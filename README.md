@@ -210,7 +210,6 @@ go tool cover -func=/tmp/sec_monitor_cover.out
 ## 仓库说明
 
 - 本项目是 AI 生成 / AI 辅助代码库。部署或依赖告警前请自行审查。
-- `AGENTS.md` 已故意忽略，请勿把本地代理指令提交到公开仓库。
 - 运行数据、日志、构建产物、依赖目录和缓存已被忽略。
 - 不要提交 Telegram Bot Token、SQLite 数据库文件或本地环境文件。
 

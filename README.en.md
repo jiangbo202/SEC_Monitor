@@ -210,7 +210,6 @@ go tool cover -func=/tmp/sec_monitor_cover.out
 ## Repository Notes
 
 - This is an AI-generated / AI-assisted codebase. Review changes before deploying or relying on alerts.
-- `AGENTS.md` is intentionally ignored. Keep agent-specific local instructions out of the public repository.
 - Runtime data, logs, build output, dependency folders, and caches are ignored.
 - Do not commit Telegram bot tokens, SQLite data files, or local environment files.
 
