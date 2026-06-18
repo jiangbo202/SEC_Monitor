@@ -123,7 +123,7 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 		_, err := s.filings.RefreshWithTrigger(ctx, "scheduler")
 		return err
 	case ipoRadarSyncTaskName:
-		_, err := s.ipo.Refresh(ctx)
+		_, err := s.ipo.RefreshWithTrigger(ctx, "ipo_scheduler")
 		return err
 	default:
 		return nil

@@ -267,7 +267,9 @@ const messages = {
         triggers: {
           manual: '手动',
           scheduler: '调度',
-          target: '单标的'
+          target: '单标的',
+          ipoManual: '新申报手动',
+          ipoScheduler: '新申报调度'
         }
       },
       scheduler: {
@@ -656,7 +658,9 @@ const messages = {
         triggers: {
           manual: 'Manual',
           scheduler: 'Scheduler',
-          target: 'Single Target'
+          target: 'Single Target',
+          ipoManual: 'IPO Manual',
+          ipoScheduler: 'IPO Scheduler'
         }
       },
       scheduler: {

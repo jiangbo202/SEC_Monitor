@@ -31,9 +31,10 @@ type IPOFilingFilter struct {
 }
 
 type IPORadarRefreshResult struct {
-	Checked    int `json:"checked"`
-	NewFilings int `json:"new_filings"`
-	Notified   int `json:"notified"`
+	Checked    int  `json:"checked"`
+	NewFilings int  `json:"new_filings"`
+	Notified   int  `json:"notified"`
+	SyncRunID  uint `json:"sync_run_id"`
 }
 
 func NewIPORadarService(db *gorm.DB, secClient sec.CurrentFilingsClient, notifier telegram.Notifier, configs *ConfigService) *IPORadarService {
@@ -68,19 +69,35 @@ func (s *IPORadarService) List(ctx context.Context, filter IPOFilingFilter) (Pag
 }
 
 func (s *IPORadarService) Refresh(ctx context.Context) (IPORadarRefreshResult, error) {
-	settings, err := s.configs.IPORadarSettings(ctx)
-	if err != nil {
+	return s.RefreshWithTrigger(ctx, "ipo_manual")
+}
+
+func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string) (IPORadarRefreshResult, error) {
+	startedAt := time.Now().UTC()
+	if strings.TrimSpace(trigger) == "" {
+		trigger = "ipo_manual"
+	}
+	run := model.SyncRun{StartedAt: startedAt, Status: "running", Trigger: trigger}
+	if err := s.db.WithContext(ctx).Create(&run).Error; err != nil {
 		return IPORadarRefreshResult{}, err
 	}
+	out := IPORadarRefreshResult{SyncRunID: run.ID}
+	settings, err := s.configs.IPORadarSettings(ctx)
+	if err != nil {
+		s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
+		return out, err
+	}
 	if !settings.Enabled {
-		return IPORadarRefreshResult{}, nil
+		s.finishSyncRun(ctx, run.ID, out, "success", "")
+		return out, nil
 	}
 	results, err := s.sec.ListCurrentFilings(ctx, sec.CurrentFilingQuery{FormTypes: settings.FormTypes, Count: settings.MaxResults})
 	if err != nil {
-		return IPORadarRefreshResult{}, err
+		s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
+		return out, err
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -settings.LookbackDays)
-	out := IPORadarRefreshResult{Checked: len(results)}
+	out.Checked = len(results)
 	for _, item := range results {
 		if !item.FilingDate.IsZero() && item.FilingDate.Before(cutoff) {
 			continue
@@ -101,6 +118,7 @@ func (s *IPORadarService) Refresh(ctx context.Context) (IPORadarRefreshResult, e
 		}
 		created, err := s.createIfNew(ctx, filing)
 		if err != nil {
+			s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
 			return out, err
 		}
 		if !created {
@@ -109,13 +127,27 @@ func (s *IPORadarService) Refresh(ctx context.Context) (IPORadarRefreshResult, e
 		out.NewFilings++
 		notified, err := s.notify(ctx, filing, settings)
 		if err != nil {
+			s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
 			return out, err
 		}
 		if notified {
 			out.Notified++
 		}
 	}
+	s.finishSyncRun(ctx, run.ID, out, "success", "")
 	return out, nil
+}
+
+func (s *IPORadarService) finishSyncRun(ctx context.Context, id uint, result IPORadarRefreshResult, status string, errorMessage string) {
+	finishedAt := time.Now().UTC()
+	_ = s.db.WithContext(ctx).Model(&model.SyncRun{}).Where("id = ?", id).Updates(map[string]any{
+		"finished_at":     &finishedAt,
+		"status":          status,
+		"targets_checked": result.Checked,
+		"new_filings":     result.NewFilings,
+		"failed_targets":  0,
+		"error_message":   errorMessage,
+	}).Error
 }
 
 func (s *IPORadarService) createIfNew(ctx context.Context, filing model.IPOFiling) (bool, error) {

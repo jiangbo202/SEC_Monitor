@@ -384,6 +384,16 @@ func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 			if got.NewFilings != tt.wantNew || got.Notified != tt.wantNotify {
 				t.Fatalf("result = %+v, want new=%d notified=%d", got, tt.wantNew, tt.wantNotify)
 			}
+			var syncRun model.SyncRun
+			if err := db.Order("id DESC").First(&syncRun).Error; err != nil {
+				t.Fatalf("load sync run: %v", err)
+			}
+			if syncRun.Trigger != "ipo_manual" {
+				t.Fatalf("sync run trigger = %q, want ipo_manual", syncRun.Trigger)
+			}
+			if syncRun.NewFilings != got.NewFilings || syncRun.Status != "success" {
+				t.Fatalf("sync run = %+v, want result counts and success", syncRun)
+			}
 			var stored int64
 			if err := db.Model(&model.IPOFiling{}).Count(&stored).Error; err != nil {
 				t.Fatalf("count ipo filings: %v", err)

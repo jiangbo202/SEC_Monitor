@@ -169,6 +169,8 @@ function triggerLabel(trigger?: string) {
   if (trigger === 'manual') return t('pages.syncRuns.triggers.manual')
   if (trigger === 'scheduler') return t('pages.syncRuns.triggers.scheduler')
   if (trigger === 'target') return t('pages.syncRuns.triggers.target')
+  if (trigger === 'ipo_manual') return t('pages.syncRuns.triggers.ipoManual')
+  if (trigger === 'ipo_scheduler') return t('pages.syncRuns.triggers.ipoScheduler')
   return trigger || '-'
 }
 

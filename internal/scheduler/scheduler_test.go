@@ -154,6 +154,13 @@ func TestSchedulerTableDriven(t *testing.T) {
 				if count != 1 {
 					t.Fatalf("ipo filings = %d, want 1", count)
 				}
+				var run model.SyncRun
+				if err := db.Order("id DESC").First(&run).Error; err != nil {
+					t.Fatalf("load sync run: %v", err)
+				}
+				if run.Trigger != "ipo_scheduler" || run.NewFilings != 1 || run.Status != "success" {
+					t.Fatalf("sync run = %+v, want ipo_scheduler success with one new filing", run)
+				}
 			}
 		})
 	}

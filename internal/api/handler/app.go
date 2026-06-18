@@ -446,7 +446,7 @@ func (h *AppHandler) RunTask(c *gin.Context) {
 	if h.Tasks != nil {
 		task, err := h.Tasks.Get(c.Request.Context(), uintParam(c, "id"))
 		if err == nil && task.TaskName == "ipo_radar_sync" && h.IPO != nil {
-			result, err := h.IPO.Refresh(context.Background())
+			result, err := h.IPO.RefreshWithTrigger(context.Background(), "ipo_manual")
 			if err != nil {
 				Error(c, err)
 				return
