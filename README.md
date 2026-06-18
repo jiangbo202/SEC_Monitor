@@ -2,7 +2,7 @@
 
 SEC Monitor is a local-first Web app for monitoring SEC EDGAR filings for US stocks and ETFs.
 
-> AI-assisted project: this repository was developed with help from AI coding agents. Human review is still required before using it for production or investment workflows.
+> AI-generated / AI-assisted project: this repository was built with help from AI coding agents and reviewed iteratively by a human operator. Treat it as an open-source utility, not financial advice or a production compliance system.
 
 ## Stack
 
@@ -57,7 +57,18 @@ These paths are intentionally ignored by Git.
 
 ## Docker Deployment
 
-The Docker image contains both the Go API server and the built Vue frontend. One container serves the full Web UI and API on port `8080`.
+The Docker image contains both the Go API server and the built Vue frontend. One container serves the full Web UI and API.
+
+Current Compose mapping:
+
+- Host URL: http://127.0.0.1:9090
+- Container port: `8080`
+- Mapping in `docker-compose.yml`: `9090:8080`
+
+Prerequisites:
+
+- Docker
+- Docker Compose v2
 
 Build the image:
 
@@ -71,24 +82,63 @@ Run with Docker Compose:
 make docker-up
 ```
 
-`make docker-up` stops the local `make start` services first, then starts the Docker container. If you run `docker compose up` manually, run `make stop` first so `127.0.0.1:8080` does not hit a stale local backend.
+`make docker-up` stops the local `make start` services first, then starts the Docker container. If you run `docker compose up` manually, run `make stop` first so the browser does not hit a stale local backend.
 
 Open:
 
-- Web UI: http://127.0.0.1:8080
-- Health: http://127.0.0.1:8080/healthz
+- Web UI: http://127.0.0.1:9090
+- Health: http://127.0.0.1:9090/healthz
 
-Stop and inspect logs:
+Common Docker operations:
 
 ```bash
-make docker-logs
-make docker-down
+make docker-up       # build and start
+make docker-logs     # follow container logs
+make docker-down     # stop and remove container, keep data volume
+
+docker compose ps
+docker compose restart sec-monitor
+docker compose logs -f sec-monitor
+docker compose down
 ```
 
-Before serious use, edit `SEC_USER_AGENT` in `docker-compose.yml` or pass it at runtime:
+Data persistence:
+
+- SQLite database inside container: `/app/data/sec_monitor.db`
+- Docker named volume: `sec_monitor_sec-monitor-data`
+- `docker compose down` keeps the volume and data.
+- `docker compose down -v` removes the volume and deletes the database.
+
+Logs:
+
+- Container logs are written to Docker stdout/stderr.
+- View them with `make docker-logs` or `docker compose logs -f sec-monitor`.
+- The local development `logs/` directory is not used by the Docker container.
+
+Change Docker port:
+
+```yaml
+ports:
+  - "9090:8080"
+```
+
+Change the left side to the host port you want, for example `18080:8080`, then run:
+
+```bash
+make docker-up
+```
+
+Before serious use, set a descriptive SEC User-Agent. Edit `SEC_USER_AGENT` in `docker-compose.yml` or pass it at runtime:
 
 ```bash
 SEC_USER_AGENT="sec-monitor/0.1 your-email@example.com" docker compose up -d --build
+```
+
+Upgrade/rebuild:
+
+```bash
+git pull
+make docker-up
 ```
 
 Publish example:
@@ -151,6 +201,7 @@ go tool cover -func=/tmp/sec_monitor_cover.out
 
 ## Repository Notes
 
+- This is an AI-generated / AI-assisted codebase. Review changes before deploying or relying on alerts.
 - `AGENTS.md` is intentionally ignored. Keep agent-specific local instructions out of the public repository.
 - Runtime data, logs, build output, dependency folders, and caches are ignored.
 - Do not commit Telegram bot tokens, SQLite data files, or local environment files.
