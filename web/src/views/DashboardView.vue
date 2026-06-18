@@ -7,6 +7,7 @@
       </div>
       <div class="dashboard-actions">
         <el-button :loading="refreshing" type="primary" @click="refreshFilings">{{ t('pages.dashboard.refreshFilings') }}</el-button>
+        <el-button :loading="refreshingIpo" @click="refreshIpoFilings">{{ t('pages.dashboard.refreshIpoRadar') }}</el-button>
         <el-button :loading="loading" @click="load">{{ t('common.refreshPanel') }}</el-button>
       </div>
     </div>
@@ -58,24 +59,41 @@
       <el-card shadow="never" class="dashboard-panel panel-wide">
         <template #header>
           <div class="panel-header">
-            <span>{{ t('pages.dashboard.latestFilings') }}</span>
-            <el-link type="primary" @click="$router.push('/filings')">{{ t('common.viewAll') }}</el-link>
+            <span>{{ t('pages.dashboard.ipoRadar') }}</span>
+            <div class="panel-header-actions">
+              <el-tag v-if="latestIpoSync" :type="syncStatusType(latestIpoSync.status)" effect="plain">{{ triggerLabel(latestIpoSync.trigger) }}</el-tag>
+              <el-link type="primary" @click="$router.push('/ipo-radar')">{{ t('common.viewAll') }}</el-link>
+            </div>
           </div>
         </template>
-        <el-table :data="recentFilings" v-loading="loading" border>
+        <div class="ipo-summary-row">
+          <div>
+            <span>{{ t('pages.dashboard.ipoTotal') }}</span>
+            <strong>{{ ipoFilingTotal }}</strong>
+          </div>
+          <div>
+            <span>{{ t('pages.dashboard.ipoLastChecked') }}</span>
+            <strong>{{ latestIpoSync ? formatDateTime(latestIpoSync.started_at) : '-' }}</strong>
+          </div>
+          <div>
+            <span>{{ t('pages.dashboard.ipoLastNew') }}</span>
+            <strong>{{ latestIpoSync?.new_filings ?? 0 }}</strong>
+          </div>
+        </div>
+        <el-table :data="recentIpoFilings" v-loading="loading" border>
           <el-table-column prop="filing_type" :label="t('common.type')" width="100">
-            <template #default="{ row }"><el-tag effect="plain">{{ row.filing_type }}</el-tag></template>
+            <template #default="{ row }"><el-tag type="warning" effect="plain">{{ row.filing_type }}</el-tag></template>
           </el-table-column>
-          <el-table-column prop="ticker" label="Ticker" width="90" />
-          <el-table-column prop="company_name" :label="t('common.company')" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="company_name" :label="t('common.company')" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="cik" label="CIK" width="130" />
           <el-table-column prop="filing_date" :label="t('common.filingDate')" width="130">
             <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
           </el-table-column>
-          <el-table-column prop="pulled_at" :label="t('common.syncTime')" width="180">
-            <template #default="{ row }">{{ formatDateTime(row.pulled_at) }}</template>
+          <el-table-column prop="accepted_at" :label="t('pages.dashboard.secAcceptedAt')" width="170">
+            <template #default="{ row }">{{ formatDateTime(row.accepted_at) }}</template>
           </el-table-column>
-          <el-table-column :label="t('common.link')" width="80">
-            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ t('common.open') }}</el-link></template>
+          <el-table-column prop="title" :label="t('common.title')" min-width="260">
+            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ row.title || row.company_name }}</el-link></template>
           </el-table-column>
         </el-table>
       </el-card>
@@ -87,12 +105,12 @@
             <el-link type="primary" @click="$router.push('/sync-runs')">{{ t('common.history') }}</el-link>
           </div>
         </template>
-        <div v-if="latestSync" class="status-block">
-          <el-tag :type="syncStatusType(latestSync.status)" effect="plain">{{ latestSync.status }}</el-tag>
-          <strong>{{ t('pages.dashboard.newFilings', { count: latestSync.new_filings }) }}</strong>
-          <span>{{ t('pages.dashboard.syncSummary', { targets: latestSync.targets_checked, failed: latestSync.failed_targets }) }}</span>
-          <span>{{ t('pages.dashboard.startedAt', { time: formatDateTime(latestSync.started_at) }) }}</span>
-          <span>{{ t('pages.dashboard.finishedAt', { time: formatDateTime(latestSync.finished_at) }) }}</span>
+        <div v-if="latestFilingSync" class="status-block">
+          <el-tag :type="syncStatusType(latestFilingSync.status)" effect="plain">{{ syncStatusLabel(latestFilingSync.status) }}</el-tag>
+          <strong>{{ t('pages.dashboard.newFilings', { count: latestFilingSync.new_filings }) }}</strong>
+          <span>{{ t('pages.dashboard.syncSummary', { targets: latestFilingSync.targets_checked, failed: latestFilingSync.failed_targets }) }}</span>
+          <span>{{ t('pages.dashboard.startedAt', { time: formatDateTime(latestFilingSync.started_at) }) }}</span>
+          <span>{{ t('pages.dashboard.finishedAt', { time: formatDateTime(latestFilingSync.finished_at) }) }}</span>
         </div>
         <el-empty v-else :description="t('pages.dashboard.noSyncRuns')" />
       </el-card>
@@ -152,6 +170,31 @@
       <el-card shadow="never" class="dashboard-panel panel-wide">
         <template #header>
           <div class="panel-header">
+            <span>{{ t('pages.dashboard.latestFilings') }}</span>
+            <el-link type="primary" @click="$router.push('/filings')">{{ t('common.viewAll') }}</el-link>
+          </div>
+        </template>
+        <el-table :data="recentFilings" v-loading="loading" border>
+          <el-table-column prop="filing_type" :label="t('common.type')" width="100">
+            <template #default="{ row }"><el-tag effect="plain">{{ row.filing_type }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="ticker" label="Ticker" width="90" />
+          <el-table-column prop="company_name" :label="t('common.company')" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="filing_date" :label="t('common.filingDate')" width="130">
+            <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
+          </el-table-column>
+          <el-table-column prop="pulled_at" :label="t('common.syncTime')" width="180">
+            <template #default="{ row }">{{ formatDateTime(row.pulled_at) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('common.link')" width="80">
+            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ t('common.open') }}</el-link></template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+
+      <el-card shadow="never" class="dashboard-panel panel-wide">
+        <template #header>
+          <div class="panel-header">
             <span>{{ t('pages.dashboard.recentNotifications') }}</span>
             <div class="panel-header-actions">
               <el-tag :type="notificationRateType" effect="plain">{{ t('pages.dashboard.notificationRate', { rate: notificationSuccessRate }) }}</el-tag>
@@ -178,24 +221,28 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Aim, Bell, DataAnalysis, Document } from '@element-plus/icons-vue'
+import { Aim, Bell, DataAnalysis, Document, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, Filing, NotificationLog, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
+import type { ApiResponse, Filing, IPOFiling, IPORadarRefreshResult, NotificationLog, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
 const loading = ref(false)
 const refreshing = ref(false)
+const refreshingIpo = ref(false)
 const targetTotal = ref(0)
 const enabledTargetTotal = ref(0)
 const filingTotal = ref(0)
 const notificationTotal = ref(0)
 const syncTotal = ref(0)
+const ipoFilingTotal = ref(0)
 const recentFilings = ref<Filing[]>([])
+const recentIpoFilings = ref<IPOFiling[]>([])
 const dashboardFilings = ref<Filing[]>([])
 const recentNotifications = ref<NotificationLog[]>([])
-const latestSync = ref<SyncRun | null>(null)
+const latestFilingSync = ref<SyncRun | null>(null)
+const latestIpoSync = ref<SyncRun | null>(null)
 const successfulTargets = ref(0)
 const failedTargets = ref(0)
 const failedTargetItems = ref<WatchTarget[]>([])
@@ -205,14 +252,15 @@ const onboardingVisible = ref(false)
 const onboardingActiveStep = computed(() => {
   if (targetTotal.value === 0) return 1
   if (!telegramEnabled.value) return 2
-  if (!latestSync.value) return 3
+  if (!latestFilingSync.value) return 3
   return 4
 })
 
 const metrics = computed(() => [
   { label: t('nav.targets'), value: targetTotal.value, hint: t('pages.dashboard.enabledTargets') + ` ${enabledTargetTotal.value}`, icon: Aim },
   { label: t('nav.filings'), value: filingTotal.value, hint: t('common.filings'), icon: Document },
-  { label: t('nav.syncRuns'), value: syncTotal.value, hint: latestSync.value ? latestSync.value.status : t('pages.dashboard.noSyncRuns'), icon: DataAnalysis },
+  { label: t('nav.ipoRadar'), value: ipoFilingTotal.value, hint: latestIpoSync.value ? t('pages.dashboard.countSuffix', { count: latestIpoSync.value.new_filings }) : t('pages.dashboard.noIpoRuns'), icon: TrendCharts },
+  { label: t('nav.syncRuns'), value: syncTotal.value, hint: latestFilingSync.value ? syncStatusLabel(latestFilingSync.value.status) : t('pages.dashboard.noSyncRuns'), icon: DataAnalysis },
   { label: t('nav.notificationLogs'), value: notificationTotal.value, hint: 'Telegram', icon: Bell }
 ])
 
@@ -225,7 +273,7 @@ const healthAlerts = computed(() => {
       type: 'error'
     })
   }
-  if (!latestSync.value) {
+  if (!latestFilingSync.value) {
     alerts.push({ title: t('pages.dashboard.noSyncAlertTitle'), description: t('pages.dashboard.noSyncAlertDescription'), type: 'warning' })
   } else if (latestSyncAgeHours.value >= 6) {
     alerts.push({
@@ -247,8 +295,8 @@ const healthAlerts = computed(() => {
 })
 
 const latestSyncAgeHours = computed(() => {
-  if (!latestSync.value?.started_at) return 0
-  const started = new Date(latestSync.value.started_at)
+  if (!latestFilingSync.value?.started_at) return 0
+  const started = new Date(latestFilingSync.value.started_at)
   if (Number.isNaN(started.getTime())) return 0
   return Math.floor((Date.now() - started.getTime()) / 36e5)
 })
@@ -281,11 +329,12 @@ const notificationRateType = computed(() => {
 async function load() {
   loading.value = true
   try {
-    const [targets, enabledTargets, filings, syncRuns, notifications, telegramConfigs, taskConfigs, uiConfigs] = await Promise.all([
+    const [targets, enabledTargets, filings, ipoFilings, syncRuns, notifications, telegramConfigs, taskConfigs, uiConfigs] = await Promise.all([
       apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { page: 1, page_size: 10 } }),
       apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { status: 'enabled', page: 1, page_size: 200 } }),
       apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { page: 1, page_size: 100, sort_by: 'pulled_at', sort_order: 'desc' } }),
-      apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { page: 1, page_size: 1 } }),
+      apiClient.get<ApiResponse<PageResult<IPOFiling>>>('/ipo-filings', { params: { page: 1, page_size: 6 } }),
+      apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { page: 1, page_size: 20 } }),
       apiClient.get<ApiResponse<PageResult<NotificationLog>>>('/notification-logs', { params: { page: 1, page_size: 5 } }),
       apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config'),
       apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs'),
@@ -294,11 +343,14 @@ async function load() {
     targetTotal.value = targets.data.data.total
     enabledTargetTotal.value = enabledTargets.data.data.total
     filingTotal.value = filings.data.data.total
+    ipoFilingTotal.value = ipoFilings.data.data.total
     syncTotal.value = syncRuns.data.data.total
     notificationTotal.value = notifications.data.data.total
     dashboardFilings.value = filings.data.data.items
     recentFilings.value = filings.data.data.items.slice(0, 6)
-    latestSync.value = syncRuns.data.data.items[0] || null
+    recentIpoFilings.value = ipoFilings.data.data.items
+    latestFilingSync.value = syncRuns.data.data.items.find((item) => ['manual', 'scheduler', 'target'].includes(item.trigger)) || null
+    latestIpoSync.value = syncRuns.data.data.items.find((item) => item.trigger === 'ipo_manual' || item.trigger === 'ipo_scheduler') || null
     recentNotifications.value = notifications.data.data.items
     successfulTargets.value = enabledTargets.data.data.items.filter((item) => item.last_sync_status === 'success').length
     failedTargets.value = enabledTargets.data.data.items.filter((item) => item.last_sync_status === 'failed').length
@@ -334,6 +386,17 @@ async function refreshFilings() {
   }
 }
 
+async function refreshIpoFilings() {
+  refreshingIpo.value = true
+  try {
+    const res = await apiClient.post<ApiResponse<IPORadarRefreshResult>>('/ipo-filings/refresh', null, { timeout: 120000 })
+    ElMessage.success(t('messages.ipoRefreshDone', { count: res.data.data.new_filings, notified: res.data.data.notified }))
+    await load()
+  } finally {
+    refreshingIpo.value = false
+  }
+}
+
 function formatDate(value?: string | null) {
   if (!value) return '-'
   const date = new Date(value)
@@ -353,6 +416,23 @@ function syncStatusType(status?: string) {
   if (status === 'partial') return 'warning'
   if (status === 'failed') return 'danger'
   return 'info'
+}
+
+function syncStatusLabel(status?: string) {
+  if (status === 'success') return t('status.success')
+  if (status === 'partial') return t('status.partial')
+  if (status === 'failed') return t('status.failed')
+  if (status === 'running') return t('status.running')
+  return status || '-'
+}
+
+function triggerLabel(trigger?: string) {
+  if (trigger === 'ipo_manual') return t('pages.syncRuns.triggers.ipoManual')
+  if (trigger === 'ipo_scheduler') return t('pages.syncRuns.triggers.ipoScheduler')
+  if (trigger === 'manual') return t('pages.syncRuns.triggers.manual')
+  if (trigger === 'scheduler') return t('pages.syncRuns.triggers.scheduler')
+  if (trigger === 'target') return t('pages.syncRuns.triggers.target')
+  return trigger || '-'
 }
 
 function notificationStatusType(status?: string) {

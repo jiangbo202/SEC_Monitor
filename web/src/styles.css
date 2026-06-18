@@ -312,6 +312,7 @@ h1 {
 
 .dashboard-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -335,7 +336,7 @@ h1 {
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 16px;
 }
@@ -401,6 +402,38 @@ h1 {
 .status-block span {
   color: #4b5563;
   font-size: 13px;
+}
+
+.ipo-summary-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.ipo-summary-row div {
+  min-width: 0;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+}
+
+.ipo-summary-row span {
+  display: block;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.ipo-summary-row strong {
+  display: block;
+  overflow: hidden;
+  color: #111827;
+  font-size: 18px;
+  line-height: 26px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .target-health {
@@ -525,5 +558,9 @@ h1 {
 
   .panel-wide {
     grid-column: span 1;
+  }
+
+  .ipo-summary-row {
+    grid-template-columns: 1fr;
   }
 }
