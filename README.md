@@ -1,37 +1,40 @@
 # SEC Monitor
 
-SEC Monitor is a local-first Web app for monitoring SEC EDGAR filings for US stocks and ETFs.
+简体中文 | [English](./README.en.md)
 
-> AI-generated / AI-assisted project: this repository was built with help from AI coding agents and reviewed iteratively by a human operator. Treat it as an open-source utility, not financial advice or a production compliance system.
+SEC Monitor 是一个本地优先的 Web 应用，用于监控美股和 ETF 的 SEC EDGAR 公告。
 
-## Stack
+> AI 生成 / AI 辅助项目：本仓库由 AI 编程代理协助构建，并由人工反复审查和迭代。请把它视为开源工具，不构成投资建议，也不是生产级合规系统。
 
-- Backend: Go 1.24, Gin, GORM
-- Database: SQLite by default
-- Scheduler: robfig/cron
-- Frontend: Vue 3, Vite, TypeScript, Element Plus
+## 技术栈
 
-## Features
+- 后端：Go 1.24、Gin、GORM
+- 数据库：默认 SQLite
+- 调度：robfig/cron
+- 前端：Vue 3、Vite、TypeScript、Element Plus
 
-- Watch target management with ticker lookup, enable/disable, and per-target sync status.
-- SEC filing refresh with deduplication, retry, initial fetch day limit, max fetch count, and optional full-history archive fetch.
-- SEC filing list with filters, pagination, sortable filing date, publish time, sync time, ticker, and filing type.
-- Sync history page with status, trigger source, checked targets, new filings, failed targets, and error messages.
-- Dashboard overview for monitored targets, recent filings, sync health, and notification status.
-- Telegram notification settings, test sending, retries, and notification logs.
-- Structured system configuration for SEC fetch policy and data retention.
-- Data cleanup preview and confirmed cleanup based on retention days.
-- Operation audit logs for key changes.
+## 功能
 
-## Quick Start
+- 监控标的管理：Ticker 自动带出、启用/停用、单标的同步状态。
+- SEC 公告同步：去重、重试、首次拉取天数限制、最大拉取数量、可选完整历史归档。
+- SEC 公告列表：筛选、分页、Filing Date、发布时间、同步时间、Ticker、公告类型排序。
+- 同步历史：状态、触发来源、检查标的数、新增公告数、失败标的数、错误信息。
+- 总览页面：监控标的、最近公告、同步健康度、通知状态。
+- Telegram：通知配置、测试发送、重试、通知日志。
+- 系统配置：SEC 拉取策略、数据保留、默认语言。
+- 中英文切换：顶部可切换当前浏览器语言，系统配置可设置默认语言。
+- 数据清理：按保留天数预览并确认清理。
+- 审计日志：记录关键变更操作。
 
-Prerequisites:
+## 快速开始
+
+前置要求：
 
 - Go 1.24+
 - Node.js 20+
 - npm
 
-Run locally:
+本地运行：
 
 ```bash
 make start
@@ -41,60 +44,60 @@ make restart
 make stop
 ```
 
-Default URLs:
+默认地址：
 
-- Backend: http://127.0.0.1:8080
-- Frontend: http://127.0.0.1:5173
-- Health: http://127.0.0.1:8080/healthz
+- 后端：http://127.0.0.1:8080
+- 前端：http://127.0.0.1:5173
+- 健康检查：http://127.0.0.1:8080/healthz
 
-Local runtime files:
+本地运行文件：
 
-- PID files: `.runtime/`
-- SQLite database: `data/sec_monitor.db`
-- Logs: `logs/YYYY-MM-DD/`
+- PID 文件：`.runtime/`
+- SQLite 数据库：`data/sec_monitor.db`
+- 日志：`logs/YYYY-MM-DD/`
 
-These paths are intentionally ignored by Git.
+这些路径已被 Git 忽略。
 
-## Docker Deployment
+## Docker 部署
 
-The Docker image contains both the Go API server and the built Vue frontend. One container serves the full Web UI and API.
+Docker 镜像包含 Go API 服务和已构建的 Vue 前端。一个容器即可提供完整 Web UI 和 API。
 
-Current Compose mapping:
+当前 Compose 映射：
 
-- Host URL: http://127.0.0.1:9090
-- Container port: `8080`
-- Mapping in `docker-compose.yml`: `9090:8080`
+- 访问地址：http://127.0.0.1:9090
+- 容器端口：`8080`
+- `docker-compose.yml` 映射：`9090:8080`
 
-Prerequisites:
+前置要求：
 
 - Docker
 - Docker Compose v2
 
-Build the image:
+构建镜像：
 
 ```bash
 make docker-build
 ```
 
-Run with Docker Compose:
+使用 Docker Compose 启动：
 
 ```bash
 make docker-up
 ```
 
-`make docker-up` stops the local `make start` services first, then starts the Docker container. If you run `docker compose up` manually, run `make stop` first so the browser does not hit a stale local backend.
+`make docker-up` 会先停止本地 `make start` 服务，再启动 Docker 容器。若手动执行 `docker compose up`，请先运行 `make stop`，避免浏览器访问到旧的本地后端。
 
-Open:
+打开：
 
-- Web UI: http://127.0.0.1:9090
-- Health: http://127.0.0.1:9090/healthz
+- Web UI：http://127.0.0.1:9090
+- 健康检查：http://127.0.0.1:9090/healthz
 
-Common Docker operations:
+常用 Docker 命令：
 
 ```bash
-make docker-up       # build and start
-make docker-logs     # follow container logs
-make docker-down     # stop and remove container, keep data volume
+make docker-up       # 构建并启动
+make docker-logs     # 查看容器日志
+make docker-down     # 停止并移除容器，保留数据卷
 
 docker compose ps
 docker compose restart sec-monitor
@@ -102,69 +105,74 @@ docker compose logs -f sec-monitor
 docker compose down
 ```
 
-Data persistence:
+数据持久化：
 
-- SQLite database inside container: `/app/data/sec_monitor.db`
-- Docker named volume: `sec_monitor_sec-monitor-data`
-- `docker compose down` keeps the volume and data.
-- `docker compose down -v` removes the volume and deletes the database.
+- 容器内 SQLite 数据库：`/app/data/sec_monitor.db`
+- Docker 命名卷：`sec_monitor_sec-monitor-data`
+- `docker compose down` 会保留数据卷和数据库。
+- `docker compose down -v` 会删除数据卷和数据库。
 
-Logs:
+日志：
 
-- Container logs are written to Docker stdout/stderr.
-- View them with `make docker-logs` or `docker compose logs -f sec-monitor`.
-- The local development `logs/` directory is not used by the Docker container.
+- Docker 容器日志输出到 stdout/stderr。
+- 使用 `make docker-logs` 或 `docker compose logs -f sec-monitor` 查看。
+- 本地开发的 `logs/` 目录不会被 Docker 容器使用。
 
-Change Docker port:
+修改 Docker 端口：
 
 ```yaml
 ports:
   - "9090:8080"
 ```
 
-Change the left side to the host port you want, for example `18080:8080`, then run:
+把左侧改成你需要的宿主机端口，例如 `18080:8080`，然后执行：
 
 ```bash
 make docker-up
 ```
 
-Before serious use, set a descriptive SEC User-Agent. Edit `SEC_USER_AGENT` in `docker-compose.yml` or pass it at runtime:
+正式使用前，请设置明确的 SEC User-Agent。可以编辑 `docker-compose.yml` 中的 `SEC_USER_AGENT`，也可以启动时传入：
 
 ```bash
 SEC_USER_AGENT="sec-monitor/0.1 your-email@example.com" docker compose up -d --build
 ```
 
-Upgrade/rebuild:
+升级或重建：
 
 ```bash
 git pull
 make docker-up
 ```
 
-Publish example:
+发布镜像示例：
 
 ```bash
 docker build -t ghcr.io/<user>/sec-monitor:latest .
 docker push ghcr.io/<user>/sec-monitor:latest
 ```
 
-## Configuration
+## 配置
 
-Runtime configuration is available in the Web UI under `系统配置`.
+运行时配置在 Web UI 的 `系统配置` 页面中管理。
 
-SEC fetch settings:
+SEC 拉取配置：
 
-- `sec.sync_window_days`: limits every sync to filings from recent N days. `0` means no date window.
-- `sec.initial_fetch_days`: limits first sync for a target to recent N days.
-- `sec.max_fetch_count`: limits filings processed per target per sync. `0` means no limit.
-- `sec.fetch_full_history`: enables SEC archived submissions file fetching.
+- `sec.sync_window_days`：每次同步只处理最近 N 天公告，`0` 表示不限制时间窗口。
+- `sec.initial_fetch_days`：新标的首次同步只处理最近 N 天公告。
+- `sec.max_fetch_count`：每个标的每次同步最多处理多少条公告，`0` 表示不限制。
+- `sec.fetch_full_history`：是否启用 SEC 归档 submissions 文件拉取。
 
-Data retention settings:
+数据保留配置：
 
-- `system.data_retention_days`: filings older than this by sync time can be previewed and cleaned.
-- `system.storage_by_day`: reserved for day-based local storage layout.
+- `system.data_retention_days`：按同步入库时间保留公告，过期公告可预览并清理。
+- `system.storage_by_day`：预留的按天分目录存储开关。
 
-Environment variables:
+界面配置：
+
+- `ui.default_locale`：默认界面语言，支持 `zh-CN` 和 `en-US`。
+- 顶部语言切换会保存到当前浏览器，优先级高于系统默认语言。
+
+环境变量：
 
 ```bash
 APP_ADDR=127.0.0.1:8080
@@ -175,37 +183,37 @@ SEC_USER_AGENT="sec-monitor/0.1 your-email@example.com"
 SEC_TIMEOUT_MS=10000
 ```
 
-SEC requires a descriptive User-Agent. Set `SEC_USER_AGENT` before serious use.
+SEC 要求请求方设置明确的 User-Agent。正式使用前请设置 `SEC_USER_AGENT`。
 
-## Development
+## 开发
 
-Backend tests:
+后端测试：
 
 ```bash
 GOCACHE=$(pwd)/.cache/go-build GOMODCACHE=$(pwd)/.cache/go-mod go test ./...
 ```
 
-Frontend build:
+前端构建：
 
 ```bash
 cd web
 npm run build
 ```
 
-Coverage:
+覆盖率：
 
 ```bash
 GOCACHE=$(pwd)/.cache/go-build GOMODCACHE=$(pwd)/.cache/go-mod go test ./... -coverprofile=/tmp/sec_monitor_cover.out
 go tool cover -func=/tmp/sec_monitor_cover.out
 ```
 
-## Repository Notes
+## 仓库说明
 
-- This is an AI-generated / AI-assisted codebase. Review changes before deploying or relying on alerts.
-- `AGENTS.md` is intentionally ignored. Keep agent-specific local instructions out of the public repository.
-- Runtime data, logs, build output, dependency folders, and caches are ignored.
-- Do not commit Telegram bot tokens, SQLite data files, or local environment files.
+- 本项目是 AI 生成 / AI 辅助代码库。部署或依赖告警前请自行审查。
+- `AGENTS.md` 已故意忽略，请勿把本地代理指令提交到公开仓库。
+- 运行数据、日志、构建产物、依赖目录和缓存已被忽略。
+- 不要提交 Telegram Bot Token、SQLite 数据库文件或本地环境文件。
 
-## License
+## 许可证
 
-MIT License. See [LICENSE](LICENSE).
+MIT License。详见 [LICENSE](LICENSE)。
