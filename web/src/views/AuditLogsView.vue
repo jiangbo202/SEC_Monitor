@@ -1,15 +1,15 @@
 <template>
   <section class="page">
     <div class="page-header">
-      <h1>审计日志</h1>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <h1>{{ t('pages.auditLogs.title') }}</h1>
+      <el-button :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
     </div>
-    <el-table :data="rows" v-loading="loading" border empty-text="暂无审计日志">
-      <el-table-column prop="operated_at" label="时间" width="170">
+    <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.auditLogs.empty')">
+      <el-table-column prop="operated_at" :label="t('common.time')" width="170">
         <template #default="{ row }">{{ formatDateTime(row.operated_at) }}</template>
       </el-table-column>
       <el-table-column prop="operator" label="用户" width="110" show-overflow-tooltip />
-      <el-table-column prop="action" label="操作" width="130">
+      <el-table-column prop="action" :label="t('common.actions')" width="130">
         <template #default="{ row }"><el-tag :type="auditActionType(row.action)" effect="plain">{{ auditActionLabel(row.action) }}</el-tag></template>
       </el-table-column>
       <el-table-column prop="object_type" label="对象" width="130">
@@ -27,7 +27,9 @@
 import { onMounted, ref } from 'vue'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, OperationLog, PageResult } from '@/api/types'
+import { useI18n } from '@/i18n'
 
+const { t } = useI18n()
 const loading = ref(false)
 const rows = ref<OperationLog[]>([])
 const total = ref(0)
@@ -53,10 +55,10 @@ function auditActionType(action?: string) {
 }
 
 function auditActionLabel(action?: string) {
-  if (action === 'create') return '新增'
-  if (action === 'update') return '更新'
-  if (action === 'delete') return '删除'
-  if (action === 'status') return '状态'
+  if (action === 'create') return t('common.add')
+  if (action === 'update') return t('common.update')
+  if (action === 'delete') return t('common.delete')
+  if (action === 'status') return t('common.status')
   return action || '-'
 }
 

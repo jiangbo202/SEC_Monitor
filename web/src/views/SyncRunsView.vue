@@ -1,14 +1,14 @@
 <template>
   <section class="page">
     <div class="page-header">
-      <h1>同步历史</h1>
+      <h1>{{ t('pages.syncRuns.title') }}</h1>
       <div class="page-actions">
         <el-button :disabled="!selectedRunFailedDetails.length" :loading="retryingAll" type="primary" @click="retrySelectedFailures">重试当前失败</el-button>
-        <el-button :loading="loading" @click="load">刷新</el-button>
+        <el-button :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
       </div>
     </div>
     <el-form :inline="true" :model="filters" class="toolbar">
-      <el-form-item label="状态">
+      <el-form-item :label="t('common.status')">
         <el-select v-model="filters.status" clearable style="width: 150px">
           <el-option label="Success" value="success" />
           <el-option label="Partial" value="partial" />
@@ -16,27 +16,27 @@
           <el-option label="Running" value="running" />
         </el-select>
       </el-form-item>
-      <el-form-item><el-button :loading="loading" @click="load">查询</el-button></el-form-item>
+      <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
     </el-form>
-    <el-table :data="rows" v-loading="loading" border empty-text="暂无同步历史" @expand-change="onExpandChange" @current-change="onCurrentRunChange">
+    <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.syncRuns.empty')" @expand-change="onExpandChange" @current-change="onCurrentRunChange">
       <el-table-column type="expand">
         <template #default="{ row }">
           <el-table :data="details[row.id] || []" border class="sync-detail-table">
             <el-table-column prop="ticker" label="Ticker" width="100" />
-            <el-table-column prop="status" label="状态" width="120">
+            <el-table-column prop="status" :label="t('common.status')" width="120">
               <template #default="{ row: detail }">
                 <el-tag class="status-tag" :type="syncStatusType(detail.status)" effect="plain">{{ syncStatusLabel(detail.status) }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="new_filings" label="新增" width="80" align="right" />
-            <el-table-column prop="duration_ms" label="耗时" width="100">
+            <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" align="right" />
+            <el-table-column prop="duration_ms" :label="t('common.duration')" width="100">
               <template #default="{ row: detail }">{{ formatDuration(detail.duration_ms) }}</template>
             </el-table-column>
             <el-table-column prop="started_at" label="开始" width="170">
               <template #default="{ row: detail }">{{ formatDateTime(detail.started_at) }}</template>
             </el-table-column>
-            <el-table-column prop="error_message" label="错误信息" min-width="260" show-overflow-tooltip />
-            <el-table-column label="操作" width="150">
+            <el-table-column prop="error_message" :label="t('common.error')" min-width="260" show-overflow-tooltip />
+            <el-table-column :label="t('common.actions')" width="150">
               <template #default="{ row: detail }">
                 <el-button
                   v-if="detail.status === 'failed'"
@@ -61,7 +61,7 @@
           </el-table>
         </template>
       </el-table-column>
-      <el-table-column prop="status" label="状态" width="120">
+      <el-table-column prop="status" :label="t('common.status')" width="120">
         <template #default="{ row }">
           <el-tag class="status-tag" :type="syncStatusType(row.status)" effect="plain">{{ syncStatusLabel(row.status) }}</el-tag>
         </template>
@@ -77,10 +77,10 @@
       <el-table-column prop="finished_at" label="结束时间" width="170">
         <template #default="{ row }">{{ formatDateTime(row.finished_at) }}</template>
       </el-table-column>
-      <el-table-column prop="targets_checked" label="标的" width="80" align="right" />
-      <el-table-column prop="new_filings" label="新增" width="80" align="right" />
-      <el-table-column prop="failed_targets" label="失败" width="80" align="right" />
-      <el-table-column prop="error_message" label="错误信息" min-width="220" />
+      <el-table-column prop="targets_checked" :label="t('common.target')" width="80" align="right" />
+      <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" align="right" />
+      <el-table-column prop="failed_targets" :label="t('status.failed')" width="80" align="right" />
+      <el-table-column prop="error_message" :label="t('common.error')" min-width="220" />
     </el-table>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />
   </section>
@@ -92,7 +92,9 @@ import { ElMessage } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, PageResult, SyncRun, SyncRunDetail } from '@/api/types'
+import { useI18n } from '@/i18n'
 
+const { t } = useI18n()
 const loading = ref(false)
 const rows = ref<SyncRun[]>([])
 const total = ref(0)

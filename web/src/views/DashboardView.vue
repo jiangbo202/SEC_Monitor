@@ -2,12 +2,12 @@
   <section class="page dashboard-page">
     <div class="page-header">
       <div>
-        <h1>总览</h1>
-        <p class="page-subtitle">SEC 监控状态、最近同步和最新公告</p>
+        <h1>{{ t('pages.dashboard.title') }}</h1>
+        <p class="page-subtitle">{{ t('pages.dashboard.subtitle') }}</p>
       </div>
       <div class="dashboard-actions">
-        <el-button :loading="refreshing" type="primary" @click="refreshFilings">刷新公告</el-button>
-        <el-button :loading="loading" @click="load">刷新面板</el-button>
+        <el-button :loading="refreshing" type="primary" @click="refreshFilings">{{ t('pages.dashboard.refreshFilings') }}</el-button>
+        <el-button :loading="loading" @click="load">{{ t('common.refreshPanel') }}</el-button>
       </div>
     </div>
 
@@ -40,24 +40,24 @@
       <el-card shadow="never" class="dashboard-panel panel-wide">
         <template #header>
           <div class="panel-header">
-            <span>最新 SEC 公告</span>
-            <el-link type="primary" @click="$router.push('/filings')">查看全部</el-link>
+            <span>{{ t('pages.dashboard.latestFilings') }}</span>
+            <el-link type="primary" @click="$router.push('/filings')">{{ t('common.viewAll') }}</el-link>
           </div>
         </template>
         <el-table :data="recentFilings" v-loading="loading" border>
-          <el-table-column prop="filing_type" label="类型" width="100">
+          <el-table-column prop="filing_type" :label="t('common.type')" width="100">
             <template #default="{ row }"><el-tag effect="plain">{{ row.filing_type }}</el-tag></template>
           </el-table-column>
           <el-table-column prop="ticker" label="Ticker" width="90" />
-          <el-table-column prop="company_name" label="公司" min-width="160" show-overflow-tooltip />
-          <el-table-column prop="filing_date" label="Filing Date" width="130">
+          <el-table-column prop="company_name" :label="t('common.company')" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="filing_date" :label="t('common.filingDate')" width="130">
             <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
           </el-table-column>
-          <el-table-column prop="pulled_at" label="同步时间" width="180">
+          <el-table-column prop="pulled_at" :label="t('common.syncTime')" width="180">
             <template #default="{ row }">{{ formatDateTime(row.pulled_at) }}</template>
           </el-table-column>
-          <el-table-column label="链接" width="80">
-            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">打开</el-link></template>
+          <el-table-column :label="t('common.link')" width="80">
+            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ t('common.open') }}</el-link></template>
           </el-table-column>
         </el-table>
       </el-card>
@@ -65,39 +65,39 @@
       <el-card shadow="never" class="dashboard-panel">
         <template #header>
           <div class="panel-header">
-            <span>同步状态</span>
-            <el-link type="primary" @click="$router.push('/sync-runs')">历史</el-link>
+            <span>{{ t('pages.dashboard.syncStatus') }}</span>
+            <el-link type="primary" @click="$router.push('/sync-runs')">{{ t('common.history') }}</el-link>
           </div>
         </template>
         <div v-if="latestSync" class="status-block">
           <el-tag :type="syncStatusType(latestSync.status)" effect="plain">{{ latestSync.status }}</el-tag>
-          <strong>{{ latestSync.new_filings }} 条新增公告</strong>
-          <span>检查 {{ latestSync.targets_checked }} 个标的，失败 {{ latestSync.failed_targets }} 个</span>
-          <span>开始：{{ formatDateTime(latestSync.started_at) }}</span>
-          <span>结束：{{ formatDateTime(latestSync.finished_at) }}</span>
+          <strong>{{ t('pages.dashboard.newFilings', { count: latestSync.new_filings }) }}</strong>
+          <span>{{ t('pages.dashboard.syncSummary', { targets: latestSync.targets_checked, failed: latestSync.failed_targets }) }}</span>
+          <span>{{ t('pages.dashboard.startedAt', { time: formatDateTime(latestSync.started_at) }) }}</span>
+          <span>{{ t('pages.dashboard.finishedAt', { time: formatDateTime(latestSync.finished_at) }) }}</span>
         </div>
-        <el-empty v-else description="暂无同步记录" />
+        <el-empty v-else :description="t('pages.dashboard.noSyncRuns')" />
       </el-card>
 
       <el-card shadow="never" class="dashboard-panel">
         <template #header>
           <div class="panel-header">
-            <span>标的健康</span>
-            <el-link type="primary" @click="$router.push('/targets')">管理</el-link>
+            <span>{{ t('pages.dashboard.targetHealth') }}</span>
+            <el-link type="primary" @click="$router.push('/targets')">{{ t('common.manage') }}</el-link>
           </div>
         </template>
         <div class="target-health">
-          <div class="health-row"><span>启用标的</span><strong>{{ enabledTargetTotal }}</strong></div>
-          <div class="health-row"><span>同步成功</span><strong>{{ successfulTargets }}</strong></div>
-          <div class="health-row danger"><span>同步失败</span><strong>{{ failedTargets }}</strong></div>
+          <div class="health-row"><span>{{ t('pages.dashboard.enabledTargets') }}</span><strong>{{ enabledTargetTotal }}</strong></div>
+          <div class="health-row"><span>{{ t('pages.dashboard.syncSuccess') }}</span><strong>{{ successfulTargets }}</strong></div>
+          <div class="health-row danger"><span>{{ t('pages.dashboard.syncFailed') }}</span><strong>{{ failedTargets }}</strong></div>
         </div>
       </el-card>
 
       <el-card shadow="never" class="dashboard-panel">
         <template #header>
           <div class="panel-header">
-            <span>活跃标的</span>
-            <el-link type="primary" @click="$router.push('/filings')">公告</el-link>
+            <span>{{ t('pages.dashboard.activeTargets') }}</span>
+            <el-link type="primary" @click="$router.push('/filings')">{{ t('common.filings') }}</el-link>
           </div>
         </template>
         <div v-if="activeTargets.length" class="rank-list">
@@ -106,17 +106,17 @@
               <strong>{{ item.ticker }}</strong>
               <span>{{ item.latestType }}</span>
             </div>
-            <el-tag effect="plain">{{ item.count }} 条</el-tag>
+            <el-tag effect="plain">{{ t('pages.dashboard.countSuffix', { count: item.count }) }}</el-tag>
           </div>
         </div>
-        <el-empty v-else description="暂无活跃标的" />
+        <el-empty v-else :description="t('pages.dashboard.noActiveTargets')" />
       </el-card>
 
       <el-card shadow="never" class="dashboard-panel">
         <template #header>
           <div class="panel-header">
-            <span>失败标的</span>
-            <el-link type="primary" @click="$router.push('/targets?status=enabled')">处理</el-link>
+            <span>{{ t('pages.dashboard.failedTargets') }}</span>
+            <el-link type="primary" @click="$router.push('/targets?status=enabled')">{{ t('common.process') }}</el-link>
           </div>
         </template>
         <div v-if="failedTargetItems.length" class="issue-list">
@@ -125,33 +125,33 @@
               <strong>{{ item.ticker }}</strong>
               <span>{{ item.last_sync_error || '同步失败，暂无错误详情' }}</span>
             </div>
-            <el-button size="small" @click="$router.push(`/targets?ticker=${encodeURIComponent(item.ticker)}`)">查看</el-button>
+            <el-button size="small" @click="$router.push(`/targets?ticker=${encodeURIComponent(item.ticker)}`)">{{ t('common.view') }}</el-button>
           </div>
         </div>
-        <el-empty v-else description="暂无失败标的" />
+        <el-empty v-else :description="t('pages.dashboard.noFailedTargets')" />
       </el-card>
 
       <el-card shadow="never" class="dashboard-panel panel-wide">
         <template #header>
           <div class="panel-header">
-            <span>最近通知</span>
+            <span>{{ t('pages.dashboard.recentNotifications') }}</span>
             <div class="panel-header-actions">
-              <el-tag :type="notificationRateType" effect="plain">成功率 {{ notificationSuccessRate }}%</el-tag>
-              <el-link type="primary" @click="$router.push('/notification-logs')">查看日志</el-link>
+              <el-tag :type="notificationRateType" effect="plain">{{ t('pages.dashboard.notificationRate', { rate: notificationSuccessRate }) }}</el-tag>
+              <el-link type="primary" @click="$router.push('/notification-logs')">{{ t('nav.notificationLogs') }}</el-link>
             </div>
           </div>
         </template>
         <el-table :data="recentNotifications" v-loading="loading" border>
-          <el-table-column prop="created_at" label="时间" width="180">
+          <el-table-column prop="created_at" :label="t('common.time')" width="180">
             <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
           </el-table-column>
           <el-table-column prop="filing_id" label="Filing ID" min-width="180" show-overflow-tooltip />
-          <el-table-column prop="status" label="状态" width="110">
+          <el-table-column prop="status" :label="t('common.status')" width="110">
             <template #default="{ row }">
               <el-tag class="status-tag" :type="notificationStatusType(row.status)" effect="plain">{{ notificationStatusLabel(row.status) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="error_message" label="错误" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="error_message" :label="t('common.error')" min-width="180" show-overflow-tooltip />
         </el-table>
       </el-card>
     </div>
@@ -164,7 +164,9 @@ import { Aim, Bell, DataAnalysis, Document } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, Filing, NotificationLog, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
+import { useI18n } from '@/i18n'
 
+const { t } = useI18n()
 const loading = ref(false)
 const refreshing = ref(false)
 const targetTotal = ref(0)
@@ -183,10 +185,10 @@ const telegramEnabled = ref(false)
 const schedulerEnabled = ref(false)
 
 const metrics = computed(() => [
-  { label: '监控标的', value: targetTotal.value, hint: `${enabledTargetTotal.value} 个启用`, icon: Aim },
-  { label: 'SEC 公告', value: filingTotal.value, hint: '已入库公告总数', icon: Document },
-  { label: '同步批次', value: syncTotal.value, hint: latestSync.value ? `最近 ${latestSync.value.status}` : '暂无记录', icon: DataAnalysis },
-  { label: '通知日志', value: notificationTotal.value, hint: 'Telegram 发送记录', icon: Bell }
+  { label: t('nav.targets'), value: targetTotal.value, hint: t('pages.dashboard.enabledTargets') + ` ${enabledTargetTotal.value}`, icon: Aim },
+  { label: t('nav.filings'), value: filingTotal.value, hint: t('common.filings'), icon: Document },
+  { label: t('nav.syncRuns'), value: syncTotal.value, hint: latestSync.value ? latestSync.value.status : t('pages.dashboard.noSyncRuns'), icon: DataAnalysis },
+  { label: t('nav.notificationLogs'), value: notificationTotal.value, hint: 'Telegram', icon: Bell }
 ])
 
 const healthAlerts = computed(() => {
@@ -325,8 +327,8 @@ function notificationStatusType(status?: string) {
 }
 
 function notificationStatusLabel(status?: string) {
-  if (status === 'success') return '成功'
-  if (status === 'failed') return '失败'
+  if (status === 'success') return t('status.success')
+  if (status === 'failed') return t('status.failed')
   return status || '-'
 }
 

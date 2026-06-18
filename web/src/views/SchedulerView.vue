@@ -1,10 +1,10 @@
 <template>
   <section class="page">
     <div class="page-header">
-      <h1>调度任务</h1>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <h1>{{ t('pages.scheduler.title') }}</h1>
+      <el-button :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
     </div>
-    <el-table :data="rows" v-loading="loading" border empty-text="暂无调度任务">
+    <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.scheduler.empty')">
       <el-table-column prop="task_name" label="任务" min-width="180" show-overflow-tooltip />
       <el-table-column label="Cron" min-width="200">
         <template #default="{ row }">
@@ -17,15 +17,15 @@
           <div class="cron-hint">{{ explainCron(row.cron_expr) }}</div>
         </template>
       </el-table-column>
-      <el-table-column label="启用" width="90">
+      <el-table-column :label="t('common.enabled')" width="90">
         <template #default="{ row }"><el-switch v-model="row.enabled" /></template>
       </el-table-column>
       <el-table-column prop="last_run_at" label="上次运行" width="170">
         <template #default="{ row }">{{ formatDateTime(row.last_run_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="150" fixed="right">
+      <el-table-column :label="t('common.actions')" width="150" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="primary" @click="save(row)">保存</el-button>
+          <el-button size="small" type="primary" @click="save(row)">{{ t('common.save') }}</el-button>
           <el-dropdown trigger="click" @command="(command: string) => handleTaskCommand(command, row)">
             <el-button size="small" :icon="MoreFilled" />
             <template #dropdown>
@@ -46,7 +46,9 @@ import { ElMessage } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, TaskConfig } from '@/api/types'
+import { useI18n } from '@/i18n'
 
+const { t } = useI18n()
 const loading = ref(false)
 const running = ref(false)
 const rows = ref<TaskConfig[]>([])

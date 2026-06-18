@@ -1,66 +1,66 @@
 <template>
   <section class="page">
     <div class="page-header">
-      <h1>监控标的</h1>
-      <el-button type="primary" @click="openCreate">新增标的</el-button>
+      <h1>{{ t('pages.targets.title') }}</h1>
+      <el-button type="primary" @click="openCreate">{{ t('pages.targets.add') }}</el-button>
     </div>
     <el-form :inline="true" :model="filters" class="toolbar">
       <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
-      <el-form-item label="状态">
+      <el-form-item :label="t('common.status')">
         <el-select v-model="filters.status" clearable style="width: 140px">
-          <el-option label="已启用" value="enabled" />
-          <el-option label="已停用" value="disabled" />
+          <el-option :label="t('common.enabled')" value="enabled" />
+          <el-option :label="t('common.disabled')" value="disabled" />
         </el-select>
       </el-form-item>
-      <el-form-item><el-button :loading="loading" @click="load">查询</el-button></el-form-item>
+      <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
     </el-form>
-    <el-table :data="rows" v-loading="loading" border empty-text="暂无标的，点击右上角新增">
+    <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.targets.empty')">
       <el-table-column prop="ticker" label="Ticker" width="105">
         <template #default="{ row }">
           <el-link type="primary" @click="openDetail(row)">{{ row.ticker }}</el-link>
         </template>
       </el-table-column>
-      <el-table-column prop="company_name" label="公司名称" min-width="220" show-overflow-tooltip />
+      <el-table-column prop="company_name" :label="t('common.companyName')" min-width="220" show-overflow-tooltip />
       <el-table-column prop="cik" label="CIK" width="120" />
-      <el-table-column prop="target_type" label="类型" width="90">
+      <el-table-column prop="target_type" :label="t('common.type')" width="90">
         <template #default="{ row }">
           <el-tag :type="row.target_type === 'etf' ? 'warning' : 'info'" effect="plain">{{ row.target_type === 'etf' ? 'ETF' : 'Stock' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="status" label="启用" width="90">
+      <el-table-column prop="status" :label="t('common.enabled')" width="90">
         <template #default="{ row }">
           <el-switch
             :model-value="row.status === 'enabled'"
             inline-prompt
-            active-text="开"
-            inactive-text="关"
+            :active-text="t('pages.targets.enableShort')"
+            :inactive-text="t('pages.targets.disableShort')"
             @change="(value: boolean) => setTargetEnabled(row, value)"
           />
         </template>
       </el-table-column>
-      <el-table-column prop="last_sync_status" label="同步" width="120">
+      <el-table-column prop="last_sync_status" :label="t('common.sync')" width="120">
         <template #default="{ row }">
           <el-tag class="status-tag" :type="syncStatusType(row.last_sync_status)" effect="plain">{{ syncStatusLabel(row.last_sync_status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="last_sync_at" label="上次同步" width="170">
+      <el-table-column prop="last_sync_at" :label="t('pages.targets.lastSync')" width="170">
         <template #default="{ row }">{{ formatDateTime(row.last_sync_at) }}</template>
       </el-table-column>
-      <el-table-column prop="last_new_filings" label="新增" width="80" align="right" />
-      <el-table-column prop="last_sync_error" label="同步错误" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="updated_at" label="更新" width="170">
+      <el-table-column prop="last_new_filings" :label="t('common.newCount')" width="80" align="right" />
+      <el-table-column prop="last_sync_error" :label="t('pages.targets.syncError')" min-width="180" show-overflow-tooltip />
+      <el-table-column prop="updated_at" :label="t('common.update')" width="170">
         <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="150" fixed="right">
+      <el-table-column :label="t('common.actions')" width="150" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="primary" :loading="syncingId === row.id" @click="syncTarget(row)">同步</el-button>
+          <el-button size="small" type="primary" :loading="syncingId === row.id" @click="syncTarget(row)">{{ t('common.sync') }}</el-button>
           <el-dropdown trigger="click" @command="(command: string) => handleTargetCommand(command, row)">
             <el-button size="small" :icon="MoreFilled" />
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="detail">查看详情</el-dropdown-item>
-                <el-dropdown-item command="edit">编辑</el-dropdown-item>
-                <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                <el-dropdown-item command="detail">{{ t('common.details') }}</el-dropdown-item>
+                <el-dropdown-item command="edit">{{ t('common.edit') }}</el-dropdown-item>
+                <el-dropdown-item command="delete" divided>{{ t('common.delete') }}</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -69,37 +69,37 @@
     </el-table>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑标的' : '新增标的'" width="520px">
+    <el-dialog v-model="dialogVisible" :title="editingId ? t('pages.targets.edit') : t('pages.targets.add')" width="520px">
       <el-form :model="form" label-width="110px">
         <el-form-item label="Ticker">
           <el-input v-model="form.ticker" placeholder="TSLA" @blur="lookupTicker">
             <template #append>
-              <el-button :loading="lookingUp" @click="lookupTicker">带出信息</el-button>
+              <el-button :loading="lookingUp" @click="lookupTicker">{{ t('pages.targets.lookup') }}</el-button>
             </template>
           </el-input>
         </el-form-item>
-        <el-form-item label="公司名称"><el-input v-model="form.company_name" /></el-form-item>
+        <el-form-item :label="t('common.companyName')"><el-input v-model="form.company_name" /></el-form-item>
         <el-form-item label="CIK"><el-input v-model="form.cik" /></el-form-item>
-        <el-form-item label="类型">
+        <el-form-item :label="t('common.type')">
           <el-select v-model="form.target_type">
             <el-option label="Stock" value="stock" />
             <el-option label="ETF" value="etf" />
           </el-select>
         </el-form-item>
-        <el-form-item label="状态">
+        <el-form-item :label="t('common.status')">
           <el-select v-model="form.status">
-            <el-option label="已启用" value="enabled" />
-            <el-option label="已停用" value="disabled" />
+            <el-option :label="t('common.enabled')" value="enabled" />
+            <el-option :label="t('common.disabled')" value="disabled" />
           </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-drawer v-model="detailVisible" :title="detailTarget ? `${detailTarget.ticker} 详情` : '标的详情'" size="720px">
+    <el-drawer v-model="detailVisible" :title="detailTarget ? `${detailTarget.ticker} ${t('common.details')}` : t('pages.targets.detail')" size="720px">
       <div v-if="detailTarget" class="target-detail">
         <el-alert
           v-if="detailTarget.last_sync_status === 'failed'"
@@ -111,61 +111,61 @@
         />
         <div class="target-detail-summary">
           <el-descriptions :column="2" border>
-            <el-descriptions-item label="公司">{{ detailTarget.company_name }}</el-descriptions-item>
+            <el-descriptions-item :label="t('common.company')">{{ detailTarget.company_name }}</el-descriptions-item>
             <el-descriptions-item label="CIK">{{ detailTarget.cik || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="类型">{{ detailTarget.target_type }}</el-descriptions-item>
-            <el-descriptions-item label="状态">
+            <el-descriptions-item :label="t('common.type')">{{ detailTarget.target_type }}</el-descriptions-item>
+            <el-descriptions-item :label="t('common.status')">
               <el-tag :type="detailTarget.status === 'enabled' ? 'success' : 'info'" effect="plain">{{ targetStatusLabel(detailTarget.status) }}</el-tag>
             </el-descriptions-item>
-            <el-descriptions-item label="同步状态">
+            <el-descriptions-item :label="t('pages.targets.syncStatus')">
               <el-tag :type="syncStatusType(detailTarget.last_sync_status)" effect="plain">{{ detailTarget.last_sync_status || '-' }}</el-tag>
             </el-descriptions-item>
-            <el-descriptions-item label="上次同步">{{ formatDateTime(detailTarget.last_sync_at) }}</el-descriptions-item>
-            <el-descriptions-item label="最近新增">{{ detailTarget.last_new_filings || 0 }}</el-descriptions-item>
-            <el-descriptions-item label="同步错误">{{ detailTarget.last_sync_error || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="拉取策略">{{ policySummary }}</el-descriptions-item>
+            <el-descriptions-item :label="t('pages.targets.lastSync')">{{ formatDateTime(detailTarget.last_sync_at) }}</el-descriptions-item>
+            <el-descriptions-item :label="t('pages.targets.recentNew')">{{ detailTarget.last_new_filings || 0 }}</el-descriptions-item>
+            <el-descriptions-item :label="t('pages.targets.syncError')">{{ detailTarget.last_sync_error || '-' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('pages.targets.fetchPolicy')">{{ policySummary }}</el-descriptions-item>
           </el-descriptions>
           <div class="target-detail-actions">
-            <el-button type="primary" :loading="syncingId === detailTarget.id" @click="syncTarget(detailTarget)">同步该标的</el-button>
-            <el-button @click="openEdit(detailTarget)">编辑</el-button>
+            <el-button type="primary" :loading="syncingId === detailTarget.id" @click="syncTarget(detailTarget)">{{ t('pages.targets.syncTarget') }}</el-button>
+            <el-button @click="openEdit(detailTarget)">{{ t('common.edit') }}</el-button>
           </div>
         </div>
 
         <div class="panel-header target-detail-section-title">
-          <span>最近同步</span>
-          <el-link type="primary" @click="$router.push('/sync-runs')">历史</el-link>
+          <span>{{ t('pages.targets.recentSync') }}</span>
+          <el-link type="primary" @click="$router.push('/sync-runs')">{{ t('common.history') }}</el-link>
         </div>
-        <el-table :data="detailSyncDetails" v-loading="detailLoading" border empty-text="暂无同步记录">
-          <el-table-column prop="status" label="状态" width="130">
+        <el-table :data="detailSyncDetails" v-loading="detailLoading" border :empty-text="t('pages.targets.noSyncRuns')">
+          <el-table-column prop="status" :label="t('common.status')" width="130">
             <template #default="{ row }">
               <el-tag class="status-tag" :type="syncStatusType(row.status)" effect="plain">{{ row.status }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="new_filings" label="新增" width="80" />
-          <el-table-column prop="duration_ms" label="耗时" width="100">
+          <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" />
+          <el-table-column prop="duration_ms" :label="t('common.duration')" width="100">
             <template #default="{ row }">{{ formatDuration(row.duration_ms) }}</template>
           </el-table-column>
-          <el-table-column prop="started_at" label="开始时间" width="180">
+          <el-table-column prop="started_at" :label="t('common.time')" width="180">
             <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
           </el-table-column>
-          <el-table-column prop="error_message" label="错误" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="error_message" :label="t('common.error')" min-width="180" show-overflow-tooltip />
         </el-table>
 
         <div class="panel-header target-detail-section-title">
-          <span>最近公告</span>
-          <el-link type="primary" @click="$router.push(`/filings?ticker=${encodeURIComponent(detailTarget.ticker)}`)">查看全部</el-link>
+          <span>{{ t('pages.targets.recentFilings') }}</span>
+          <el-link type="primary" @click="$router.push(`/filings?ticker=${encodeURIComponent(detailTarget.ticker)}`)">{{ t('common.viewAll') }}</el-link>
         </div>
-        <el-table :data="detailFilings" v-loading="detailLoading" border empty-text="暂无公告，尝试同步该标的">
-          <el-table-column prop="filing_type" label="类型" width="90" />
-          <el-table-column prop="filing_date" label="Filing Date" width="130">
+        <el-table :data="detailFilings" v-loading="detailLoading" border :empty-text="t('pages.targets.noFilings')">
+          <el-table-column prop="filing_type" :label="t('common.type')" width="90" />
+          <el-table-column prop="filing_date" :label="t('common.filingDate')" width="130">
             <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
           </el-table-column>
-          <el-table-column prop="pulled_at" label="同步时间" width="170">
+          <el-table-column prop="pulled_at" :label="t('common.syncTime')" width="170">
             <template #default="{ row }">{{ formatDateTime(row.pulled_at) }}</template>
           </el-table-column>
-          <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
-          <el-table-column label="链接" width="80">
-            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">打开</el-link></template>
+          <el-table-column prop="title" :label="t('common.title')" min-width="200" show-overflow-tooltip />
+          <el-table-column :label="t('common.link')" width="80">
+            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ t('common.open') }}</el-link></template>
           </el-table-column>
         </el-table>
       </div>
@@ -180,7 +180,9 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, Filing, PageResult, SyncRunDetail, SystemConfig, TickerLookup, WatchTarget } from '@/api/types'
+import { useI18n } from '@/i18n'
 
+const { t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
 const lookingUp = ref(false)
@@ -385,15 +387,15 @@ function syncStatusType(status?: string) {
 }
 
 function syncStatusLabel(status?: string) {
-  if (status === 'success') return '成功'
-  if (status === 'failed') return '失败'
-  if (status === 'running') return '运行中'
+  if (status === 'success') return t('status.success')
+  if (status === 'failed') return t('status.failed')
+  if (status === 'running') return t('status.running')
   return '-'
 }
 
 function targetStatusLabel(status?: string) {
-  if (status === 'enabled') return '已启用'
-  if (status === 'disabled') return '已停用'
+  if (status === 'enabled') return t('status.enabled')
+  if (status === 'disabled') return t('status.disabled')
   return status || '-'
 }
 

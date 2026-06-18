@@ -1,10 +1,10 @@
 <template>
   <section class="page">
     <div class="page-header">
-      <h1>系统配置</h1>
+      <h1>{{ t('pages.configs.title') }}</h1>
       <div>
-        <el-button :loading="loading" @click="load">刷新</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
+        <el-button :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="save">{{ t('pages.configs.save') }}</el-button>
       </div>
     </div>
 
@@ -90,7 +90,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, CleanupPreview, SystemConfig } from '@/api/types'
+import { useI18n } from '@/i18n'
 
+const { t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
 const previewing = ref(false)

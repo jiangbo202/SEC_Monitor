@@ -1,8 +1,8 @@
 <template>
   <section class="page">
     <div class="page-header">
-      <h1>SEC 公告</h1>
-      <el-button type="primary" :loading="refreshing" @click="refresh">刷新数据</el-button>
+      <h1>{{ t('pages.filings.title') }}</h1>
+      <el-button type="primary" :loading="refreshing" @click="refresh">{{ t('common.refreshData') }}</el-button>
     </div>
     <el-form :inline="true" :model="filters" class="toolbar">
       <el-form-item label="快捷筛选">
@@ -13,11 +13,11 @@
         </div>
       </el-form-item>
       <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
-      <el-form-item label="公司"><el-input v-model="filters.company_name" clearable /></el-form-item>
+      <el-form-item :label="t('common.company')"><el-input v-model="filters.company_name" clearable /></el-form-item>
       <el-form-item>
         <template #label>
           <span class="filing-type-label">
-            类型
+            {{ t('common.type') }}
             <el-tooltip content="查看 SEC Filing 类型说明" placement="top">
               <el-button :icon="QuestionFilled" link class="help-button" @click="typeHelpVisible = true" />
             </el-tooltip>
@@ -54,10 +54,10 @@
           <el-option label="未通知" value="unnotified" />
         </el-select>
       </el-form-item>
-      <el-form-item><el-button :loading="loading" @click="load">查询</el-button></el-form-item>
+      <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
     </el-form>
-    <el-table :data="rows" v-loading="loading" border empty-text="暂无公告，可刷新数据或调整筛选条件" @sort-change="onSortChange">
-      <el-table-column prop="filing_type" label="类型" width="140" sortable="custom">
+    <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.filings.empty')" @sort-change="onSortChange">
+      <el-table-column prop="filing_type" :label="t('common.type')" width="140" sortable="custom">
         <template #default="{ row }">
           <div class="filing-type-cell">
             <strong>{{ row.filing_type }}</strong>
@@ -68,17 +68,17 @@
         </template>
       </el-table-column>
       <el-table-column prop="ticker" label="Ticker" width="100" sortable="custom" />
-      <el-table-column prop="company_name" label="公司名称" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="filing_date" label="Filing Date" width="140" sortable="custom">
+      <el-table-column prop="company_name" :label="t('common.companyName')" min-width="180" show-overflow-tooltip />
+      <el-table-column prop="filing_date" :label="t('common.filingDate')" width="140" sortable="custom">
         <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
       </el-table-column>
       <el-table-column prop="published_at" label="发布时间" width="170" sortable="custom">
         <template #default="{ row }">{{ formatDateTime(row.published_at) }}</template>
       </el-table-column>
-      <el-table-column prop="pulled_at" label="同步时间" width="170" sortable="custom">
+      <el-table-column prop="pulled_at" :label="t('common.syncTime')" width="170" sortable="custom">
         <template #default="{ row }">{{ formatDateTime(row.pulled_at) }}</template>
       </el-table-column>
-      <el-table-column prop="title" label="标题" min-width="260">
+      <el-table-column prop="title" :label="t('common.title')" min-width="260">
         <template #default="{ row }">
           <div class="filing-title-cell">
             <el-link class="filing-title-link" :href="row.filing_url" target="_blank" type="primary">
@@ -116,7 +116,9 @@ import { QuestionFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, Filing, PageResult } from '@/api/types'
+import { useI18n } from '@/i18n'
 
+const { t } = useI18n()
 interface FilingTypeInfo {
   code: string
   name: string

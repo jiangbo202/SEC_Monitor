@@ -1,8 +1,8 @@
 <template>
   <section class="page">
     <div class="page-header">
-      <h1>Telegram</h1>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <h1>{{ t('pages.telegram.title') }}</h1>
+      <el-button :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
     </div>
     <el-card shadow="never" class="form-card">
       <el-form :model="form" label-width="120px">
@@ -12,7 +12,7 @@
         <el-form-item label="Chat ID"><el-input v-model="form.chat_id" /></el-form-item>
         <el-form-item label="启用通知"><el-switch v-model="form.enabled" /></el-form-item>
         <el-form-item>
-          <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+          <el-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</el-button>
           <el-button :loading="testing" @click="testSend">测试发送</el-button>
         </el-form-item>
       </el-form>
@@ -25,7 +25,9 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, SystemConfig } from '@/api/types'
+import { useI18n } from '@/i18n'
 
+const { t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
