@@ -5,6 +5,7 @@ import DashboardView from '@/views/DashboardView.vue'
 import TargetsView from '@/views/TargetsView.vue'
 import FilingsView from '@/views/FilingsView.vue'
 import EventRadarView from '@/views/EventRadarView.vue'
+import IPORadarView from '@/views/IPORadarView.vue'
 import InsiderTradingView from '@/views/InsiderTradingView.vue'
 import SyncRunsView from '@/views/SyncRunsView.vue'
 import SchedulerView from '@/views/SchedulerView.vue'
@@ -25,6 +26,7 @@ const router = createRouter({
         { path: 'targets', name: 'targets', component: TargetsView },
         { path: 'filings', name: 'filings', component: FilingsView },
         { path: 'event-radar', name: 'event-radar', component: EventRadarView },
+        { path: 'ipo-radar', name: 'ipo-radar', component: IPORadarView },
         { path: 'insider-trading', name: 'insider-trading', component: InsiderTradingView },
         { path: 'sync-runs', name: 'sync-runs', component: SyncRunsView },
         { path: 'scheduler', name: 'scheduler', component: SchedulerView },

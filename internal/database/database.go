@@ -23,6 +23,7 @@ func Migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&model.WatchTarget{},
 		&model.Filing{},
+		&model.IPOFiling{},
 		&model.SyncRun{},
 		&model.SyncRunDetail{},
 		&model.TaskConfig{},

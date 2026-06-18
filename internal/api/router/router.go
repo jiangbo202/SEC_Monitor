@@ -46,7 +46,12 @@ func New(deps Dependencies) *gin.Engine {
 		notifier = telegramNotifier{configs: configs}
 	}
 	filings := service.NewFilingService(deps.DB, secClient, notifier, configs)
-	sched := scheduler.New(tasks, filings)
+	currentFilingsClient, ok := secClient.(sec.CurrentFilingsClient)
+	if !ok {
+		currentFilingsClient = sec.NewHTTPClient(deps.Config.SEC.BaseURL, deps.Config.SEC.UserAgent, time.Duration(deps.Config.SEC.TimeoutMS)*time.Millisecond)
+	}
+	ipoRadar := service.NewIPORadarService(deps.DB, currentFilingsClient, notifier, configs)
+	sched := scheduler.New(tasks, filings, ipoRadar)
 	_ = sched.Start(context.Background())
 	app := &handler.AppHandler{
 		Runtime:      deps.Config,
@@ -55,6 +60,7 @@ func New(deps Dependencies) *gin.Engine {
 		Configs:      configs,
 		Tasks:        tasks,
 		Filings:      filings,
+		IPO:          ipoRadar,
 		SEC:          secClient,
 		Audit:        audit,
 		Notification: service.NewNotificationService(deps.DB),
@@ -78,6 +84,8 @@ func New(deps Dependencies) *gin.Engine {
 
 		api.GET("/filings", app.ListFilings)
 		api.POST("/filings/refresh", app.RefreshFilings)
+		api.GET("/ipo-filings", app.ListIPORadarFilings)
+		api.POST("/ipo-filings/refresh", app.RefreshIPORadar)
 		api.GET("/filings/cleanup-preview", app.PreviewFilingCleanup)
 		api.POST("/filings/cleanup", app.CleanupFilings)
 		api.GET("/filings/:id", app.GetFiling)

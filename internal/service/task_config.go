@@ -27,19 +27,23 @@ func NewTaskConfigService(db *gorm.DB, audit *AuditService) *TaskConfigService {
 }
 
 func (s *TaskConfigService) EnsureDefault(ctx context.Context) error {
-	task := model.TaskConfig{
-		TaskName: "sec_filing_sync",
-		CronExpr: "*/5 * * * *",
-		Enabled:  true,
-		Running:  false,
+	tasks := []model.TaskConfig{
+		{TaskName: "ipo_radar_sync", CronExpr: "*/30 * * * *", Enabled: true, Running: false},
+		{TaskName: "sec_filing_sync", CronExpr: "*/5 * * * *", Enabled: true, Running: false},
 	}
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&task).Error
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&tasks).Error
 }
 
 func (s *TaskConfigService) List(ctx context.Context) ([]model.TaskConfig, error) {
 	var tasks []model.TaskConfig
 	err := s.db.WithContext(ctx).Order("task_name ASC").Find(&tasks).Error
 	return tasks, err
+}
+
+func (s *TaskConfigService) Get(ctx context.Context, id uint) (model.TaskConfig, error) {
+	var task model.TaskConfig
+	err := s.db.WithContext(ctx).First(&task, id).Error
+	return task, mapNotFound(err)
 }
 
 func (s *TaskConfigService) Update(ctx context.Context, id uint, input TaskConfigInput, operator string) (model.TaskConfig, error) {

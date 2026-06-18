@@ -20,8 +20,9 @@ SEC Monitor 是一个本地优先的 Web 应用，用于监控美股和 ETF 的 
 - SEC 公告列表：筛选、分页、Filing Date、发布时间、同步时间、Ticker、公告类型排序。
 - 保存筛选视图：常用公告筛选条件可保存在浏览器本地。
 - 重大事件雷达：聚合 8-K、S-1、S-3、424B、13D 等高关注公告。
+- 新申报监控：扫描 SEC 当前申报流中的 S-1、F-1、424B 等 IPO/融资相关申请，并可发送 Telegram 提醒。
 - Insider Trading：聚合 Form 3/4/5 内幕人持股变动披露。
-- 同步历史：状态、触发来源、检查标的数、新增公告数、失败标的数、错误信息。
+- 同步历史与调度：内置 `sec_filing_sync` 和 `ipo_radar_sync` 两类周期任务，可立即执行、启停和调整 Cron。
 - 总览页面：监控标的、最近公告、同步健康度、通知状态。
 - Telegram：通知配置、测试发送、重试、通知日志。
 - 系统配置：SEC 拉取策略、通知规则、数据保留、默认语言。
@@ -186,6 +187,15 @@ SEC 拉取配置：
 - `notification.keywords`：只通知标题或正文中包含指定关键词的公告，使用逗号分隔。
 - `notification.quiet_hours_enabled`：是否启用静默时间。
 - `notification.quiet_hours_start` / `notification.quiet_hours_end`：静默时间范围，格式 `HH:mm`。
+
+新申报监控配置：
+
+- `ipo.enabled`：是否启用新申报监控。
+- `ipo.form_types`：扫描的 SEC 表单类型，默认 `S-1,S-1/A,F-1,F-1/A,424B,RW`。
+- `ipo.lookback_days`：只保留最近 N 天的当前申报结果。
+- `ipo.max_results`：每类表单最多拉取条数，SEC 当前申报接口上限按 100 处理。
+- `ipo.notify_enabled`：新申报入库后是否发送 Telegram 提醒。
+- `ipo.keywords`：按公司名或标题过滤，逗号分隔；留空表示不过滤。
 
 环境变量：
 

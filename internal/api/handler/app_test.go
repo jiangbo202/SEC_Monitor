@@ -42,6 +42,19 @@ func (f fakeSECClient) ListFilings(ctx context.Context, query sec.FilingQuery) (
 	}}, nil
 }
 
+func (f fakeSECClient) ListCurrentFilings(ctx context.Context, query sec.CurrentFilingQuery) ([]sec.CurrentFilingResult, error) {
+	return []sec.CurrentFilingResult{{
+		FilingID:        "0000000001-26-000001",
+		AccessionNumber: "0000000001-26-000001",
+		CIK:             "0000000001",
+		CompanyName:     "Acme Space Inc.",
+		FilingType:      "S-1",
+		FilingDate:      time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC),
+		FilingURL:       "https://sec.gov/acme/s1",
+		Title:           "S-1 - Acme Space Inc.",
+	}}, nil
+}
+
 type fakeNotifier struct{}
 
 func (f fakeNotifier) Send(ctx context.Context, message telegram.Message) error {
@@ -51,6 +64,7 @@ func (f fakeNotifier) Send(ctx context.Context, message telegram.Message) error 
 type fakeScheduler struct {
 	reloadCalls int
 	runCalls    int
+	runTasks    []string
 	reloadErr   error
 	runErr      error
 }
@@ -65,6 +79,12 @@ func (f *fakeScheduler) RunOnce(ctx context.Context) error {
 	return f.runErr
 }
 
+func (f *fakeScheduler) RunTask(ctx context.Context, taskName string) error {
+	f.runCalls++
+	f.runTasks = append(f.runTasks, taskName)
+	return f.runErr
+}
+
 func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -75,13 +95,18 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
+		&model.IPOFiling{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	audit := service.NewAuditService(db)
 	configs := service.NewConfigService(db, audit)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("default configs: %v", err)
+	}
 	targets := service.NewWatchTargetService(db, audit)
 	filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs)
+	ipoRadar := service.NewIPORadarService(db, fakeSECClient{}, fakeNotifier{}, configs)
 	tasks := service.NewTaskConfigService(db, audit)
 	if err := tasks.EnsureDefault(context.Background()); err != nil {
 		t.Fatalf("default task: %v", err)
@@ -97,6 +122,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 		Configs:      configs,
 		Tasks:        tasks,
 		Filings:      filings,
+		IPO:          ipoRadar,
 		SEC:          fakeSECClient{},
 		Audit:        audit,
 		Notification: service.NewNotificationService(db),
@@ -115,7 +141,12 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.GET("/targets/:id/sync-details", h.ListWatchTargetSyncDetails)
 	r.GET("/filings", h.ListFilings)
 	r.POST("/filings/refresh", h.RefreshFilings)
+	r.GET("/ipo-filings", h.ListIPORadarFilings)
+	r.POST("/ipo-filings/refresh", h.RefreshIPORadar)
+	r.GET("/filings/cleanup-preview", h.PreviewFilingCleanup)
+	r.POST("/filings/cleanup", h.CleanupFilings)
 	r.GET("/filings/:id", h.GetFiling)
+	r.GET("/sync-runs", h.ListSyncRuns)
 	r.GET("/sync-runs/:id/details", h.ListSyncRunDetails)
 	r.GET("/configs", h.ListSystemConfigs)
 	r.PUT("/configs", h.UpdateSystemConfigs)
@@ -178,6 +209,26 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 		{name: "list filings", method: http.MethodGet, path: "/filings?ticker=AAPL&date_from=2026-06-01&date_to=bad", seed: seedFiling, wantStatus: http.StatusOK},
 		{name: "get filing", method: http.MethodGet, path: "/filings/1", seed: seedFiling, wantStatus: http.StatusOK},
 		{name: "refresh filings", method: http.MethodPost, path: "/filings/refresh", seed: seedTarget, wantStatus: http.StatusOK},
+		{name: "preview filing cleanup", method: http.MethodGet, path: "/filings/cleanup-preview", seed: seedOldFiling, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"delete_count":1`) {
+				t.Fatalf("body = %s, want one delete candidate", rec.Body.String())
+			}
+		}},
+		{name: "cleanup filings", method: http.MethodPost, path: "/filings/cleanup", seed: seedOldFiling, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"deleted":1`) {
+				t.Fatalf("body = %s, want one deleted", rec.Body.String())
+			}
+		}},
+		{name: "refresh ipo radar", method: http.MethodPost, path: "/ipo-filings/refresh", wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"new_filings":1`) {
+				t.Fatalf("body = %s, want new_filings", rec.Body.String())
+			}
+		}},
+		{name: "list ipo radar filings", method: http.MethodGet, path: "/ipo-filings?filing_type=S-1&notified=no", seed: seedIPOFiling, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"company_name":"Acme Space Inc."`) {
+				t.Fatalf("body = %s, want ipo filing", rec.Body.String())
+			}
+		}},
 		{name: "sync target", method: http.MethodPost, path: "/targets/1/sync", seed: seedTarget, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if !strings.Contains(rec.Body.String(), `"new_filings":1`) {
 				t.Fatalf("body = %s, want new_filings", rec.Body.String())
@@ -188,6 +239,7 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 				t.Fatalf("body = %s, want target sync details", rec.Body.String())
 			}
 		}},
+		{name: "list sync runs", method: http.MethodGet, path: "/sync-runs?status=success&trigger=manual", seed: seedSyncRunDetail, wantStatus: http.StatusOK},
 		{name: "list sync run details", method: http.MethodGet, path: "/sync-runs/1/details", seed: seedSyncRunDetail, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if !strings.Contains(rec.Body.String(), `"ticker":"AAPL"`) || !strings.Contains(rec.Body.String(), `"status":"success"`) {
 				t.Fatalf("body = %s, want sync detail", rec.Body.String())
@@ -218,6 +270,9 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 		{name: "run task uses scheduler", method: http.MethodPost, path: "/tasks/1/run", wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if sched.runCalls != 1 {
 				t.Fatalf("runCalls = %d, want 1", sched.runCalls)
+			}
+			if len(sched.runTasks) != 1 || sched.runTasks[0] == "" {
+				t.Fatalf("runTasks = %+v, want task name", sched.runTasks)
 			}
 		}},
 		{name: "telegram test rejects masked token", method: http.MethodPost, path: "/telegram/test", seed: seedMaskedTelegramConfig, wantStatus: http.StatusBadRequest, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
@@ -314,6 +369,7 @@ func TestAppHandlerRunTaskWithoutSchedulerTableDriven(t *testing.T) {
 				Configs:      configs,
 				Tasks:        service.NewTaskConfigService(db, audit),
 				Filings:      service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs),
+				IPO:          service.NewIPORadarService(db, fakeSECClient{}, fakeNotifier{}, configs),
 				Audit:        audit,
 				Notification: service.NewNotificationService(db),
 			}
@@ -384,6 +440,31 @@ func seedFiling(t *testing.T, db *gorm.DB) {
 		FilingType: "8-K", FilingDate: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), PulledAt: time.Now(),
 	}).Error; err != nil {
 		t.Fatalf("seed filing: %v", err)
+	}
+}
+
+func seedOldFiling(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Create(&model.Filing{
+		FilingID: "old-f1", Ticker: "AAPL", CIK: "0000320193", CompanyName: "Apple Inc.",
+		FilingType: "8-K", FilingDate: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), PulledAt: time.Now().AddDate(0, 0, -60),
+	}).Error; err != nil {
+		t.Fatalf("seed old filing: %v", err)
+	}
+}
+
+func seedIPOFiling(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Create(&model.IPOFiling{
+		FilingID:    "ipo-1",
+		CIK:         "0000000001",
+		CompanyName: "Acme Space Inc.",
+		FilingType:  "S-1",
+		FilingDate:  time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC),
+		FilingURL:   "https://sec.gov/acme/s1",
+		Title:       "S-1 - Acme Space Inc.",
+	}).Error; err != nil {
+		t.Fatalf("seed ipo filing: %v", err)
 	}
 }
 

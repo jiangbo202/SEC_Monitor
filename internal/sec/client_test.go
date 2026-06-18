@@ -204,3 +204,81 @@ func TestHTTPClientListFilingsTableDriven(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPClientListCurrentFilingsTableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		query      CurrentFilingQuery
+		wantLen    int
+		wantErr    bool
+		assert     func(t *testing.T, got []CurrentFilingResult)
+	}{
+		{
+			name:       "maps atom current filing",
+			statusCode: http.StatusOK,
+			query:      CurrentFilingQuery{FormTypes: []string{"S-1"}, Count: 10},
+			wantLen:    1,
+			body: `<feed xmlns="http://www.w3.org/2005/Atom">
+				<entry>
+					<title>S-1 - Acme Space Inc. (0000000001) (Filer)</title>
+					<updated>2026-06-18T14:30:16-04:00</updated>
+					<link href="https://www.sec.gov/Archives/edgar/data/1/000000000126000001/acme-s1.htm"/>
+					<category term="S-1"/>
+					<summary>CIK: 0000000001&lt;br/&gt;Accession Number: 0000000001-26-000001&lt;br/&gt;Filing Date: 2026-06-18</summary>
+				</entry>
+			</feed>`,
+			assert: func(t *testing.T, got []CurrentFilingResult) {
+				item := got[0]
+				if item.FilingID != "0000000001-26-000001" || item.CIK != "0000000001" || item.CompanyName != "Acme Space Inc." || item.FilingType != "S-1" {
+					t.Fatalf("mapped current filing = %+v", item)
+				}
+				if item.AcceptedAt == nil || item.AcceptedAt.Format(time.RFC3339) != "2026-06-18T18:30:16Z" {
+					t.Fatalf("AcceptedAt = %v, want UTC timestamp", item.AcceptedAt)
+				}
+			},
+		},
+		{
+			name:       "deduplicates across form queries",
+			statusCode: http.StatusOK,
+			query:      CurrentFilingQuery{FormTypes: []string{"S-1", "S-1/A"}, Count: 10},
+			wantLen:    1,
+			body:       `<feed><entry><title>S-1 - Acme Space Inc.</title><link href="https://www.sec.gov/Archives/dup.htm"/><category term="S-1"/></entry></feed>`,
+		},
+		{name: "non success status returns error", statusCode: http.StatusTooManyRequests, body: `<feed/>`, query: CurrentFilingQuery{FormTypes: []string{"S-1"}}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewHTTPClient("https://sec.test", "sec-monitor-test", time.Second)
+			client.CurrentFilingsURL = "https://sec.test/cgi-bin/browse-edgar"
+			client.Client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Query().Get("output") != "atom" || r.URL.Query().Get("action") != "getcurrent" {
+					t.Fatalf("unexpected query = %s", r.URL.RawQuery)
+				}
+				return &http.Response{
+					StatusCode: tt.statusCode,
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Header:     make(http.Header),
+				}, nil
+			})}
+			got, err := client.ListCurrentFilings(context.Background(), tt.query)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ListCurrentFilings expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ListCurrentFilings: %v", err)
+			}
+			if len(got) != tt.wantLen {
+				t.Fatalf("len = %d, want %d", len(got), tt.wantLen)
+			}
+			if tt.assert != nil {
+				tt.assert(t, got)
+			}
+		})
+	}
+}

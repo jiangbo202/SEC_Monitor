@@ -53,6 +53,28 @@ export interface Filing {
   notification_log_id?: number
 }
 
+export interface IPOFiling {
+  id: number
+  filing_id: string
+  accession_number: string
+  cik: string
+  company_name: string
+  filing_type: string
+  filing_date: string
+  accepted_at?: string | null
+  filing_url: string
+  title: string
+  notified_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface IPORadarRefreshResult {
+  checked: number
+  new_filings: number
+  notified: number
+}
+
 export interface SystemConfig {
   id: number
   config_key: string

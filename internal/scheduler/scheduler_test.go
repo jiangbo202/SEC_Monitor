@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"testing"
+	"time"
 
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
@@ -23,6 +24,16 @@ func (f fakeSECClient) ListFilings(ctx context.Context, query sec.FilingQuery) (
 	return nil, nil
 }
 
+func (f fakeSECClient) ListCurrentFilings(ctx context.Context, query sec.CurrentFilingQuery) ([]sec.CurrentFilingResult, error) {
+	return []sec.CurrentFilingResult{{
+		FilingID:    "ipo-1",
+		CompanyName: "IPO Corp.",
+		FilingType:  "S-1",
+		FilingDate:  nowUTC(),
+		FilingURL:   "https://www.sec.gov/ipo",
+	}}, nil
+}
+
 type fakeNotifier struct{}
 
 func (f fakeNotifier) Send(ctx context.Context, message telegram.Message) error {
@@ -38,6 +49,7 @@ func testDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
+		&model.IPOFiling{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -73,6 +85,13 @@ func TestSchedulerTableDriven(t *testing.T) {
 			},
 		},
 		{
+			name: "run ipo radar task",
+			seed: []model.TaskConfig{{TaskName: "ipo_radar_sync", CronExpr: "*/30 * * * *", Enabled: true}},
+			run: func(ctx context.Context, sched *Scheduler) error {
+				return sched.RunTask(ctx, "ipo_radar_sync")
+			},
+		},
+		{
 			name: "run once records task status",
 			seed: []model.TaskConfig{{TaskName: "sec_filing_sync", CronExpr: "*/5 * * * *", Enabled: true}},
 			run: func(ctx context.Context, sched *Scheduler) error {
@@ -102,9 +121,13 @@ func TestSchedulerTableDriven(t *testing.T) {
 			}
 			audit := service.NewAuditService(db)
 			configs := service.NewConfigService(db, audit)
+			if err := configs.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults: %v", err)
+			}
 			tasks := service.NewTaskConfigService(db, audit)
 			filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs)
-			err := tt.run(context.Background(), New(tasks, filings))
+			ipoRadar := service.NewIPORadarService(db, fakeSECClient{}, fakeNotifier{}, configs)
+			err := tt.run(context.Background(), New(tasks, filings, ipoRadar))
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected error")
 			}
@@ -123,6 +146,19 @@ func TestSchedulerTableDriven(t *testing.T) {
 					t.Fatalf("Running = true, want false after completion")
 				}
 			}
+			if tt.name == "run ipo radar task" {
+				var count int64
+				if err := db.Model(&model.IPOFiling{}).Count(&count).Error; err != nil {
+					t.Fatalf("count ipo filings: %v", err)
+				}
+				if count != 1 {
+					t.Fatalf("ipo filings = %d, want 1", count)
+				}
+			}
 		})
 	}
+}
+
+func nowUTC() time.Time {
+	return time.Now().UTC()
 }

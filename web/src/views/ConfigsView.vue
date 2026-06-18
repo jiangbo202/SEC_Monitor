@@ -58,6 +58,34 @@
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
+            <span>{{ t('pages.configs.ipoRadar') }}</span>
+          </div>
+        </template>
+        <el-form :model="ipoForm" label-width="150px">
+          <el-form-item :label="t('pages.configs.ipoEnabled')">
+            <el-switch v-model="ipoForm.enabled" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.ipoFormTypes')">
+            <el-input v-model="ipoForm.form_types" :placeholder="t('pages.configs.ipoFormTypesPlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.ipoLookbackDays')">
+            <el-input-number v-model="ipoForm.lookback_days" :min="1" :max="365" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.ipoMaxResults')">
+            <el-input-number v-model="ipoForm.max_results" :min="1" :max="100" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.ipoNotifyEnabled')">
+            <el-switch v-model="ipoForm.notify_enabled" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.ipoKeywords')">
+            <el-input v-model="ipoForm.keywords" :placeholder="t('pages.configs.ipoKeywordsPlaceholder')" />
+          </el-form-item>
+        </el-form>
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
             <span>{{ t('pages.configs.secPolicy') }}</span>
             <el-tag effect="plain">{{ secPolicySummary }}</el-tag>
           </div>
@@ -170,6 +198,14 @@ const notificationForm = reactive({
   quiet_hours_start: '22:00',
   quiet_hours_end: '08:00'
 })
+const ipoForm = reactive({
+  enabled: true,
+  form_types: 'S-1,S-1/A,F-1,F-1/A,424B,RW',
+  lookback_days: 7,
+  max_results: 100,
+  notify_enabled: true,
+  keywords: ''
+})
 
 const secRiskHints = computed(() => {
   const hints: Array<{ title: string, description: string, type: 'warning' | 'info' }> = []
@@ -245,6 +281,12 @@ async function load() {
     notificationForm.quiet_hours_enabled = configValue(configs, 'notification.quiet_hours_enabled', 'false') === 'true'
     notificationForm.quiet_hours_start = configValue(configs, 'notification.quiet_hours_start', '22:00')
     notificationForm.quiet_hours_end = configValue(configs, 'notification.quiet_hours_end', '08:00')
+    ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
+    ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,424B,RW')
+    ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))
+    ipoForm.max_results = Number(configValue(configs, 'ipo.max_results', '100'))
+    ipoForm.notify_enabled = configValue(configs, 'ipo.notify_enabled', 'true') === 'true'
+    ipoForm.keywords = configValue(configs, 'ipo.keywords', '')
   } finally {
     loading.value = false
   }
@@ -266,7 +308,13 @@ async function save() {
       { key: 'notification.keywords', value: notificationForm.keywords, value_type: 'string', category: 'notification', encrypted: false },
       { key: 'notification.quiet_hours_enabled', value: String(notificationForm.quiet_hours_enabled), value_type: 'bool', category: 'notification', encrypted: false },
       { key: 'notification.quiet_hours_start', value: notificationForm.quiet_hours_start, value_type: 'string', category: 'notification', encrypted: false },
-      { key: 'notification.quiet_hours_end', value: notificationForm.quiet_hours_end, value_type: 'string', category: 'notification', encrypted: false }
+      { key: 'notification.quiet_hours_end', value: notificationForm.quiet_hours_end, value_type: 'string', category: 'notification', encrypted: false },
+      { key: 'ipo.enabled', value: String(ipoForm.enabled), value_type: 'bool', category: 'ipo', encrypted: false },
+      { key: 'ipo.form_types', value: ipoForm.form_types, value_type: 'string', category: 'ipo', encrypted: false },
+      { key: 'ipo.lookback_days', value: String(ipoForm.lookback_days), value_type: 'int', category: 'ipo', encrypted: false },
+      { key: 'ipo.max_results', value: String(ipoForm.max_results), value_type: 'int', category: 'ipo', encrypted: false },
+      { key: 'ipo.notify_enabled', value: String(ipoForm.notify_enabled), value_type: 'bool', category: 'ipo', encrypted: false },
+      { key: 'ipo.keywords', value: ipoForm.keywords, value_type: 'string', category: 'ipo', encrypted: false }
     ])
     store.applyDefaultLocale(uiForm.default_locale)
     ElMessage.success(t('messages.configSaved'))

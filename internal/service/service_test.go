@@ -17,11 +17,15 @@ import (
 
 type fakeSECClient struct {
 	filings         []sec.FilingResult
+	currentFilings  []sec.CurrentFilingResult
 	filingsByTicker map[string][]sec.FilingResult
 	listErrs        []error
 	listErrByTicker map[string]error
+	currentErr      error
 	listCalls       int
+	currentCalls    int
 	queries         []sec.FilingQuery
+	currentQueries  []sec.CurrentFilingQuery
 }
 
 func (f fakeSECClient) LookupCIK(ctx context.Context, ticker string) (string, string, error) {
@@ -47,6 +51,15 @@ func (f *fakeSECClient) ListFilings(ctx context.Context, query sec.FilingQuery) 
 	}
 	f.listCalls++
 	return f.filings, nil
+}
+
+func (f *fakeSECClient) ListCurrentFilings(ctx context.Context, query sec.CurrentFilingQuery) ([]sec.CurrentFilingResult, error) {
+	f.currentCalls++
+	f.currentQueries = append(f.currentQueries, query)
+	if f.currentErr != nil {
+		return nil, f.currentErr
+	}
+	return f.currentFilings, nil
 }
 
 type fakeNotifier struct {
@@ -82,6 +95,7 @@ func testDB(t *testing.T) *gorm.DB {
 		&model.SystemConfig{},
 		&model.OperationLog{},
 		&model.NotificationLog{},
+		&model.IPOFiling{},
 	); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
@@ -232,12 +246,194 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 				t.Fatalf("settings = %+v", settings)
 			}
 		}},
+		{name: "ensure ipo radar defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults: %v", err)
+			}
+			settings, err := svc.IPORadarSettings(context.Background())
+			if err != nil {
+				t.Fatalf("IPORadarSettings: %v", err)
+			}
+			if !settings.Enabled || !settings.NotifyEnabled || settings.LookbackDays != 7 || settings.MaxResults != 100 {
+				t.Fatalf("settings = %+v", settings)
+			}
+			if len(settings.FormTypes) == 0 || settings.FormTypes[0] != "S-1" {
+				t.Fatalf("form types = %+v", settings.FormTypes)
+			}
+		}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db := testDB(t)
 			tt.run(t, db, NewConfigService(db, NewAuditService(db)))
+		})
+	}
+}
+
+func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name        string
+		configs     []ConfigInput
+		secFilings  []sec.CurrentFilingResult
+		notifierErr []error
+		runTwice    bool
+		wantNew     int
+		wantNotify  int
+		wantStored  int64
+		wantLogs    int64
+	}{
+		{
+			name: "creates and notifies new ipo filing",
+			configs: []ConfigInput{
+				{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+				{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram", Encrypted: true},
+				{Key: "telegram.chat_id", Value: "10001", ValueType: "string", Category: "telegram"},
+			},
+			secFilings: []sec.CurrentFilingResult{{
+				FilingID:        "0000000001-26-000001",
+				AccessionNumber: "0000000001-26-000001",
+				CIK:             "0000000001",
+				CompanyName:     "Acme Space Inc.",
+				FilingType:      "S-1",
+				FilingDate:      now,
+				FilingURL:       "https://www.sec.gov/acme/s1",
+				Title:           "S-1 - Acme Space Inc.",
+			}},
+			wantNew:    1,
+			wantNotify: 1,
+			wantStored: 1,
+			wantLogs:   1,
+		},
+		{
+			name: "deduplicates existing filing on second refresh",
+			configs: []ConfigInput{
+				{Key: "ipo.notify_enabled", Value: "false", ValueType: "bool", Category: "ipo"},
+			},
+			secFilings: []sec.CurrentFilingResult{{
+				FilingID:    "dup",
+				CompanyName: "Duplicate Corp.",
+				FilingType:  "F-1",
+				FilingDate:  now,
+				FilingURL:   "https://www.sec.gov/dup/f1",
+				Title:       "F-1 - Duplicate Corp.",
+			}},
+			runTwice:   true,
+			wantNew:    0,
+			wantStored: 1,
+		},
+		{
+			name: "filters old filing and keyword mismatch",
+			configs: []ConfigInput{
+				{Key: "ipo.lookback_days", Value: "1", ValueType: "int", Category: "ipo"},
+				{Key: "ipo.keywords", Value: "biotech", ValueType: "string", Category: "ipo"},
+			},
+			secFilings: []sec.CurrentFilingResult{
+				{FilingID: "old", CompanyName: "Old Biotech", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -3), FilingURL: "https://www.sec.gov/old"},
+				{FilingID: "keyword-miss", CompanyName: "Cloud Tools", FilingType: "S-1", FilingDate: now, FilingURL: "https://www.sec.gov/cloud"},
+			},
+			wantStored: 0,
+		},
+		{
+			name: "records failed notification without failing refresh",
+			configs: []ConfigInput{
+				{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+				{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram", Encrypted: true},
+				{Key: "telegram.chat_id", Value: "10001", ValueType: "string", Category: "telegram"},
+			},
+			secFilings: []sec.CurrentFilingResult{{
+				FilingID:    "notify-fail",
+				CompanyName: "Fail Notify Inc.",
+				FilingType:  "S-1",
+				FilingDate:  now,
+				FilingURL:   "https://www.sec.gov/fail",
+			}},
+			notifierErr: []error{errors.New("telegram down"), errors.New("telegram down"), errors.New("telegram down")},
+			wantNew:     1,
+			wantStored:  1,
+			wantLogs:    1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			configs := NewConfigService(db, NewAuditService(db))
+			if err := configs.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults: %v", err)
+			}
+			if len(tt.configs) > 0 {
+				if err := configs.UpsertMany(context.Background(), tt.configs, "tester"); err != nil {
+					t.Fatalf("UpsertMany: %v", err)
+				}
+			}
+			secClient := &fakeSECClient{currentFilings: tt.secFilings}
+			notifier := &fakeNotifier{errs: tt.notifierErr}
+			svc := NewIPORadarService(db, secClient, notifier, configs)
+			got, err := svc.Refresh(context.Background())
+			if err != nil {
+				t.Fatalf("Refresh: %v", err)
+			}
+			if tt.runTwice {
+				got, err = svc.Refresh(context.Background())
+				if err != nil {
+					t.Fatalf("Refresh second: %v", err)
+				}
+			}
+			if got.NewFilings != tt.wantNew || got.Notified != tt.wantNotify {
+				t.Fatalf("result = %+v, want new=%d notified=%d", got, tt.wantNew, tt.wantNotify)
+			}
+			var stored int64
+			if err := db.Model(&model.IPOFiling{}).Count(&stored).Error; err != nil {
+				t.Fatalf("count ipo filings: %v", err)
+			}
+			if stored != tt.wantStored {
+				t.Fatalf("stored = %d, want %d", stored, tt.wantStored)
+			}
+			var logs int64
+			if err := db.Model(&model.NotificationLog{}).Count(&logs).Error; err != nil {
+				t.Fatalf("count notification logs: %v", err)
+			}
+			if logs != tt.wantLogs {
+				t.Fatalf("logs = %d, want %d", logs, tt.wantLogs)
+			}
+		})
+	}
+}
+
+func TestIPORadarServiceListTableDriven(t *testing.T) {
+	now := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		filter IPOFilingFilter
+		want   int64
+	}{
+		{name: "filters company", filter: IPOFilingFilter{CompanyName: "Acme", Page: 1, PageSize: 10}, want: 1},
+		{name: "filters cik", filter: IPOFilingFilter{CIK: "0000000002", Page: 1, PageSize: 10}, want: 1},
+		{name: "filters type", filter: IPOFilingFilter{FilingType: "F-1", Page: 1, PageSize: 10}, want: 1},
+		{name: "filters notified yes", filter: IPOFilingFilter{Notified: "yes", Page: 1, PageSize: 10}, want: 1},
+		{name: "filters notified no", filter: IPOFilingFilter{Notified: "no", Page: 1, PageSize: 10}, want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			notifiedAt := now
+			if err := db.Create(&[]model.IPOFiling{
+				{FilingID: "ipo-1", CompanyName: "Acme Space Inc.", CIK: "0000000001", FilingType: "S-1", FilingDate: now, NotifiedAt: &notifiedAt},
+				{FilingID: "ipo-2", CompanyName: "Beta Bio Ltd.", CIK: "0000000002", FilingType: "F-1", FilingDate: now},
+			}).Error; err != nil {
+				t.Fatalf("seed ipo filings: %v", err)
+			}
+			svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+			got, err := svc.List(context.Background(), tt.filter)
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if got.Total != tt.want {
+				t.Fatalf("total = %d, want %d", got.Total, tt.want)
+			}
 		})
 	}
 }
@@ -639,8 +835,15 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(tasks) != 1 {
-				t.Fatalf("tasks = %d, want 1", len(tasks))
+			if len(tasks) != 2 {
+				t.Fatalf("tasks = %d, want 2", len(tasks))
+			}
+			names := map[string]bool{}
+			for _, task := range tasks {
+				names[task.TaskName] = true
+			}
+			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] {
+				t.Fatalf("task names = %+v, want sec and ipo tasks", names)
 			}
 		}},
 		{name: "update task", run: func(t *testing.T, svc *TaskConfigService) {
@@ -648,6 +851,13 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 				t.Fatalf("EnsureDefault: %v", err)
 			}
 			tasks, _ := svc.List(context.Background())
+			got, err := svc.Get(context.Background(), tasks[0].ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.TaskName != tasks[0].TaskName {
+				t.Fatalf("Get task = %+v, want %s", got, tasks[0].TaskName)
+			}
 			updated, err := svc.Update(context.Background(), tasks[0].ID, TaskConfigInput{CronExpr: "*/30 * * * *", Enabled: false}, "tester")
 			if err != nil {
 				t.Fatalf("Update: %v", err)
@@ -657,6 +867,10 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			}
 		}},
 		{name: "missing task returns not found", run: func(t *testing.T, svc *TaskConfigService) {
+			_, getErr := svc.Get(context.Background(), 404)
+			if !errors.Is(getErr, ErrNotFound) {
+				t.Fatalf("Get err = %v, want not found", getErr)
+			}
 			_, err := svc.Update(context.Background(), 404, TaskConfigInput{CronExpr: "* * * * *", Enabled: true}, "tester")
 			if !errors.Is(err, ErrNotFound) {
 				t.Fatalf("Update err = %v, want not found", err)

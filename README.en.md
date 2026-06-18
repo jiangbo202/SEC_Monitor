@@ -20,8 +20,9 @@ SEC Monitor is a local-first Web app for monitoring SEC EDGAR filings for US sto
 - SEC filing list with filters, pagination, sortable filing date, publish time, sync time, ticker, and filing type.
 - Saved filing views stored locally in the browser.
 - Major Event Radar for 8-K, S-1, S-3, 424B, 13D, and other high-signal filings.
+- IPO Radar scans SEC current filings for S-1, F-1, 424B, and other IPO/offering-related submissions, with optional Telegram alerts.
 - Insider Trading page for Form 3/4/5 ownership-change disclosures.
-- Sync history page with status, trigger source, checked targets, new filings, failed targets, and error messages.
+- Sync history and scheduling with built-in `sec_filing_sync` and `ipo_radar_sync` jobs, manual run, enable/disable, and cron editing.
 - Dashboard overview for monitored targets, recent filings, sync health, and notification status.
 - Telegram notification settings, test sending, retries, and notification logs.
 - Structured system configuration for SEC fetch policy, notification rules, data retention, and default language.
@@ -186,6 +187,15 @@ Notification rule settings:
 - `notification.keywords`: only notify filings whose title or content contains selected keywords, comma-separated.
 - `notification.quiet_hours_enabled`: enables quiet hours.
 - `notification.quiet_hours_start` / `notification.quiet_hours_end`: quiet-hour window in `HH:mm` format.
+
+IPO Radar settings:
+
+- `ipo.enabled`: enables IPO Radar.
+- `ipo.form_types`: SEC form types to scan. Default is `S-1,S-1/A,F-1,F-1/A,424B,RW`.
+- `ipo.lookback_days`: keeps only current filing results from recent N days.
+- `ipo.max_results`: max rows per form type. The SEC current-filing endpoint is capped at 100 here.
+- `ipo.notify_enabled`: sends Telegram alerts for newly stored IPO Radar filings.
+- `ipo.keywords`: comma-separated company/title keyword filter. Empty means no keyword filter.
 
 Environment variables:
 

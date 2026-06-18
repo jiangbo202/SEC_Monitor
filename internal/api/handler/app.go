@@ -28,6 +28,7 @@ type AppHandler struct {
 	Configs      *service.ConfigService
 	Tasks        *service.TaskConfigService
 	Filings      *service.FilingService
+	IPO          *service.IPORadarService
 	SEC          sec.Client
 	Audit        *service.AuditService
 	Notification *service.NotificationService
@@ -37,6 +38,7 @@ type AppHandler struct {
 type SchedulerController interface {
 	Reload(ctx context.Context) error
 	RunOnce(ctx context.Context) error
+	RunTask(ctx context.Context, taskName string) error
 }
 
 func (h *AppHandler) LookupTicker(c *gin.Context) {
@@ -195,6 +197,40 @@ func (h *AppHandler) GetFiling(c *gin.Context) {
 
 func (h *AppHandler) RefreshFilings(c *gin.Context) {
 	result, err := h.Filings.Refresh(c.Request.Context())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ListIPORadarFilings(c *gin.Context) {
+	if h.IPO == nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	page, pageSize := pageParams(c)
+	result, err := h.IPO.List(c.Request.Context(), service.IPOFilingFilter{
+		CompanyName: c.Query("company_name"),
+		CIK:         c.Query("cik"),
+		FilingType:  c.Query("filing_type"),
+		Notified:    c.Query("notified"),
+		Page:        page,
+		PageSize:    pageSize,
+	})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) RefreshIPORadar(c *gin.Context) {
+	if h.IPO == nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := h.IPO.Refresh(c.Request.Context())
 	if err != nil {
 		Error(c, err)
 		return
@@ -395,12 +431,29 @@ func (h *AppHandler) UpdateTaskConfig(c *gin.Context) {
 
 func (h *AppHandler) RunTask(c *gin.Context) {
 	if h.Scheduler != nil {
-		if err := h.Scheduler.RunOnce(context.Background()); err != nil {
+		task, err := h.Tasks.Get(c.Request.Context(), uintParam(c, "id"))
+		if err != nil {
+			Error(c, err)
+			return
+		}
+		if err := h.Scheduler.RunTask(context.Background(), task.TaskName); err != nil {
 			Error(c, err)
 			return
 		}
 		OK(c, gin.H{"started": true})
 		return
+	}
+	if h.Tasks != nil {
+		task, err := h.Tasks.Get(c.Request.Context(), uintParam(c, "id"))
+		if err == nil && task.TaskName == "ipo_radar_sync" && h.IPO != nil {
+			result, err := h.IPO.Refresh(context.Background())
+			if err != nil {
+				Error(c, err)
+				return
+			}
+			OK(c, result)
+			return
+		}
 	}
 	result, err := h.Filings.Refresh(context.Background())
 	if err != nil {

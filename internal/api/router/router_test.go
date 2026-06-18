@@ -24,6 +24,7 @@ func TestRouterCreatesAndListsWatchTargets(t *testing.T) {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
+		&model.IPOFiling{},
 	); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
@@ -60,6 +61,13 @@ func TestRouterCreatesAndListsWatchTargets(t *testing.T) {
 	if payload.Data.Total != 1 || payload.Data.Items[0].Ticker != "MSFT" {
 		t.Fatalf("list payload = %+v, want one MSFT target", payload.Data)
 	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/ipo-filings?page=1&page_size=10", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list ipo filings status = %d, body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestRouterServesWebAppFallback(t *testing.T) {
@@ -70,6 +78,7 @@ func TestRouterServesWebAppFallback(t *testing.T) {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
+		&model.IPOFiling{},
 	); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}

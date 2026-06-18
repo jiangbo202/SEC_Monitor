@@ -46,6 +46,15 @@ type NotificationSettings struct {
 	QuietHoursEnd     string
 }
 
+type IPORadarSettings struct {
+	Enabled       bool
+	FormTypes     []string
+	LookbackDays  int
+	MaxResults    int
+	NotifyEnabled bool
+	Keywords      []string
+}
+
 func NewConfigService(db *gorm.DB, audit *AuditService) *ConfigService {
 	return &ConfigService{db: db, audit: audit}
 }
@@ -66,6 +75,12 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "notification.quiet_hours_enabled", Value: "false", ValueType: "bool", Category: "notification"},
 		{Key: "notification.quiet_hours_start", Value: "22:00", ValueType: "string", Category: "notification"},
 		{Key: "notification.quiet_hours_end", Value: "08:00", ValueType: "string", Category: "notification"},
+		{Key: "ipo.enabled", Value: "true", ValueType: "bool", Category: "ipo"},
+		{Key: "ipo.form_types", Value: "S-1,S-1/A,F-1,F-1/A,424B,RW", ValueType: "string", Category: "ipo"},
+		{Key: "ipo.lookback_days", Value: "7", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.max_results", Value: "100", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.notify_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
+		{Key: "ipo.keywords", Value: "", ValueType: "string", Category: "ipo"},
 	}, "system")
 }
 
@@ -236,6 +251,55 @@ func (s *ConfigService) NotificationSettings(ctx context.Context) (NotificationS
 		QuietHoursEnabled: quietEnabled,
 		QuietHoursStart:   valueOrDefault(quietStart, "22:00"),
 		QuietHoursEnd:     valueOrDefault(quietEnd, "08:00"),
+	}, nil
+}
+
+func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings, error) {
+	enabledRaw, _, err := s.GetValue(ctx, "ipo.enabled")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	formTypesRaw, _, err := s.GetValue(ctx, "ipo.form_types")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	lookbackRaw, _, err := s.GetValue(ctx, "ipo.lookback_days")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	maxRaw, _, err := s.GetValue(ctx, "ipo.max_results")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	notifyRaw, _, err := s.GetValue(ctx, "ipo.notify_enabled")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	keywordsRaw, _, err := s.GetValue(ctx, "ipo.keywords")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	enabled, _ := strconv.ParseBool(enabledRaw)
+	notify, _ := strconv.ParseBool(notifyRaw)
+	lookback, _ := strconv.Atoi(lookbackRaw)
+	maxResults, _ := strconv.Atoi(maxRaw)
+	if lookback <= 0 {
+		lookback = 7
+	}
+	if maxResults <= 0 || maxResults > 200 {
+		maxResults = 100
+	}
+	formTypes := splitConfigList(formTypesRaw)
+	if len(formTypes) == 0 {
+		formTypes = []string{"S-1", "S-1/A", "F-1", "F-1/A", "424B", "RW"}
+	}
+	return IPORadarSettings{
+		Enabled:       enabled,
+		FormTypes:     formTypes,
+		LookbackDays:  lookback,
+		MaxResults:    maxResults,
+		NotifyEnabled: notify,
+		Keywords:      splitConfigList(keywordsRaw),
 	}, nil
 }
 
