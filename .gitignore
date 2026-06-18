@@ -1,0 +1,35 @@
+.DS_Store
+
+# Agent-local instructions and workspace metadata
+AGENTS.md
+.codex/
+.agents/
+
+# Local build/test/runtime artifacts
+.cache/
+.runtime/
+data/
+dist/
+logs/
+node_modules/
+coverage/
+*.log
+*.out
+*.test
+web/dist/
+web/.vite/
+
+# Environment and editor files
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+
+# Go artifacts
+bin/
+*.coverprofile
+coverage.out
+
+# OS files
+Thumbs.db

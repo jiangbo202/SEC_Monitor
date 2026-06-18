@@ -1,0 +1,22 @@
+services:
+  sec-monitor:
+    build:
+      context: .
+    image: sec-monitor:local
+    container_name: sec-monitor
+    restart: unless-stopped
+    ports:
+      - "9090:8080"
+    environment:
+      APP_ADDR: ":8080"
+      DB_TYPE: sqlite
+      DB_DSN: /app/data/sec_monitor.db
+      WEB_DIST_DIR: /app/web
+      SEC_BASE_URL: https://data.sec.gov
+      SEC_USER_AGENT: "${SEC_USER_AGENT:-sec-monitor/0.1 your-email@example.com}"
+      SEC_TIMEOUT_MS: "10000"
+    volumes:
+      - sec-monitor-data:/app/data
+
+volumes:
+  sec-monitor-data:
