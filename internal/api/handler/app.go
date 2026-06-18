@@ -225,6 +225,26 @@ func (h *AppHandler) ListIPORadarFilings(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) ListIPOCompanies(c *gin.Context) {
+	if h.IPO == nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	page, pageSize := pageParams(c)
+	result, err := h.IPO.ListCompanies(c.Request.Context(), service.IPOCompanyFilter{
+		CompanyName: c.Query("company_name"),
+		CIK:         c.Query("cik"),
+		Status:      c.Query("status"),
+		Page:        page,
+		PageSize:    pageSize,
+	}, time.Now().UTC())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) RefreshIPORadar(c *gin.Context) {
 	if h.IPO == nil {
 		Error(c, service.ErrValidation)

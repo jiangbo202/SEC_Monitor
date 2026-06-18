@@ -68,6 +68,13 @@ func TestRouterCreatesAndListsWatchTargets(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list ipo filings status = %d, body=%s", rec.Code, rec.Body.String())
 	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/ipo-companies?page=1&page_size=10", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list ipo companies status = %d, body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestRouterServesWebAppFallback(t *testing.T) {

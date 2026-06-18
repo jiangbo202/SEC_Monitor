@@ -258,7 +258,19 @@ const messages = {
         subtitle: '监控 SEC 当前申报流中的 S-1、F-1、424B 等 IPO 或融资相关申请。',
         empty: '暂无新申报记录',
         refresh: '扫描新申报',
-        acceptedAt: 'SEC 接收时间'
+        acceptedAt: 'SEC 接收时间',
+        latestType: '最新类型',
+        filingCount: '申报数',
+        firstFiling: '首次申报',
+        latestUpdate: '最近更新',
+        statuses: {
+          new: '新申报',
+          updating: '更新中',
+          priced: '已定价',
+          listed: '已上市',
+          withdrawn: '撤回/终止',
+          stale: '长期无更新'
+        }
       },
       insiderTrading: {
         title: 'Insider Trading',
@@ -656,7 +668,19 @@ const messages = {
         subtitle: 'Monitors SEC current filings for S-1, F-1, 424B, and other IPO or offering-related submissions.',
         empty: 'No IPO radar filings',
         refresh: 'Scan New Filings',
-        acceptedAt: 'SEC Accepted At'
+        acceptedAt: 'SEC Accepted At',
+        latestType: 'Latest Type',
+        filingCount: 'Filings',
+        firstFiling: 'First Filing',
+        latestUpdate: 'Latest Update',
+        statuses: {
+          new: 'New',
+          updating: 'Updating',
+          priced: 'Priced',
+          listed: 'Listed',
+          withdrawn: 'Withdrawn',
+          stale: 'Stale'
+        }
       },
       insiderTrading: {
         title: 'Insider Trading',

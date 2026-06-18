@@ -20,7 +20,7 @@ SEC Monitor is a local-first Web app for monitoring SEC EDGAR filings for US sto
 - SEC filing list with filters, pagination, sortable filing date, publish time, sync time, ticker, and filing type.
 - Saved filing views stored locally in the browser.
 - Major Event Radar for 8-K, S-1, S-3, 424B, 13D, and other high-signal filings.
-- IPO Radar scans SEC current filings for S-1, F-1, 424B, and other IPO/offering-related submissions, with optional Telegram alerts.
+- IPO Radar scans SEC current filings for S-1, F-1, S-1MEF, and related IPO/offering submissions, groups them by company, and labels lifecycle status such as new, updating, priced, listed, withdrawn, and stale.
 - Insider Trading page for Form 3/4/5 ownership-change disclosures.
 - Sync history and scheduling with built-in `sec_filing_sync` and `ipo_radar_sync` jobs, manual run, enable/disable, and cron editing.
 - Dashboard overview for monitored targets, recent filings, sync health, and notification status.

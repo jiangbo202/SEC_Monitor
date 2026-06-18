@@ -84,6 +84,7 @@ func New(deps Dependencies) *gin.Engine {
 
 		api.GET("/filings", app.ListFilings)
 		api.POST("/filings/refresh", app.RefreshFilings)
+		api.GET("/ipo-companies", app.ListIPOCompanies)
 		api.GET("/ipo-filings", app.ListIPORadarFilings)
 		api.POST("/ipo-filings/refresh", app.RefreshIPORadar)
 		api.GET("/filings/cleanup-preview", app.PreviewFilingCleanup)

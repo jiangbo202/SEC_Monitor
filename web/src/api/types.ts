@@ -69,6 +69,21 @@ export interface IPOFiling {
   updated_at: string
 }
 
+export interface IPOCompany {
+  cik: string
+  company_name: string
+  status: string
+  first_filing_date: string
+  latest_filing_date: string
+  latest_accepted_at?: string | null
+  latest_filing_type: string
+  latest_filing_url: string
+  latest_title: string
+  filing_count: number
+  notified: boolean
+  matched_ticker?: string
+}
+
 export interface IPORadarRefreshResult {
   checked: number
   new_filings: number

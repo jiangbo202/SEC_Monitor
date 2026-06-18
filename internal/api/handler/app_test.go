@@ -141,6 +141,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.GET("/targets/:id/sync-details", h.ListWatchTargetSyncDetails)
 	r.GET("/filings", h.ListFilings)
 	r.POST("/filings/refresh", h.RefreshFilings)
+	r.GET("/ipo-companies", h.ListIPOCompanies)
 	r.GET("/ipo-filings", h.ListIPORadarFilings)
 	r.POST("/ipo-filings/refresh", h.RefreshIPORadar)
 	r.GET("/filings/cleanup-preview", h.PreviewFilingCleanup)
@@ -227,6 +228,11 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 		{name: "list ipo radar filings", method: http.MethodGet, path: "/ipo-filings?filing_type=S-1&notified=no", seed: seedIPOFiling, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if !strings.Contains(rec.Body.String(), `"company_name":"Acme Space Inc."`) {
 				t.Fatalf("body = %s, want ipo filing", rec.Body.String())
+			}
+		}},
+		{name: "list ipo companies", method: http.MethodGet, path: "/ipo-companies?status=new", seed: seedIPOFiling, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"status":"new"`) || !strings.Contains(rec.Body.String(), `"filing_count":1`) {
+				t.Fatalf("body = %s, want ipo company status", rec.Body.String())
 			}
 		}},
 		{name: "sync target", method: http.MethodPost, path: "/targets/1/sync", seed: seedTarget, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {

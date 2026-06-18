@@ -448,6 +448,96 @@ func TestIPORadarServiceListTableDriven(t *testing.T) {
 	}
 }
 
+func TestIPORadarServiceListCompaniesTableDriven(t *testing.T) {
+	now := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		filings    []model.IPOFiling
+		targets    []model.WatchTarget
+		wantStatus string
+		wantLatest string
+	}{
+		{
+			name: "new filing from initial registration",
+			filings: []model.IPOFiling{{
+				FilingID: "new-s1", CIK: "0000000001", CompanyName: "Acme Space Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.gov/acme",
+			}},
+			wantStatus: "new",
+			wantLatest: "S-1",
+		},
+		{
+			name: "amendment marks updating",
+			filings: []model.IPOFiling{
+				{FilingID: "s1", CIK: "0000000002", CompanyName: "Beta Bio Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -3), FilingURL: "https://sec.gov/beta/s1"},
+				{FilingID: "s1a", CIK: "0000000002", CompanyName: "Beta Bio Inc.", FilingType: "S-1/A", FilingDate: now, FilingURL: "https://sec.gov/beta/s1a"},
+			},
+			wantStatus: "updating",
+			wantLatest: "S-1/A",
+		},
+		{
+			name: "424B marks priced",
+			filings: []model.IPOFiling{
+				{FilingID: "f1", CIK: "0000000003", CompanyName: "Cedar AI Ltd.", FilingType: "F-1", FilingDate: now.AddDate(0, 0, -4), FilingURL: "https://sec.gov/cedar/f1"},
+				{FilingID: "424b4", CIK: "0000000003", CompanyName: "Cedar AI Ltd.", FilingType: "424B4", FilingDate: now, FilingURL: "https://sec.gov/cedar/424b4"},
+			},
+			wantStatus: "priced",
+			wantLatest: "424B4",
+		},
+		{
+			name: "withdrawn beats amendment",
+			filings: []model.IPOFiling{
+				{FilingID: "s1", CIK: "0000000004", CompanyName: "Delta Energy Inc.", FilingType: "S-1/A", FilingDate: now.AddDate(0, 0, -2), FilingURL: "https://sec.gov/delta/s1a"},
+				{FilingID: "rw", CIK: "0000000004", CompanyName: "Delta Energy Inc.", FilingType: "RW", FilingDate: now, FilingURL: "https://sec.gov/delta/rw"},
+			},
+			wantStatus: "withdrawn",
+			wantLatest: "RW",
+		},
+		{
+			name: "watch target match marks listed",
+			filings: []model.IPOFiling{{
+				FilingID: "s1", CIK: "0000000005", CompanyName: "Echo Robotics Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.gov/echo/s1",
+			}},
+			targets:    []model.WatchTarget{{Ticker: "ECHO", CompanyName: "Echo Robotics Inc.", CIK: "0000000005", TargetType: "stock", Status: "enabled"}},
+			wantStatus: "listed",
+			wantLatest: "S-1",
+		},
+		{
+			name: "stale after long inactivity",
+			filings: []model.IPOFiling{{
+				FilingID: "old-s1", CIK: "0000000006", CompanyName: "Foxtrot Cloud Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -80), FilingURL: "https://sec.gov/foxtrot/s1",
+			}},
+			wantStatus: "stale",
+			wantLatest: "S-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			if err := db.Create(&tt.filings).Error; err != nil {
+				t.Fatalf("seed ipo filings: %v", err)
+			}
+			if len(tt.targets) > 0 {
+				if err := db.Create(&tt.targets).Error; err != nil {
+					t.Fatalf("seed targets: %v", err)
+				}
+			}
+			svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+			got, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 10}, now)
+			if err != nil {
+				t.Fatalf("ListCompanies: %v", err)
+			}
+			if got.Total != 1 || len(got.Items) != 1 {
+				t.Fatalf("page = %+v, want one company", got)
+			}
+			item := got.Items[0]
+			if item.Status != tt.wantStatus || item.LatestFilingType != tt.wantLatest {
+				t.Fatalf("company = %+v, want status=%s latest=%s", item, tt.wantStatus, tt.wantLatest)
+			}
+		})
+	}
+}
+
 func TestShouldNotifyFilingTableDriven(t *testing.T) {
 	now := time.Date(2026, 6, 18, 10, 30, 0, 0, time.UTC)
 	filing := model.Filing{FilingType: "8-K", Title: "Merger agreement", CompanyName: "Acme Inc."}

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,29 @@ type IPOFilingFilter struct {
 	Notified    string
 	Page        int
 	PageSize    int
+}
+
+type IPOCompanyFilter struct {
+	CompanyName string
+	CIK         string
+	Status      string
+	Page        int
+	PageSize    int
+}
+
+type IPOCompanyItem struct {
+	CIK              string     `json:"cik"`
+	CompanyName      string     `json:"company_name"`
+	Status           string     `json:"status"`
+	FirstFilingDate  time.Time  `json:"first_filing_date"`
+	LatestFilingDate time.Time  `json:"latest_filing_date"`
+	LatestAcceptedAt *time.Time `json:"latest_accepted_at"`
+	LatestFilingType string     `json:"latest_filing_type"`
+	LatestFilingURL  string     `json:"latest_filing_url"`
+	LatestTitle      string     `json:"latest_title"`
+	FilingCount      int        `json:"filing_count"`
+	Notified         bool       `json:"notified"`
+	MatchedTicker    string     `json:"matched_ticker,omitempty"`
 }
 
 type IPORadarRefreshResult struct {
@@ -66,6 +90,73 @@ func (s *IPORadarService) List(ctx context.Context, filter IPOFilingFilter) (Pag
 	var items []model.IPOFiling
 	err := query.Order("filing_date DESC, accepted_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error
 	return newPageResult(items, total, page, pageSize), err
+}
+
+func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFilter, now time.Time) (PageResult[IPOCompanyItem], error) {
+	page, pageSize := normalizePage(filter.Page, filter.PageSize)
+	query := s.db.WithContext(ctx).Model(&model.IPOFiling{})
+	if filter.CompanyName != "" {
+		query = query.Where("company_name LIKE ?", "%"+strings.TrimSpace(filter.CompanyName)+"%")
+	}
+	if filter.CIK != "" {
+		query = query.Where("cik = ?", strings.TrimSpace(filter.CIK))
+	}
+
+	var filings []model.IPOFiling
+	if err := query.Order("cik ASC, filing_date ASC, accepted_at ASC, id ASC").Find(&filings).Error; err != nil {
+		return PageResult[IPOCompanyItem]{}, err
+	}
+	if len(filings) == 0 {
+		return newPageResult([]IPOCompanyItem{}, 0, page, pageSize), nil
+	}
+
+	ciks := make([]string, 0, len(filings))
+	seenCIK := map[string]bool{}
+	for _, filing := range filings {
+		if filing.CIK != "" && !seenCIK[filing.CIK] {
+			seenCIK[filing.CIK] = true
+			ciks = append(ciks, filing.CIK)
+		}
+	}
+	var targets []model.WatchTarget
+	if len(ciks) > 0 {
+		if err := s.db.WithContext(ctx).Where("cik IN ?", ciks).Find(&targets).Error; err != nil {
+			return PageResult[IPOCompanyItem]{}, err
+		}
+	}
+	tickerByCIK := map[string]string{}
+	for _, target := range targets {
+		if target.CIK != "" && target.Ticker != "" {
+			tickerByCIK[target.CIK] = target.Ticker
+		}
+	}
+
+	grouped := map[string][]model.IPOFiling{}
+	for _, filing := range filings {
+		key := valueOrDefault(filing.CIK, strings.ToLower(strings.TrimSpace(filing.CompanyName)))
+		grouped[key] = append(grouped[key], filing)
+	}
+
+	items := make([]IPOCompanyItem, 0, len(grouped))
+	for _, group := range grouped {
+		item := buildIPOCompanyItem(group, tickerByCIK, now)
+		if status := strings.TrimSpace(filter.Status); status != "" && item.Status != status {
+			continue
+		}
+		items = append(items, item)
+	}
+	sortIPOCompanies(items)
+
+	total := int64(len(items))
+	start := (page - 1) * pageSize
+	if start >= len(items) {
+		return newPageResult([]IPOCompanyItem{}, total, page, pageSize), nil
+	}
+	end := start + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	return newPageResult(items[start:end], total, page, pageSize), nil
 }
 
 func (s *IPORadarService) Refresh(ctx context.Context) (IPORadarRefreshResult, error) {
@@ -159,6 +250,107 @@ func (s *IPORadarService) createIfNew(ctx context.Context, filing model.IPOFilin
 		return false, res.Error
 	}
 	return res.RowsAffected == 1, nil
+}
+
+func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]string, now time.Time) IPOCompanyItem {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	item := IPOCompanyItem{FilingCount: len(filings)}
+	for i, filing := range filings {
+		if i == 0 || filing.FilingDate.Before(item.FirstFilingDate) {
+			item.FirstFilingDate = filing.FilingDate
+		}
+		if i == 0 || filingAfter(filing, model.IPOFiling{FilingDate: item.LatestFilingDate, AcceptedAt: item.LatestAcceptedAt}) {
+			item.CIK = filing.CIK
+			item.CompanyName = filing.CompanyName
+			item.LatestFilingDate = filing.FilingDate
+			item.LatestAcceptedAt = filing.AcceptedAt
+			item.LatestFilingType = filing.FilingType
+			item.LatestFilingURL = filing.FilingURL
+			item.LatestTitle = filing.Title
+		}
+		if filing.NotifiedAt != nil {
+			item.Notified = true
+		}
+		if item.CIK == "" {
+			item.CIK = filing.CIK
+		}
+		if item.CompanyName == "" {
+			item.CompanyName = filing.CompanyName
+		}
+	}
+	item.MatchedTicker = tickerByCIK[item.CIK]
+	item.Status = inferIPOCompanyStatus(filings, item.MatchedTicker, item.LatestFilingDate, now)
+	return item
+}
+
+func filingAfter(left model.IPOFiling, right model.IPOFiling) bool {
+	if left.FilingDate.After(right.FilingDate) {
+		return true
+	}
+	if left.FilingDate.Before(right.FilingDate) {
+		return false
+	}
+	if left.AcceptedAt != nil && right.AcceptedAt == nil {
+		return true
+	}
+	if left.AcceptedAt != nil && right.AcceptedAt != nil && left.AcceptedAt.After(*right.AcceptedAt) {
+		return true
+	}
+	return false
+}
+
+func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, latestFilingDate time.Time, now time.Time) string {
+	if strings.TrimSpace(matchedTicker) != "" {
+		return "listed"
+	}
+	hasAmendment := false
+	hasPriced := false
+	hasWithdrawn := false
+	for _, filing := range filings {
+		form := strings.ToUpper(strings.TrimSpace(filing.FilingType))
+		if form == "RW" || strings.HasPrefix(form, "RW ") {
+			hasWithdrawn = true
+		}
+		if strings.HasPrefix(form, "424B") {
+			hasPriced = true
+		}
+		if strings.HasSuffix(form, "/A") {
+			hasAmendment = true
+		}
+	}
+	switch {
+	case hasWithdrawn:
+		return "withdrawn"
+	case hasPriced:
+		return "priced"
+	case !latestFilingDate.IsZero() && latestFilingDate.Before(now.UTC().AddDate(0, 0, -60)):
+		return "stale"
+	case hasAmendment:
+		return "updating"
+	default:
+		return "new"
+	}
+}
+
+func sortIPOCompanies(items []IPOCompanyItem) {
+	statusRank := map[string]int{
+		"new":       0,
+		"updating":  1,
+		"priced":    2,
+		"listed":    3,
+		"withdrawn": 4,
+		"stale":     5,
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		leftRank := statusRank[items[i].Status]
+		rightRank := statusRank[items[j].Status]
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		return items[i].LatestFilingDate.After(items[j].LatestFilingDate)
+	})
 }
 
 func (s *IPORadarService) notify(ctx context.Context, filing model.IPOFiling, settings IPORadarSettings) (bool, error) {
