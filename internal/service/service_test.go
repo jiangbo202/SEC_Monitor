@@ -190,6 +190,24 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 				t.Fatalf("settings = %+v", settings)
 			}
 		}},
+		{name: "ensure ui default locale is chinese", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults: %v", err)
+			}
+			if err := svc.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults second: %v", err)
+			}
+			configs, err := svc.List(context.Background(), "ui", false)
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(configs) != 1 {
+				t.Fatalf("ui defaults = %d, want 1", len(configs))
+			}
+			if configs[0].ConfigKey != "ui.default_locale" || configs[0].ConfigValue != "zh-CN" {
+				t.Fatalf("default locale config = %+v", configs[0])
+			}
+		}},
 	}
 
 	for _, tt := range tests {

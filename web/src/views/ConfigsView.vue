@@ -12,6 +12,24 @@
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
+            <span>{{ t('pages.configs.interfaceSettings') }}</span>
+            <el-tag effect="plain">{{ localeLabel(uiForm.default_locale) }}</el-tag>
+          </div>
+        </template>
+        <el-form :model="uiForm" label-width="150px">
+          <el-form-item :label="t('pages.configs.defaultLanguage')">
+            <el-select v-model="uiForm.default_locale" style="width: 180px">
+              <el-option label="中文" value="zh-CN" />
+              <el-option label="English" value="en-US" />
+            </el-select>
+          </el-form-item>
+        </el-form>
+        <el-alert :title="t('pages.configs.defaultLanguageHint')" type="info" :closable="false" show-icon />
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
             <span>{{ t('pages.configs.secPolicy') }}</span>
             <el-tag effect="plain">{{ secPolicySummary }}</el-tag>
           </div>
@@ -90,9 +108,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, CleanupPreview, SystemConfig } from '@/api/types'
-import { useI18n } from '@/i18n'
+import { type Locale, useI18n } from '@/i18n'
 
-const { t } = useI18n()
+const { store, t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
 const previewing = ref(false)
@@ -101,6 +119,7 @@ const cleanupPreview = ref<CleanupPreview | null>(null)
 
 const secForm = reactive({ initial_fetch_days: 30, sync_window_days: 30, max_fetch_count: 300, fetch_full_history: false })
 const systemForm = reactive({ data_retention_days: 30, storage_by_day: false })
+const uiForm = reactive<{ default_locale: Locale }>({ default_locale: 'zh-CN' })
 
 const secRiskHints = computed(() => {
   const hints: Array<{ title: string, description: string, type: 'warning' | 'info' }> = []
@@ -150,6 +169,14 @@ function configValue(configs: SystemConfig[], key: string, fallback: string) {
   return configs.find((item) => item.config_key === key)?.config_value || fallback
 }
 
+function localeValue(value: string): Locale {
+  return value === 'en-US' ? 'en-US' : 'zh-CN'
+}
+
+function localeLabel(value: Locale) {
+  return value === 'en-US' ? 'English' : '中文'
+}
+
 async function load() {
   loading.value = true
   try {
@@ -161,6 +188,7 @@ async function load() {
     secForm.fetch_full_history = configValue(configs, 'sec.fetch_full_history', 'false') === 'true'
     systemForm.data_retention_days = Number(configValue(configs, 'system.data_retention_days', '30'))
     systemForm.storage_by_day = configValue(configs, 'system.storage_by_day', 'false') === 'true'
+    uiForm.default_locale = localeValue(configValue(configs, 'ui.default_locale', 'zh-CN'))
   } finally {
     loading.value = false
   }
@@ -175,8 +203,10 @@ async function save() {
       { key: 'sec.max_fetch_count', value: String(secForm.max_fetch_count), value_type: 'int', category: 'sec', encrypted: false },
       { key: 'sec.fetch_full_history', value: String(secForm.fetch_full_history), value_type: 'bool', category: 'sec', encrypted: false },
       { key: 'system.data_retention_days', value: String(systemForm.data_retention_days), value_type: 'int', category: 'system', encrypted: false },
-      { key: 'system.storage_by_day', value: String(systemForm.storage_by_day), value_type: 'bool', category: 'system', encrypted: false }
+      { key: 'system.storage_by_day', value: String(systemForm.storage_by_day), value_type: 'bool', category: 'system', encrypted: false },
+      { key: 'ui.default_locale', value: uiForm.default_locale, value_type: 'string', category: 'ui', encrypted: false }
     ])
+    store.applyDefaultLocale(uiForm.default_locale)
     ElMessage.success(t('messages.configSaved'))
     cleanupPreview.value = null
     await load()

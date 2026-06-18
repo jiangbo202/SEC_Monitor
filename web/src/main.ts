@@ -15,5 +15,6 @@ app.use(pinia).use(router).use(ElementPlus)
 
 const i18n = useI18nStore(pinia)
 document.documentElement.lang = i18n.locale
+i18n.loadConfiguredDefaultLocale()
 
 app.mount('#app')

@@ -49,6 +49,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "sec.fetch_full_history", Value: "false", ValueType: "bool", Category: "sec"},
 		{Key: "system.data_retention_days", Value: "30", ValueType: "int", Category: "system"},
 		{Key: "system.storage_by_day", Value: "false", ValueType: "bool", Category: "system"},
+		{Key: "ui.default_locale", Value: "zh-CN", ValueType: "string", Category: "ui"},
 	}, "system")
 }
 

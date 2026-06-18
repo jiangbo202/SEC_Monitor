@@ -1,8 +1,11 @@
 import { defineStore } from 'pinia'
+import { apiClient } from '@/api/client'
+import type { ApiResponse, SystemConfig } from '@/api/types'
 
 export type Locale = 'zh-CN' | 'en-US'
 
 const LOCALE_KEY = 'sec-monitor-locale'
+const DEFAULT_LOCALE_CONFIG_KEY = 'ui.default_locale'
 
 const messages = {
   'zh-CN': {
@@ -273,7 +276,10 @@ const messages = {
         summarySecPolicy: '{syncWindow}，{initialWindow}，{max}',
         summaryStorageByDay: '按天分目录',
         summaryContinuousDb: '连续数据库',
-        summaryRetention: '公告保留 {days} 天，{storage}'
+        summaryRetention: '公告保留 {days} 天，{storage}',
+        interfaceSettings: '界面设置',
+        defaultLanguage: '默认语言',
+        defaultLanguageHint: '用于新浏览器或尚未手动选择语言的用户；顶部语言切换会保存为个人偏好。'
       },
       auditLogs: {
         title: '审计日志',
@@ -564,7 +570,10 @@ const messages = {
         summarySecPolicy: '{syncWindow}, {initialWindow}, {max}',
         summaryStorageByDay: 'store by day',
         summaryContinuousDb: 'continuous database',
-        summaryRetention: 'Keep filings for {days} days, {storage}'
+        summaryRetention: 'Keep filings for {days} days, {storage}',
+        interfaceSettings: 'Interface Settings',
+        defaultLanguage: 'Default Language',
+        defaultLanguageHint: 'Used for new browsers or users who have not manually selected a language. The top language switch is saved as a personal preference.'
       },
       auditLogs: {
         title: 'Audit Logs',
@@ -605,13 +614,30 @@ function resolveMessage(tree: MessageTree, key: string): string {
 
 export const useI18nStore = defineStore('i18n', {
   state: () => ({
-    locale: normalizeLocale(localStorage.getItem(LOCALE_KEY))
+    locale: normalizeLocale(localStorage.getItem(LOCALE_KEY)),
+    hasLocalPreference: localStorage.getItem(LOCALE_KEY) !== null
   }),
   actions: {
     setLocale(locale: Locale) {
       this.locale = locale
+      this.hasLocalPreference = true
       localStorage.setItem(LOCALE_KEY, locale)
       document.documentElement.lang = locale
+    },
+    applyDefaultLocale(locale: Locale) {
+      if (this.hasLocalPreference) return
+      this.locale = locale
+      document.documentElement.lang = locale
+    },
+    async loadConfiguredDefaultLocale() {
+      if (this.hasLocalPreference) return
+      try {
+        const res = await apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs', { params: { category: 'ui' } })
+        const locale = res.data.data.find((item) => item.config_key === DEFAULT_LOCALE_CONFIG_KEY)?.config_value
+        this.applyDefaultLocale(normalizeLocale(locale || null))
+      } catch (error) {
+        this.applyDefaultLocale('zh-CN')
+      }
     }
   }
 })
