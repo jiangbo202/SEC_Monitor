@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/net/html/charset"
 )
 
 type FilingQuery struct {
@@ -111,7 +113,9 @@ func (c *HTTPClient) ListCurrentFilings(ctx context.Context, query CurrentFiling
 			return nil, fmt.Errorf("sec current filings status: %d", resp.StatusCode)
 		}
 		var feed atomFeed
-		err = xml.NewDecoder(resp.Body).Decode(&feed)
+		decoder := xml.NewDecoder(resp.Body)
+		decoder.CharsetReader = charset.NewReaderLabel
+		err = decoder.Decode(&feed)
 		resp.Body.Close()
 		if err != nil {
 			return nil, err

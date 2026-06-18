@@ -246,6 +246,26 @@ func TestHTTPClientListCurrentFilingsTableDriven(t *testing.T) {
 			wantLen:    1,
 			body:       `<feed><entry><title>S-1 - Acme Space Inc.</title><link href="https://www.sec.gov/Archives/dup.htm"/><category term="S-1"/></entry></feed>`,
 		},
+		{
+			name:       "decodes sec legacy charset declaration",
+			statusCode: http.StatusOK,
+			query:      CurrentFilingQuery{FormTypes: []string{"S-1"}, Count: 10},
+			wantLen:    1,
+			body: `<?xml version="1.0" encoding="ISO-8859-1"?>
+			<feed>
+				<entry>
+					<title>S-1 - Caf&#233; Robotics Inc. (0000000002) (Filer)</title>
+					<link href="https://www.sec.gov/Archives/edgar/data/2/000000000226000001/cafe-s1.htm"/>
+					<category term="S-1"/>
+					<summary>CIK: 0000000002&lt;br/&gt;Accession Number: 0000000002-26-000001&lt;br/&gt;Filing Date: 2026-06-18</summary>
+				</entry>
+			</feed>`,
+			assert: func(t *testing.T, got []CurrentFilingResult) {
+				if got[0].CompanyName != "Café Robotics Inc." {
+					t.Fatalf("CompanyName = %q, want decoded charset text", got[0].CompanyName)
+				}
+			},
+		},
 		{name: "non success status returns error", statusCode: http.StatusTooManyRequests, body: `<feed/>`, query: CurrentFilingQuery{FormTypes: []string{"S-1"}}, wantErr: true},
 	}
 
