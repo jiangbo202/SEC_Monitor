@@ -123,7 +123,7 @@
           <div v-for="item in failedTargetItems" :key="item.id" class="issue-row">
             <div>
               <strong>{{ item.ticker }}</strong>
-              <span>{{ item.last_sync_error || '同步失败，暂无错误详情' }}</span>
+              <span>{{ item.last_sync_error || t('pages.dashboard.noSyncErrorDetail') }}</span>
             </div>
             <el-button size="small" @click="$router.push(`/targets?ticker=${encodeURIComponent(item.ticker)}`)">{{ t('common.view') }}</el-button>
           </div>
@@ -195,28 +195,28 @@ const healthAlerts = computed(() => {
   const alerts: Array<{ title: string, description: string, type: 'success' | 'warning' | 'error' | 'info' }> = []
   if (failedTargets.value > 0) {
     alerts.push({
-      title: `${failedTargets.value} 个标的同步失败`,
-      description: '进入监控标的页查看错误，或对失败标的单独重试同步。',
+      title: t('pages.dashboard.failedTargetsAlertTitle', { count: failedTargets.value }),
+      description: t('pages.dashboard.failedTargetsAlertDescription'),
       type: 'error'
     })
   }
   if (!latestSync.value) {
-    alerts.push({ title: '还没有同步记录', description: '新增标的后可以手动刷新公告或等待调度执行。', type: 'warning' })
+    alerts.push({ title: t('pages.dashboard.noSyncAlertTitle'), description: t('pages.dashboard.noSyncAlertDescription'), type: 'warning' })
   } else if (latestSyncAgeHours.value >= 6) {
     alerts.push({
-      title: `最近同步已超过 ${latestSyncAgeHours.value} 小时`,
-      description: '建议检查调度任务是否启用，或手动刷新公告。',
+      title: t('pages.dashboard.staleSyncAlertTitle', { hours: latestSyncAgeHours.value }),
+      description: t('pages.dashboard.staleSyncAlertDescription'),
       type: 'warning'
     })
   }
   if (!schedulerEnabled.value) {
-    alerts.push({ title: '调度任务未启用', description: '当前不会自动周期拉取 SEC 公告。', type: 'warning' })
+    alerts.push({ title: t('pages.dashboard.schedulerDisabledTitle'), description: t('pages.dashboard.schedulerDisabledDescription'), type: 'warning' })
   }
   if (!telegramEnabled.value) {
-    alerts.push({ title: 'Telegram 通知未启用', description: '新公告会入库，但不会主动推送提醒。', type: 'info' })
+    alerts.push({ title: t('pages.dashboard.telegramDisabledTitle'), description: t('pages.dashboard.telegramDisabledDescription'), type: 'info' })
   }
   if (alerts.length === 0) {
-    alerts.push({ title: '系统运行正常', description: '同步、调度和通知配置当前没有明显异常。', type: 'success' })
+    alerts.push({ title: t('pages.dashboard.healthyTitle'), description: t('pages.dashboard.healthyDescription'), type: 'success' })
   }
   return alerts.slice(0, 3)
 })
@@ -292,7 +292,7 @@ async function refreshFilings() {
   refreshing.value = true
   try {
     const res = await apiClient.post<ApiResponse<{ new_filings: number }>>('/filings/refresh')
-    ElMessage.success(`新增 ${res.data.data.new_filings} 条公告`)
+    ElMessage.success(t('messages.newFilingsAdded', { count: res.data.data.new_filings }))
     await load()
   } finally {
     refreshing.value = false

@@ -8,16 +8,16 @@
       <el-table-column prop="operated_at" :label="t('common.time')" width="170">
         <template #default="{ row }">{{ formatDateTime(row.operated_at) }}</template>
       </el-table-column>
-      <el-table-column prop="operator" label="用户" width="110" show-overflow-tooltip />
+      <el-table-column prop="operator" :label="t('common.user')" width="110" show-overflow-tooltip />
       <el-table-column prop="action" :label="t('common.actions')" width="130">
         <template #default="{ row }"><el-tag :type="auditActionType(row.action)" effect="plain">{{ auditActionLabel(row.action) }}</el-tag></template>
       </el-table-column>
-      <el-table-column prop="object_type" label="对象" width="130">
+      <el-table-column prop="object_type" :label="t('pages.auditLogs.object')" width="130">
         <template #default="{ row }"><el-tag type="info" effect="plain">{{ row.object_type }}</el-tag></template>
       </el-table-column>
-      <el-table-column prop="object_id" label="对象 ID" width="100" show-overflow-tooltip />
-      <el-table-column prop="before_data" label="操作前" min-width="220" show-overflow-tooltip />
-      <el-table-column prop="after_data" label="操作后" min-width="220" show-overflow-tooltip />
+      <el-table-column prop="object_id" :label="t('pages.auditLogs.objectId')" width="100" show-overflow-tooltip />
+      <el-table-column prop="before_data" :label="t('pages.auditLogs.before')" min-width="220" show-overflow-tooltip />
+      <el-table-column prop="after_data" :label="t('pages.auditLogs.after')" min-width="220" show-overflow-tooltip />
     </el-table>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />
   </section>

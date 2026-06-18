@@ -3,7 +3,7 @@
     <div class="page-header">
       <h1>{{ t('pages.syncRuns.title') }}</h1>
       <div class="page-actions">
-        <el-button :disabled="!selectedRunFailedDetails.length" :loading="retryingAll" type="primary" @click="retrySelectedFailures">重试当前失败</el-button>
+        <el-button :disabled="!selectedRunFailedDetails.length" :loading="retryingAll" type="primary" @click="retrySelectedFailures">{{ t('pages.syncRuns.retryCurrentFailures') }}</el-button>
         <el-button :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
       </div>
     </div>
@@ -32,7 +32,7 @@
             <el-table-column prop="duration_ms" :label="t('common.duration')" width="100">
               <template #default="{ row: detail }">{{ formatDuration(detail.duration_ms) }}</template>
             </el-table-column>
-            <el-table-column prop="started_at" label="开始" width="170">
+            <el-table-column prop="started_at" :label="t('common.startTime')" width="170">
               <template #default="{ row: detail }">{{ formatDateTime(detail.started_at) }}</template>
             </el-table-column>
             <el-table-column prop="error_message" :label="t('common.error')" min-width="260" show-overflow-tooltip />
@@ -45,14 +45,14 @@
                   :loading="retryingTargetId === detail.target_id"
                   @click="retryTarget(row, detail)"
                 >
-                  重试
+                  {{ t('common.retry') }}
                 </el-button>
-                <el-button v-else size="small" @click="$router.push(`/targets?ticker=${encodeURIComponent(detail.ticker)}`)">标的</el-button>
+                <el-button v-else size="small" @click="$router.push(`/targets?ticker=${encodeURIComponent(detail.ticker)}`)">{{ t('common.target') }}</el-button>
                 <el-dropdown v-if="detail.status === 'failed'" trigger="click" @command="(command: string) => handleDetailCommand(command, detail)">
                   <el-button size="small" :icon="MoreFilled" />
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item command="target">查看标的</el-dropdown-item>
+                      <el-dropdown-item command="target">{{ t('pages.syncRuns.viewTarget') }}</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
@@ -66,15 +66,15 @@
           <el-tag class="status-tag" :type="syncStatusType(row.status)" effect="plain">{{ syncStatusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="trigger" label="来源" width="100">
+      <el-table-column prop="trigger" :label="t('common.source')" width="100">
         <template #default="{ row }">
           <el-tag type="info" effect="plain">{{ triggerLabel(row.trigger) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="started_at" label="开始时间" width="170">
+      <el-table-column prop="started_at" :label="t('common.startTime')" width="170">
         <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
       </el-table-column>
-      <el-table-column prop="finished_at" label="结束时间" width="170">
+      <el-table-column prop="finished_at" :label="t('common.finishTime')" width="170">
         <template #default="{ row }">{{ formatDateTime(row.finished_at) }}</template>
       </el-table-column>
       <el-table-column prop="targets_checked" :label="t('common.target')" width="80" align="right" />
@@ -158,17 +158,17 @@ function syncStatusType(status?: string) {
 }
 
 function syncStatusLabel(status?: string) {
-  if (status === 'success') return '成功'
-  if (status === 'partial') return '部分成功'
-  if (status === 'failed') return '失败'
-  if (status === 'running') return '运行中'
+  if (status === 'success') return t('status.success')
+  if (status === 'partial') return t('status.partial')
+  if (status === 'failed') return t('status.failed')
+  if (status === 'running') return t('status.running')
   return '-'
 }
 
 function triggerLabel(trigger?: string) {
-  if (trigger === 'manual') return '手动'
-  if (trigger === 'scheduler') return '调度'
-  if (trigger === 'target') return '单标的'
+  if (trigger === 'manual') return t('pages.syncRuns.triggers.manual')
+  if (trigger === 'scheduler') return t('pages.syncRuns.triggers.scheduler')
+  if (trigger === 'target') return t('pages.syncRuns.triggers.target')
   return trigger || '-'
 }
 
@@ -182,7 +182,7 @@ async function retryTarget(run: SyncRun, detail: SyncRunDetail) {
   retryingTargetId.value = detail.target_id
   try {
     const res = await apiClient.post<ApiResponse<{ new_filings: number }>>(`/watch-targets/${detail.target_id}/sync`)
-    ElMessage.success(`${detail.ticker} 重试完成，新增 ${res.data.data.new_filings} 条`)
+    ElMessage.success(t('messages.retryDone', { ticker: detail.ticker, count: res.data.data.new_filings }))
     const nextDetails = { ...details.value }
     delete nextDetails[run.id]
     details.value = nextDetails
@@ -202,7 +202,7 @@ async function retrySelectedFailures() {
       const res = await apiClient.post<ApiResponse<{ new_filings: number }>>(`/watch-targets/${detail.target_id}/sync`)
       totalNew += res.data.data.new_filings
     }
-    ElMessage.success(`已重试 ${selectedRunFailedDetails.value.length} 个失败标的，新增 ${totalNew} 条`)
+    ElMessage.success(t('messages.retryAllDone', { targets: selectedRunFailedDetails.value.length, count: totalNew }))
     const run = currentRun.value
     const nextDetails = { ...details.value }
     delete nextDetails[run.id]

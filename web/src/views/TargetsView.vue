@@ -208,8 +208,10 @@ const policySummary = computed(() => {
   const syncWindow = configValue('sec.sync_window_days', '30')
   const max = configValue('sec.max_fetch_count', '300')
   const full = configValue('sec.fetch_full_history', 'false') === 'true'
-  const syncText = syncWindow === '0' ? '每次不限制时间' : `每次最近 ${syncWindow} 天`
-  return `${syncText}，首次 ${full ? '完整历史' : `最近 ${days} 天`}，最多 ${max === '0' ? '不限制' : `${max} 条`}`
+  const syncText = syncWindow === '0' ? t('pages.targets.policyEveryUnlimited') : t('pages.targets.policyEveryDays', { days: syncWindow })
+  const initialText = full ? t('pages.targets.policyInitialFull') : t('pages.targets.policyInitialDays', { days })
+  const maxText = max === '0' ? t('pages.targets.policyMaxUnlimited') : t('pages.targets.policyMaxCount', { count: max })
+  return t('pages.targets.policySummary', { syncWindow: syncText, initialWindow: initialText, max: maxText })
 })
 
 async function load() {
@@ -245,9 +247,9 @@ async function lookupTicker() {
     if (!form.target_type) {
       form.target_type = res.data.data.target_type || 'stock'
     }
-    ElMessage.success('已带出公司名称和 CIK')
+    ElMessage.success(t('messages.lookupDone'))
   } catch (error) {
-    ElMessage.warning('未能自动带出信息，请检查 Ticker 或手动填写')
+    ElMessage.warning(t('messages.lookupFailed'))
   } finally {
     lookingUp.value = false
   }
@@ -270,7 +272,7 @@ async function save() {
       createdTarget = res.data.data
     }
     dialogVisible.value = false
-    ElMessage.success('已保存')
+    ElMessage.success(t('messages.saved'))
     await load()
     if (createdTarget) {
       await offerImmediateSync(createdTarget)
@@ -310,7 +312,7 @@ async function syncTarget(row: WatchTarget) {
   syncingId.value = row.id
   try {
     const res = await apiClient.post<ApiResponse<{ new_filings: number, failed_targets: number }>>(`/watch-targets/${row.id}/sync`)
-    ElMessage.success(`同步完成，新增 ${res.data.data.new_filings} 条`)
+    ElMessage.success(t('messages.syncDone', { count: res.data.data.new_filings }))
     await load()
     if (detailVisible.value && detailTarget.value?.id === row.id) {
       const updated = rows.value.find((item) => item.id === row.id)
@@ -324,9 +326,9 @@ async function syncTarget(row: WatchTarget) {
 
 async function offerImmediateSync(target: WatchTarget) {
   try {
-    await ElMessageBox.confirm(`是否现在同步 ${target.ticker} 的 SEC 公告？`, '新增标的已保存', {
-      confirmButtonText: '立即同步',
-      cancelButtonText: '稍后',
+    await ElMessageBox.confirm(t('messages.offerSync', { ticker: target.ticker }), t('messages.targetSavedTitle'), {
+      confirmButtonText: t('messages.syncNow'),
+      cancelButtonText: t('messages.later'),
       type: 'info'
     })
   } catch (error) {
@@ -361,7 +363,7 @@ async function loadTargetDetailData(row: WatchTarget) {
 }
 
 async function remove(row: WatchTarget) {
-  await ElMessageBox.confirm(`删除 ${row.ticker}?`, '确认删除', { type: 'warning' })
+  await ElMessageBox.confirm(t('messages.confirmDeleteTarget', { ticker: row.ticker }), t('messages.confirmDeleteTitle'), { type: 'warning' })
   await apiClient.delete(`/watch-targets/${row.id}`)
   await load()
 }
@@ -406,15 +408,15 @@ function formatDuration(value: number) {
 }
 
 function syncIssueTitle(target: WatchTarget) {
-  return `${target.ticker} 最近同步失败`
+  return t('pages.targets.syncIssueTitle', { ticker: target.ticker })
 }
 
 function syncIssueSuggestion(target: WatchTarget) {
   const message = target.last_sync_error || ''
-  if (message.toLowerCase().includes('cik')) return '建议检查 Ticker 是否正确，或手动补充 CIK 后重试。'
-  if (message.toLowerCase().includes('timeout') || message.includes('deadline')) return '看起来像 SEC 请求超时，可以稍后重试或降低最大拉取条数。'
-  if (message.toLowerCase().includes('telegram')) return '公告可能已入库，但通知失败；请检查 Telegram 配置。'
-  return message || '可先重试该标的；如果继续失败，请查看同步历史中的错误明细。'
+  if (message.toLowerCase().includes('cik')) return t('pages.targets.syncIssueCik')
+  if (message.toLowerCase().includes('timeout') || message.includes('deadline')) return t('pages.targets.syncIssueTimeout')
+  if (message.toLowerCase().includes('telegram')) return t('pages.targets.syncIssueTelegram')
+  return message || t('pages.targets.syncIssueDefault')
 }
 
 onMounted(() => {

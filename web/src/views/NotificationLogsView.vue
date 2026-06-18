@@ -9,7 +9,7 @@
         <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
       </el-table-column>
       <el-table-column prop="filing_id" label="Filing ID" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="channel" label="渠道" width="100">
+      <el-table-column prop="channel" :label="t('pages.notificationLogs.channel')" width="100">
         <template #default="{ row }"><el-tag type="info" effect="plain">{{ row.channel }}</el-tag></template>
       </el-table-column>
       <el-table-column prop="target" :label="t('common.target')" min-width="150" show-overflow-tooltip />
@@ -18,7 +18,7 @@
           <el-tag class="status-tag" :type="notificationStatusType(row.status)" effect="plain">{{ notificationStatusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="retry_count" label="重试" width="80" align="right" />
+      <el-table-column prop="retry_count" :label="t('common.retryCount')" width="80" align="right" />
       <el-table-column prop="error_message" :label="t('common.error')" min-width="220" show-overflow-tooltip />
     </el-table>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />

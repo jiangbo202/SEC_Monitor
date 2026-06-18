@@ -7,13 +7,13 @@
     <el-card shadow="never" class="form-card">
       <el-form :model="form" label-width="120px">
         <el-form-item label="Bot Token">
-          <el-input v-model="form.bot_token" show-password placeholder="输入新 Token；保留脱敏值则不更新" />
+          <el-input v-model="form.bot_token" show-password :placeholder="t('pages.telegram.tokenPlaceholder')" />
         </el-form-item>
         <el-form-item label="Chat ID"><el-input v-model="form.chat_id" /></el-form-item>
-        <el-form-item label="启用通知"><el-switch v-model="form.enabled" /></el-form-item>
+        <el-form-item :label="t('pages.telegram.enableNotification')"><el-switch v-model="form.enabled" /></el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</el-button>
-          <el-button :loading="testing" @click="testSend">测试发送</el-button>
+          <el-button :loading="testing" @click="testSend">{{ t('pages.telegram.testSend') }}</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -51,7 +51,7 @@ async function save() {
   saving.value = true
   try {
     await apiClient.put('/telegram/config', form)
-    ElMessage.success('Telegram 配置已保存')
+    ElMessage.success(t('messages.telegramSaved'))
     await load()
   } finally {
     saving.value = false
@@ -62,9 +62,9 @@ async function testSend() {
   testing.value = true
   try {
     await apiClient.post('/telegram/test')
-    ElMessage.success('测试消息已发送')
+    ElMessage.success(t('messages.telegramTestSent'))
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.message || '测试发送失败，请检查 Bot Token 和 Chat ID')
+    ElMessage.error(error?.response?.data?.message || t('messages.telegramTestFailed'))
   } finally {
     testing.value = false
   }
