@@ -19,6 +19,8 @@ const messages = {
       dashboard: '总览',
       targets: '监控标的',
       filings: 'SEC 公告',
+      eventRadar: '重大事件',
+      insiderTrading: '内幕交易',
       automation: '自动化',
       syncRuns: '同步历史',
       scheduler: '调度任务',
@@ -68,6 +70,7 @@ const messages = {
       sync: '同步',
       syncTime: '同步时间',
       target: '标的',
+      targetGroup: '分组',
       task: '任务',
       time: '时间',
       title: '标题',
@@ -91,6 +94,8 @@ const messages = {
     },
     messages: {
       saved: '已保存',
+      savedViewAdded: '筛选视图已保存',
+      savedViewDeleted: '筛选视图已删除',
       configSaved: '配置已保存',
       onboardingDone: '启动向导已完成',
       newFilingsAdded: '新增 {count} 条公告',
@@ -179,6 +184,7 @@ const messages = {
         enableShort: '开',
         disableShort: '关',
         syncTarget: '同步该标的',
+        groupPlaceholder: '例如 EV、AI、ETF',
         syncStatus: '同步状态',
         lastSync: '上次同步',
         syncError: '同步错误',
@@ -214,6 +220,12 @@ const messages = {
         typeHelpTitle: 'SEC Filing 类型说明',
         typeName: '名称',
         typeDescription: '说明',
+        typeWhy: '为什么重要',
+        typeRead: '通常看什么',
+        saveView: '保存视图',
+        savedViews: '保存视图',
+        viewName: '视图名称',
+        deleteView: '删除视图',
         important: '重点',
         watch: '关注',
         normal: '普通',
@@ -225,6 +237,18 @@ const messages = {
           insiderTrading: '内幕交易',
           financingS1: '融资 S-1'
         }
+      },
+      eventRadar: {
+        title: '重大事件雷达',
+        subtitle: '聚合 8-K、S-1、S-3、424B、13D 等可能影响股价或融资稀释的公告。',
+        empty: '暂无重大事件公告',
+        filterMajor: '重大事件类型'
+      },
+      insiderTrading: {
+        title: 'Insider Trading',
+        subtitle: '聚合 Form 3/4/5，快速查看董事、高管和大股东持股变动披露。',
+        empty: '暂无内幕交易公告',
+        formType: '表单类型'
       },
       syncRuns: {
         title: '同步历史',
@@ -366,6 +390,8 @@ const messages = {
       dashboard: 'Dashboard',
       targets: 'Watch Targets',
       filings: 'SEC Filings',
+      eventRadar: 'Major Events',
+      insiderTrading: 'Insider Trading',
       automation: 'Automation',
       syncRuns: 'Sync History',
       scheduler: 'Scheduler',
@@ -415,6 +441,7 @@ const messages = {
       sync: 'Sync',
       syncTime: 'Synced At',
       target: 'Target',
+      targetGroup: 'Group',
       task: 'Task',
       time: 'Time',
       title: 'Title',
@@ -438,6 +465,8 @@ const messages = {
     },
     messages: {
       saved: 'Saved',
+      savedViewAdded: 'Saved view added',
+      savedViewDeleted: 'Saved view deleted',
       configSaved: 'Settings saved',
       onboardingDone: 'Onboarding completed',
       newFilingsAdded: '{count} new filings added',
@@ -526,6 +555,7 @@ const messages = {
         enableShort: 'On',
         disableShort: 'Off',
         syncTarget: 'Sync Target',
+        groupPlaceholder: 'e.g. EV, AI, ETF',
         syncStatus: 'Sync Status',
         lastSync: 'Last Sync',
         syncError: 'Sync Error',
@@ -561,6 +591,12 @@ const messages = {
         typeHelpTitle: 'SEC Filing Type Guide',
         typeName: 'Name',
         typeDescription: 'Description',
+        typeWhy: 'Why It Matters',
+        typeRead: 'What To Check',
+        saveView: 'Save View',
+        savedViews: 'Saved Views',
+        viewName: 'View Name',
+        deleteView: 'Delete View',
         important: 'Important',
         watch: 'Watch',
         normal: 'Normal',
@@ -572,6 +608,18 @@ const messages = {
           insiderTrading: 'Insider Trading',
           financingS1: 'Financing S-1'
         }
+      },
+      eventRadar: {
+        title: 'Major Event Radar',
+        subtitle: 'Track 8-K, S-1, S-3, 424B, 13D, and other filings that may affect price, financing, or dilution.',
+        empty: 'No major event filings',
+        filterMajor: 'Major Event Types'
+      },
+      insiderTrading: {
+        title: 'Insider Trading',
+        subtitle: 'Track Forms 3/4/5 for director, officer, and major shareholder ownership changes.',
+        empty: 'No insider trading filings',
+        formType: 'Form Type'
       },
       syncRuns: {
         title: 'Sync History',

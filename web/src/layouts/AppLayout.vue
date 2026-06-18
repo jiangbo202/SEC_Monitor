@@ -10,6 +10,8 @@
         <el-menu-item index="/"><el-icon><DataBoard /></el-icon><span>{{ t('nav.dashboard') }}</span></el-menu-item>
         <el-menu-item index="/targets"><el-icon><Aim /></el-icon><span>{{ t('nav.targets') }}</span></el-menu-item>
         <el-menu-item index="/filings"><el-icon><Document /></el-icon><span>{{ t('nav.filings') }}</span></el-menu-item>
+        <el-menu-item index="/event-radar"><el-icon><Warning /></el-icon><span>{{ t('nav.eventRadar') }}</span></el-menu-item>
+        <el-menu-item index="/insider-trading"><el-icon><UserFilled /></el-icon><span>{{ t('nav.insiderTrading') }}</span></el-menu-item>
 
         <div class="nav-section-label">{{ t('nav.automation') }}</div>
         <el-menu-item index="/sync-runs"><el-icon><DataAnalysis /></el-icon><span>{{ t('nav.syncRuns') }}</span></el-menu-item>
@@ -41,7 +43,7 @@
 </template>
 
 <script setup lang="ts">
-import { Aim, Bell, DataAnalysis, DataBoard, Document, FirstAidKit, Monitor, Notification, Setting, Tickets, Timer } from '@element-plus/icons-vue'
+import { Aim, Bell, DataAnalysis, DataBoard, Document, FirstAidKit, Monitor, Notification, Setting, Tickets, Timer, UserFilled, Warning } from '@element-plus/icons-vue'
 import { useI18n } from '@/i18n'
 
 const { store, t } = useI18n()

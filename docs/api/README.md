@@ -25,6 +25,15 @@ Error response:
 - `POST /watch-targets/:id/sync`
 - `GET /watch-targets/:id/sync-details`
 
+Query params:
+
+- `ticker`
+- `status`
+- `target_type`
+- `group`
+- `page`
+- `page_size`
+
 ## SEC Filings
 
 - `GET /filings`

@@ -18,6 +18,7 @@ export interface WatchTarget {
   company_name: string
   cik: string
   target_type: string
+  group?: string
   status: string
   last_sync_at?: string | null
   last_sync_status?: string
@@ -32,6 +33,7 @@ export interface TickerLookup {
   cik: string
   company_name: string
   target_type: string
+  group?: string
 }
 
 export interface Filing {

@@ -64,6 +64,7 @@ func (h *AppHandler) ListWatchTargets(c *gin.Context) {
 		Ticker:     c.Query("ticker"),
 		Status:     c.Query("status"),
 		TargetType: c.Query("target_type"),
+		Group:      c.Query("group"),
 		Page:       page,
 		PageSize:   pageSize,
 	})
@@ -508,7 +509,7 @@ func (h *AppHandler) ExportTargetsCSV(c *gin.Context) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="sec-monitor-targets.csv"`)
 	writer := csv.NewWriter(c.Writer)
-	_ = writer.Write([]string{"ticker", "company_name", "cik", "target_type", "status", "last_sync_at", "last_sync_status", "last_new_filings"})
+	_ = writer.Write([]string{"ticker", "company_name", "cik", "target_type", "group", "status", "last_sync_at", "last_sync_status", "last_new_filings"})
 	for _, target := range targets {
 		lastSyncAt := ""
 		if target.LastSyncAt != nil {
@@ -519,6 +520,7 @@ func (h *AppHandler) ExportTargetsCSV(c *gin.Context) {
 			target.CompanyName,
 			target.CIK,
 			target.TargetType,
+			target.Group,
 			target.Status,
 			lastSyncAt,
 			target.LastSyncStatus,

@@ -6,6 +6,7 @@
     </div>
     <el-form :inline="true" :model="filters" class="toolbar">
       <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
+      <el-form-item :label="t('common.targetGroup')"><el-input v-model="filters.group" clearable style="width: 150px" /></el-form-item>
       <el-form-item :label="t('common.status')">
         <el-select v-model="filters.status" clearable style="width: 140px">
           <el-option :label="t('common.enabled')" value="enabled" />
@@ -25,6 +26,12 @@
       <el-table-column prop="target_type" :label="t('common.type')" width="90">
         <template #default="{ row }">
           <el-tag :type="row.target_type === 'etf' ? 'warning' : 'info'" effect="plain">{{ row.target_type === 'etf' ? 'ETF' : 'Stock' }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="group" :label="t('common.targetGroup')" width="120">
+        <template #default="{ row }">
+          <el-tag v-if="row.group" effect="plain">{{ row.group }}</el-tag>
+          <span v-else>-</span>
         </template>
       </el-table-column>
       <el-table-column prop="status" :label="t('common.enabled')" width="90">
@@ -86,6 +93,9 @@
             <el-option label="ETF" value="etf" />
           </el-select>
         </el-form-item>
+        <el-form-item :label="t('common.targetGroup')">
+          <el-input v-model="form.group" :placeholder="t('pages.targets.groupPlaceholder')" />
+        </el-form-item>
         <el-form-item :label="t('common.status')">
           <el-select v-model="form.status">
             <el-option :label="t('common.enabled')" value="enabled" />
@@ -114,6 +124,7 @@
             <el-descriptions-item :label="t('common.company')">{{ detailTarget.company_name }}</el-descriptions-item>
             <el-descriptions-item label="CIK">{{ detailTarget.cik || '-' }}</el-descriptions-item>
             <el-descriptions-item :label="t('common.type')">{{ detailTarget.target_type }}</el-descriptions-item>
+            <el-descriptions-item :label="t('common.targetGroup')">{{ detailTarget.group || '-' }}</el-descriptions-item>
             <el-descriptions-item :label="t('common.status')">
               <el-tag :type="detailTarget.status === 'enabled' ? 'success' : 'info'" effect="plain">{{ targetStatusLabel(detailTarget.status) }}</el-tag>
             </el-descriptions-item>
@@ -200,8 +211,8 @@ const detailFilings = ref<Filing[]>([])
 const detailSyncDetails = ref<SyncRunDetail[]>([])
 const systemConfigs = ref<SystemConfig[]>([])
 const editingId = ref<number | null>(null)
-const filters = reactive({ ticker: '', status: '' })
-const form = reactive({ ticker: '', company_name: '', cik: '', target_type: 'stock', status: 'enabled' })
+const filters = reactive({ ticker: '', status: '', group: '' })
+const form = reactive({ ticker: '', company_name: '', cik: '', target_type: 'stock', group: '', status: 'enabled' })
 
 const policySummary = computed(() => {
   const days = configValue('sec.initial_fetch_days', '30')
@@ -231,7 +242,7 @@ function configValue(key: string, fallback: string) {
 
 function openCreate() {
   editingId.value = null
-  Object.assign(form, { ticker: '', company_name: '', cik: '', target_type: 'stock', status: 'enabled' })
+  Object.assign(form, { ticker: '', company_name: '', cik: '', target_type: 'stock', group: '', status: 'enabled' })
   dialogVisible.value = true
 }
 

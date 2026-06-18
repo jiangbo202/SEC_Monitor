@@ -8,6 +8,7 @@ type WatchTarget struct {
 	CompanyName    string     `gorm:"size:255;not null" json:"company_name"`
 	CIK            string     `gorm:"size:32;index" json:"cik"`
 	TargetType     string     `gorm:"size:32;not null;index" json:"target_type"`
+	Group          string     `gorm:"size:64;index" json:"group"`
 	Status         string     `gorm:"size:32;not null;index" json:"status"`
 	LastSyncAt     *time.Time `json:"last_sync_at"`
 	LastSyncStatus string     `gorm:"size:32;index" json:"last_sync_status"`

@@ -102,6 +102,7 @@ func TestWatchTargetServiceCreatesListsUpdatesAndAuditsTargets(t *testing.T) {
 		CompanyName: "Apple Inc.",
 		CIK:         "0000320193",
 		TargetType:  "stock",
+		Group:       "EV",
 		Status:      "enabled",
 	}, "tester")
 	if err != nil {
@@ -109,6 +110,9 @@ func TestWatchTargetServiceCreatesListsUpdatesAndAuditsTargets(t *testing.T) {
 	}
 	if created.Ticker != "AAPL" {
 		t.Fatalf("ticker normalized = %q, want AAPL", created.Ticker)
+	}
+	if created.Group != "EV" {
+		t.Fatalf("group = %q, want EV", created.Group)
 	}
 
 	updated, err := svc.SetStatus(context.Background(), created.ID, "disabled", "tester")
@@ -125,6 +129,13 @@ func TestWatchTargetServiceCreatesListsUpdatesAndAuditsTargets(t *testing.T) {
 	}
 	if page.Total != 1 || len(page.Items) != 1 {
 		t.Fatalf("target page total=%d len=%d, want one target", page.Total, len(page.Items))
+	}
+	groupPage, err := svc.List(context.Background(), WatchTargetFilter{Group: "EV", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("list target group: %v", err)
+	}
+	if groupPage.Total != 1 {
+		t.Fatalf("group page total = %d, want 1", groupPage.Total)
 	}
 
 	logs, err := audit.List(context.Background(), AuditLogFilter{Page: 1, PageSize: 10})

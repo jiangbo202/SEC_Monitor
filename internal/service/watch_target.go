@@ -21,6 +21,7 @@ type WatchTargetInput struct {
 	CompanyName string `json:"company_name"`
 	CIK         string `json:"cik"`
 	TargetType  string `json:"target_type"`
+	Group       string `json:"group"`
 	Status      string `json:"status"`
 }
 
@@ -28,6 +29,7 @@ type WatchTargetFilter struct {
 	Ticker     string
 	Status     string
 	TargetType string
+	Group      string
 	Page       int
 	PageSize   int
 }
@@ -67,6 +69,7 @@ func (s *WatchTargetService) Update(ctx context.Context, id uint, input WatchTar
 			"company_name": next.CompanyName,
 			"cik":          next.CIK,
 			"target_type":  next.TargetType,
+			"group":        next.Group,
 			"status":       next.Status,
 		}).Error; err != nil {
 			return err
@@ -135,6 +138,9 @@ func (s *WatchTargetService) List(ctx context.Context, filter WatchTargetFilter)
 	if filter.TargetType != "" {
 		query = query.Where("target_type = ?", strings.ToLower(strings.TrimSpace(filter.TargetType)))
 	}
+	if filter.Group != "" {
+		query = query.Where("`group` = ?", strings.TrimSpace(filter.Group))
+	}
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -171,6 +177,7 @@ func (input WatchTargetInput) toModel() (model.WatchTarget, error) {
 		CompanyName: companyName,
 		CIK:         strings.TrimSpace(input.CIK),
 		TargetType:  targetType,
+		Group:       strings.TrimSpace(input.Group),
 		Status:      status,
 	}, nil
 }

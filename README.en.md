@@ -15,9 +15,12 @@ SEC Monitor is a local-first Web app for monitoring SEC EDGAR filings for US sto
 
 ## Features
 
-- Watch target management with ticker lookup, enable/disable, and per-target sync status.
+- Watch target management with ticker lookup, groups, enable/disable, and per-target sync status.
 - SEC filing refresh with deduplication, retry, initial fetch day limit, max fetch count, and optional full-history archive fetch.
 - SEC filing list with filters, pagination, sortable filing date, publish time, sync time, ticker, and filing type.
+- Saved filing views stored locally in the browser.
+- Major Event Radar for 8-K, S-1, S-3, 424B, 13D, and other high-signal filings.
+- Insider Trading page for Form 3/4/5 ownership-change disclosures.
 - Sync history page with status, trigger source, checked targets, new filings, failed targets, and error messages.
 - Dashboard overview for monitored targets, recent filings, sync health, and notification status.
 - Telegram notification settings, test sending, retries, and notification logs.

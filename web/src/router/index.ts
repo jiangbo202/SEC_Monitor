@@ -4,6 +4,8 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import DashboardView from '@/views/DashboardView.vue'
 import TargetsView from '@/views/TargetsView.vue'
 import FilingsView from '@/views/FilingsView.vue'
+import EventRadarView from '@/views/EventRadarView.vue'
+import InsiderTradingView from '@/views/InsiderTradingView.vue'
 import SyncRunsView from '@/views/SyncRunsView.vue'
 import SchedulerView from '@/views/SchedulerView.vue'
 import TelegramView from '@/views/TelegramView.vue'
@@ -22,6 +24,8 @@ const router = createRouter({
         { path: '', name: 'dashboard', component: DashboardView },
         { path: 'targets', name: 'targets', component: TargetsView },
         { path: 'filings', name: 'filings', component: FilingsView },
+        { path: 'event-radar', name: 'event-radar', component: EventRadarView },
+        { path: 'insider-trading', name: 'insider-trading', component: InsiderTradingView },
         { path: 'sync-runs', name: 'sync-runs', component: SyncRunsView },
         { path: 'scheduler', name: 'scheduler', component: SchedulerView },
         { path: 'telegram', name: 'telegram', component: TelegramView },
