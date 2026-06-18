@@ -2,7 +2,7 @@
 
 简体中文 | [English](./README.en.md)
 
-SEC Monitor 是一个本地优先的 Web 应用，用于监控美股和 ETF 的 SEC EDGAR 公告。
+SEC Monitor 是一个本地优先的 SEC 情报监控系统，用于跟踪美股和 ETF 公告、IPO 生命周期、重大事件、内幕交易披露和 Telegram 通知。
 
 > AI 生成 / AI 辅助项目：本仓库由 AI 编程代理协助构建，并由人工反复审查和迭代。请把它视为开源工具，不构成投资建议，也不是生产级合规系统。
 

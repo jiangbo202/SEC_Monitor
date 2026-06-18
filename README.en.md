@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | English
 
-SEC Monitor is a local-first Web app for monitoring SEC EDGAR filings for US stocks and ETFs.
+SEC Monitor is a local-first SEC intelligence monitoring system for tracking US stock and ETF filings, IPO lifecycles, major events, insider trading disclosures, and Telegram alerts.
 
 > AI-generated / AI-assisted project: this repository was built with help from AI coding agents and reviewed iteratively by a human operator. Treat it as an open-source utility, not financial advice or a production compliance system.
 
