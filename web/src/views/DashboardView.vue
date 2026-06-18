@@ -11,6 +11,24 @@
       </div>
     </div>
 
+    <el-dialog v-model="onboardingVisible" :title="t('pages.onboarding.title')" width="720px">
+      <p class="page-subtitle">{{ t('pages.onboarding.description') }}</p>
+      <el-steps direction="vertical" :active="onboardingActiveStep" class="onboarding-steps">
+        <el-step :title="t('pages.onboarding.userAgent')" :description="t('pages.onboarding.userAgentHint')" />
+        <el-step :title="t('pages.onboarding.target')" :description="t('pages.onboarding.targetHint')" />
+        <el-step :title="t('pages.onboarding.telegram')" :description="t('pages.onboarding.telegramHint')" />
+        <el-step :title="t('pages.onboarding.sync')" :description="t('pages.onboarding.syncHint')" />
+      </el-steps>
+      <template #footer>
+        <el-button @click="completeOnboarding">{{ t('pages.onboarding.skip') }}</el-button>
+        <el-button @click="$router.push('/configs')">{{ t('pages.onboarding.goConfigs') }}</el-button>
+        <el-button @click="$router.push('/targets')">{{ t('pages.onboarding.addTarget') }}</el-button>
+        <el-button @click="$router.push('/telegram')">{{ t('pages.onboarding.goTelegram') }}</el-button>
+        <el-button type="primary" :loading="refreshing" @click="refreshFilings">{{ t('pages.onboarding.refreshFilings') }}</el-button>
+        <el-button type="success" @click="completeOnboarding">{{ t('pages.onboarding.finish') }}</el-button>
+      </template>
+    </el-dialog>
+
     <div class="health-alert-grid">
       <el-alert
         v-for="item in healthAlerts"
@@ -183,6 +201,13 @@ const failedTargets = ref(0)
 const failedTargetItems = ref<WatchTarget[]>([])
 const telegramEnabled = ref(false)
 const schedulerEnabled = ref(false)
+const onboardingVisible = ref(false)
+const onboardingActiveStep = computed(() => {
+  if (targetTotal.value === 0) return 1
+  if (!telegramEnabled.value) return 2
+  if (!latestSync.value) return 3
+  return 4
+})
 
 const metrics = computed(() => [
   { label: t('nav.targets'), value: targetTotal.value, hint: t('pages.dashboard.enabledTargets') + ` ${enabledTargetTotal.value}`, icon: Aim },
@@ -256,14 +281,15 @@ const notificationRateType = computed(() => {
 async function load() {
   loading.value = true
   try {
-    const [targets, enabledTargets, filings, syncRuns, notifications, telegramConfigs, taskConfigs] = await Promise.all([
+    const [targets, enabledTargets, filings, syncRuns, notifications, telegramConfigs, taskConfigs, uiConfigs] = await Promise.all([
       apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { page: 1, page_size: 10 } }),
       apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { status: 'enabled', page: 1, page_size: 200 } }),
       apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { page: 1, page_size: 100, sort_by: 'pulled_at', sort_order: 'desc' } }),
       apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { page: 1, page_size: 1 } }),
       apiClient.get<ApiResponse<PageResult<NotificationLog>>>('/notification-logs', { params: { page: 1, page_size: 5 } }),
       apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config'),
-      apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs')
+      apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs'),
+      apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs', { params: { category: 'ui' } })
     ])
     targetTotal.value = targets.data.data.total
     enabledTargetTotal.value = enabledTargets.data.data.total
@@ -279,9 +305,18 @@ async function load() {
     failedTargetItems.value = enabledTargets.data.data.items.filter((item) => item.last_sync_status === 'failed').slice(0, 5)
     telegramEnabled.value = configValue(telegramConfigs.data.data, 'telegram.enabled') === 'true'
     schedulerEnabled.value = taskConfigs.data.data.some((item) => item.enabled)
+    onboardingVisible.value = configValue(uiConfigs.data.data, 'ui.onboarding_completed') !== 'true'
   } finally {
     loading.value = false
   }
+}
+
+async function completeOnboarding() {
+  await apiClient.put('/system-configs', [
+    { key: 'ui.onboarding_completed', value: 'true', value_type: 'bool', category: 'ui', encrypted: false }
+  ])
+  onboardingVisible.value = false
+  ElMessage.success(t('messages.onboardingDone'))
 }
 
 function configValue(configs: SystemConfig[], key: string) {

@@ -21,8 +21,11 @@ SEC Monitor is a local-first Web app for monitoring SEC EDGAR filings for US sto
 - Sync history page with status, trigger source, checked targets, new filings, failed targets, and error messages.
 - Dashboard overview for monitored targets, recent filings, sync health, and notification status.
 - Telegram notification settings, test sending, retries, and notification logs.
-- Structured system configuration for SEC fetch policy, data retention, and default language.
+- Structured system configuration for SEC fetch policy, notification rules, data retention, and default language.
 - Chinese/English UI switching: the top bar controls the current browser preference, and System Settings controls the default language.
+- First-run setup guide for SEC User-Agent, first target, notifications, and initial sync.
+- System Health page for User-Agent, database, sync, notification, and data-size checks.
+- Export and backup for filings CSV, watch targets CSV, configs JSON, and full backup JSON.
 - Data cleanup preview and confirmed cleanup based on retention days.
 - Operation audit logs for key changes.
 
@@ -170,7 +173,16 @@ Data retention settings:
 Interface settings:
 
 - `ui.default_locale`: default UI language, supports `zh-CN` and `en-US`.
+- `ui.onboarding_completed`: whether the first-run setup guide has been completed.
 - The top language switch is stored in the current browser and takes precedence over the system default.
+
+Notification rule settings:
+
+- `notification.important_only`: only notify important filing types.
+- `notification.filing_types`: only notify selected filing types, comma-separated, for example `8-K,10-K,S-1`.
+- `notification.keywords`: only notify filings whose title or content contains selected keywords, comma-separated.
+- `notification.quiet_hours_enabled`: enables quiet hours.
+- `notification.quiet_hours_start` / `notification.quiet_hours_end`: quiet-hour window in `HH:mm` format.
 
 Environment variables:
 

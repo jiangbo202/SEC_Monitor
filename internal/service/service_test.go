@@ -190,7 +190,7 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 				t.Fatalf("settings = %+v", settings)
 			}
 		}},
-		{name: "ensure ui default locale is chinese", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+		{name: "ensure ui defaults include locale and onboarding state", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
 			if err := svc.EnsureDefaults(context.Background()); err != nil {
 				t.Fatalf("EnsureDefaults: %v", err)
 			}
@@ -201,11 +201,24 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 1 {
-				t.Fatalf("ui defaults = %d, want 1", len(configs))
+			values := map[string]string{}
+			for _, cfg := range configs {
+				values[cfg.ConfigKey] = cfg.ConfigValue
 			}
-			if configs[0].ConfigKey != "ui.default_locale" || configs[0].ConfigValue != "zh-CN" {
-				t.Fatalf("default locale config = %+v", configs[0])
+			if values["ui.default_locale"] != "zh-CN" || values["ui.onboarding_completed"] != "false" {
+				t.Fatalf("ui defaults = %+v", values)
+			}
+		}},
+		{name: "ensure notification defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults: %v", err)
+			}
+			settings, err := svc.NotificationSettings(context.Background())
+			if err != nil {
+				t.Fatalf("NotificationSettings: %v", err)
+			}
+			if settings.ImportantOnly || settings.QuietHoursEnabled || settings.QuietHoursStart != "22:00" || settings.QuietHoursEnd != "08:00" {
+				t.Fatalf("settings = %+v", settings)
 			}
 		}},
 	}
@@ -214,6 +227,30 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			db := testDB(t)
 			tt.run(t, db, NewConfigService(db, NewAuditService(db)))
+		})
+	}
+}
+
+func TestShouldNotifyFilingTableDriven(t *testing.T) {
+	now := time.Date(2026, 6, 18, 10, 30, 0, 0, time.UTC)
+	filing := model.Filing{FilingType: "8-K", Title: "Merger agreement", CompanyName: "Acme Inc."}
+	tests := []struct {
+		name     string
+		settings NotificationSettings
+		want     bool
+	}{
+		{name: "default allows notification", settings: NotificationSettings{}, want: true},
+		{name: "important only allows 8-K", settings: NotificationSettings{ImportantOnly: true}, want: true},
+		{name: "filing type mismatch blocks", settings: NotificationSettings{FilingTypes: []string{"10-K"}}, want: false},
+		{name: "keyword match allows", settings: NotificationSettings{Keywords: []string{"merger"}}, want: true},
+		{name: "keyword mismatch blocks", settings: NotificationSettings{Keywords: []string{"bankruptcy"}}, want: false},
+		{name: "quiet hours blocks", settings: NotificationSettings{QuietHoursEnabled: true, QuietHoursStart: "09:00", QuietHoursEnd: "11:00"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldNotifyFiling(filing, tt.settings, now); got != tt.want {
+				t.Fatalf("shouldNotifyFiling = %v, want %v", got, tt.want)
+			}
 		})
 	}
 }

@@ -2,12 +2,17 @@ package handler
 
 import (
 	"context"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
-	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"sec_monitor/internal/config"
+	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/service"
 	"sec_monitor/internal/telegram"
@@ -17,6 +22,7 @@ import (
 )
 
 type AppHandler struct {
+	Runtime      config.Config
 	DB           *gorm.DB
 	Targets      *service.WatchTargetService
 	Configs      *service.ConfigService
@@ -404,7 +410,165 @@ func (h *AppHandler) RunTask(c *gin.Context) {
 }
 
 func (h *AppHandler) ListHealth(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	var targetTotal int64
+	var enabledTargets int64
+	var filingTotal int64
+	var notificationFailures int64
+	_ = h.DB.WithContext(c.Request.Context()).Model(&model.WatchTarget{}).Count(&targetTotal).Error
+	_ = h.DB.WithContext(c.Request.Context()).Model(&model.WatchTarget{}).Where("status = ?", "enabled").Count(&enabledTargets).Error
+	_ = h.DB.WithContext(c.Request.Context()).Model(&model.Filing{}).Count(&filingTotal).Error
+	_ = h.DB.WithContext(c.Request.Context()).Model(&model.NotificationLog{}).Where("status = ?", "failed").Count(&notificationFailures).Error
+
+	var latestSync model.SyncRun
+	_ = h.DB.WithContext(c.Request.Context()).Order("started_at DESC, id DESC").First(&latestSync).Error
+
+	telegramCfg, _ := h.Configs.Telegram(c.Request.Context())
+	dbSize := int64(0)
+	dbPath := h.Runtime.Database.DSN
+	if strings.EqualFold(h.Runtime.Database.Type, "sqlite") {
+		if info, err := os.Stat(dbPath); err == nil {
+			dbSize = info.Size()
+			if abs, err := filepath.Abs(dbPath); err == nil {
+				dbPath = abs
+			}
+		}
+	}
+
+	secUserAgent := strings.TrimSpace(h.Runtime.SEC.UserAgent)
+	issues := []gin.H{}
+	if secUserAgent == "" || strings.Contains(secUserAgent, "contact@example.com") {
+		issues = append(issues, gin.H{"level": "warning", "message": "SEC User-Agent 仍是默认值，建议设置成包含联系方式的描述性值"})
+	}
+	if targetTotal == 0 {
+		issues = append(issues, gin.H{"level": "info", "message": "还没有监控标的"})
+	}
+	if latestSync.ID == 0 {
+		issues = append(issues, gin.H{"level": "warning", "message": "还没有同步记录"})
+	}
+	if notificationFailures > 0 {
+		issues = append(issues, gin.H{"level": "warning", "message": "存在失败的通知记录"})
+	}
+
+	status := "ok"
+	if len(issues) > 0 {
+		status = "warning"
+	}
+	OK(c, gin.H{
+		"status":                status,
+		"issues":                issues,
+		"target_total":          targetTotal,
+		"enabled_targets":       enabledTargets,
+		"filing_total":          filingTotal,
+		"notification_failures": notificationFailures,
+		"telegram_enabled":      telegramCfg.Enabled,
+		"sec_user_agent":        secUserAgent,
+		"database_type":         h.Runtime.Database.Type,
+		"database_path":         dbPath,
+		"database_size_bytes":   dbSize,
+		"latest_sync":           latestSync,
+	})
+}
+
+func (h *AppHandler) ExportFilingsCSV(c *gin.Context) {
+	var filings []model.Filing
+	if err := h.DB.WithContext(c.Request.Context()).Order("filing_date DESC, id DESC").Find(&filings).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="sec-monitor-filings.csv"`)
+	writer := csv.NewWriter(c.Writer)
+	_ = writer.Write([]string{"ticker", "company_name", "filing_type", "filing_date", "published_at", "pulled_at", "title", "filing_url", "filing_id"})
+	for _, filing := range filings {
+		publishedAt := ""
+		if filing.PublishedAt != nil {
+			publishedAt = filing.PublishedAt.Format(time.RFC3339)
+		}
+		_ = writer.Write([]string{
+			filing.Ticker,
+			filing.CompanyName,
+			filing.FilingType,
+			filing.FilingDate.Format("2006-01-02"),
+			publishedAt,
+			filing.PulledAt.Format(time.RFC3339),
+			filing.Title,
+			filing.FilingURL,
+			filing.FilingID,
+		})
+	}
+	writer.Flush()
+}
+
+func (h *AppHandler) ExportTargetsCSV(c *gin.Context) {
+	var targets []model.WatchTarget
+	if err := h.DB.WithContext(c.Request.Context()).Order("ticker ASC").Find(&targets).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="sec-monitor-targets.csv"`)
+	writer := csv.NewWriter(c.Writer)
+	_ = writer.Write([]string{"ticker", "company_name", "cik", "target_type", "status", "last_sync_at", "last_sync_status", "last_new_filings"})
+	for _, target := range targets {
+		lastSyncAt := ""
+		if target.LastSyncAt != nil {
+			lastSyncAt = target.LastSyncAt.Format(time.RFC3339)
+		}
+		_ = writer.Write([]string{
+			target.Ticker,
+			target.CompanyName,
+			target.CIK,
+			target.TargetType,
+			target.Status,
+			lastSyncAt,
+			target.LastSyncStatus,
+			strconv.Itoa(target.LastNewFilings),
+		})
+	}
+	writer.Flush()
+}
+
+func (h *AppHandler) ExportConfigsJSON(c *gin.Context) {
+	configs, err := h.Configs.List(c.Request.Context(), "", true)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="sec-monitor-configs.json"`)
+	_ = json.NewEncoder(c.Writer).Encode(configs)
+}
+
+func (h *AppHandler) ExportBackupJSON(c *gin.Context) {
+	var targets []model.WatchTarget
+	var filings []model.Filing
+	var tasks []model.TaskConfig
+	configs, err := h.Configs.List(c.Request.Context(), "", true)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	if err := h.DB.WithContext(c.Request.Context()).Order("ticker ASC").Find(&targets).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	if err := h.DB.WithContext(c.Request.Context()).Order("filing_date DESC, id DESC").Find(&filings).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	if err := h.DB.WithContext(c.Request.Context()).Order("task_name ASC").Find(&tasks).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="sec-monitor-backup.json"`)
+	_ = json.NewEncoder(c.Writer).Encode(gin.H{
+		"exported_at": time.Now().UTC(),
+		"targets":     targets,
+		"filings":     filings,
+		"tasks":       tasks,
+		"configs":     configs,
+	})
 }
 
 func pageParams(c *gin.Context) (int, int) {

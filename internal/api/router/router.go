@@ -49,6 +49,7 @@ func New(deps Dependencies) *gin.Engine {
 	sched := scheduler.New(tasks, filings)
 	_ = sched.Start(context.Background())
 	app := &handler.AppHandler{
+		Runtime:      deps.Config,
 		DB:           deps.DB,
 		Targets:      service.NewWatchTargetService(deps.DB, audit),
 		Configs:      configs,
@@ -97,6 +98,12 @@ func New(deps Dependencies) *gin.Engine {
 
 		api.GET("/operation-logs", app.ListOperationLogs)
 		api.GET("/notification-logs", app.ListNotificationLogs)
+
+		api.GET("/system-health", app.ListHealth)
+		api.GET("/exports/filings.csv", app.ExportFilingsCSV)
+		api.GET("/exports/watch-targets.csv", app.ExportTargetsCSV)
+		api.GET("/exports/configs.json", app.ExportConfigsJSON)
+		api.GET("/exports/backup.json", app.ExportBackupJSON)
 	}
 
 	configureWebApp(r, deps.WebDistDir)

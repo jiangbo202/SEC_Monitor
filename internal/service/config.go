@@ -37,6 +37,15 @@ type SECFetchSettings struct {
 	FetchFullHistory bool
 }
 
+type NotificationSettings struct {
+	ImportantOnly     bool
+	FilingTypes       []string
+	Keywords          []string
+	QuietHoursEnabled bool
+	QuietHoursStart   string
+	QuietHoursEnd     string
+}
+
 func NewConfigService(db *gorm.DB, audit *AuditService) *ConfigService {
 	return &ConfigService{db: db, audit: audit}
 }
@@ -50,6 +59,13 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "system.data_retention_days", Value: "30", ValueType: "int", Category: "system"},
 		{Key: "system.storage_by_day", Value: "false", ValueType: "bool", Category: "system"},
 		{Key: "ui.default_locale", Value: "zh-CN", ValueType: "string", Category: "ui"},
+		{Key: "ui.onboarding_completed", Value: "false", ValueType: "bool", Category: "ui"},
+		{Key: "notification.important_only", Value: "false", ValueType: "bool", Category: "notification"},
+		{Key: "notification.filing_types", Value: "", ValueType: "string", Category: "notification"},
+		{Key: "notification.keywords", Value: "", ValueType: "string", Category: "notification"},
+		{Key: "notification.quiet_hours_enabled", Value: "false", ValueType: "bool", Category: "notification"},
+		{Key: "notification.quiet_hours_start", Value: "22:00", ValueType: "string", Category: "notification"},
+		{Key: "notification.quiet_hours_end", Value: "08:00", ValueType: "string", Category: "notification"},
 	}, "system")
 }
 
@@ -186,6 +202,43 @@ func (s *ConfigService) SECFetchSettings(ctx context.Context) (SECFetchSettings,
 	}, nil
 }
 
+func (s *ConfigService) NotificationSettings(ctx context.Context) (NotificationSettings, error) {
+	importantOnlyRaw, _, err := s.GetValue(ctx, "notification.important_only")
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	filingTypesRaw, _, err := s.GetValue(ctx, "notification.filing_types")
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	keywordsRaw, _, err := s.GetValue(ctx, "notification.keywords")
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	quietEnabledRaw, _, err := s.GetValue(ctx, "notification.quiet_hours_enabled")
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	quietStart, _, err := s.GetValue(ctx, "notification.quiet_hours_start")
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	quietEnd, _, err := s.GetValue(ctx, "notification.quiet_hours_end")
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	importantOnly, _ := strconv.ParseBool(importantOnlyRaw)
+	quietEnabled, _ := strconv.ParseBool(quietEnabledRaw)
+	return NotificationSettings{
+		ImportantOnly:     importantOnly,
+		FilingTypes:       splitConfigList(filingTypesRaw),
+		Keywords:          splitConfigList(keywordsRaw),
+		QuietHoursEnabled: quietEnabled,
+		QuietHoursStart:   valueOrDefault(quietStart, "22:00"),
+		QuietHoursEnd:     valueOrDefault(quietEnd, "08:00"),
+	}, nil
+}
+
 func maskSecret(value string) string {
 	if value == "" {
 		return ""
@@ -205,4 +258,18 @@ func valueOrDefault(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func splitConfigList(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n' || r == ';'
+	})
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
 }

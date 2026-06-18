@@ -8,6 +8,7 @@ import SyncRunsView from '@/views/SyncRunsView.vue'
 import SchedulerView from '@/views/SchedulerView.vue'
 import TelegramView from '@/views/TelegramView.vue'
 import ConfigsView from '@/views/ConfigsView.vue'
+import SystemHealthView from '@/views/SystemHealthView.vue'
 import AuditLogsView from '@/views/AuditLogsView.vue'
 import NotificationLogsView from '@/views/NotificationLogsView.vue'
 
@@ -25,6 +26,7 @@ const router = createRouter({
         { path: 'scheduler', name: 'scheduler', component: SchedulerView },
         { path: 'telegram', name: 'telegram', component: TelegramView },
         { path: 'configs', name: 'configs', component: ConfigsView },
+        { path: 'system-health', name: 'system-health', component: SystemHealthView },
         { path: 'audit-logs', name: 'audit-logs', component: AuditLogsView },
         { path: 'notification-logs', name: 'notification-logs', component: NotificationLogsView }
       ]

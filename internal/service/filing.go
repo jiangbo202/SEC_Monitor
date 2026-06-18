@@ -445,6 +445,13 @@ func (s *FilingService) notifyNewFiling(ctx context.Context, filing model.Filing
 	if err != nil || !cfg.Enabled || cfg.ChatID == "" || cfg.BotToken == "" {
 		return err
 	}
+	settings, err := s.configs.NotificationSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if !shouldNotifyFiling(filing, settings, time.Now()) {
+		return nil
+	}
 	message := telegram.Message{
 		Text: fmt.Sprintf("%s %s\n%s\n%s\n%s", filing.Ticker, filing.FilingType, filing.Title, filing.FilingDate.Format("2006-01-02"), filing.FilingURL),
 	}
@@ -471,6 +478,74 @@ func (s *FilingService) notifyNewFiling(ctx context.Context, filing model.Filing
 		log.SentAt = &now
 	}
 	return s.db.WithContext(ctx).Create(&log).Error
+}
+
+func shouldNotifyFiling(filing model.Filing, settings NotificationSettings, now time.Time) bool {
+	if settings.QuietHoursEnabled && inQuietHours(now, settings.QuietHoursStart, settings.QuietHoursEnd) {
+		return false
+	}
+	filingType := strings.ToUpper(strings.TrimSpace(filing.FilingType))
+	if settings.ImportantOnly && !isImportantFilingType(filingType) {
+		return false
+	}
+	if len(settings.FilingTypes) > 0 {
+		matched := false
+		for _, item := range settings.FilingTypes {
+			normalized := strings.ToUpper(strings.TrimSpace(item))
+			if normalized != "" && filingType == normalized {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if len(settings.Keywords) > 0 {
+		haystack := strings.ToLower(filing.Title + " " + filing.CompanyName + " " + filing.RawContent)
+		matched := false
+		for _, keyword := range settings.Keywords {
+			normalized := strings.ToLower(strings.TrimSpace(keyword))
+			if normalized != "" && strings.Contains(haystack, normalized) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func isImportantFilingType(value string) bool {
+	for _, item := range []string{"8-K", "10-K", "10-Q", "S-1", "S-3", "424B", "4", "3", "5", "13D", "13G"} {
+		if value == item || strings.HasPrefix(value, item) {
+			return true
+		}
+	}
+	return false
+}
+
+func inQuietHours(now time.Time, start string, end string) bool {
+	startMinute, okStart := parseClockMinute(start)
+	endMinute, okEnd := parseClockMinute(end)
+	if !okStart || !okEnd || startMinute == endMinute {
+		return false
+	}
+	current := now.Hour()*60 + now.Minute()
+	if startMinute < endMinute {
+		return current >= startMinute && current < endMinute
+	}
+	return current >= startMinute || current < endMinute
+}
+
+func parseClockMinute(value string) (int, bool) {
+	parsed, err := time.Parse("15:04", strings.TrimSpace(value))
+	if err != nil {
+		return 0, false
+	}
+	return parsed.Hour()*60 + parsed.Minute(), true
 }
 
 func sendWithRetry(ctx context.Context, notifier telegram.Notifier, message telegram.Message, attempts int) error {

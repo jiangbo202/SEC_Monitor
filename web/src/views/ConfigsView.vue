@@ -30,6 +30,34 @@
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
+            <span>{{ t('pages.configs.notificationRules') }}</span>
+          </div>
+        </template>
+        <el-form :model="notificationForm" label-width="150px">
+          <el-form-item :label="t('pages.configs.importantOnly')">
+            <el-switch v-model="notificationForm.important_only" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.notifyFilingTypes')">
+            <el-input v-model="notificationForm.filing_types" :placeholder="t('pages.configs.notifyFilingTypesPlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.notifyKeywords')">
+            <el-input v-model="notificationForm.keywords" :placeholder="t('pages.configs.notifyKeywordsPlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.quietHoursEnabled')">
+            <el-switch v-model="notificationForm.quiet_hours_enabled" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.quietHoursStart')">
+            <el-time-picker v-model="notificationForm.quiet_hours_start" format="HH:mm" value-format="HH:mm" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.quietHoursEnd')">
+            <el-time-picker v-model="notificationForm.quiet_hours_end" format="HH:mm" value-format="HH:mm" />
+          </el-form-item>
+        </el-form>
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
             <span>{{ t('pages.configs.secPolicy') }}</span>
             <el-tag effect="plain">{{ secPolicySummary }}</el-tag>
           </div>
@@ -99,6 +127,20 @@
           <el-descriptions-item :label="t('pages.configs.newestSync')">{{ formatDateTime(cleanupPreview.newest_pulled_at) }}</el-descriptions-item>
         </el-descriptions>
       </el-card>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
+            <span>{{ t('pages.configs.exportBackup') }}</span>
+          </div>
+        </template>
+        <div class="export-actions">
+          <el-button @click="download('/api/exports/filings.csv')">{{ t('pages.configs.exportFilings') }}</el-button>
+          <el-button @click="download('/api/exports/watch-targets.csv')">{{ t('pages.configs.exportTargets') }}</el-button>
+          <el-button @click="download('/api/exports/configs.json')">{{ t('pages.configs.exportConfigs') }}</el-button>
+          <el-button type="primary" @click="download('/api/exports/backup.json')">{{ t('pages.configs.exportAll') }}</el-button>
+        </div>
+      </el-card>
     </div>
   </section>
 </template>
@@ -120,6 +162,14 @@ const cleanupPreview = ref<CleanupPreview | null>(null)
 const secForm = reactive({ initial_fetch_days: 30, sync_window_days: 30, max_fetch_count: 300, fetch_full_history: false })
 const systemForm = reactive({ data_retention_days: 30, storage_by_day: false })
 const uiForm = reactive<{ default_locale: Locale }>({ default_locale: 'zh-CN' })
+const notificationForm = reactive({
+  important_only: false,
+  filing_types: '',
+  keywords: '',
+  quiet_hours_enabled: false,
+  quiet_hours_start: '22:00',
+  quiet_hours_end: '08:00'
+})
 
 const secRiskHints = computed(() => {
   const hints: Array<{ title: string, description: string, type: 'warning' | 'info' }> = []
@@ -189,6 +239,12 @@ async function load() {
     systemForm.data_retention_days = Number(configValue(configs, 'system.data_retention_days', '30'))
     systemForm.storage_by_day = configValue(configs, 'system.storage_by_day', 'false') === 'true'
     uiForm.default_locale = localeValue(configValue(configs, 'ui.default_locale', 'zh-CN'))
+    notificationForm.important_only = configValue(configs, 'notification.important_only', 'false') === 'true'
+    notificationForm.filing_types = configValue(configs, 'notification.filing_types', '')
+    notificationForm.keywords = configValue(configs, 'notification.keywords', '')
+    notificationForm.quiet_hours_enabled = configValue(configs, 'notification.quiet_hours_enabled', 'false') === 'true'
+    notificationForm.quiet_hours_start = configValue(configs, 'notification.quiet_hours_start', '22:00')
+    notificationForm.quiet_hours_end = configValue(configs, 'notification.quiet_hours_end', '08:00')
   } finally {
     loading.value = false
   }
@@ -204,7 +260,13 @@ async function save() {
       { key: 'sec.fetch_full_history', value: String(secForm.fetch_full_history), value_type: 'bool', category: 'sec', encrypted: false },
       { key: 'system.data_retention_days', value: String(systemForm.data_retention_days), value_type: 'int', category: 'system', encrypted: false },
       { key: 'system.storage_by_day', value: String(systemForm.storage_by_day), value_type: 'bool', category: 'system', encrypted: false },
-      { key: 'ui.default_locale', value: uiForm.default_locale, value_type: 'string', category: 'ui', encrypted: false }
+      { key: 'ui.default_locale', value: uiForm.default_locale, value_type: 'string', category: 'ui', encrypted: false },
+      { key: 'notification.important_only', value: String(notificationForm.important_only), value_type: 'bool', category: 'notification', encrypted: false },
+      { key: 'notification.filing_types', value: notificationForm.filing_types, value_type: 'string', category: 'notification', encrypted: false },
+      { key: 'notification.keywords', value: notificationForm.keywords, value_type: 'string', category: 'notification', encrypted: false },
+      { key: 'notification.quiet_hours_enabled', value: String(notificationForm.quiet_hours_enabled), value_type: 'bool', category: 'notification', encrypted: false },
+      { key: 'notification.quiet_hours_start', value: notificationForm.quiet_hours_start, value_type: 'string', category: 'notification', encrypted: false },
+      { key: 'notification.quiet_hours_end', value: notificationForm.quiet_hours_end, value_type: 'string', category: 'notification', encrypted: false }
     ])
     store.applyDefaultLocale(uiForm.default_locale)
     ElMessage.success(t('messages.configSaved'))
@@ -213,6 +275,10 @@ async function save() {
   } finally {
     saving.value = false
   }
+}
+
+function download(url: string) {
+  window.location.href = url
 }
 
 async function loadCleanupPreview() {

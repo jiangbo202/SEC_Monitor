@@ -21,8 +21,11 @@ SEC Monitor 是一个本地优先的 Web 应用，用于监控美股和 ETF 的 
 - 同步历史：状态、触发来源、检查标的数、新增公告数、失败标的数、错误信息。
 - 总览页面：监控标的、最近公告、同步健康度、通知状态。
 - Telegram：通知配置、测试发送、重试、通知日志。
-- 系统配置：SEC 拉取策略、数据保留、默认语言。
+- 系统配置：SEC 拉取策略、通知规则、数据保留、默认语言。
 - 中英文切换：顶部可切换当前浏览器语言，系统配置可设置默认语言。
+- 首次启动向导：引导设置 SEC User-Agent、添加标的、配置通知和首次同步。
+- 系统健康页：检查 User-Agent、数据库、同步、通知和数据规模。
+- 导出与备份：导出公告 CSV、标的 CSV、配置 JSON 和完整备份 JSON。
 - 数据清理：按保留天数预览并确认清理。
 - 审计日志：记录关键变更操作。
 
@@ -170,7 +173,16 @@ SEC 拉取配置：
 界面配置：
 
 - `ui.default_locale`：默认界面语言，支持 `zh-CN` 和 `en-US`。
+- `ui.onboarding_completed`：是否已完成首次启动向导。
 - 顶部语言切换会保存到当前浏览器，优先级高于系统默认语言。
+
+通知规则配置：
+
+- `notification.important_only`：仅通知重点公告类型。
+- `notification.filing_types`：只通知指定公告类型，使用逗号分隔，例如 `8-K,10-K,S-1`。
+- `notification.keywords`：只通知标题或正文中包含指定关键词的公告，使用逗号分隔。
+- `notification.quiet_hours_enabled`：是否启用静默时间。
+- `notification.quiet_hours_start` / `notification.quiet_hours_end`：静默时间范围，格式 `HH:mm`。
 
 环境变量：
 

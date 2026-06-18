@@ -129,3 +129,23 @@ export interface CleanupPreview {
   oldest_pulled_at?: string | null
   newest_pulled_at?: string | null
 }
+
+export interface SystemHealthIssue {
+  level: string
+  message: string
+}
+
+export interface SystemHealth {
+  status: string
+  issues: SystemHealthIssue[]
+  target_total: number
+  enabled_targets: number
+  filing_total: number
+  notification_failures: number
+  telegram_enabled: boolean
+  sec_user_agent: string
+  database_type: string
+  database_path: string
+  database_size_bytes: number
+  latest_sync?: SyncRun
+}

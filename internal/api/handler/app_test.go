@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"sec_monitor/internal/config"
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/service"
@@ -87,6 +88,10 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	}
 	sched := &fakeScheduler{}
 	h := &AppHandler{
+		Runtime: config.Config{
+			Database: config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"},
+			SEC:      config.SECConfig{UserAgent: "sec-monitor-test test@example.com"},
+		},
 		DB:           db,
 		Targets:      targets,
 		Configs:      configs,
@@ -124,19 +129,24 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.PUT("/tasks/:id", h.UpdateTaskConfig)
 	r.POST("/tasks/:id/run", h.RunTask)
 	r.GET("/list-health", h.ListHealth)
+	r.GET("/exports/filings.csv", h.ExportFilingsCSV)
+	r.GET("/exports/watch-targets.csv", h.ExportTargetsCSV)
+	r.GET("/exports/configs.json", h.ExportConfigsJSON)
+	r.GET("/exports/backup.json", h.ExportBackupJSON)
 	r.GET("/not-implemented", NotImplemented("example"))
 	return r, db, sched
 }
 
 func TestAppHandlerRoutesTableDriven(t *testing.T) {
 	tests := []struct {
-		name       string
-		method     string
-		path       string
-		body       string
-		seed       func(t *testing.T, db *gorm.DB)
-		assert     func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler)
-		wantStatus int
+		name        string
+		method      string
+		path        string
+		body        string
+		seed        func(t *testing.T, db *gorm.DB)
+		assert      func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler)
+		rawResponse bool
+		wantStatus  int
 	}{
 		{name: "health", method: http.MethodGet, path: "/healthz", wantStatus: http.StatusOK},
 		{name: "lookup ticker", method: http.MethodGet, path: "/sec/tickers/tsla", wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
@@ -145,6 +155,18 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 			}
 		}},
 		{name: "list health", method: http.MethodGet, path: "/list-health", wantStatus: http.StatusOK},
+		{name: "export filings csv", method: http.MethodGet, path: "/exports/filings.csv", seed: seedFiling, rawResponse: true, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), "ticker,company_name") || !strings.Contains(rec.Body.String(), "AAPL") {
+				t.Fatalf("csv body = %s", rec.Body.String())
+			}
+		}},
+		{name: "export targets csv", method: http.MethodGet, path: "/exports/watch-targets.csv", seed: seedTarget, rawResponse: true, wantStatus: http.StatusOK},
+		{name: "export configs json", method: http.MethodGet, path: "/exports/configs.json", seed: seedTelegramConfig, rawResponse: true, wantStatus: http.StatusOK},
+		{name: "export backup json", method: http.MethodGet, path: "/exports/backup.json", seed: seedFiling, rawResponse: true, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"filings"`) || !strings.Contains(rec.Body.String(), `"configs"`) {
+				t.Fatalf("backup body = %s", rec.Body.String())
+			}
+		}},
 		{name: "create target", method: http.MethodPost, path: "/targets", body: `{"ticker":"aapl","company_name":"Apple Inc.","target_type":"stock","status":"enabled"}`, wantStatus: http.StatusCreated},
 		{name: "reject invalid target", method: http.MethodPost, path: "/targets", body: `{"ticker":"","company_name":"Apple Inc.","target_type":"stock","status":"enabled"}`, wantStatus: http.StatusBadRequest},
 		{name: "list targets", method: http.MethodGet, path: "/targets?page=bad&page_size=bad", seed: seedTarget, wantStatus: http.StatusOK},
@@ -227,7 +249,7 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d, body=%s", rec.Code, tt.wantStatus, rec.Body.String())
 			}
-			if rec.Code != http.StatusNoContent {
+			if rec.Code != http.StatusNoContent && !tt.rawResponse {
 				var payload map[string]any
 				if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 					t.Fatalf("decode response: %v", err)
