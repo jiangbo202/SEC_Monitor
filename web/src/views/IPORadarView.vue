@@ -92,7 +92,7 @@ async function load() {
 async function refresh() {
   refreshing.value = true
   try {
-    const res = await apiClient.post<ApiResponse<IPORadarRefreshResult>>('/ipo-filings/refresh')
+    const res = await apiClient.post<ApiResponse<IPORadarRefreshResult>>('/ipo-filings/refresh', null, { timeout: 120000 })
     ElMessage.success(t('messages.ipoRefreshDone', { count: res.data.data.new_filings, notified: res.data.data.notified }))
     page.value = 1
     await load()

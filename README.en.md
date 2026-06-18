@@ -191,7 +191,7 @@ Notification rule settings:
 IPO Radar settings:
 
 - `ipo.enabled`: enables IPO Radar.
-- `ipo.form_types`: SEC form types to scan. Default is `S-1,S-1/A,F-1,F-1/A,424B,RW`.
+- `ipo.form_types`: SEC form types to scan. Default is `S-1,S-1/A,F-1,F-1/A,S-1MEF`.
 - `ipo.lookback_days`: keeps only current filing results from recent N days.
 - `ipo.max_results`: max rows per form type. The SEC current-filing endpoint is capped at 100 here.
 - `ipo.notify_enabled`: sends Telegram alerts for newly stored IPO Radar filings.

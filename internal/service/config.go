@@ -76,7 +76,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "notification.quiet_hours_start", Value: "22:00", ValueType: "string", Category: "notification"},
 		{Key: "notification.quiet_hours_end", Value: "08:00", ValueType: "string", Category: "notification"},
 		{Key: "ipo.enabled", Value: "true", ValueType: "bool", Category: "ipo"},
-		{Key: "ipo.form_types", Value: "S-1,S-1/A,F-1,F-1/A,424B,RW", ValueType: "string", Category: "ipo"},
+		{Key: "ipo.form_types", Value: "S-1,S-1/A,F-1,F-1/A,S-1MEF", ValueType: "string", Category: "ipo"},
 		{Key: "ipo.lookback_days", Value: "7", ValueType: "int", Category: "ipo"},
 		{Key: "ipo.max_results", Value: "100", ValueType: "int", Category: "ipo"},
 		{Key: "ipo.notify_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
@@ -291,7 +291,7 @@ func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings,
 	}
 	formTypes := splitConfigList(formTypesRaw)
 	if len(formTypes) == 0 {
-		formTypes = []string{"S-1", "S-1/A", "F-1", "F-1/A", "424B", "RW"}
+		formTypes = []string{"S-1", "S-1/A", "F-1", "F-1/A", "S-1MEF"}
 	}
 	return IPORadarSettings{
 		Enabled:       enabled,

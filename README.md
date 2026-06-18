@@ -191,7 +191,7 @@ SEC 拉取配置：
 新申报监控配置：
 
 - `ipo.enabled`：是否启用新申报监控。
-- `ipo.form_types`：扫描的 SEC 表单类型，默认 `S-1,S-1/A,F-1,F-1/A,424B,RW`。
+- `ipo.form_types`：扫描的 SEC 表单类型，默认 `S-1,S-1/A,F-1,F-1/A,S-1MEF`。
 - `ipo.lookback_days`：只保留最近 N 天的当前申报结果。
 - `ipo.max_results`：每类表单最多拉取条数，SEC 当前申报接口上限按 100 处理。
 - `ipo.notify_enabled`：新申报入库后是否发送 Telegram 提醒。

@@ -200,7 +200,7 @@ const notificationForm = reactive({
 })
 const ipoForm = reactive({
   enabled: true,
-  form_types: 'S-1,S-1/A,F-1,F-1/A,424B,RW',
+  form_types: 'S-1,S-1/A,F-1,F-1/A,S-1MEF',
   lookback_days: 7,
   max_results: 100,
   notify_enabled: true,
@@ -282,7 +282,7 @@ async function load() {
     notificationForm.quiet_hours_start = configValue(configs, 'notification.quiet_hours_start', '22:00')
     notificationForm.quiet_hours_end = configValue(configs, 'notification.quiet_hours_end', '08:00')
     ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
-    ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,424B,RW')
+    ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,S-1MEF')
     ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))
     ipoForm.max_results = Number(configValue(configs, 'ipo.max_results', '100'))
     ipoForm.notify_enabled = configValue(configs, 'ipo.notify_enabled', 'true') === 'true'
