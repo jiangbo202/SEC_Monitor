@@ -412,6 +412,71 @@ func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 	}
 }
 
+func TestIPORadarServiceRefreshBackfillsCompanyLifecycleFilings(t *testing.T) {
+	now := time.Now().UTC()
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "ipo.notify_enabled", Value: "false", ValueType: "bool", Category: "ipo"},
+	}, "tester"); err != nil {
+		t.Fatalf("UpsertMany: %v", err)
+	}
+
+	secClient := &fakeSECClient{
+		currentFilings: []sec.CurrentFilingResult{{
+			FilingID:        "acme-s1a",
+			AccessionNumber: "0000000001-26-000002",
+			CIK:             "0000000001",
+			CompanyName:     "Acme Space Inc.",
+			FilingType:      "S-1/A",
+			FilingDate:      now,
+			FilingURL:       "https://www.sec.gov/acme/s1a",
+			Title:           "S-1/A - Acme Space Inc.",
+		}},
+		filings: []sec.FilingResult{
+			{FilingID: "acme-s1", AccessionNumber: "0000000001-26-000001", CIK: "0000000001", CompanyName: "Acme Space Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -10), FilingURL: "https://www.sec.gov/acme/s1", Title: "S-1 - Acme Space Inc."},
+			{FilingID: "acme-s1a", AccessionNumber: "0000000001-26-000002", CIK: "0000000001", CompanyName: "Acme Space Inc.", FilingType: "S-1/A", FilingDate: now, FilingURL: "https://www.sec.gov/acme/s1a", Title: "S-1/A - Acme Space Inc."},
+			{FilingID: "acme-effect", AccessionNumber: "9999999995-26-000001", CIK: "0000000001", CompanyName: "Acme Space Inc.", FilingType: "EFFECT", FilingDate: now.AddDate(0, 0, 1), FilingURL: "https://www.sec.gov/acme/effect", Title: "EFFECT - Acme Space Inc."},
+			{FilingID: "acme-424b4", AccessionNumber: "0000000001-26-000003", CIK: "0000000001", CompanyName: "Acme Space Inc.", FilingType: "424B4", FilingDate: now.AddDate(0, 0, 2), FilingURL: "https://www.sec.gov/acme/424b4", Title: "424B4 - Acme Space Inc."},
+			{FilingID: "acme-10k", AccessionNumber: "0000000001-26-000004", CIK: "0000000001", CompanyName: "Acme Space Inc.", FilingType: "10-K", FilingDate: now.AddDate(0, 0, 3), FilingURL: "https://www.sec.gov/acme/10k", Title: "10-K - Acme Space Inc."},
+		},
+	}
+	svc := NewIPORadarService(db, secClient, &fakeNotifier{}, configs)
+
+	got, err := svc.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if secClient.listCalls != 1 {
+		t.Fatalf("ListFilings calls = %d, want 1", secClient.listCalls)
+	}
+	if len(secClient.queries) != 1 || secClient.queries[0].CIK != "0000000001" || !secClient.queries[0].FetchFullHistory {
+		t.Fatalf("ListFilings query = %+v, want CIK full-history lookup", secClient.queries)
+	}
+	if got.NewFilings != 4 {
+		t.Fatalf("NewFilings = %d, want 4", got.NewFilings)
+	}
+	var filings []model.IPOFiling
+	if err := db.Order("filing_type ASC").Find(&filings).Error; err != nil {
+		t.Fatalf("load ipo filings: %v", err)
+	}
+	gotTypes := map[string]bool{}
+	for _, filing := range filings {
+		gotTypes[filing.FilingType] = true
+	}
+	for _, want := range []string{"S-1", "S-1/A", "EFFECT", "424B4"} {
+		if !gotTypes[want] {
+			t.Fatalf("stored filing types = %+v, missing %s", gotTypes, want)
+		}
+	}
+	if gotTypes["10-K"] {
+		t.Fatalf("stored filing types = %+v, did not expect 10-K", gotTypes)
+	}
+}
+
 func TestIPORadarServiceListTableDriven(t *testing.T) {
 	now := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -448,6 +513,56 @@ func TestIPORadarServiceListTableDriven(t *testing.T) {
 	}
 }
 
+func TestIPORadarServiceListOrdersBySyncAndPublishTime(t *testing.T) {
+	now := time.Date(2026, 6, 18, 10, 0, 0, 0, time.UTC)
+	acceptedOld := now.Add(-2 * time.Hour)
+	acceptedNew := now.Add(-1 * time.Hour)
+	db := testDB(t)
+	if err := db.Create([]model.IPOFiling{
+		{FilingID: "older-sync-newer-filing", CompanyName: "Beta Bio Ltd.", CIK: "0000000002", FilingType: "F-1", FilingDate: now, AcceptedAt: &acceptedNew, FilingURL: "https://sec.gov/beta", CreatedAt: now.Add(-1 * time.Hour)},
+		{FilingID: "newer-sync-older-filing", CompanyName: "Acme Space Inc.", CIK: "0000000001", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -3), AcceptedAt: &acceptedOld, FilingURL: "https://sec.gov/acme", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed ipo filings: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+
+	got, err := svc.List(context.Background(), IPOFilingFilter{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(got.Items))
+	}
+	if got.Items[0].FilingID != "newer-sync-older-filing" {
+		t.Fatalf("first filing = %s, want newer sync time first", got.Items[0].FilingID)
+	}
+}
+
+func TestIPORadarServiceListTimelineOrdersByAcceptedTimeAscending(t *testing.T) {
+	now := time.Date(2026, 6, 18, 10, 0, 0, 0, time.UTC)
+	acceptedOld := now.Add(-3 * time.Hour)
+	acceptedNew := now.Add(-1 * time.Hour)
+	db := testDB(t)
+	if err := db.Create([]model.IPOFiling{
+		{FilingID: "s1a", CompanyName: "Acme Space Inc.", CIK: "0000000001", FilingType: "S-1/A", FilingDate: now, AcceptedAt: &acceptedNew, FilingURL: "https://sec.gov/acme/s1a", CreatedAt: now.Add(-2 * time.Hour)},
+		{FilingID: "s1", CompanyName: "Acme Space Inc.", CIK: "0000000001", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -2), AcceptedAt: &acceptedOld, FilingURL: "https://sec.gov/acme/s1", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed ipo filings: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+
+	got, err := svc.List(context.Background(), IPOFilingFilter{CIK: "0000000001", Sort: "timeline", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(got.Items))
+	}
+	if got.Items[0].FilingID != "s1" || got.Items[1].FilingID != "s1a" {
+		t.Fatalf("filing order = %s,%s; want s1,s1a", got.Items[0].FilingID, got.Items[1].FilingID)
+	}
+}
+
 func TestIPORadarServiceListCompaniesTableDriven(t *testing.T) {
 	now := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -473,6 +588,15 @@ func TestIPORadarServiceListCompaniesTableDriven(t *testing.T) {
 			},
 			wantStatus: "updating",
 			wantLatest: "S-1/A",
+		},
+		{
+			name: "effect marks effective before pricing",
+			filings: []model.IPOFiling{
+				{FilingID: "s1", CIK: "0000000007", CompanyName: "Gamma Cloud Inc.", FilingType: "S-1/A", FilingDate: now.AddDate(0, 0, -2), FilingURL: "https://sec.gov/gamma/s1a"},
+				{FilingID: "effect", CIK: "0000000007", CompanyName: "Gamma Cloud Inc.", FilingType: "EFFECT", FilingDate: now, FilingURL: "https://sec.gov/gamma/effect"},
+			},
+			wantStatus: "effective",
+			wantLatest: "EFFECT",
 		},
 		{
 			name: "424B marks priced",

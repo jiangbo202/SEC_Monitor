@@ -58,6 +58,7 @@ type Client interface {
 
 type CurrentFilingsClient interface {
 	ListCurrentFilings(ctx context.Context, query CurrentFilingQuery) ([]CurrentFilingResult, error)
+	ListFilings(ctx context.Context, query FilingQuery) ([]FilingResult, error)
 }
 
 type HTTPClient struct {

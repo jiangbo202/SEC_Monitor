@@ -11,8 +11,8 @@
         <el-menu-item index="/targets"><el-icon><Aim /></el-icon><span>{{ t('nav.targets') }}</span></el-menu-item>
         <el-menu-item index="/filings"><el-icon><Document /></el-icon><span>{{ t('nav.filings') }}</span></el-menu-item>
         <el-menu-item index="/event-radar"><el-icon><Warning /></el-icon><span>{{ t('nav.eventRadar') }}</span></el-menu-item>
-        <el-menu-item index="/ipo-radar"><el-icon><TrendCharts /></el-icon><span>{{ t('nav.ipoRadar') }}</span></el-menu-item>
         <el-menu-item index="/insider-trading"><el-icon><UserFilled /></el-icon><span>{{ t('nav.insiderTrading') }}</span></el-menu-item>
+        <el-menu-item index="/ipo-radar"><el-icon><TrendCharts /></el-icon><span>{{ t('nav.ipoRadar') }}</span></el-menu-item>
 
         <div class="nav-section-label">{{ t('nav.automation') }}</div>
         <el-menu-item index="/sync-runs"><el-icon><DataAnalysis /></el-icon><span>{{ t('nav.syncRuns') }}</span></el-menu-item>

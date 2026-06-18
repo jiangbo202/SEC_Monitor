@@ -27,6 +27,7 @@ type IPOFilingFilter struct {
 	CIK         string
 	FilingType  string
 	Notified    string
+	Sort        string
 	Page        int
 	PageSize    int
 }
@@ -88,7 +89,11 @@ func (s *IPORadarService) List(ctx context.Context, filter IPOFilingFilter) (Pag
 		return PageResult[model.IPOFiling]{}, err
 	}
 	var items []model.IPOFiling
-	err := query.Order("filing_date DESC, accepted_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error
+	order := "created_at DESC, accepted_at DESC, filing_date DESC, id DESC"
+	if strings.EqualFold(strings.TrimSpace(filter.Sort), "timeline") {
+		order = "accepted_at ASC, filing_date ASC, id ASC"
+	}
+	err := query.Order(order).Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error
 	return newPageResult(items, total, page, pageSize), err
 }
 
@@ -189,6 +194,7 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -settings.LookbackDays)
 	out.Checked = len(results)
+	backfilledCIK := map[string]bool{}
 	for _, item := range results {
 		if !item.FilingDate.IsZero() && item.FilingDate.Before(cutoff) {
 			continue
@@ -196,37 +202,65 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		if !ipoKeywordMatch(item, settings.Keywords) {
 			continue
 		}
-		filing := model.IPOFiling{
-			FilingID:        valueOrDefault(item.FilingID, item.FilingURL),
-			AccessionNumber: item.AccessionNumber,
-			CIK:             item.CIK,
-			CompanyName:     valueOrDefault(item.CompanyName, "Unknown"),
-			FilingType:      item.FilingType,
-			FilingDate:      item.FilingDate,
-			AcceptedAt:      item.AcceptedAt,
-			FilingURL:       item.FilingURL,
-			Title:           item.Title,
-		}
+		filing := currentFilingToIPOModel(item)
 		created, err := s.createIfNew(ctx, filing)
 		if err != nil {
 			s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
 			return out, err
 		}
-		if !created {
+		if created {
+			out.NewFilings++
+			notified, err := s.notify(ctx, filing, settings)
+			if err != nil {
+				s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
+				return out, err
+			}
+			if notified {
+				out.Notified++
+			}
+		}
+		cik := strings.TrimSpace(item.CIK)
+		if cik == "" || backfilledCIK[cik] {
 			continue
 		}
-		out.NewFilings++
-		notified, err := s.notify(ctx, filing, settings)
+		backfilledCIK[cik] = true
+		added, err := s.backfillCompanyLifecycleFilings(ctx, item, settings)
 		if err != nil {
 			s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
 			return out, err
 		}
-		if notified {
-			out.Notified++
-		}
+		out.NewFilings += added
 	}
 	s.finishSyncRun(ctx, run.ID, out, "success", "")
 	return out, nil
+}
+
+func (s *IPORadarService) backfillCompanyLifecycleFilings(ctx context.Context, seed sec.CurrentFilingResult, settings IPORadarSettings) (int, error) {
+	cik := strings.TrimSpace(seed.CIK)
+	if cik == "" {
+		return 0, nil
+	}
+	results, err := s.sec.ListFilings(ctx, sec.FilingQuery{CIK: cik, FetchFullHistory: true})
+	if err != nil {
+		return 0, err
+	}
+	added := 0
+	for _, result := range results {
+		if !isIPOLifecycleFilingType(result.FilingType, settings.FormTypes) {
+			continue
+		}
+		if !ipoKeywordMatch(filingResultToCurrent(result), settings.Keywords) {
+			continue
+		}
+		created, err := s.createIfNew(ctx, filingResultToIPOModel(result, seed))
+		if err != nil {
+			return added, err
+		}
+		if created {
+			added++
+		}
+	}
+	return added, nil
 }
 
 func (s *IPORadarService) finishSyncRun(ctx context.Context, id uint, result IPORadarRefreshResult, status string, errorMessage string) {
@@ -250,6 +284,69 @@ func (s *IPORadarService) createIfNew(ctx context.Context, filing model.IPOFilin
 		return false, res.Error
 	}
 	return res.RowsAffected == 1, nil
+}
+
+func currentFilingToIPOModel(item sec.CurrentFilingResult) model.IPOFiling {
+	return model.IPOFiling{
+		FilingID:        valueOrDefault(item.FilingID, item.FilingURL),
+		AccessionNumber: item.AccessionNumber,
+		CIK:             item.CIK,
+		CompanyName:     valueOrDefault(item.CompanyName, "Unknown"),
+		FilingType:      item.FilingType,
+		FilingDate:      item.FilingDate,
+		AcceptedAt:      item.AcceptedAt,
+		FilingURL:       item.FilingURL,
+		Title:           item.Title,
+	}
+}
+
+func filingResultToIPOModel(item sec.FilingResult, seed sec.CurrentFilingResult) model.IPOFiling {
+	return model.IPOFiling{
+		FilingID:        valueOrDefault(item.FilingID, item.FilingURL),
+		AccessionNumber: item.AccessionNumber,
+		CIK:             valueOrDefault(item.CIK, seed.CIK),
+		CompanyName:     valueOrDefault(item.CompanyName, valueOrDefault(seed.CompanyName, "Unknown")),
+		FilingType:      item.FilingType,
+		FilingDate:      item.FilingDate,
+		AcceptedAt:      item.PublishedAt,
+		FilingURL:       item.FilingURL,
+		Title:           item.Title,
+	}
+}
+
+func filingResultToCurrent(item sec.FilingResult) sec.CurrentFilingResult {
+	return sec.CurrentFilingResult{
+		FilingID:    item.FilingID,
+		CIK:         item.CIK,
+		CompanyName: item.CompanyName,
+		FilingType:  item.FilingType,
+		FilingDate:  item.FilingDate,
+		AcceptedAt:  item.PublishedAt,
+		FilingURL:   item.FilingURL,
+		Title:       item.Title,
+	}
+}
+
+func isIPOLifecycleFilingType(filingType string, configured []string) bool {
+	form := strings.ToUpper(strings.TrimSpace(filingType))
+	if form == "" {
+		return false
+	}
+	for _, configuredType := range configured {
+		if form == strings.ToUpper(strings.TrimSpace(configuredType)) {
+			return true
+		}
+	}
+	if form == "EFFECT" {
+		return true
+	}
+	if strings.HasPrefix(form, "424B") {
+		return true
+	}
+	if form == "RW" || strings.HasPrefix(form, "RW ") || form == "RW WD" {
+		return true
+	}
+	return false
 }
 
 func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]string, now time.Time) IPOCompanyItem {
@@ -306,12 +403,16 @@ func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, late
 		return "listed"
 	}
 	hasAmendment := false
+	hasEffect := false
 	hasPriced := false
 	hasWithdrawn := false
 	for _, filing := range filings {
 		form := strings.ToUpper(strings.TrimSpace(filing.FilingType))
 		if form == "RW" || strings.HasPrefix(form, "RW ") {
 			hasWithdrawn = true
+		}
+		if form == "EFFECT" {
+			hasEffect = true
 		}
 		if strings.HasPrefix(form, "424B") {
 			hasPriced = true
@@ -325,6 +426,8 @@ func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, late
 		return "withdrawn"
 	case hasPriced:
 		return "priced"
+	case hasEffect:
+		return "effective"
 	case !latestFilingDate.IsZero() && latestFilingDate.Before(now.UTC().AddDate(0, 0, -60)):
 		return "stale"
 	case hasAmendment:
@@ -338,10 +441,11 @@ func sortIPOCompanies(items []IPOCompanyItem) {
 	statusRank := map[string]int{
 		"new":       0,
 		"updating":  1,
-		"priced":    2,
-		"listed":    3,
-		"withdrawn": 4,
-		"stale":     5,
+		"effective": 2,
+		"priced":    3,
+		"listed":    4,
+		"withdrawn": 5,
+		"stale":     6,
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		leftRank := statusRank[items[i].Status]

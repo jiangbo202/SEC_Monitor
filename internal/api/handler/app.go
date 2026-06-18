@@ -215,6 +215,7 @@ func (h *AppHandler) ListIPORadarFilings(c *gin.Context) {
 		CIK:         c.Query("cik"),
 		FilingType:  c.Query("filing_type"),
 		Notified:    c.Query("notified"),
+		Sort:        c.Query("sort"),
 		Page:        page,
 		PageSize:    pageSize,
 	})

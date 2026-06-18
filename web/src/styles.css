@@ -336,9 +336,20 @@ h1 {
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 16px;
   margin-bottom: 16px;
+}
+
+.section-label {
+  margin: 2px 0 10px;
+  color: #5f6978;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ipo-kpi-grid {
+  margin-bottom: 20px;
 }
 
 .kpi-card .el-card__body {

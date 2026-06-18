@@ -42,8 +42,23 @@
       />
     </div>
 
+    <div class="section-label">{{ t('pages.dashboard.targetMonitor') }}</div>
     <div class="kpi-grid">
       <el-card v-for="item in metrics" :key="item.label" shadow="never" class="kpi-card">
+        <div class="kpi-card-inner">
+          <component :is="item.icon" class="kpi-icon" />
+          <div class="metric">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+            <small>{{ item.hint }}</small>
+          </div>
+        </div>
+      </el-card>
+    </div>
+
+    <div class="section-label">{{ t('pages.dashboard.ipoRadar') }}</div>
+    <div class="kpi-grid ipo-kpi-grid">
+      <el-card v-for="item in ipoMetrics" :key="item.label" shadow="never" class="kpi-card">
         <div class="kpi-card-inner">
           <component :is="item.icon" class="kpi-icon" />
           <div class="metric">
@@ -224,7 +239,7 @@ import { computed, onMounted, ref } from 'vue'
 import { Aim, Bell, DataAnalysis, Document, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, Filing, IPOFiling, IPORadarRefreshResult, NotificationLog, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
+import type { ApiResponse, Filing, IPOCompany, IPOFiling, IPORadarRefreshResult, NotificationLog, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -237,6 +252,7 @@ const filingTotal = ref(0)
 const notificationTotal = ref(0)
 const syncTotal = ref(0)
 const ipoFilingTotal = ref(0)
+const ipoCompanies = ref<IPOCompany[]>([])
 const recentFilings = ref<Filing[]>([])
 const recentIpoFilings = ref<IPOFiling[]>([])
 const dashboardFilings = ref<Filing[]>([])
@@ -259,9 +275,30 @@ const onboardingActiveStep = computed(() => {
 const metrics = computed(() => [
   { label: t('nav.targets'), value: targetTotal.value, hint: t('pages.dashboard.enabledTargets') + ` ${enabledTargetTotal.value}`, icon: Aim },
   { label: t('nav.filings'), value: filingTotal.value, hint: t('common.filings'), icon: Document },
-  { label: t('nav.ipoRadar'), value: ipoFilingTotal.value, hint: latestIpoSync.value ? t('pages.dashboard.countSuffix', { count: latestIpoSync.value.new_filings }) : t('pages.dashboard.noIpoRuns'), icon: TrendCharts },
   { label: t('nav.syncRuns'), value: syncTotal.value, hint: latestFilingSync.value ? syncStatusLabel(latestFilingSync.value.status) : t('pages.dashboard.noSyncRuns'), icon: DataAnalysis },
   { label: t('nav.notificationLogs'), value: notificationTotal.value, hint: 'Telegram', icon: Bell }
+])
+
+const ipoStatusCounts = computed(() => {
+  const counts = new Map<string, number>()
+  for (const company of ipoCompanies.value) {
+    counts.set(company.status, (counts.get(company.status) || 0) + 1)
+  }
+  return counts
+})
+
+const ipoInProgressTotal = computed(() => {
+  const activeStatuses = new Set(['new', 'updating', 'effective', 'stale'])
+  return ipoCompanies.value.filter((company) => activeStatuses.has(company.status)).length
+})
+
+const ipoMetrics = computed(() => [
+  { label: t('pages.dashboard.ipoInProgress'), value: ipoInProgressTotal.value, hint: t('pages.dashboard.ipoInProgressHint'), icon: TrendCharts },
+  { label: t('pages.ipoRadar.statuses.new'), value: ipoStatusCounts.value.get('new') || 0, hint: t('pages.dashboard.ipoNewHint'), icon: Aim },
+  { label: t('pages.ipoRadar.statuses.updating'), value: ipoStatusCounts.value.get('updating') || 0, hint: t('pages.dashboard.ipoUpdatingHint'), icon: DataAnalysis },
+  { label: t('pages.ipoRadar.statuses.effective'), value: ipoStatusCounts.value.get('effective') || 0, hint: t('pages.dashboard.ipoEffectiveHint'), icon: TrendCharts },
+  { label: t('pages.dashboard.ipoTotal'), value: ipoFilingTotal.value, hint: t('pages.dashboard.ipoStoredHint'), icon: Document },
+  { label: t('pages.dashboard.ipoLastNew'), value: latestIpoSync.value?.new_filings ?? 0, hint: latestIpoSync.value ? formatDateTime(latestIpoSync.value.started_at) : t('pages.dashboard.noIpoRuns'), icon: Bell }
 ])
 
 const healthAlerts = computed(() => {
@@ -329,11 +366,12 @@ const notificationRateType = computed(() => {
 async function load() {
   loading.value = true
   try {
-    const [targets, enabledTargets, filings, ipoFilings, syncRuns, notifications, telegramConfigs, taskConfigs, uiConfigs] = await Promise.all([
+    const [targets, enabledTargets, filings, ipoFilings, ipoCompanyRes, syncRuns, notifications, telegramConfigs, taskConfigs, uiConfigs] = await Promise.all([
       apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { page: 1, page_size: 10 } }),
       apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { status: 'enabled', page: 1, page_size: 200 } }),
       apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { page: 1, page_size: 100, sort_by: 'pulled_at', sort_order: 'desc' } }),
       apiClient.get<ApiResponse<PageResult<IPOFiling>>>('/ipo-filings', { params: { page: 1, page_size: 6 } }),
+      apiClient.get<ApiResponse<PageResult<IPOCompany>>>('/ipo-companies', { params: { page: 1, page_size: 500 } }),
       apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { page: 1, page_size: 20 } }),
       apiClient.get<ApiResponse<PageResult<NotificationLog>>>('/notification-logs', { params: { page: 1, page_size: 5 } }),
       apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config'),
@@ -344,6 +382,7 @@ async function load() {
     enabledTargetTotal.value = enabledTargets.data.data.total
     filingTotal.value = filings.data.data.total
     ipoFilingTotal.value = ipoFilings.data.data.total
+    ipoCompanies.value = ipoCompanyRes.data.data.items
     syncTotal.value = syncRuns.data.data.total
     notificationTotal.value = notifications.data.data.total
     dashboardFilings.value = filings.data.data.items
