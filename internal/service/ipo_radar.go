@@ -41,18 +41,24 @@ type IPOCompanyFilter struct {
 }
 
 type IPOCompanyItem struct {
-	CIK              string     `json:"cik"`
-	CompanyName      string     `json:"company_name"`
-	Status           string     `json:"status"`
-	FirstFilingDate  time.Time  `json:"first_filing_date"`
-	LatestFilingDate time.Time  `json:"latest_filing_date"`
-	LatestAcceptedAt *time.Time `json:"latest_accepted_at"`
-	LatestFilingType string     `json:"latest_filing_type"`
-	LatestFilingURL  string     `json:"latest_filing_url"`
-	LatestTitle      string     `json:"latest_title"`
-	FilingCount      int        `json:"filing_count"`
-	Notified         bool       `json:"notified"`
-	MatchedTicker    string     `json:"matched_ticker,omitempty"`
+	CIK               string     `json:"cik"`
+	CompanyName       string     `json:"company_name"`
+	Status            string     `json:"status"`
+	FirstFilingDate   time.Time  `json:"first_filing_date"`
+	LatestFilingDate  time.Time  `json:"latest_filing_date"`
+	LatestAcceptedAt  *time.Time `json:"latest_accepted_at"`
+	LatestFilingType  string     `json:"latest_filing_type"`
+	LatestFilingURL   string     `json:"latest_filing_url"`
+	LatestTitle       string     `json:"latest_title"`
+	FilingCount       int        `json:"filing_count"`
+	Notified          bool       `json:"notified"`
+	MatchedTicker     string     `json:"matched_ticker,omitempty"`
+	StatusReason      string     `json:"status_reason"`
+	StatusConfidence  string     `json:"status_confidence"`
+	StatusSource      string     `json:"status_source"`
+	FinalTicker       string     `json:"final_ticker,omitempty"`
+	OverrideNote      string     `json:"override_note,omitempty"`
+	OverrideUpdatedAt *time.Time `json:"override_updated_at,omitempty"`
 }
 
 type IPORadarRefreshResult struct {
@@ -60,6 +66,12 @@ type IPORadarRefreshResult struct {
 	NewFilings int  `json:"new_filings"`
 	Notified   int  `json:"notified"`
 	SyncRunID  uint `json:"sync_run_id"`
+}
+
+type IPOCompanyOverrideInput struct {
+	StatusOverride string `json:"status_override"`
+	FinalTicker    string `json:"final_ticker"`
+	Note           string `json:"note"`
 }
 
 func NewIPORadarService(db *gorm.DB, secClient sec.CurrentFilingsClient, notifier telegram.Notifier, configs *ConfigService) *IPORadarService {
@@ -135,6 +147,16 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 			tickerByCIK[target.CIK] = target.Ticker
 		}
 	}
+	var overrides []model.IPOCompanyOverride
+	if len(ciks) > 0 {
+		if err := s.db.WithContext(ctx).Where("cik IN ?", ciks).Find(&overrides).Error; err != nil {
+			return PageResult[IPOCompanyItem]{}, err
+		}
+	}
+	overrideByCIK := map[string]model.IPOCompanyOverride{}
+	for _, override := range overrides {
+		overrideByCIK[override.CIK] = override
+	}
 
 	grouped := map[string][]model.IPOFiling{}
 	for _, filing := range filings {
@@ -144,7 +166,7 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 
 	items := make([]IPOCompanyItem, 0, len(grouped))
 	for _, group := range grouped {
-		item := buildIPOCompanyItem(group, tickerByCIK, now)
+		item := buildIPOCompanyItem(group, tickerByCIK, overrideByCIK, now)
 		if status := strings.TrimSpace(filter.Status); status != "" && item.Status != status {
 			continue
 		}
@@ -162,6 +184,39 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 		end = len(items)
 	}
 	return newPageResult(items[start:end], total, page, pageSize), nil
+}
+
+func (s *IPORadarService) UpsertCompanyOverride(ctx context.Context, cik string, input IPOCompanyOverrideInput) (model.IPOCompanyOverride, error) {
+	cik = strings.TrimSpace(cik)
+	if cik == "" {
+		return model.IPOCompanyOverride{}, fmt.Errorf("%w: cik is required", ErrValidation)
+	}
+	status := strings.TrimSpace(input.StatusOverride)
+	if status != "" && !validIPOStatus(status) {
+		return model.IPOCompanyOverride{}, fmt.Errorf("%w: invalid ipo status", ErrValidation)
+	}
+	override := model.IPOCompanyOverride{
+		CIK:            cik,
+		StatusOverride: status,
+		FinalTicker:    strings.ToUpper(strings.TrimSpace(input.FinalTicker)),
+		Note:           strings.TrimSpace(input.Note),
+	}
+	err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "cik"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"status_override": override.StatusOverride,
+			"final_ticker":    override.FinalTicker,
+			"note":            override.Note,
+			"updated_at":      time.Now().UTC(),
+		}),
+	}).Create(&override).Error
+	if err != nil {
+		return model.IPOCompanyOverride{}, err
+	}
+	if err := s.db.WithContext(ctx).Where("cik = ?", cik).First(&override).Error; err != nil {
+		return model.IPOCompanyOverride{}, err
+	}
+	return override, nil
 }
 
 func (s *IPORadarService) Refresh(ctx context.Context) (IPORadarRefreshResult, error) {
@@ -349,7 +404,7 @@ func isIPOLifecycleFilingType(filingType string, configured []string) bool {
 	return false
 }
 
-func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]string, now time.Time) IPOCompanyItem {
+func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]string, overrideByCIK map[string]model.IPOCompanyOverride, now time.Time) IPOCompanyItem {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -378,7 +433,22 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 		}
 	}
 	item.MatchedTicker = tickerByCIK[item.CIK]
-	item.Status = inferIPOCompanyStatus(filings, item.MatchedTicker, item.LatestFilingDate, now)
+	item.Status, item.StatusReason, item.StatusConfidence = inferIPOCompanyStatus(filings, item.MatchedTicker, item.LatestFilingDate, now)
+	item.StatusSource = "system"
+	if override, ok := overrideByCIK[item.CIK]; ok {
+		item.FinalTicker = override.FinalTicker
+		item.OverrideNote = override.Note
+		item.OverrideUpdatedAt = &override.UpdatedAt
+		if strings.TrimSpace(override.StatusOverride) != "" {
+			item.Status = override.StatusOverride
+			item.StatusReason = "manual override"
+			item.StatusConfidence = "manual"
+			item.StatusSource = "manual"
+		}
+		if item.MatchedTicker == "" && override.FinalTicker != "" {
+			item.MatchedTicker = override.FinalTicker
+		}
+	}
 	return item
 }
 
@@ -398,9 +468,9 @@ func filingAfter(left model.IPOFiling, right model.IPOFiling) bool {
 	return false
 }
 
-func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, latestFilingDate time.Time, now time.Time) string {
+func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, latestFilingDate time.Time, now time.Time) (string, string, string) {
 	if strings.TrimSpace(matchedTicker) != "" {
-		return "listed"
+		return "listed", "matched ticker " + strings.TrimSpace(matchedTicker), "high"
 	}
 	hasAmendment := false
 	hasEffect := false
@@ -423,17 +493,26 @@ func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, late
 	}
 	switch {
 	case hasWithdrawn:
-		return "withdrawn"
+		return "withdrawn", "detected RW withdrawal filing", "high"
 	case hasPriced:
-		return "priced"
+		return "priced", "detected 424B pricing filing", "high"
 	case hasEffect:
-		return "effective"
+		return "effective", "detected EFFECT filing", "high"
 	case !latestFilingDate.IsZero() && latestFilingDate.Before(now.UTC().AddDate(0, 0, -60)):
-		return "stale"
+		return "stale", "no IPO filing update for over 60 days", "medium"
 	case hasAmendment:
-		return "updating"
+		return "updating", "detected amendment filing", "high"
 	default:
-		return "new"
+		return "new", "detected initial IPO registration filing", "medium"
+	}
+}
+
+func validIPOStatus(status string) bool {
+	switch status {
+	case "new", "updating", "effective", "priced", "listed", "withdrawn", "stale":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -459,6 +538,9 @@ func sortIPOCompanies(items []IPOCompanyItem) {
 
 func (s *IPORadarService) notify(ctx context.Context, filing model.IPOFiling, settings IPORadarSettings) (bool, error) {
 	if !settings.NotifyEnabled {
+		return false, nil
+	}
+	if !shouldNotifyIPOFiling(filing, settings) {
 		return false, nil
 	}
 	cfg, err := s.configs.Telegram(ctx)
@@ -497,6 +579,19 @@ func (s *IPORadarService) notify(ctx context.Context, filing model.IPOFiling, se
 		return false, nil
 	}
 	return true, s.db.WithContext(ctx).Model(&model.IPOFiling{}).Where("filing_id = ?", filing.FilingID).Update("notified_at", &now).Error
+}
+
+func shouldNotifyIPOFiling(filing model.IPOFiling, settings IPORadarSettings) bool {
+	if len(settings.NotifyFormTypes) == 0 {
+		return true
+	}
+	form := strings.ToUpper(strings.TrimSpace(filing.FilingType))
+	for _, allowed := range settings.NotifyFormTypes {
+		if form == strings.ToUpper(strings.TrimSpace(allowed)) {
+			return true
+		}
+	}
+	return false
 }
 
 func ipoKeywordMatch(item sec.CurrentFilingResult, keywords []string) bool {

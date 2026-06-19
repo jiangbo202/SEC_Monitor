@@ -272,6 +272,25 @@ const messages = {
         filingCount: '申报数',
         firstFiling: '首次申报',
         latestUpdate: '最近更新',
+        statusReason: '判断依据',
+        statusSource: '状态来源',
+        finalTicker: '最终 Ticker',
+        overrideNote: '备注',
+        manualOverride: '手动校准',
+        companyDetail: 'IPO 公司详情',
+        timeline: 'IPO 时间线',
+        exportCompanies: '导出 IPO 公司',
+        exportFilings: '导出 IPO 文件',
+        qualitySummary: '当前载入 {total} 个 IPO 项目，其中 {incomplete} 个为中等置信度状态；展开公司可查看完整时间线。',
+        confidence: {
+          high: '高置信度',
+          medium: '中等置信度',
+          manual: '人工确认'
+        },
+        sources: {
+          system: '系统推断',
+          manual: '手动校准'
+        },
         tabs: {
           filings: '申报列表',
           companies: '公司视图'
@@ -381,6 +400,8 @@ const messages = {
         ipoLookbackDays: '扫描最近天数',
         ipoMaxResults: '每类最大条数',
         ipoNotifyEnabled: 'IPO申报提醒',
+        ipoNotifyFormTypes: '提醒类型',
+        ipoNotifyFormTypesPlaceholder: '留空表示全部，例如 EFFECT,424B4',
         ipoKeywords: '公司/标题关键词',
         ipoKeywordsPlaceholder: '留空表示不过滤，例如 biotech,spac,energy',
         quietHoursEnabled: '启用静默时间',
@@ -388,6 +409,8 @@ const messages = {
         quietHoursEnd: '静默结束',
         exportBackup: '导出与备份',
         exportFilings: '导出公告 CSV',
+        exportIPOCompanies: '导出 IPO 公司 CSV',
+        exportIPOFilings: '导出 IPO 文件 CSV',
         exportTargets: '导出标的 CSV',
         exportConfigs: '导出配置 JSON',
         exportAll: '导出备份 JSON'
@@ -696,6 +719,25 @@ const messages = {
         filingCount: 'Filings',
         firstFiling: 'First Filing',
         latestUpdate: 'Latest Update',
+        statusReason: 'Reason',
+        statusSource: 'Status Source',
+        finalTicker: 'Final Ticker',
+        overrideNote: 'Note',
+        manualOverride: 'Manual Override',
+        companyDetail: 'IPO Company Detail',
+        timeline: 'IPO Timeline',
+        exportCompanies: 'Export IPO Companies',
+        exportFilings: 'Export IPO Filings',
+        qualitySummary: '{total} IPO projects loaded. {incomplete} have medium-confidence status; expand a company to inspect its timeline.',
+        confidence: {
+          high: 'High confidence',
+          medium: 'Medium confidence',
+          manual: 'Manual'
+        },
+        sources: {
+          system: 'System inferred',
+          manual: 'Manual override'
+        },
         tabs: {
           filings: 'Filing List',
           companies: 'Company View'
@@ -805,6 +847,8 @@ const messages = {
         ipoLookbackDays: 'Lookback Days',
         ipoMaxResults: 'Max Per Type',
         ipoNotifyEnabled: 'IPO Alerts',
+        ipoNotifyFormTypes: 'Alert Types',
+        ipoNotifyFormTypesPlaceholder: 'Empty means all, e.g. EFFECT,424B4',
         ipoKeywords: 'Company/Title Keywords',
         ipoKeywordsPlaceholder: 'Empty means no filter, e.g. biotech,spac,energy',
         quietHoursEnabled: 'Enable Quiet Hours',
@@ -812,6 +856,8 @@ const messages = {
         quietHoursEnd: 'Quiet End',
         exportBackup: 'Export & Backup',
         exportFilings: 'Export Filings CSV',
+        exportIPOCompanies: 'Export IPO Companies CSV',
+        exportIPOFilings: 'Export IPO Filings CSV',
         exportTargets: 'Export Targets CSV',
         exportConfigs: 'Export Configs JSON',
         exportAll: 'Export Backup JSON'

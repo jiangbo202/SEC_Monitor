@@ -24,7 +24,7 @@ func TestRouterCreatesAndListsWatchTargets(t *testing.T) {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
-		&model.IPOFiling{},
+		&model.IPOFiling{}, &model.IPOCompanyOverride{},
 	); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestRouterServesWebAppFallback(t *testing.T) {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
-		&model.IPOFiling{},
+		&model.IPOFiling{}, &model.IPOCompanyOverride{},
 	); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}

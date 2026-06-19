@@ -95,7 +95,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
-		&model.IPOFiling{},
+		&model.IPOFiling{}, &model.IPOCompanyOverride{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -142,6 +142,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.GET("/filings", h.ListFilings)
 	r.POST("/filings/refresh", h.RefreshFilings)
 	r.GET("/ipo-companies", h.ListIPOCompanies)
+	r.PUT("/ipo-companies/:cik/override", h.UpdateIPOCompanyOverride)
 	r.GET("/ipo-filings", h.ListIPORadarFilings)
 	r.POST("/ipo-filings/refresh", h.RefreshIPORadar)
 	r.GET("/filings/cleanup-preview", h.PreviewFilingCleanup)
@@ -162,6 +163,8 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.POST("/tasks/:id/run", h.RunTask)
 	r.GET("/list-health", h.ListHealth)
 	r.GET("/exports/filings.csv", h.ExportFilingsCSV)
+	r.GET("/exports/ipo-companies.csv", h.ExportIPOCompaniesCSV)
+	r.GET("/exports/ipo-filings.csv", h.ExportIPORadarFilingsCSV)
 	r.GET("/exports/watch-targets.csv", h.ExportTargetsCSV)
 	r.GET("/exports/configs.json", h.ExportConfigsJSON)
 	r.GET("/exports/backup.json", h.ExportBackupJSON)
@@ -190,6 +193,16 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 		{name: "export filings csv", method: http.MethodGet, path: "/exports/filings.csv", seed: seedFiling, rawResponse: true, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if !strings.Contains(rec.Body.String(), "ticker,company_name") || !strings.Contains(rec.Body.String(), "AAPL") {
 				t.Fatalf("csv body = %s", rec.Body.String())
+			}
+		}},
+		{name: "export ipo companies csv", method: http.MethodGet, path: "/exports/ipo-companies.csv", seed: seedIPOFiling, rawResponse: true, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), "status_reason") || !strings.Contains(rec.Body.String(), "Acme Space Inc.") {
+				t.Fatalf("ipo companies csv body = %s", rec.Body.String())
+			}
+		}},
+		{name: "export ipo filings csv", method: http.MethodGet, path: "/exports/ipo-filings.csv", seed: seedIPOFiling, rawResponse: true, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), "cik,company_name") || !strings.Contains(rec.Body.String(), "Acme Space Inc.") {
+				t.Fatalf("ipo filings csv body = %s", rec.Body.String())
 			}
 		}},
 		{name: "export targets csv", method: http.MethodGet, path: "/exports/watch-targets.csv", seed: seedTarget, rawResponse: true, wantStatus: http.StatusOK},
@@ -233,6 +246,11 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 		{name: "list ipo companies", method: http.MethodGet, path: "/ipo-companies?status=new", seed: seedIPOFiling, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if !strings.Contains(rec.Body.String(), `"status":"new"`) || !strings.Contains(rec.Body.String(), `"filing_count":1`) {
 				t.Fatalf("body = %s, want ipo company status", rec.Body.String())
+			}
+		}},
+		{name: "update ipo company override", method: http.MethodPut, path: "/ipo-companies/0000000001/override", body: `{"status_override":"withdrawn","final_ticker":"ACME","note":"manual"}`, seed: seedIPOFiling, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"status_override":"withdrawn"`) || !strings.Contains(rec.Body.String(), `"final_ticker":"ACME"`) {
+				t.Fatalf("body = %s, want override", rec.Body.String())
 			}
 		}},
 		{name: "sync target", method: http.MethodPost, path: "/targets/1/sync", seed: seedTarget, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {

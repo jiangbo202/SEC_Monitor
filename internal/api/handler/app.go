@@ -246,6 +246,24 @@ func (h *AppHandler) ListIPOCompanies(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) UpdateIPOCompanyOverride(c *gin.Context) {
+	if h.IPO == nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	var input service.IPOCompanyOverrideInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := h.IPO.UpsertCompanyOverride(c.Request.Context(), c.Param("cik"), input)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) RefreshIPORadar(c *gin.Context) {
 	if h.IPO == nil {
 		Error(c, service.ErrValidation)
@@ -257,6 +275,71 @@ func (h *AppHandler) RefreshIPORadar(c *gin.Context) {
 		return
 	}
 	OK(c, result)
+}
+
+func (h *AppHandler) ExportIPOCompaniesCSV(c *gin.Context) {
+	if h.IPO == nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := h.IPO.ListCompanies(c.Request.Context(), service.IPOCompanyFilter{Page: 1, PageSize: 10000}, time.Now().UTC())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="sec-monitor-ipo-companies.csv"`)
+	writer := csv.NewWriter(c.Writer)
+	_ = writer.Write([]string{"cik", "company_name", "status", "status_reason", "status_confidence", "status_source", "matched_ticker", "final_ticker", "filing_count", "first_filing_date", "latest_filing_date", "latest_filing_type", "latest_title", "latest_filing_url"})
+	for _, item := range result.Items {
+		_ = writer.Write([]string{
+			item.CIK,
+			item.CompanyName,
+			item.Status,
+			item.StatusReason,
+			item.StatusConfidence,
+			item.StatusSource,
+			item.MatchedTicker,
+			item.FinalTicker,
+			strconv.Itoa(item.FilingCount),
+			item.FirstFilingDate.Format("2006-01-02"),
+			item.LatestFilingDate.Format("2006-01-02"),
+			item.LatestFilingType,
+			item.LatestTitle,
+			item.LatestFilingURL,
+		})
+	}
+	writer.Flush()
+}
+
+func (h *AppHandler) ExportIPORadarFilingsCSV(c *gin.Context) {
+	var filings []model.IPOFiling
+	if err := h.DB.WithContext(c.Request.Context()).Order("cik ASC, accepted_at ASC, filing_date ASC, id ASC").Find(&filings).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="sec-monitor-ipo-filings.csv"`)
+	writer := csv.NewWriter(c.Writer)
+	_ = writer.Write([]string{"cik", "company_name", "filing_type", "filing_date", "accepted_at", "synced_at", "title", "filing_url", "filing_id"})
+	for _, filing := range filings {
+		acceptedAt := ""
+		if filing.AcceptedAt != nil {
+			acceptedAt = filing.AcceptedAt.Format(time.RFC3339)
+		}
+		_ = writer.Write([]string{
+			filing.CIK,
+			filing.CompanyName,
+			filing.FilingType,
+			filing.FilingDate.Format("2006-01-02"),
+			acceptedAt,
+			filing.CreatedAt.Format(time.RFC3339),
+			filing.Title,
+			filing.FilingURL,
+			filing.FilingID,
+		})
+	}
+	writer.Flush()
 }
 
 func (h *AppHandler) ListSyncRuns(c *gin.Context) {

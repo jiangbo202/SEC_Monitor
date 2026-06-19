@@ -77,6 +77,9 @@
           <el-form-item :label="t('pages.configs.ipoNotifyEnabled')">
             <el-switch v-model="ipoForm.notify_enabled" />
           </el-form-item>
+          <el-form-item :label="t('pages.configs.ipoNotifyFormTypes')">
+            <el-input v-model="ipoForm.notify_form_types" :placeholder="t('pages.configs.ipoNotifyFormTypesPlaceholder')" />
+          </el-form-item>
           <el-form-item :label="t('pages.configs.ipoKeywords')">
             <el-input v-model="ipoForm.keywords" :placeholder="t('pages.configs.ipoKeywordsPlaceholder')" />
           </el-form-item>
@@ -164,6 +167,8 @@
         </template>
         <div class="export-actions">
           <el-button @click="download('/api/exports/filings.csv')">{{ t('pages.configs.exportFilings') }}</el-button>
+          <el-button @click="download('/api/exports/ipo-companies.csv')">{{ t('pages.configs.exportIPOCompanies') }}</el-button>
+          <el-button @click="download('/api/exports/ipo-filings.csv')">{{ t('pages.configs.exportIPOFilings') }}</el-button>
           <el-button @click="download('/api/exports/watch-targets.csv')">{{ t('pages.configs.exportTargets') }}</el-button>
           <el-button @click="download('/api/exports/configs.json')">{{ t('pages.configs.exportConfigs') }}</el-button>
           <el-button type="primary" @click="download('/api/exports/backup.json')">{{ t('pages.configs.exportAll') }}</el-button>
@@ -204,6 +209,7 @@ const ipoForm = reactive({
   lookback_days: 7,
   max_results: 100,
   notify_enabled: true,
+  notify_form_types: '',
   keywords: ''
 })
 
@@ -286,6 +292,7 @@ async function load() {
     ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))
     ipoForm.max_results = Number(configValue(configs, 'ipo.max_results', '100'))
     ipoForm.notify_enabled = configValue(configs, 'ipo.notify_enabled', 'true') === 'true'
+    ipoForm.notify_form_types = configValue(configs, 'ipo.notify_form_types', '')
     ipoForm.keywords = configValue(configs, 'ipo.keywords', '')
   } finally {
     loading.value = false
@@ -314,6 +321,7 @@ async function save() {
       { key: 'ipo.lookback_days', value: String(ipoForm.lookback_days), value_type: 'int', category: 'ipo', encrypted: false },
       { key: 'ipo.max_results', value: String(ipoForm.max_results), value_type: 'int', category: 'ipo', encrypted: false },
       { key: 'ipo.notify_enabled', value: String(ipoForm.notify_enabled), value_type: 'bool', category: 'ipo', encrypted: false },
+      { key: 'ipo.notify_form_types', value: ipoForm.notify_form_types, value_type: 'string', category: 'ipo', encrypted: false },
       { key: 'ipo.keywords', value: ipoForm.keywords, value_type: 'string', category: 'ipo', encrypted: false }
     ])
     store.applyDefaultLocale(uiForm.default_locale)

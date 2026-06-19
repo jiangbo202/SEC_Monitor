@@ -47,12 +47,13 @@ type NotificationSettings struct {
 }
 
 type IPORadarSettings struct {
-	Enabled       bool
-	FormTypes     []string
-	LookbackDays  int
-	MaxResults    int
-	NotifyEnabled bool
-	Keywords      []string
+	Enabled         bool
+	FormTypes       []string
+	LookbackDays    int
+	MaxResults      int
+	NotifyEnabled   bool
+	NotifyFormTypes []string
+	Keywords        []string
 }
 
 func NewConfigService(db *gorm.DB, audit *AuditService) *ConfigService {
@@ -80,6 +81,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "ipo.lookback_days", Value: "7", ValueType: "int", Category: "ipo"},
 		{Key: "ipo.max_results", Value: "100", ValueType: "int", Category: "ipo"},
 		{Key: "ipo.notify_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
+		{Key: "ipo.notify_form_types", Value: "", ValueType: "string", Category: "ipo"},
 		{Key: "ipo.keywords", Value: "", ValueType: "string", Category: "ipo"},
 	}, "system")
 }
@@ -279,6 +281,10 @@ func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings,
 	if err != nil {
 		return IPORadarSettings{}, err
 	}
+	notifyFormTypesRaw, _, err := s.GetValue(ctx, "ipo.notify_form_types")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
 	enabled, _ := strconv.ParseBool(enabledRaw)
 	notify, _ := strconv.ParseBool(notifyRaw)
 	lookback, _ := strconv.Atoi(lookbackRaw)
@@ -294,12 +300,13 @@ func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings,
 		formTypes = []string{"S-1", "S-1/A", "F-1", "F-1/A", "S-1MEF"}
 	}
 	return IPORadarSettings{
-		Enabled:       enabled,
-		FormTypes:     formTypes,
-		LookbackDays:  lookback,
-		MaxResults:    maxResults,
-		NotifyEnabled: notify,
-		Keywords:      splitConfigList(keywordsRaw),
+		Enabled:         enabled,
+		FormTypes:       formTypes,
+		LookbackDays:    lookback,
+		MaxResults:      maxResults,
+		NotifyEnabled:   notify,
+		NotifyFormTypes: splitConfigList(notifyFormTypesRaw),
+		Keywords:        splitConfigList(keywordsRaw),
 	}, nil
 }
 

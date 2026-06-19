@@ -82,6 +82,12 @@ export interface IPOCompany {
   filing_count: number
   notified: boolean
   matched_ticker?: string
+  status_reason: string
+  status_confidence: string
+  status_source: string
+  final_ticker?: string
+  override_note?: string
+  override_updated_at?: string | null
 }
 
 export interface IPORadarRefreshResult {

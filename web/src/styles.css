@@ -377,6 +377,20 @@ h1 {
   gap: 16px;
 }
 
+.quality-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.detail-drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .dashboard-panel {
   min-width: 0;
 }

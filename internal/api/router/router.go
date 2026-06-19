@@ -85,6 +85,7 @@ func New(deps Dependencies) *gin.Engine {
 		api.GET("/filings", app.ListFilings)
 		api.POST("/filings/refresh", app.RefreshFilings)
 		api.GET("/ipo-companies", app.ListIPOCompanies)
+		api.PUT("/ipo-companies/:cik/override", app.UpdateIPOCompanyOverride)
 		api.GET("/ipo-filings", app.ListIPORadarFilings)
 		api.POST("/ipo-filings/refresh", app.RefreshIPORadar)
 		api.GET("/filings/cleanup-preview", app.PreviewFilingCleanup)
@@ -110,6 +111,8 @@ func New(deps Dependencies) *gin.Engine {
 
 		api.GET("/system-health", app.ListHealth)
 		api.GET("/exports/filings.csv", app.ExportFilingsCSV)
+		api.GET("/exports/ipo-companies.csv", app.ExportIPOCompaniesCSV)
+		api.GET("/exports/ipo-filings.csv", app.ExportIPORadarFilingsCSV)
 		api.GET("/exports/watch-targets.csv", app.ExportTargetsCSV)
 		api.GET("/exports/configs.json", app.ExportConfigsJSON)
 		api.GET("/exports/backup.json", app.ExportBackupJSON)

@@ -20,7 +20,7 @@ SEC Monitor is a local-first SEC intelligence monitoring system for tracking US 
 - SEC filing list with filters, pagination, sortable filing date, publish time, sync time, ticker, and filing type.
 - Saved filing views stored locally in the browser.
 - Major Event Radar for 8-K, S-1, S-3, 424B, 13D, and other high-signal filings.
-- IPO Monitor scans SEC current filings for S-1, F-1, S-1MEF, and related IPO/offering submissions; after discovering a company, it backfills S-1/F-1, amendments, EFFECT, 424B, and withdrawal-related filings by CIK; it supports both filing-list and company views, and labels lifecycle status such as new, updating, effective, priced, listed, withdrawn, and stale.
+- IPO Monitor scans SEC current filings for S-1, F-1, S-1MEF, and related IPO/offering submissions; after discovering a company, it backfills S-1/F-1, amendments, EFFECT, 424B, and withdrawal-related filings by CIK; it supports filing-list, company, and detail-drawer views with status reasons, confidence, manual overrides, and lifecycle labels such as new, updating, effective, priced, listed, withdrawn, and stale.
 - Insider Trading page for Form 3/4/5 ownership-change disclosures.
 - Sync history and scheduling with built-in `sec_filing_sync` and `ipo_radar_sync` jobs, manual run, enable/disable, and cron editing.
 - Dashboard overview with separate Watch Target and IPO Monitor KPI sections, including sync health, recent filings, in-progress IPO companies, IPO status distribution, and notification status.
@@ -195,14 +195,17 @@ IPO Monitor settings:
 - `ipo.lookback_days`: keeps only current filing results from recent N days.
 - `ipo.max_results`: max rows per form type. The SEC current-filing endpoint is capped at 100 here.
 - `ipo.notify_enabled`: sends Telegram alerts for newly stored IPO Monitor filings.
+- `ipo.notify_form_types`: only alert on selected IPO form types, for example `EFFECT,424B4`; empty means all.
 - `ipo.keywords`: comma-separated company/title keyword filter. Empty means no keyword filter.
 
 IPO page notes:
 
 - `Company View`: groups IPO projects by CIK/company. Status is inferred by the system from locally stored filings; it is not an official SEC field.
+- Status includes reason, confidence, and source. The detail drawer supports manual status, final ticker, and note overrides.
 - Expanded company filings are sorted by `SEC Accepted At` from oldest to newest, making the IPO timeline easier to review.
 - `Filing List`: sorts by local sync time and SEC accepted time from newest to oldest, making recent discoveries easier to inspect.
 - `In Progress` excludes priced, listed, and withdrawn/terminated projects.
+- IPO company CSV and IPO filing CSV exports are available.
 
 Environment variables:
 

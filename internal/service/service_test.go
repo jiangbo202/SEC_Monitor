@@ -96,6 +96,7 @@ func testDB(t *testing.T) *gorm.DB {
 		&model.OperationLog{},
 		&model.NotificationLog{},
 		&model.IPOFiling{},
+		&model.IPOCompanyOverride{},
 	); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
@@ -353,6 +354,25 @@ func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 			wantNew:     1,
 			wantStored:  1,
 			wantLogs:    1,
+		},
+		{
+			name: "skips notification when ipo notify form type does not match",
+			configs: []ConfigInput{
+				{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+				{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram", Encrypted: true},
+				{Key: "telegram.chat_id", Value: "10001", ValueType: "string", Category: "telegram"},
+				{Key: "ipo.notify_form_types", Value: "EFFECT,424B4", ValueType: "string", Category: "ipo"},
+			},
+			secFilings: []sec.CurrentFilingResult{{
+				FilingID:    "notify-filtered",
+				CompanyName: "Filtered Notify Inc.",
+				FilingType:  "S-1",
+				FilingDate:  now,
+				FilingURL:   "https://www.sec.gov/filter",
+			}},
+			wantNew:    1,
+			wantStored: 1,
+			wantLogs:   0,
 		},
 	}
 
@@ -657,6 +677,53 @@ func TestIPORadarServiceListCompaniesTableDriven(t *testing.T) {
 			item := got.Items[0]
 			if item.Status != tt.wantStatus || item.LatestFilingType != tt.wantLatest {
 				t.Fatalf("company = %+v, want status=%s latest=%s", item, tt.wantStatus, tt.wantLatest)
+			}
+		})
+	}
+}
+
+func TestIPORadarCompanyOverrideTableDriven(t *testing.T) {
+	now := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		input      IPOCompanyOverrideInput
+		wantStatus string
+		wantSource string
+	}{
+		{
+			name:       "manual status override wins",
+			input:      IPOCompanyOverrideInput{StatusOverride: "withdrawn", FinalTicker: "ACME", Note: "confirmed withdrawn"},
+			wantStatus: "withdrawn",
+			wantSource: "manual",
+		},
+		{
+			name:       "final ticker without status keeps system status",
+			input:      IPOCompanyOverrideInput{FinalTicker: "ACME"},
+			wantStatus: "new",
+			wantSource: "system",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			if err := db.Create(&model.IPOFiling{
+				FilingID: "s1-" + tt.name, CIK: "0000000001", CompanyName: "Acme Space Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.gov/acme/s1",
+			}).Error; err != nil {
+				t.Fatalf("seed ipo filing: %v", err)
+			}
+			svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+			if _, err := svc.UpsertCompanyOverride(context.Background(), "0000000001", tt.input); err != nil {
+				t.Fatalf("UpsertCompanyOverride: %v", err)
+			}
+			got, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 10}, now)
+			if err != nil {
+				t.Fatalf("ListCompanies: %v", err)
+			}
+			if got.Total != 1 {
+				t.Fatalf("total = %d, want 1", got.Total)
+			}
+			if got.Items[0].Status != tt.wantStatus || got.Items[0].StatusSource != tt.wantSource {
+				t.Fatalf("company = %+v, want status=%s source=%s", got.Items[0], tt.wantStatus, tt.wantSource)
 			}
 		})
 	}

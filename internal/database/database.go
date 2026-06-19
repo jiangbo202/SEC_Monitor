@@ -24,6 +24,7 @@ func Migrate(db *gorm.DB) error {
 		&model.WatchTarget{},
 		&model.Filing{},
 		&model.IPOFiling{},
+		&model.IPOCompanyOverride{},
 		&model.SyncRun{},
 		&model.SyncRunDetail{},
 		&model.TaskConfig{},
