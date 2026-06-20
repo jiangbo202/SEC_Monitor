@@ -29,7 +29,15 @@
           <el-form-item><el-button :loading="companiesLoading" @click="loadCompanies">{{ t('common.query') }}</el-button></el-form-item>
         </el-form>
 
-        <el-table :data="companies" v-loading="companiesLoading" border :empty-text="t('pages.ipoRadar.emptyCompanies')" @expand-change="onExpandChange">
+        <el-table
+          :data="companies"
+          v-loading="companiesLoading"
+          border
+          :empty-text="t('pages.ipoRadar.emptyCompanies')"
+          :default-sort="{ prop: 'latest_update', order: 'descending' }"
+          @expand-change="onExpandChange"
+          @sort-change="onCompanySortChange"
+        >
           <el-table-column type="expand">
             <template #default="{ row }">
               <el-table :data="filingDetails[row.cik] || []" border class="sync-detail-table">
@@ -57,14 +65,13 @@
               </el-table>
             </template>
           </el-table-column>
-          <el-table-column prop="status" :label="t('common.status')" width="130">
+          <el-table-column prop="status" :label="t('common.status')" width="130" sortable="custom">
             <template #default="{ row }">
               <el-tooltip :content="statusReasonText(row)" placement="top">
                 <el-tag :type="ipoStatusType(row.status)" effect="plain">{{ ipoStatusLabel(row.status) }}</el-tag>
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column prop="status_reason" :label="t('pages.ipoRadar.statusReason')" min-width="180" show-overflow-tooltip />
           <el-table-column prop="company_name" :label="t('common.companyName')" min-width="220" show-overflow-tooltip />
           <el-table-column prop="cik" label="CIK" width="130" />
           <el-table-column prop="latest_filing_type" :label="t('pages.ipoRadar.latestType')" width="120">
@@ -74,7 +81,7 @@
           <el-table-column prop="first_filing_date" :label="t('pages.ipoRadar.firstFiling')" width="130">
             <template #default="{ row }">{{ formatDate(row.first_filing_date) }}</template>
           </el-table-column>
-          <el-table-column prop="latest_accepted_at" :label="t('pages.ipoRadar.latestUpdate')" width="170">
+          <el-table-column prop="latest_update" :label="t('pages.ipoRadar.latestUpdate')" width="170" sortable="custom">
             <template #default="{ row }">{{ formatDateTime(row.latest_accepted_at || row.latest_filing_date) }}</template>
           </el-table-column>
           <el-table-column prop="latest_title" :label="t('common.title')" min-width="260">
@@ -220,6 +227,7 @@ const companiesPage = ref(1)
 const pageSize = 20
 const filingFilters = reactive({ company_name: '', cik: '', filing_type: '', notified: '' })
 const companyFilters = reactive({ company_name: '', cik: '', status: '' })
+const companySort = reactive({ sort_by: 'latest_update', sort_order: 'desc' })
 const filingDetails = ref<Record<string, IPOFiling[]>>({})
 const selectedCompany = ref<IPOCompany | null>(null)
 const detailVisible = ref(false)
@@ -245,12 +253,19 @@ async function loadFilings() {
 async function loadCompanies() {
   companiesLoading.value = true
   try {
-    const res = await apiClient.get<ApiResponse<PageResult<IPOCompany>>>('/ipo-companies', { params: { ...companyFilters, page: companiesPage.value, page_size: pageSize } })
+    const res = await apiClient.get<ApiResponse<PageResult<IPOCompany>>>('/ipo-companies', { params: { ...companyFilters, ...companySort, page: companiesPage.value, page_size: pageSize } })
     companies.value = res.data.data.items
     companiesTotal.value = res.data.data.total
   } finally {
     companiesLoading.value = false
   }
+}
+
+function onCompanySortChange({ prop, order }: { prop?: string, order?: string | null }) {
+  companySort.sort_by = prop === 'status' ? 'status' : 'latest_update'
+  companySort.sort_order = order === 'ascending' ? 'asc' : 'desc'
+  companiesPage.value = 1
+  loadCompanies()
 }
 
 async function handleTabChange() {

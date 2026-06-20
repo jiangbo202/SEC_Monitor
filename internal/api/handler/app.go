@@ -236,6 +236,8 @@ func (h *AppHandler) ListIPOCompanies(c *gin.Context) {
 		CompanyName: c.Query("company_name"),
 		CIK:         c.Query("cik"),
 		Status:      c.Query("status"),
+		SortBy:      c.Query("sort_by"),
+		SortOrder:   c.Query("sort_order"),
 		Page:        page,
 		PageSize:    pageSize,
 	}, time.Now().UTC())

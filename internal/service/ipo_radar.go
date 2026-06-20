@@ -36,6 +36,8 @@ type IPOCompanyFilter struct {
 	CompanyName string
 	CIK         string
 	Status      string
+	SortBy      string
+	SortOrder   string
 	Page        int
 	PageSize    int
 }
@@ -172,7 +174,7 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 		}
 		items = append(items, item)
 	}
-	sortIPOCompanies(items)
+	sortIPOCompanies(items, filter.SortBy, filter.SortOrder)
 
 	total := int64(len(items))
 	start := (page - 1) * pageSize
@@ -516,7 +518,7 @@ func validIPOStatus(status string) bool {
 	}
 }
 
-func sortIPOCompanies(items []IPOCompanyItem) {
+func sortIPOCompanies(items []IPOCompanyItem, sortBy string, sortOrder string) {
 	statusRank := map[string]int{
 		"new":       0,
 		"updating":  1,
@@ -526,14 +528,45 @@ func sortIPOCompanies(items []IPOCompanyItem) {
 		"withdrawn": 5,
 		"stale":     6,
 	}
+	sortBy = strings.ToLower(strings.TrimSpace(sortBy))
+	if sortBy != "status" {
+		sortBy = "latest_update"
+	}
+	ascending := strings.EqualFold(strings.TrimSpace(sortOrder), "asc")
 	sort.SliceStable(items, func(i, j int) bool {
-		leftRank := statusRank[items[i].Status]
-		rightRank := statusRank[items[j].Status]
-		if leftRank != rightRank {
-			return leftRank < rightRank
+		left, right := items[i], items[j]
+		if sortBy == "status" {
+			leftRank := statusRank[left.Status]
+			rightRank := statusRank[right.Status]
+			if leftRank != rightRank {
+				if ascending {
+					return leftRank < rightRank
+				}
+				return leftRank > rightRank
+			}
 		}
-		return items[i].LatestFilingDate.After(items[j].LatestFilingDate)
+		leftActivity := ipoCompanyLatestActivity(left)
+		rightActivity := ipoCompanyLatestActivity(right)
+		if !leftActivity.Equal(rightActivity) {
+			if sortBy == "latest_update" && ascending {
+				return leftActivity.Before(rightActivity)
+			}
+			return leftActivity.After(rightActivity)
+		}
+		leftName := strings.ToLower(left.CompanyName)
+		rightName := strings.ToLower(right.CompanyName)
+		if leftName != rightName {
+			return leftName < rightName
+		}
+		return left.CIK < right.CIK
 	})
+}
+
+func ipoCompanyLatestActivity(item IPOCompanyItem) time.Time {
+	if item.LatestAcceptedAt != nil && !item.LatestAcceptedAt.IsZero() {
+		return *item.LatestAcceptedAt
+	}
+	return item.LatestFilingDate
 }
 
 func (s *IPORadarService) notify(ctx context.Context, filing model.IPOFiling, settings IPORadarSettings) (bool, error) {

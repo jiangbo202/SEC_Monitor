@@ -682,6 +682,39 @@ func TestIPORadarServiceListCompaniesTableDriven(t *testing.T) {
 	}
 }
 
+func TestSortIPOCompaniesTableDriven(t *testing.T) {
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	items := []IPOCompanyItem{
+		{CIK: "3", CompanyName: "Gamma", Status: "new", LatestFilingDate: now.AddDate(0, 0, -1), LatestAcceptedAt: ptrTime(now.Add(-time.Hour))},
+		{CIK: "2", CompanyName: "Beta", Status: "stale", LatestFilingDate: now, LatestAcceptedAt: ptrTime(now.Add(-2 * time.Hour))},
+		{CIK: "1", CompanyName: "Alpha", Status: "updating", LatestFilingDate: now.Add(30 * time.Minute)},
+		{CIK: "4", CompanyName: "Alpha", Status: "new", LatestFilingDate: now.AddDate(0, 0, -1), LatestAcceptedAt: ptrTime(now.Add(-time.Hour))},
+	}
+	tests := []struct {
+		name      string
+		sortBy    string
+		sortOrder string
+		wantCIKs  []string
+	}{
+		{name: "defaults to latest SEC activity descending", wantCIKs: []string{"1", "4", "3", "2"}},
+		{name: "sorts latest SEC activity ascending", sortBy: "latest_update", sortOrder: "asc", wantCIKs: []string{"2", "4", "3", "1"}},
+		{name: "sorts status ascending with latest activity tie break", sortBy: "status", sortOrder: "asc", wantCIKs: []string{"4", "3", "1", "2"}},
+		{name: "sorts status descending with latest activity tie break", sortBy: "status", sortOrder: "desc", wantCIKs: []string{"2", "1", "4", "3"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := append([]IPOCompanyItem(nil), items...)
+			sortIPOCompanies(got, tt.sortBy, tt.sortOrder)
+			for index, wantCIK := range tt.wantCIKs {
+				if got[index].CIK != wantCIK {
+					t.Fatalf("item %d cik = %s, want %s; items=%+v", index, got[index].CIK, wantCIK, got)
+				}
+			}
+		})
+	}
+}
+
 func TestIPORadarCompanyOverrideTableDriven(t *testing.T) {
 	now := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
