@@ -80,6 +80,7 @@
       <el-table-column prop="targets_checked" :label="t('common.target')" width="80" align="right" />
       <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" align="right" />
       <el-table-column prop="failed_targets" :label="t('status.failed')" width="80" align="right" />
+      <el-table-column prop="warning_message" :label="t('pages.syncRuns.warning')" min-width="200" show-overflow-tooltip />
       <el-table-column prop="error_message" :label="t('common.error')" min-width="220" />
     </el-table>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />

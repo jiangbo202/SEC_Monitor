@@ -25,11 +25,15 @@ func Migrate(db *gorm.DB) error {
 		&model.Filing{},
 		&model.IPOFiling{},
 		&model.IPOCompanyOverride{},
+		&model.IPOCompanyMarketData{},
+		&model.IPOOfferingEvent{},
 		&model.SyncRun{},
 		&model.SyncRunDetail{},
 		&model.TaskConfig{},
 		&model.SystemConfig{},
 		&model.OperationLog{},
 		&model.NotificationLog{},
+		&model.NotificationBatch{},
+		&model.NotificationBatchItem{},
 	)
 }

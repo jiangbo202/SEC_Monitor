@@ -61,21 +61,28 @@ type CurrentFilingsClient interface {
 	ListFilings(ctx context.Context, query FilingQuery) ([]FilingResult, error)
 }
 
+type IPOMarketClient interface {
+	ListListedCompanies(ctx context.Context) ([]ListedCompany, error)
+	FetchFilingDocument(ctx context.Context, filingURL string) (string, error)
+}
+
 type HTTPClient struct {
-	BaseURL           string
-	CompanyTickersURL string
-	CurrentFilingsURL string
-	UserAgent         string
-	Client            *http.Client
+	BaseURL                   string
+	CompanyTickersURL         string
+	CompanyTickersExchangeURL string
+	CurrentFilingsURL         string
+	UserAgent                 string
+	Client                    *http.Client
 }
 
 func NewHTTPClient(baseURL string, userAgent string, timeout time.Duration) *HTTPClient {
 	return &HTTPClient{
-		BaseURL:           strings.TrimRight(baseURL, "/"),
-		CompanyTickersURL: "https://www.sec.gov/files/company_tickers.json",
-		CurrentFilingsURL: "https://www.sec.gov/cgi-bin/browse-edgar",
-		UserAgent:         userAgent,
-		Client:            &http.Client{Timeout: timeout},
+		BaseURL:                   strings.TrimRight(baseURL, "/"),
+		CompanyTickersURL:         "https://www.sec.gov/files/company_tickers.json",
+		CompanyTickersExchangeURL: "https://www.sec.gov/files/company_tickers_exchange.json",
+		CurrentFilingsURL:         "https://www.sec.gov/cgi-bin/browse-edgar",
+		UserAgent:                 userAgent,
+		Client:                    &http.Client{Timeout: timeout},
 	}
 }
 

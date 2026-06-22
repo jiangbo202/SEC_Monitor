@@ -95,7 +95,8 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
-		&model.IPOFiling{}, &model.IPOCompanyOverride{},
+		&model.NotificationBatch{}, &model.NotificationBatchItem{},
+		&model.IPOFiling{}, &model.IPOCompanyOverride{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -117,16 +118,17 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 			Database: config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"},
 			SEC:      config.SECConfig{UserAgent: "sec-monitor-test test@example.com"},
 		},
-		DB:           db,
-		Targets:      targets,
-		Configs:      configs,
-		Tasks:        tasks,
-		Filings:      filings,
-		IPO:          ipoRadar,
-		SEC:          fakeSECClient{},
-		Audit:        audit,
-		Notification: service.NewNotificationService(db),
-		Scheduler:    sched,
+		DB:                db,
+		Targets:           targets,
+		Configs:           configs,
+		Tasks:             tasks,
+		Filings:           filings,
+		IPO:               ipoRadar,
+		SEC:               fakeSECClient{},
+		Audit:             audit,
+		Notification:      service.NewNotificationService(db),
+		NotificationBatch: service.NewNotificationBatchService(db, fakeNotifier{}, configs),
+		Scheduler:         sched,
 	}
 	r := gin.New()
 	r.GET("/healthz", Health)
@@ -142,6 +144,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.GET("/filings", h.ListFilings)
 	r.POST("/filings/refresh", h.RefreshFilings)
 	r.GET("/ipo-companies", h.ListIPOCompanies)
+	r.GET("/ipo-companies/:cik/offerings", h.ListIPOOfferingEvents)
 	r.PUT("/ipo-companies/:cik/override", h.UpdateIPOCompanyOverride)
 	r.GET("/ipo-filings", h.ListIPORadarFilings)
 	r.POST("/ipo-filings/refresh", h.RefreshIPORadar)
@@ -158,6 +161,8 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.POST("/telegram/test", h.TestTelegram)
 	r.GET("/operation-logs", h.ListOperationLogs)
 	r.GET("/notification-logs", h.ListNotificationLogs)
+	r.GET("/notification-batches", h.ListNotificationBatches)
+	r.GET("/notification-batches/:id/items", h.ListNotificationBatchItems)
 	r.GET("/tasks", h.ListTaskConfigs)
 	r.PUT("/tasks/:id", h.UpdateTaskConfig)
 	r.POST("/tasks/:id/run", h.RunTask)
@@ -248,11 +253,19 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 				t.Fatalf("body = %s, want ipo company status", rec.Body.String())
 			}
 		}},
-		{name: "update ipo company override", method: http.MethodPut, path: "/ipo-companies/0000000001/override", body: `{"status_override":"withdrawn","final_ticker":"ACME","note":"manual"}`, seed: seedIPOFiling, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
-			if !strings.Contains(rec.Body.String(), `"status_override":"withdrawn"`) || !strings.Contains(rec.Body.String(), `"final_ticker":"ACME"`) {
+		{name: "list ipo offering events", method: http.MethodGet, path: "/ipo-companies/0000000001/offerings?page=1&page_size=10", seed: seedIPOOfferingEvent, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"offering_type":"initial"`) {
+				t.Fatalf("body = %s, want offering event", rec.Body.String())
+			}
+		}},
+		{name: "update ipo company override", method: http.MethodPut, path: "/ipo-companies/0000000001/override", body: `{"status_override":"withdrawn","final_ticker":"ACME","exchange":"NYSE","offer_price":"20.00","shares_offered":2500000,"listing_date":"2026-07-01","note":"manual"}`, seed: seedIPOFiling, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"status_override":"withdrawn"`) || !strings.Contains(rec.Body.String(), `"final_ticker":"ACME"`) || !strings.Contains(rec.Body.String(), `"exchange":"NYSE"`) || !strings.Contains(rec.Body.String(), `"offer_price":"20.00"`) {
 				t.Fatalf("body = %s, want override", rec.Body.String())
 			}
 		}},
+		{name: "reject invalid ipo offer price", method: http.MethodPut, path: "/ipo-companies/0000000001/override", body: `{"offer_price":"invalid"}`, seed: seedIPOFiling, wantStatus: http.StatusBadRequest},
+		{name: "reject invalid ipo shares", method: http.MethodPut, path: "/ipo-companies/0000000001/override", body: `{"shares_offered":-1}`, seed: seedIPOFiling, wantStatus: http.StatusBadRequest},
+		{name: "reject invalid ipo listing date", method: http.MethodPut, path: "/ipo-companies/0000000001/override", body: `{"listing_date":"07/01/2026"}`, seed: seedIPOFiling, wantStatus: http.StatusBadRequest},
 		{name: "sync target", method: http.MethodPost, path: "/targets/1/sync", seed: seedTarget, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if !strings.Contains(rec.Body.String(), `"new_filings":1`) {
 				t.Fatalf("body = %s, want new_filings", rec.Body.String())
@@ -285,6 +298,16 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 		}},
 		{name: "list operation logs", method: http.MethodGet, path: "/operation-logs?action=create", seed: seedTarget, wantStatus: http.StatusOK},
 		{name: "list notification logs", method: http.MethodGet, path: "/notification-logs?status=success&channel=telegram", seed: seedNotification, wantStatus: http.StatusOK},
+		{name: "list notification batches", method: http.MethodGet, path: "/notification-batches?source=filing&status=sent&trigger=scheduler", seed: seedNotificationBatch, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"source":"filing"`) || !strings.Contains(rec.Body.String(), `"item_count":1`) {
+				t.Fatalf("body = %s, want notification batch", rec.Body.String())
+			}
+		}},
+		{name: "list notification batch items", method: http.MethodGet, path: "/notification-batches/1/items", seed: seedNotificationBatch, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"filing_id":"batch-filing"`) {
+				t.Fatalf("body = %s, want notification batch item", rec.Body.String())
+			}
+		}},
 		{name: "list tasks", method: http.MethodGet, path: "/tasks", wantStatus: http.StatusOK},
 		{name: "update task reloads scheduler", method: http.MethodPut, path: "/tasks/1", body: `{"cron_expr":"*/30 * * * *","enabled":false}`, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if sched.reloadCalls != 1 {
@@ -492,6 +515,13 @@ func seedIPOFiling(t *testing.T, db *gorm.DB) {
 	}
 }
 
+func seedIPOOfferingEvent(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Create(&model.IPOOfferingEvent{FilingID: "offering-1", CIK: "0000000001", CompanyName: "Acme Inc.", OfferingType: "initial", ParseStatus: "parsed", OfferPrice: "16.00", FilingDate: time.Now().UTC(), ParserVersion: 4}).Error; err != nil {
+		t.Fatalf("seed ipo offering event: %v", err)
+	}
+}
+
 func seedTelegramConfig(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	if err := service.NewConfigService(db, service.NewAuditService(db)).UpsertMany(context.Background(), []service.ConfigInput{
@@ -518,6 +548,18 @@ func seedNotification(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	if err := db.Create(&model.NotificationLog{FilingID: "f1", Channel: "telegram", Status: "success"}).Error; err != nil {
 		t.Fatalf("seed notification: %v", err)
+	}
+}
+
+func seedNotificationBatch(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	batch := model.NotificationBatch{SyncRunID: 1, Source: "filing", Trigger: "scheduler", Channel: "telegram", Status: "sent", ItemCount: 1, SentCount: 1}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatalf("seed notification batch: %v", err)
+	}
+	item := model.NotificationBatchItem{BatchID: batch.ID, EntityKind: "filing", FilingID: "batch-filing", CompanyName: "Acme", FilingType: "8-K", EventAt: time.Now(), Status: "sent", Reason: "eligible"}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatalf("seed notification batch item: %v", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,11 @@ type fakeSECClient struct {
 	currentCalls    int
 	queries         []sec.FilingQuery
 	currentQueries  []sec.CurrentFilingQuery
+	listedCompanies []sec.ListedCompany
+	listedErr       error
+	documents       map[string]string
+	documentErr     error
+	documentCalls   int
 }
 
 func (f fakeSECClient) LookupCIK(ctx context.Context, ticker string) (string, string, error) {
@@ -62,6 +68,170 @@ func (f *fakeSECClient) ListCurrentFilings(ctx context.Context, query sec.Curren
 	return f.currentFilings, nil
 }
 
+func (f *fakeSECClient) ListListedCompanies(ctx context.Context) ([]sec.ListedCompany, error) {
+	return f.listedCompanies, f.listedErr
+}
+
+func (f *fakeSECClient) FetchFilingDocument(ctx context.Context, filingURL string) (string, error) {
+	f.documentCalls++
+	if f.documentErr != nil {
+		return "", f.documentErr
+	}
+	return f.documents[filingURL], nil
+}
+
+func TestIPORadarBackfillsHistorical424B4Offering(t *testing.T) {
+	now := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	url := "https://sec.test/kardigan-424b4"
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "kard-s1", CIK: "0002123613", CompanyName: "Kardigan, Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -20), FilingURL: "https://sec.test/kardigan-s1"},
+		{FilingID: "kard-424b4", CIK: "0002123613", CompanyName: "Kardigan, Inc.", FilingType: "424B4", FilingDate: now.AddDate(0, 0, -1), FilingURL: url},
+	}).Error; err != nil {
+		t.Fatalf("seed filings: %v", err)
+	}
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("defaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+		{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
+		{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
+	}, "tester"); err != nil {
+		t.Fatalf("telegram config: %v", err)
+	}
+	secClient := &fakeSECClient{documents: map[string]string{url: `We are offering 25,000,000 shares of our common stock. The initial public offering price per share is $16.00.`}}
+	notifier := &fakeNotifier{}
+	svc := NewIPORadarService(db, secClient, notifier, configs)
+	for run := 1; run <= 2; run++ {
+		if _, err := svc.Refresh(context.Background()); err != nil {
+			t.Fatalf("Refresh run %d: %v", run, err)
+		}
+	}
+	page, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 10}, now)
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("ListCompanies page=%+v err=%v", page, err)
+	}
+	item := page.Items[0]
+	if item.OfferPrice != "16.00" || item.SharesOffered != 25000000 || item.GrossProceeds != "400000000.00" {
+		t.Fatalf("offering = %+v", item)
+	}
+	if secClient.documentCalls != 1 {
+		t.Fatalf("document calls = %d, want 1", secClient.documentCalls)
+	}
+	if notifier.calls != 0 {
+		t.Fatalf("historical backfill notifier calls = %d, want 0", notifier.calls)
+	}
+}
+
+func TestIPORadarNew424B4SendsSeparateOfferingNotification(t *testing.T) {
+	now := time.Date(2026, 6, 22, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	if err := db.Create(&model.IPOFiling{FilingID: "kard-s1", CIK: "0002123613", CompanyName: "Kardigan, Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -20), FilingURL: "https://sec.test/kardigan-s1"}).Error; err != nil {
+		t.Fatalf("seed registration filing: %v", err)
+	}
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("defaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+		{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
+		{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
+	}, "tester"); err != nil {
+		t.Fatalf("telegram config: %v", err)
+	}
+	url := "https://sec.test/kardigan-424b4"
+	secClient := &fakeSECClient{
+		currentFilings:  []sec.CurrentFilingResult{{FilingID: "kard-424b4", CIK: "0002123613", CompanyName: "Kardigan, Inc.", FilingType: "424B4", FilingDate: now, FilingURL: url, Title: "Final prospectus"}},
+		listedCompanies: []sec.ListedCompany{{CIK: "0002123613", Name: "Kardigan, Inc.", Ticker: "KARD", Exchange: "Nasdaq"}},
+		documents:       map[string]string{url: `We are offering 25,000,000 shares of our common stock. The initial public offering price per share is $16.00.`},
+	}
+	notifier := &fakeNotifier{}
+	svc := NewIPORadarService(db, secClient, notifier, configs)
+	if _, err := svc.Refresh(context.Background()); err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+	secClient.currentFilings = []sec.CurrentFilingResult{{FilingID: "kard-duplicate", CIK: "0002123613", CompanyName: "Kardigan, Inc.", FilingType: "424B4", FilingDate: now.Add(time.Hour), FilingURL: "https://sec.test/kardigan-duplicate"}}
+	secClient.documents["https://sec.test/kardigan-duplicate"] = secClient.documents[url]
+	if _, err := svc.Refresh(context.Background()); err != nil {
+		t.Fatalf("duplicate refresh: %v", err)
+	}
+	secClient.currentFilings = []sec.CurrentFilingResult{{FilingID: "kard-correction", CIK: "0002123613", CompanyName: "Kardigan, Inc.", FilingType: "424B4", FilingDate: now.Add(2 * time.Hour), FilingURL: "https://sec.test/kardigan-correction"}}
+	secClient.documents["https://sec.test/kardigan-correction"] = `We are offering 25,000,000 shares of our common stock. The initial public offering price per share is $17.00.`
+	if _, err := svc.Refresh(context.Background()); err != nil {
+		t.Fatalf("correction refresh: %v", err)
+	}
+	secClient.currentFilings = []sec.CurrentFilingResult{{FilingID: "kard-follow-on", CIK: "0002123613", CompanyName: "Kardigan, Inc.", FilingType: "424B4", FilingDate: now.Add(3 * time.Hour), FilingURL: "https://sec.test/kardigan-follow-on"}}
+	secClient.documents["https://sec.test/kardigan-follow-on"] = `We are offering 5,000,000 shares of our common stock. The public offering price is $20.00 per share.`
+	if _, err := svc.Refresh(context.Background()); err != nil {
+		t.Fatalf("follow-on refresh: %v", err)
+	}
+	if notifier.calls != 6 || len(notifier.messages) != 6 {
+		t.Fatalf("notifier calls=%d messages=%d, want four filing and two pricing messages", notifier.calls, len(notifier.messages))
+	}
+	offeringMessage := notifier.messages[1].Text
+	for _, want := range []string{"IPO 定价", "KARD", "$16.00", "25,000,000", "$400,000,000.00", url} {
+		if !strings.Contains(offeringMessage, want) {
+			t.Fatalf("offering message %q missing %q", offeringMessage, want)
+		}
+	}
+	var batch model.NotificationBatch
+	if err := db.Where("source = ?", "ipo_offering").First(&batch).Error; err != nil {
+		t.Fatalf("load offering batch: %v", err)
+	}
+	if batch.Status != "sent" || batch.SentCount != 1 {
+		t.Fatalf("offering batch = %+v", batch)
+	}
+	var events []model.IPOOfferingEvent
+	if err := db.Order("id ASC").Find(&events).Error; err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	wantTypes := []string{"initial", "duplicate", "correction", "follow_on"}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("events = %+v", events)
+	}
+	for i, want := range wantTypes {
+		if events[i].OfferingType != want {
+			t.Fatalf("event %d type=%q want=%q", i, events[i].OfferingType, want)
+		}
+		wantNotified := want == "initial" || want == "correction"
+		if (events[i].NotifiedAt != nil) != wantNotified {
+			t.Fatalf("event %d notified=%v want=%v", i, events[i].NotifiedAt != nil, wantNotified)
+		}
+	}
+	var market model.IPOCompanyMarketData
+	if err := db.Where("cik = ?", "0002123613").First(&market).Error; err != nil {
+		t.Fatalf("market: %v", err)
+	}
+	if market.OfferPrice != "17.00" || market.GrossProceeds != "425000000.00" {
+		t.Fatalf("market overwritten by follow-on: %+v", market)
+	}
+}
+
+func TestIPORadarListOfferingEvents(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, 6, 22, 9, 0, 0, 0, time.UTC)
+	rows := []model.IPOOfferingEvent{
+		{FilingID: "old", CIK: "1", CompanyName: "Acme", OfferingType: "initial", ParseStatus: "parsed", FilingDate: now.Add(-time.Hour), ParserVersion: 4},
+		{FilingID: "new", CIK: "1", CompanyName: "Acme", OfferingType: "correction", ParseStatus: "parsed", FilingDate: now, ParserVersion: 4},
+		{FilingID: "other", CIK: "2", CompanyName: "Other", OfferingType: "initial", ParseStatus: "parsed", FilingDate: now.Add(time.Hour), ParserVersion: 4},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("seed events: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+
+	got, err := svc.ListOfferingEvents(context.Background(), "1", 1, 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if got.Total != 2 || len(got.Items) != 2 || got.Items[0].FilingID != "new" || got.Items[1].FilingID != "old" {
+		t.Fatalf("events = %+v", got)
+	}
+}
+
 type fakeNotifier struct {
 	messages []telegram.Message
 	errs     []error
@@ -95,8 +265,12 @@ func testDB(t *testing.T) *gorm.DB {
 		&model.SystemConfig{},
 		&model.OperationLog{},
 		&model.NotificationLog{},
+		&model.NotificationBatch{},
+		&model.NotificationBatchItem{},
 		&model.IPOFiling{},
 		&model.IPOCompanyOverride{},
+		&model.IPOCompanyMarketData{},
+		&model.IPOOfferingEvent{},
 	); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
@@ -159,6 +333,37 @@ func TestWatchTargetServiceCreatesListsUpdatesAndAuditsTargets(t *testing.T) {
 	}
 	if logs.Total != 2 {
 		t.Fatalf("audit total = %d, want create and status update logs", logs.Total)
+	}
+}
+
+func TestFilingNotificationReasonTableDriven(t *testing.T) {
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	previous := now.Add(-2 * time.Hour)
+	tests := []struct {
+		name         string
+		filing       model.Filing
+		previousSync *time.Time
+		settings     NotificationSettings
+		at           time.Time
+		want         string
+	}{
+		{name: "first sync", filing: model.Filing{FilingType: "8-K", FilingDate: now}, want: "initial_sync"},
+		{name: "published before previous sync", filing: model.Filing{FilingType: "8-K", FilingDate: now, PublishedAt: ptrTime(previous.Add(-time.Minute))}, previousSync: &previous, want: "history_backfill"},
+		{name: "same day without publication remains eligible", filing: model.Filing{FilingType: "8-K", FilingDate: time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)}, previousSync: &previous, want: "eligible"},
+		{name: "older date without publication is history", filing: model.Filing{FilingType: "8-K", FilingDate: time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)}, previousSync: &previous, want: "history_backfill"},
+		{name: "form rule filters", filing: model.Filing{FilingType: "10-Q", FilingDate: now, PublishedAt: ptrTime(now)}, previousSync: &previous, settings: NotificationSettings{FilingTypes: []string{"8-K"}}, want: "rule_filtered"},
+		{name: "quiet hours filter", filing: model.Filing{FilingType: "8-K", FilingDate: now, PublishedAt: ptrTime(now)}, previousSync: &previous, settings: NotificationSettings{QuietHoursEnabled: true, QuietHoursStart: "11:00", QuietHoursEnd: "13:00"}, at: now, want: "quiet_hours"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			at := tt.at
+			if at.IsZero() {
+				at = now
+			}
+			if got := filingNotificationReason(tt.filing, tt.previousSync, tt.settings, at); got != tt.want {
+				t.Fatalf("reason = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -275,18 +480,21 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 	now := time.Now().UTC()
 	tests := []struct {
-		name        string
-		configs     []ConfigInput
-		secFilings  []sec.CurrentFilingResult
-		notifierErr []error
-		runTwice    bool
-		wantNew     int
-		wantNotify  int
-		wantStored  int64
-		wantLogs    int64
+		name            string
+		configs         []ConfigInput
+		secFilings      []sec.CurrentFilingResult
+		notifierErr     []error
+		seedBaseline    bool
+		runTwice        bool
+		wantNew         int
+		wantNotify      int
+		wantStored      int64
+		wantBatchStatus string
+		wantSuppressed  int
+		wantFailed      int
 	}{
 		{
-			name: "creates and notifies new ipo filing",
+			name: "creates and sends one batch after baseline",
 			configs: []ConfigInput{
 				{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
 				{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram", Encrypted: true},
@@ -302,10 +510,11 @@ func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 				FilingURL:       "https://www.sec.gov/acme/s1",
 				Title:           "S-1 - Acme Space Inc.",
 			}},
-			wantNew:    1,
-			wantNotify: 1,
-			wantStored: 1,
-			wantLogs:   1,
+			seedBaseline:    true,
+			wantNew:         1,
+			wantNotify:      1,
+			wantStored:      2,
+			wantBatchStatus: "sent",
 		},
 		{
 			name: "deduplicates existing filing on second refresh",
@@ -320,9 +529,11 @@ func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 				FilingURL:   "https://www.sec.gov/dup/f1",
 				Title:       "F-1 - Duplicate Corp.",
 			}},
-			runTwice:   true,
-			wantNew:    0,
-			wantStored: 1,
+			runTwice:        true,
+			wantNew:         0,
+			wantStored:      1,
+			wantBatchStatus: "suppressed",
+			wantSuppressed:  1,
 		},
 		{
 			name: "filters old filing and keyword mismatch",
@@ -350,10 +561,12 @@ func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 				FilingDate:  now,
 				FilingURL:   "https://www.sec.gov/fail",
 			}},
-			notifierErr: []error{errors.New("telegram down"), errors.New("telegram down"), errors.New("telegram down")},
-			wantNew:     1,
-			wantStored:  1,
-			wantLogs:    1,
+			notifierErr:     []error{errors.New("telegram down"), errors.New("telegram down"), errors.New("telegram down")},
+			seedBaseline:    true,
+			wantNew:         1,
+			wantStored:      2,
+			wantBatchStatus: "failed",
+			wantFailed:      1,
 		},
 		{
 			name: "skips notification when ipo notify form type does not match",
@@ -370,9 +583,11 @@ func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 				FilingDate:  now,
 				FilingURL:   "https://www.sec.gov/filter",
 			}},
-			wantNew:    1,
-			wantStored: 1,
-			wantLogs:   0,
+			seedBaseline:    true,
+			wantNew:         1,
+			wantStored:      2,
+			wantBatchStatus: "suppressed",
+			wantSuppressed:  1,
 		},
 	}
 
@@ -386,6 +601,11 @@ func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 			if len(tt.configs) > 0 {
 				if err := configs.UpsertMany(context.Background(), tt.configs, "tester"); err != nil {
 					t.Fatalf("UpsertMany: %v", err)
+				}
+			}
+			if tt.seedBaseline {
+				if err := db.Create(&model.IPOFiling{FilingID: "baseline", CIK: "baseline", CompanyName: "Baseline Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -1), FilingURL: "https://sec.test/baseline"}).Error; err != nil {
+					t.Fatalf("seed baseline: %v", err)
 				}
 			}
 			secClient := &fakeSECClient{currentFilings: tt.secFilings}
@@ -421,14 +641,225 @@ func TestIPORadarServiceRefreshTableDriven(t *testing.T) {
 			if stored != tt.wantStored {
 				t.Fatalf("stored = %d, want %d", stored, tt.wantStored)
 			}
-			var logs int64
-			if err := db.Model(&model.NotificationLog{}).Count(&logs).Error; err != nil {
-				t.Fatalf("count notification logs: %v", err)
-			}
-			if logs != tt.wantLogs {
-				t.Fatalf("logs = %d, want %d", logs, tt.wantLogs)
+			if tt.wantBatchStatus != "" {
+				var batch model.NotificationBatch
+				if err := db.Order("id DESC").First(&batch).Error; err != nil {
+					t.Fatalf("load notification batch: %v", err)
+				}
+				if batch.Status != tt.wantBatchStatus || batch.SuppressedCount != tt.wantSuppressed || batch.FailedCount != tt.wantFailed {
+					t.Fatalf("batch = %+v, want status=%s suppressed=%d failed=%d", batch, tt.wantBatchStatus, tt.wantSuppressed, tt.wantFailed)
+				}
 			}
 		})
+	}
+}
+
+func TestIPONotificationReasonTableDriven(t *testing.T) {
+	filing := model.IPOFiling{FilingType: "S-1"}
+	tests := []struct {
+		name     string
+		baseline bool
+		backfill bool
+		settings IPORadarSettings
+		want     string
+	}{
+		{name: "initial baseline", baseline: true, settings: IPORadarSettings{NotifyEnabled: true}, want: "initial_sync"},
+		{name: "lifecycle backfill", backfill: true, settings: IPORadarSettings{NotifyEnabled: true}, want: "lifecycle_backfill"},
+		{name: "lifecycle reason wins during initial baseline", baseline: true, backfill: true, settings: IPORadarSettings{NotifyEnabled: true}, want: "lifecycle_backfill"},
+		{name: "notifications disabled", settings: IPORadarSettings{}, want: "rule_filtered"},
+		{name: "form type filtered", settings: IPORadarSettings{NotifyEnabled: true, NotifyFormTypes: []string{"424B4"}}, want: "rule_filtered"},
+		{name: "eligible current filing", settings: IPORadarSettings{NotifyEnabled: true}, want: "eligible"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ipoNotificationReason(filing, tt.settings, tt.baseline, tt.backfill); got != tt.want {
+				t.Fatalf("reason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIPORadarMarketDataMergeTableDriven(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name         string
+		override     *IPOCompanyOverrideInput
+		wantStatus   string
+		wantTicker   string
+		wantExchange string
+		wantPrice    string
+		wantShares   int64
+		wantSource   string
+	}{
+		{name: "uses SEC listed mapping and 424B4 offering", wantStatus: "listed", wantTicker: "ACME", wantExchange: "Nasdaq", wantPrice: "15.00", wantShares: 10000000, wantSource: "sec"},
+		{name: "manual fields override automatic values", override: &IPOCompanyOverrideInput{StatusOverride: "priced", FinalTicker: "MAN", Exchange: "NYSE", OfferPrice: "20.00", SharesOffered: 2500000, ListingDate: "2026-07-01"}, wantStatus: "priced", wantTicker: "MAN", wantExchange: "NYSE", wantPrice: "20.00", wantShares: 2500000, wantSource: "manual"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			if err := db.Create(&model.IPOFiling{FilingID: "acme-s1", CIK: "0000000001", CompanyName: "Acme Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -7), FilingURL: "https://sec.test/acme-s1"}).Error; err != nil {
+				t.Fatalf("seed registration filing: %v", err)
+			}
+			configs := NewConfigService(db, NewAuditService(db))
+			if err := configs.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			if err := configs.UpsertMany(context.Background(), []ConfigInput{{Key: "ipo.notify_enabled", Value: "false", ValueType: "bool", Category: "ipo"}}, "tester"); err != nil {
+				t.Fatalf("disable notifications: %v", err)
+			}
+			url := "https://sec.test/acme-424b4"
+			secClient := &fakeSECClient{
+				currentFilings:  []sec.CurrentFilingResult{{FilingID: "acme-424b4", CIK: "0000000001", CompanyName: "Acme Inc.", FilingType: "424B4", FilingDate: now, FilingURL: url}},
+				listedCompanies: []sec.ListedCompany{{CIK: "0000000001", Name: "Acme Inc.", Ticker: "ACME", Exchange: "Nasdaq"}},
+				documents:       map[string]string{url: "We are offering 10,000,000 ordinary shares. The public offering price is $15.00 per share."},
+			}
+			svc := NewIPORadarService(db, secClient, &fakeNotifier{}, configs)
+			if _, err := svc.Refresh(context.Background()); err != nil {
+				t.Fatalf("Refresh: %v", err)
+			}
+			if tt.override != nil {
+				if _, err := svc.UpsertCompanyOverride(context.Background(), "0000000001", *tt.override); err != nil {
+					t.Fatalf("UpsertCompanyOverride: %v", err)
+				}
+			}
+			page, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 10}, now)
+			if err != nil || len(page.Items) != 1 {
+				t.Fatalf("ListCompanies page=%+v err=%v", page, err)
+			}
+			item := page.Items[0]
+			if item.Status != tt.wantStatus || item.FinalTicker != tt.wantTicker || item.Exchange != tt.wantExchange || item.OfferPrice != tt.wantPrice || item.SharesOffered != tt.wantShares || item.MarketDataSource != tt.wantSource {
+				t.Fatalf("item = %+v", item)
+			}
+			if item.AutomaticTicker != "ACME" || item.AutomaticExchange != "Nasdaq" || item.AutomaticOfferPrice != "15.00" || item.AutomaticShares != 10000000 {
+				t.Fatalf("automatic market data = %+v", item)
+			}
+			if tt.override != nil && (item.OverrideFinalTicker != "MAN" || item.OverrideExchange != "NYSE" || item.OverrideOfferPrice != "20.00" || item.OverrideShares != 2500000 || item.OverrideListingDate == nil) {
+				t.Fatalf("override market data = %+v", item)
+			}
+		})
+	}
+}
+
+func TestIPORadarListingConfirmationTableDriven(t *testing.T) {
+	now := time.Date(2026, 6, 21, 8, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		listedCompanies []sec.ListedCompany
+		seedMarket      *model.IPOCompanyMarketData
+		wantStatus      string
+		wantTicker      string
+		wantVerified    bool
+	}{
+		{
+			name:            "ticker without exchange remains updating",
+			listedCompanies: []sec.ListedCompany{{CIK: "0002112466", Name: "Silentium Ltd.", Ticker: "SIAI"}},
+			wantStatus:      "updating", wantTicker: "SIAI",
+		},
+		{
+			name:       "missing SEC mapping clears stale listing confirmation",
+			seedMarket: &model.IPOCompanyMarketData{CIK: "0002112466", Ticker: "SIAI", Exchange: "Nasdaq", ListedVerifiedAt: &now, TickerSource: "sec", TickerConfidence: "high"},
+			wantStatus: "updating",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			filing := model.IPOFiling{FilingID: "silentium-f1a", CIK: "0002112466", CompanyName: "Silentium Ltd.", FilingType: "F-1/A", FilingDate: now, FilingURL: "https://sec.test/silentium"}
+			if err := db.Create(&filing).Error; err != nil {
+				t.Fatalf("seed filing: %v", err)
+			}
+			if tt.seedMarket != nil {
+				if err := db.Create(tt.seedMarket).Error; err != nil {
+					t.Fatalf("seed market data: %v", err)
+				}
+			}
+			svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+			if err := svc.upsertListedCompanies(context.Background(), tt.listedCompanies); err != nil {
+				t.Fatalf("upsertListedCompanies: %v", err)
+			}
+			page, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 10}, now.Add(time.Hour))
+			if err != nil || len(page.Items) != 1 {
+				t.Fatalf("ListCompanies page=%+v err=%v", page, err)
+			}
+			item := page.Items[0]
+			if item.Status != tt.wantStatus || item.AutomaticTicker != tt.wantTicker || (item.ListedVerifiedAt != nil) != tt.wantVerified {
+				t.Fatalf("item = %+v, want status=%s ticker=%q verified=%v", item, tt.wantStatus, tt.wantTicker, tt.wantVerified)
+			}
+		})
+	}
+}
+
+func TestIPOLifecycleFilingTypeTableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		filingType string
+		want       bool
+	}{
+		{name: "registration filing", filingType: "F-1/A", want: true},
+		{name: "IPO final prospectus", filingType: "424B4", want: true},
+		{name: "structured note prospectus", filingType: "424B2", want: false},
+		{name: "effectiveness notice", filingType: "EFFECT", want: true},
+		{name: "withdrawal", filingType: "RW", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isIPOLifecycleFilingType(tt.filingType, []string{"S-1", "S-1/A", "F-1", "F-1/A", "S-1MEF"}); got != tt.want {
+				t.Fatalf("isIPOLifecycleFilingType(%q) = %v, want %v", tt.filingType, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIPORadarFiltersNonIPOLegacyFilings(t *testing.T) {
+	now := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	filings := []model.IPOFiling{
+		{FilingID: "jpm-note", CIK: "0000019617", CompanyName: "JPMORGAN CHASE & CO", FilingType: "424B2", FilingDate: now, FilingURL: "https://sec.test/jpm-note"},
+		{FilingID: "acme-s1", CIK: "0000000001", CompanyName: "Acme Inc.", FilingType: "S-1", FilingDate: now.Add(-time.Hour), FilingURL: "https://sec.test/acme-s1"},
+		{FilingID: "acme-note", CIK: "0000000001", CompanyName: "Acme Inc.", FilingType: "424B2", FilingDate: now, FilingURL: "https://sec.test/acme-note"},
+		{FilingID: "acme-final", CIK: "0000000001", CompanyName: "Acme Inc.", FilingType: "424B4", FilingDate: now.Add(time.Hour), FilingURL: "https://sec.test/acme-final"},
+	}
+	if err := db.Create(&filings).Error; err != nil {
+		t.Fatalf("seed filings: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	companies, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 20}, now)
+	if err != nil {
+		t.Fatalf("ListCompanies: %v", err)
+	}
+	if companies.Total != 1 || companies.Items[0].CIK != "0000000001" || companies.Items[0].FilingCount != 2 {
+		t.Fatalf("companies = %+v", companies)
+	}
+	listed, err := svc.List(context.Background(), IPOFilingFilter{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if listed.Total != 2 {
+		t.Fatalf("filings = %+v, want only S-1 and 424B4", listed)
+	}
+}
+
+func TestIPORadarSelectsDeterministicPrimaryTicker(t *testing.T) {
+	now := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	if err := db.Create(&model.IPOFiling{FilingID: "jpm-s1", CIK: "0000019617", CompanyName: "JPMORGAN CHASE & CO", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/jpm-s1"}).Error; err != nil {
+		t.Fatalf("seed filing: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	listed := []sec.ListedCompany{
+		{CIK: "0000019617", Name: "JPMORGAN CHASE & CO", Ticker: "JPM", Exchange: "NYSE"},
+		{CIK: "0000019617", Name: "JPMORGAN CHASE & CO", Ticker: "JPM-PC", Exchange: "NYSE"},
+		{CIK: "0000019617", Name: "JPMORGAN CHASE & CO", Ticker: "VYLD", Exchange: "NYSE"},
+	}
+	if err := svc.upsertListedCompanies(context.Background(), listed); err != nil {
+		t.Fatalf("upsertListedCompanies: %v", err)
+	}
+	companies, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 20}, now)
+	if err != nil || len(companies.Items) != 1 {
+		t.Fatalf("ListCompanies companies=%+v err=%v", companies, err)
+	}
+	if companies.Items[0].AutomaticTicker != "JPM" {
+		t.Fatalf("automatic ticker = %q, want JPM", companies.Items[0].AutomaticTicker)
 	}
 }
 
@@ -637,12 +1068,12 @@ func TestIPORadarServiceListCompaniesTableDriven(t *testing.T) {
 			wantLatest: "RW",
 		},
 		{
-			name: "watch target match marks listed",
+			name: "watch target ticker alone does not confirm listing",
 			filings: []model.IPOFiling{{
 				FilingID: "s1", CIK: "0000000005", CompanyName: "Echo Robotics Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.gov/echo/s1",
 			}},
 			targets:    []model.WatchTarget{{Ticker: "ECHO", CompanyName: "Echo Robotics Inc.", CIK: "0000000005", TargetType: "stock", Status: "enabled"}},
-			wantStatus: "listed",
+			wantStatus: "new",
 			wantLatest: "S-1",
 		},
 		{
@@ -786,7 +1217,7 @@ func TestShouldNotifyFilingTableDriven(t *testing.T) {
 	}
 }
 
-func TestFilingServiceRefreshesEnabledTargetsDeduplicatesAndNotifies(t *testing.T) {
+func TestFilingServiceRefreshesEnabledTargetsDeduplicatesAndSuppressesInitialNotification(t *testing.T) {
 	db := testDB(t)
 	audit := NewAuditService(db)
 	targets := NewWatchTargetService(db, audit)
@@ -824,8 +1255,15 @@ func TestFilingServiceRefreshesEnabledTargetsDeduplicatesAndNotifies(t *testing.
 	if first.NewFilings != 1 || second.NewFilings != 0 {
 		t.Fatalf("new filings first=%d second=%d, want 1 then 0", first.NewFilings, second.NewFilings)
 	}
-	if len(notifier.messages) != 1 {
-		t.Fatalf("notifications = %d, want only one", len(notifier.messages))
+	if len(notifier.messages) != 0 {
+		t.Fatalf("notifications = %d, want initial sync suppressed", len(notifier.messages))
+	}
+	var batch model.NotificationBatch
+	if err := db.Where("sync_run_id = ?", first.SyncRunID).First(&batch).Error; err != nil {
+		t.Fatalf("load notification batch: %v", err)
+	}
+	if batch.Status != "suppressed" || batch.SuppressedCount != 1 {
+		t.Fatalf("batch = %+v, want one suppressed item", batch)
 	}
 
 	page, err := svc.List(context.Background(), FilingFilter{Ticker: "AAPL", Page: 1, PageSize: 10})

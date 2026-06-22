@@ -73,6 +73,20 @@
             </template>
           </el-table-column>
           <el-table-column prop="company_name" :label="t('common.companyName')" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="final_ticker" :label="t('pages.ipoRadar.finalTicker')" width="100"><template #default="{ row }">{{ row.final_ticker || row.matched_ticker || '-' }}</template></el-table-column>
+          <el-table-column prop="exchange" :label="t('pages.ipoRadar.exchange')" width="100"><template #default="{ row }">{{ row.exchange || '-' }}</template></el-table-column>
+          <el-table-column prop="offer_price" :label="t('pages.ipoRadar.offerPrice')" width="105" align="right">
+            <template #default="{ row }">
+              <el-tooltip v-if="row.offer_price" placement="top">
+                <template #content>
+                  <div>{{ t('pages.ipoRadar.sharesOffered') }}：{{ formatNumber(row.shares_offered) }}</div>
+                  <div>{{ t('pages.ipoRadar.grossProceeds') }}：{{ formatMoney(row.gross_proceeds) }}</div>
+                </template>
+                <span class="offer-price-trigger">${{ row.offer_price }}</span>
+              </el-tooltip>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="cik" label="CIK" width="130" />
           <el-table-column prop="latest_filing_type" :label="t('pages.ipoRadar.latestType')" width="120">
             <template #default="{ row }"><el-tag effect="plain">{{ row.latest_filing_type }}</el-tag></template>
@@ -158,8 +172,46 @@
           </el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.statusReason')">{{ statusReasonText(selectedCompany) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.statusSource')">{{ statusSourceLabel(selectedCompany.status_source) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.automaticTicker')">{{ selectedCompany.automatic_ticker || '-' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.automaticExchange')">{{ selectedCompany.automatic_exchange || '-' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.automaticOfferPrice')">{{ selectedCompany.automatic_offer_price ? `$${selectedCompany.automatic_offer_price}` : '-' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.automaticSharesOffered')">{{ formatNumber(selectedCompany.automatic_shares_offered) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.grossProceeds')">{{ formatMoney(selectedCompany.automatic_gross_proceeds) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.finalTicker')">{{ selectedCompany.final_ticker || selectedCompany.matched_ticker || '-' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.exchange')">{{ selectedCompany.exchange || '-' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.offerPrice')">{{ selectedCompany.offer_price ? `$${selectedCompany.offer_price}` : '-' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.sharesOffered')">{{ formatNumber(selectedCompany.shares_offered) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.grossProceeds')">{{ formatMoney(selectedCompany.gross_proceeds) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.listedVerifiedAt')">{{ formatDateTime(selectedCompany.listed_verified_at) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.listingDate')">{{ formatDate(selectedCompany.listing_date) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.marketDataSource')">{{ marketSourceLabel(selectedCompany) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.marketDataUpdatedAt')">{{ formatDateTime(selectedCompany.market_data_updated_at) }}</el-descriptions-item>
         </el-descriptions>
+
+        <el-divider>{{ t('pages.ipoRadar.offeringEvents') }}</el-divider>
+        <el-table :data="selectedCompany ? offeringEvents[selectedCompany.cik] || [] : []" border :empty-text="t('pages.ipoRadar.emptyOfferingEvents')">
+          <el-table-column prop="offering_type" :label="t('pages.ipoRadar.eventType')" width="120">
+            <template #default="{ row }"><el-tag :type="offeringEventTagType(row.offering_type)" effect="plain">{{ offeringEventLabel(row.offering_type) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="offer_price" :label="t('pages.ipoRadar.offerPrice')" width="95" align="right">
+            <template #default="{ row }">{{ row.offer_price ? `$${row.offer_price}` : '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="shares_offered" :label="t('pages.ipoRadar.sharesOffered')" width="130" align="right">
+            <template #default="{ row }">{{ formatNumber(row.shares_offered) }}</template>
+          </el-table-column>
+          <el-table-column prop="gross_proceeds" :label="t('pages.ipoRadar.grossProceeds')" min-width="160" align="right">
+            <template #default="{ row }">{{ formatMoney(row.gross_proceeds) }}</template>
+          </el-table-column>
+          <el-table-column prop="filing_date" :label="t('common.filingDate')" width="120">
+            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ formatDate(row.filing_date) }}</el-link></template>
+          </el-table-column>
+          <el-table-column prop="notified_at" :label="t('pages.filings.notification')" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.notified_at" type="success" effect="plain">{{ t('status.success') }}</el-tag>
+              <span v-else class="muted-text">-</span>
+            </template>
+          </el-table-column>
+        </el-table>
 
         <el-divider>{{ t('pages.ipoRadar.manualOverride') }}</el-divider>
         <el-form :model="overrideForm" label-width="120px">
@@ -170,6 +222,18 @@
           </el-form-item>
           <el-form-item :label="t('pages.ipoRadar.finalTicker')">
             <el-input v-model="overrideForm.final_ticker" />
+          </el-form-item>
+          <el-form-item :label="t('pages.ipoRadar.exchange')">
+            <el-input v-model="overrideForm.exchange" />
+          </el-form-item>
+          <el-form-item :label="t('pages.ipoRadar.offerPrice')">
+            <el-input v-model="overrideForm.offer_price" inputmode="decimal" />
+          </el-form-item>
+          <el-form-item :label="t('pages.ipoRadar.sharesOffered')">
+            <el-input-number v-model="overrideForm.shares_offered" :min="0" :precision="0" controls-position="right" />
+          </el-form-item>
+          <el-form-item :label="t('pages.ipoRadar.listingDate')">
+            <el-date-picker v-model="overrideForm.listing_date" type="date" value-format="YYYY-MM-DD" clearable />
           </el-form-item>
           <el-form-item :label="t('pages.ipoRadar.overrideNote')">
             <el-input v-model="overrideForm.note" type="textarea" :rows="2" />
@@ -200,7 +264,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, IPOCompany, IPOFiling, IPORadarRefreshResult, PageResult } from '@/api/types'
+import type { ApiResponse, IPOCompany, IPOFiling, IPOOfferingEvent, IPORadarRefreshResult, PageResult } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -229,9 +293,10 @@ const filingFilters = reactive({ company_name: '', cik: '', filing_type: '', not
 const companyFilters = reactive({ company_name: '', cik: '', status: '' })
 const companySort = reactive({ sort_by: 'latest_update', sort_order: 'desc' })
 const filingDetails = ref<Record<string, IPOFiling[]>>({})
+const offeringEvents = ref<Record<string, IPOOfferingEvent[]>>({})
 const selectedCompany = ref<IPOCompany | null>(null)
 const detailVisible = ref(false)
-const overrideForm = reactive({ status_override: '', final_ticker: '', note: '' })
+const overrideForm = reactive({ status_override: '', final_ticker: '', exchange: '', offer_price: '', shares_offered: 0, listing_date: '', note: '' })
 
 const qualitySummary = computed(() => {
   const total = companiesTotal.value
@@ -286,14 +351,27 @@ async function onExpandChange(row: IPOCompany) {
 async function openCompanyDetail(row: IPOCompany) {
   selectedCompany.value = row
   overrideForm.status_override = row.status_source === 'manual' ? row.status : ''
-  overrideForm.final_ticker = row.final_ticker || row.matched_ticker || ''
+  overrideForm.final_ticker = row.override_final_ticker || ''
+  overrideForm.exchange = row.override_exchange || ''
+  overrideForm.offer_price = row.override_offer_price || ''
+  overrideForm.shares_offered = row.override_shares_offered || 0
+  overrideForm.listing_date = row.override_listing_date ? row.override_listing_date.slice(0, 10) : ''
   overrideForm.note = row.override_note || ''
   detailVisible.value = true
-  await onExpandChange(row)
+  await Promise.all([onExpandChange(row), loadOfferingEvents(row.cik)])
+}
+
+async function loadOfferingEvents(cik: string) {
+  const res = await apiClient.get<ApiResponse<PageResult<IPOOfferingEvent>>>(`/ipo-companies/${encodeURIComponent(cik)}/offerings`, { params: { page: 1, page_size: 100 } })
+  offeringEvents.value = { ...offeringEvents.value, [cik]: res.data.data.items }
 }
 
 async function saveOverride() {
   if (!selectedCompany.value) return
+  if (overrideForm.offer_price && (!Number.isFinite(Number(overrideForm.offer_price)) || Number(overrideForm.offer_price) <= 0)) {
+    ElMessage.error(t('pages.ipoRadar.invalidOfferPrice'))
+    return
+  }
   savingOverride.value = true
   try {
     await apiClient.put(`/ipo-companies/${encodeURIComponent(selectedCompany.value.cik)}/override`, overrideForm)
@@ -308,6 +386,21 @@ async function saveOverride() {
   }
 }
 
+function formatNumber(value?: number | null) {
+  return value && value > 0 ? value.toLocaleString() : '-'
+}
+
+function formatMoney(value?: string | null) {
+  if (!value) return '-'
+  const amount = Number(value)
+  return Number.isFinite(amount) ? `$${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `$${value}`
+}
+
+function marketSourceLabel(row: IPOCompany) {
+  if (!row.market_data_source) return '-'
+  return `${row.market_data_source === 'manual' ? t('pages.ipoRadar.marketSources.manual') : 'SEC'} · ${row.market_data_confidence || '-'}`
+}
+
 function ipoStatusLabel(status: string) {
   return t(`pages.ipoRadar.statuses.${status}`)
 }
@@ -319,6 +412,17 @@ function ipoStatusType(status: string) {
   if (status === 'priced') return 'warning'
   if (status === 'listed') return 'success'
   if (status === 'withdrawn') return 'danger'
+  return 'info'
+}
+
+function offeringEventLabel(type: string) {
+  return t(`pages.ipoRadar.offeringEventTypes.${type}`)
+}
+
+function offeringEventTagType(type: string) {
+  if (type === 'initial') return 'success'
+  if (type === 'correction') return 'warning'
+  if (type === 'follow_on') return 'primary'
   return 'info'
 }
 
@@ -341,6 +445,7 @@ async function refresh() {
     const res = await apiClient.post<ApiResponse<IPORadarRefreshResult>>('/ipo-filings/refresh', null, { timeout: 120000 })
     ElMessage.success(t('messages.ipoRefreshDone', { count: res.data.data.new_filings, notified: res.data.data.notified }))
     filingDetails.value = {}
+    offeringEvents.value = {}
     filingsPage.value = 1
     companiesPage.value = 1
     if (activeTab.value === 'companies') {
@@ -369,3 +474,10 @@ function formatDateTime(value?: string | null) {
 
 onMounted(loadCompanies)
 </script>
+
+<style scoped>
+.offer-price-trigger {
+  cursor: help;
+  border-bottom: 1px dotted var(--el-text-color-secondary);
+}
+</style>

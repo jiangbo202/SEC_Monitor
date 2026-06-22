@@ -45,6 +45,7 @@ func New(deps Dependencies) *gin.Engine {
 	if notifier == nil {
 		notifier = telegramNotifier{configs: configs}
 	}
+	notificationBatches := service.NewNotificationBatchService(deps.DB, notifier, configs)
 	filings := service.NewFilingService(deps.DB, secClient, notifier, configs)
 	currentFilingsClient, ok := secClient.(sec.CurrentFilingsClient)
 	if !ok {
@@ -54,17 +55,18 @@ func New(deps Dependencies) *gin.Engine {
 	sched := scheduler.New(tasks, filings, ipoRadar)
 	_ = sched.Start(context.Background())
 	app := &handler.AppHandler{
-		Runtime:      deps.Config,
-		DB:           deps.DB,
-		Targets:      service.NewWatchTargetService(deps.DB, audit),
-		Configs:      configs,
-		Tasks:        tasks,
-		Filings:      filings,
-		IPO:          ipoRadar,
-		SEC:          secClient,
-		Audit:        audit,
-		Notification: service.NewNotificationService(deps.DB),
-		Scheduler:    sched,
+		Runtime:           deps.Config,
+		DB:                deps.DB,
+		Targets:           service.NewWatchTargetService(deps.DB, audit),
+		Configs:           configs,
+		Tasks:             tasks,
+		Filings:           filings,
+		IPO:               ipoRadar,
+		SEC:               secClient,
+		Audit:             audit,
+		Notification:      service.NewNotificationService(deps.DB),
+		NotificationBatch: notificationBatches,
+		Scheduler:         sched,
 	}
 
 	r.GET("/healthz", handler.Health)
@@ -85,6 +87,7 @@ func New(deps Dependencies) *gin.Engine {
 		api.GET("/filings", app.ListFilings)
 		api.POST("/filings/refresh", app.RefreshFilings)
 		api.GET("/ipo-companies", app.ListIPOCompanies)
+		api.GET("/ipo-companies/:cik/offerings", app.ListIPOOfferingEvents)
 		api.PUT("/ipo-companies/:cik/override", app.UpdateIPOCompanyOverride)
 		api.GET("/ipo-filings", app.ListIPORadarFilings)
 		api.POST("/ipo-filings/refresh", app.RefreshIPORadar)
@@ -108,6 +111,8 @@ func New(deps Dependencies) *gin.Engine {
 
 		api.GET("/operation-logs", app.ListOperationLogs)
 		api.GET("/notification-logs", app.ListNotificationLogs)
+		api.GET("/notification-batches", app.ListNotificationBatches)
+		api.GET("/notification-batches/:id/items", app.ListNotificationBatchItems)
 
 		api.GET("/system-health", app.ListHealth)
 		api.GET("/exports/filings.csv", app.ExportFilingsCSV)

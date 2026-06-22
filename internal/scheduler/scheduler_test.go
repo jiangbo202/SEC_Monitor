@@ -49,7 +49,8 @@ func testDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
-		&model.IPOFiling{},
+		&model.NotificationBatch{}, &model.NotificationBatchItem{},
+		&model.IPOFiling{}, &model.IPOCompanyOverride{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

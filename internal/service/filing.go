@@ -20,6 +20,7 @@ type FilingService struct {
 	sec      sec.Client
 	notifier telegram.Notifier
 	configs  *ConfigService
+	batches  *NotificationBatchService
 }
 
 type FilingFilter struct {
@@ -64,7 +65,7 @@ type CleanupPreview struct {
 }
 
 func NewFilingService(db *gorm.DB, secClient sec.Client, notifier telegram.Notifier, configs *ConfigService) *FilingService {
-	return &FilingService{db: db, sec: secClient, notifier: notifier, configs: configs}
+	return &FilingService{db: db, sec: secClient, notifier: notifier, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
 }
 
 func (s *FilingService) List(ctx context.Context, filter FilingFilter) (PageResult[FilingItem], error) {
@@ -81,10 +82,12 @@ func (s *FilingService) List(ctx context.Context, filter FilingFilter) (PageResu
 	}
 	notificationStatus := strings.ToLower(strings.TrimSpace(filter.NotificationStatus))
 	switch notificationStatus {
-	case "success", "failed":
-		query = query.Where("(SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ?", notificationStatus)
+	case "success":
+		query = query.Where("notified_at IS NOT NULL OR (SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ?", "success")
+	case "failed":
+		query = query.Where("(SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ? OR (SELECT status FROM notification_batch_items WHERE notification_batch_items.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ?", "failed", "failed")
 	case "unnotified":
-		query = query.Where("(SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) IS NULL")
+		query = query.Where("notified_at IS NULL AND COALESCE((SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1), '') NOT IN ('success', 'failed') AND COALESCE((SELECT status FROM notification_batch_items WHERE notification_batch_items.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1), '') <> 'failed'")
 	}
 	if filter.DateFrom != nil {
 		query = query.Where("filing_date >= ?", *filter.DateFrom)
@@ -155,8 +158,14 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 		s.finishSyncRun(ctx, run.ID, RefreshResult{TargetsChecked: len(targets)}, "failed", err.Error())
 		return RefreshResult{}, err
 	}
+	notificationSettings, err := s.configs.NotificationSettings(ctx)
+	if err != nil {
+		s.finishSyncRun(ctx, run.ID, RefreshResult{TargetsChecked: len(targets)}, "failed", err.Error())
+		return RefreshResult{}, err
+	}
 
 	result := RefreshResult{TargetsChecked: len(targets), SyncRunID: run.ID}
+	notificationCandidates := make([]NotificationCandidate, 0)
 	for _, target := range targets {
 		detailStartedAt := time.Now().UTC()
 		detail := model.SyncRunDetail{
@@ -216,7 +225,7 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 			if created {
 				result.NewFilings++
 				targetNewFilings++
-				_ = s.notifyNewFiling(ctx, filing)
+				notificationCandidates = append(notificationCandidates, filingNotificationCandidate(filing, target.LastSyncAt, notificationSettings, time.Now()))
 			}
 		}
 		s.markTargetSync(ctx, target.ID, "success", "", targetNewFilings)
@@ -226,6 +235,12 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 	status := "success"
 	if result.FailedTargets > 0 {
 		status = "partial"
+	}
+	if len(notificationCandidates) > 0 {
+		if _, err := s.batches.Deliver(ctx, NotificationBatchInput{SyncRunID: run.ID, Source: "filing", Trigger: trigger, Candidates: notificationCandidates}); err != nil {
+			s.finishSyncRun(ctx, run.ID, result, "failed", err.Error())
+			return result, err
+		}
 	}
 	s.finishSyncRun(ctx, run.ID, result, status, "")
 	return result, nil
@@ -288,6 +303,13 @@ func (s *FilingService) withNotificationStatus(ctx context.Context, filings []mo
 		Find(&logs).Error; err != nil {
 		return nil, err
 	}
+	var batchItems []model.NotificationBatchItem
+	if err := s.db.WithContext(ctx).
+		Where("filing_id IN ?", filingIDs).
+		Order("created_at DESC, id DESC").
+		Find(&batchItems).Error; err != nil {
+		return nil, err
+	}
 	latest := map[string]model.NotificationLog{}
 	for _, log := range logs {
 		if _, exists := latest[log.FilingID]; !exists {
@@ -295,9 +317,27 @@ func (s *FilingService) withNotificationStatus(ctx context.Context, filings []mo
 		}
 	}
 	for i := range items {
+		if items[i].NotifiedAt != nil {
+			items[i].NotificationStatus = "success"
+			continue
+		}
 		if log, ok := latest[items[i].FilingID]; ok {
 			items[i].NotificationStatus = log.Status
 			items[i].NotificationLogID = log.ID
+		}
+	}
+	latestBatch := map[string]model.NotificationBatchItem{}
+	for _, item := range batchItems {
+		if _, exists := latestBatch[item.FilingID]; !exists {
+			latestBatch[item.FilingID] = item
+		}
+	}
+	for i := range items {
+		if items[i].NotificationStatus != "" {
+			continue
+		}
+		if batchItem, ok := latestBatch[items[i].FilingID]; ok && batchItem.Status == "failed" {
+			items[i].NotificationStatus = "failed"
 		}
 	}
 	return items, nil
@@ -440,46 +480,6 @@ func applyFetchSettings(filings []sec.FilingResult, firstSync bool, settings SEC
 	return filtered
 }
 
-func (s *FilingService) notifyNewFiling(ctx context.Context, filing model.Filing) error {
-	cfg, err := s.configs.Telegram(ctx)
-	if err != nil || !cfg.Enabled || cfg.ChatID == "" || cfg.BotToken == "" {
-		return err
-	}
-	settings, err := s.configs.NotificationSettings(ctx)
-	if err != nil {
-		return err
-	}
-	if !shouldNotifyFiling(filing, settings, time.Now()) {
-		return nil
-	}
-	message := telegram.Message{
-		Text: fmt.Sprintf("%s %s\n%s\n%s\n%s", filing.Ticker, filing.FilingType, filing.Title, filing.FilingDate.Format("2006-01-02"), filing.FilingURL),
-	}
-	status := "success"
-	errorMessage := ""
-	retryCount := 0
-	if err := sendWithRetry(ctx, s.notifier, message, 3); err != nil {
-		status = "failed"
-		errorMessage = err.Error()
-		retryCount = 3
-	}
-	log := model.NotificationLog{
-		FilingID:     filing.FilingID,
-		Channel:      "telegram",
-		Target:       cfg.ChatID,
-		Status:       status,
-		RetryCount:   retryCount,
-		ErrorMessage: errorMessage,
-		CreatedAt:    time.Now().UTC(),
-		UpdatedAt:    time.Now().UTC(),
-	}
-	if status == "success" {
-		now := time.Now().UTC()
-		log.SentAt = &now
-	}
-	return s.db.WithContext(ctx).Create(&log).Error
-}
-
 func shouldNotifyFiling(filing model.Filing, settings NotificationSettings, now time.Time) bool {
 	if settings.QuietHoursEnabled && inQuietHours(now, settings.QuietHoursStart, settings.QuietHoursEnd) {
 		return false
@@ -516,6 +516,46 @@ func shouldNotifyFiling(filing model.Filing, settings NotificationSettings, now 
 		}
 	}
 	return true
+}
+
+func filingNotificationCandidate(filing model.Filing, previousSync *time.Time, settings NotificationSettings, now time.Time) NotificationCandidate {
+	eventAt := filing.FilingDate
+	if filing.PublishedAt != nil {
+		eventAt = *filing.PublishedAt
+	}
+	return NotificationCandidate{
+		EntityKind: "filing", FilingID: filing.FilingID, Ticker: filing.Ticker, CIK: filing.CIK,
+		CompanyName: filing.CompanyName, FilingType: filing.FilingType, Title: filing.Title,
+		FilingURL: filing.FilingURL, EventAt: eventAt,
+		Reason: filingNotificationReason(filing, previousSync, settings, now),
+	}
+}
+
+func filingNotificationReason(filing model.Filing, previousSync *time.Time, settings NotificationSettings, now time.Time) string {
+	if previousSync == nil {
+		return "initial_sync"
+	}
+	if filing.PublishedAt != nil {
+		if filing.PublishedAt.Before(*previousSync) {
+			return "history_backfill"
+		}
+	} else {
+		filingDate := filing.FilingDate.UTC()
+		previousDate := previousSync.UTC()
+		if filingDate.Year() != previousDate.Year() || filingDate.YearDay() < previousDate.YearDay() {
+			if filingDate.Before(time.Date(previousDate.Year(), previousDate.Month(), previousDate.Day(), 0, 0, 0, 0, time.UTC)) {
+				return "history_backfill"
+			}
+		}
+	}
+	if settings.QuietHoursEnabled && inQuietHours(now, settings.QuietHoursStart, settings.QuietHoursEnd) {
+		return "quiet_hours"
+	}
+	settings.QuietHoursEnabled = false
+	if !shouldNotifyFiling(filing, settings, now) {
+		return "rule_filtered"
+	}
+	return "eligible"
 }
 
 func isImportantFilingType(value string) bool {

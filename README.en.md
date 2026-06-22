@@ -20,11 +20,11 @@ SEC Monitor is a local-first SEC intelligence monitoring system for tracking US 
 - SEC filing list with filters, pagination, sortable filing date, publish time, sync time, ticker, and filing type.
 - Saved filing views stored locally in the browser.
 - Major Event Radar for 8-K, S-1, S-3, 424B, 13D, and other high-signal filings.
-- IPO Monitor scans SEC current filings for S-1, F-1, S-1MEF, and related IPO/offering submissions; after discovering a company, it backfills S-1/F-1, amendments, EFFECT, 424B, and withdrawal-related filings by CIK; it supports filing-list, company, and detail-drawer views with status reasons, confidence, manual overrides, and lifecycle labels such as new, updating, effective, priced, listed, withdrawn, and stale.
+- IPO Monitor scans the SEC current feed and backfills lifecycle filings by CIK; it verifies final ticker and exchange against the official SEC mapping, best-effort extracts offer price and offered shares from 424B4 filings, and supports manual market-field and status correction.
 - Insider Trading page for Form 3/4/5 ownership-change disclosures.
 - Sync history and scheduling with built-in `sec_filing_sync` and `ipo_radar_sync` jobs, manual run, enable/disable, and cron editing.
 - Dashboard overview with separate Watch Target and IPO Monitor KPI sections, including sync health, recent filings, in-progress IPO companies, IPO status distribution, and notification status.
-- Telegram notification settings, test sending, retries, and notification logs.
+- Telegram settings, test sending, and retries; initial/history/lifecycle backfills are silent, each sync sends at most one grouped summary, and notification batches expose delivery or suppression reasons.
 - Structured system configuration for SEC fetch policy, notification rules, data retention, and default language.
 - Chinese/English UI switching: the top bar controls the current browser preference, and System Settings controls the default language.
 - First-run setup guide for SEC User-Agent, first target, notifications, and initial sync.
@@ -206,6 +206,18 @@ IPO page notes:
 - `Filing List`: sorts by local sync time and SEC accepted time from newest to oldest, making recent discoveries easier to inspect.
 - `In Progress` excludes priced, listed, and withdrawn/terminated projects.
 - IPO company CSV and IPO filing CSV exports are available.
+- An SEC listed-company match records final ticker, exchange, and the first time SEC confirmed the listing; this timestamp is not presented as the actual first trading date.
+- Newly discovered 424B4 filings are parsed conservatively for offer price, offered shares, and estimated gross proceeds; unsupported documents remain empty without failing synchronization.
+- Every 424B4 is stored as an offering event. The earliest parsed filing is initial pricing; later filings are classified as duplicate terms, pricing corrections, or follow-on offerings. Only initial pricing and corrections update the IPO summary and send standalone pricing alerts, so follow-on offerings do not overwrite the original IPO price.
+- The `Offering Events` table in company details shows event classification, offering terms, SEC links, and notification state.
+- Manual status, ticker, exchange, offer price, offered shares, and actual listing date take precedence over automatic values.
+
+Notification batch notes:
+
+- A new watch target establishes a silent baseline on its first synchronization.
+- Older filings discovered by later full-history synchronization are stored without alerts.
+- The first IPO scan establishes a silent baseline, and company lifecycle backfills are always silent.
+- Each sync sends at most one Telegram summary. Notification Logs opens on batch view and expands to explain each delivered or suppressed item.
 
 Environment variables:
 

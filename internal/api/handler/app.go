@@ -22,17 +22,18 @@ import (
 )
 
 type AppHandler struct {
-	Runtime      config.Config
-	DB           *gorm.DB
-	Targets      *service.WatchTargetService
-	Configs      *service.ConfigService
-	Tasks        *service.TaskConfigService
-	Filings      *service.FilingService
-	IPO          *service.IPORadarService
-	SEC          sec.Client
-	Audit        *service.AuditService
-	Notification *service.NotificationService
-	Scheduler    SchedulerController
+	Runtime           config.Config
+	DB                *gorm.DB
+	Targets           *service.WatchTargetService
+	Configs           *service.ConfigService
+	Tasks             *service.TaskConfigService
+	Filings           *service.FilingService
+	IPO               *service.IPORadarService
+	SEC               sec.Client
+	Audit             *service.AuditService
+	Notification      *service.NotificationService
+	NotificationBatch *service.NotificationBatchService
+	Scheduler         SchedulerController
 }
 
 type SchedulerController interface {
@@ -248,6 +249,20 @@ func (h *AppHandler) ListIPOCompanies(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) ListIPOOfferingEvents(c *gin.Context) {
+	if h.IPO == nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	page, pageSize := pageParams(c)
+	result, err := h.IPO.ListOfferingEvents(c.Request.Context(), c.Param("cik"), page, pageSize)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) UpdateIPOCompanyOverride(c *gin.Context) {
 	if h.IPO == nil {
 		Error(c, service.ErrValidation)
@@ -292,8 +307,20 @@ func (h *AppHandler) ExportIPOCompaniesCSV(c *gin.Context) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="sec-monitor-ipo-companies.csv"`)
 	writer := csv.NewWriter(c.Writer)
-	_ = writer.Write([]string{"cik", "company_name", "status", "status_reason", "status_confidence", "status_source", "matched_ticker", "final_ticker", "filing_count", "first_filing_date", "latest_filing_date", "latest_filing_type", "latest_title", "latest_filing_url"})
+	_ = writer.Write([]string{"cik", "company_name", "status", "status_reason", "status_confidence", "status_source", "matched_ticker", "final_ticker", "exchange", "offer_price", "shares_offered", "gross_proceeds", "listed_verified_at", "listing_date", "market_data_source", "market_data_confidence", "market_data_updated_at", "filing_count", "first_filing_date", "latest_filing_date", "latest_filing_type", "latest_title", "latest_filing_url"})
 	for _, item := range result.Items {
+		listedVerifiedAt := ""
+		if item.ListedVerifiedAt != nil {
+			listedVerifiedAt = item.ListedVerifiedAt.Format(time.RFC3339)
+		}
+		listingDate := ""
+		if item.ListingDate != nil {
+			listingDate = item.ListingDate.Format("2006-01-02")
+		}
+		marketUpdatedAt := ""
+		if item.MarketDataUpdatedAt != nil {
+			marketUpdatedAt = item.MarketDataUpdatedAt.Format(time.RFC3339)
+		}
 		_ = writer.Write([]string{
 			item.CIK,
 			item.CompanyName,
@@ -303,6 +330,15 @@ func (h *AppHandler) ExportIPOCompaniesCSV(c *gin.Context) {
 			item.StatusSource,
 			item.MatchedTicker,
 			item.FinalTicker,
+			item.Exchange,
+			item.OfferPrice,
+			strconv.FormatInt(item.SharesOffered, 10),
+			item.GrossProceeds,
+			listedVerifiedAt,
+			listingDate,
+			item.MarketDataSource,
+			item.MarketDataConfidence,
+			marketUpdatedAt,
 			strconv.Itoa(item.FilingCount),
 			item.FirstFilingDate.Format("2006-01-02"),
 			item.LatestFilingDate.Format("2006-01-02"),
@@ -498,6 +534,40 @@ func (h *AppHandler) ListNotificationLogs(c *gin.Context) {
 		Page:     page,
 		PageSize: pageSize,
 	})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ListNotificationBatches(c *gin.Context) {
+	page, pageSize := pageParams(c)
+	filter := service.NotificationBatchFilter{
+		Source: c.Query("source"), Status: c.Query("status"), Trigger: c.Query("trigger"),
+		Page: page, PageSize: pageSize,
+	}
+	if value := c.Query("date_from"); value != "" {
+		if parsed, err := time.Parse("2006-01-02", value); err == nil {
+			filter.DateFrom = &parsed
+		}
+	}
+	if value := c.Query("date_to"); value != "" {
+		if parsed, err := time.Parse("2006-01-02", value); err == nil {
+			filter.DateTo = &parsed
+		}
+	}
+	result, err := h.NotificationBatch.List(c.Request.Context(), filter)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ListNotificationBatchItems(c *gin.Context) {
+	page, pageSize := pageParams(c)
+	result, err := h.NotificationBatch.ListItems(c.Request.Context(), uintParam(c, "id"), page, pageSize)
 	if err != nil {
 		Error(c, err)
 		return

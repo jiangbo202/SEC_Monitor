@@ -221,7 +221,12 @@
           <el-table-column prop="created_at" :label="t('common.time')" width="180">
             <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
           </el-table-column>
-          <el-table-column prop="filing_id" label="Filing ID" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="source" :label="t('pages.notificationLogs.source')" width="120">
+            <template #default="{ row }">{{ notificationSourceLabel(row.source) }}</template>
+          </el-table-column>
+          <el-table-column prop="item_count" :label="t('pages.notificationLogs.totalCount')" width="90" align="right" />
+          <el-table-column prop="sent_count" :label="t('pages.notificationLogs.sentCount')" width="90" align="right" />
+          <el-table-column prop="suppressed_count" :label="t('pages.notificationLogs.suppressedCount')" width="90" align="right" />
           <el-table-column prop="status" :label="t('common.status')" width="110">
             <template #default="{ row }">
               <el-tag class="status-tag" :type="notificationStatusType(row.status)" effect="plain">{{ notificationStatusLabel(row.status) }}</el-tag>
@@ -239,7 +244,7 @@ import { computed, onMounted, ref } from 'vue'
 import { Aim, Bell, DataAnalysis, Document, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, Filing, IPOCompany, IPOFiling, IPORadarRefreshResult, NotificationLog, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
+import type { ApiResponse, Filing, IPOCompany, IPOFiling, IPORadarRefreshResult, NotificationBatch, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -256,7 +261,13 @@ const ipoCompanies = ref<IPOCompany[]>([])
 const recentFilings = ref<Filing[]>([])
 const recentIpoFilings = ref<IPOFiling[]>([])
 const dashboardFilings = ref<Filing[]>([])
-const recentNotifications = ref<NotificationLog[]>([])
+const recentNotifications = ref<NotificationBatch[]>([])
+
+function notificationSourceLabel(value: string) {
+  if (value === 'ipo') return t('pages.notificationLogs.sources.ipo')
+  if (value === 'ipo_offering') return t('pages.notificationLogs.sources.ipoOffering')
+  return t('pages.notificationLogs.sources.filing')
+}
 const latestFilingSync = ref<SyncRun | null>(null)
 const latestIpoSync = ref<SyncRun | null>(null)
 const successfulTargets = ref(0)
@@ -353,7 +364,7 @@ const activeTargets = computed(() => {
 
 const notificationSuccessRate = computed(() => {
   if (!recentNotifications.value.length) return 100
-  const success = recentNotifications.value.filter((item) => item.status === 'success').length
+  const success = recentNotifications.value.filter((item) => item.status === 'sent' || item.status === 'suppressed').length
   return Math.round((success / recentNotifications.value.length) * 100)
 })
 
@@ -373,7 +384,7 @@ async function load() {
       apiClient.get<ApiResponse<PageResult<IPOFiling>>>('/ipo-filings', { params: { page: 1, page_size: 6 } }),
       apiClient.get<ApiResponse<PageResult<IPOCompany>>>('/ipo-companies', { params: { page: 1, page_size: 500 } }),
       apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { page: 1, page_size: 20 } }),
-      apiClient.get<ApiResponse<PageResult<NotificationLog>>>('/notification-logs', { params: { page: 1, page_size: 5 } }),
+      apiClient.get<ApiResponse<PageResult<NotificationBatch>>>('/notification-batches', { params: { page: 1, page_size: 5 } }),
       apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config'),
       apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs'),
       apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs', { params: { category: 'ui' } })
@@ -475,15 +486,15 @@ function triggerLabel(trigger?: string) {
 }
 
 function notificationStatusType(status?: string) {
-  if (status === 'success') return 'success'
-  if (status === 'failed') return 'danger'
-  return 'info'
+	if (status === 'sent') return 'success'
+	if (status === 'failed') return 'danger'
+	if (status === 'suppressed') return 'warning'
+	return 'info'
 }
 
 function notificationStatusLabel(status?: string) {
-  if (status === 'success') return t('status.success')
-  if (status === 'failed') return t('status.failed')
-  return status || '-'
+	if (status === 'sent' || status === 'failed' || status === 'suppressed') return t(`pages.notificationLogs.statuses.${status}`)
+	return status || '-'
 }
 
 onMounted(load)

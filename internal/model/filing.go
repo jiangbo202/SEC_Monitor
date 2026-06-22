@@ -16,6 +16,7 @@ type Filing struct {
 	Title           string     `gorm:"type:text" json:"title"`
 	RawContent      string     `gorm:"type:text" json:"raw_content,omitempty"`
 	PulledAt        time.Time  `gorm:"index" json:"pulled_at"`
+	NotifiedAt      *time.Time `gorm:"index" json:"notified_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 }

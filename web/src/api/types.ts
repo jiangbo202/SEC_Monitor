@@ -69,6 +69,22 @@ export interface IPOFiling {
   updated_at: string
 }
 
+export interface IPOOfferingEvent {
+  id: number
+  filing_id: string
+  cik: string
+  company_name: string
+  offering_type: 'initial' | 'duplicate' | 'correction' | 'follow_on' | 'unknown'
+  parse_status: 'parsed' | 'unsupported'
+  offer_price?: string
+  shares_offered?: number
+  gross_proceeds?: string
+  filing_url: string
+  filing_date: string
+  accepted_at?: string | null
+  notified_at?: string | null
+}
+
 export interface IPOCompany {
   cik: string
   company_name: string
@@ -86,6 +102,25 @@ export interface IPOCompany {
   status_confidence: string
   status_source: string
   final_ticker?: string
+  exchange?: string
+  offer_price?: string
+  shares_offered?: number
+  gross_proceeds?: string
+  listed_verified_at?: string | null
+  listing_date?: string | null
+  market_data_source?: string
+  market_data_confidence?: string
+  market_data_updated_at?: string | null
+  automatic_ticker?: string
+  automatic_exchange?: string
+  automatic_offer_price?: string
+  automatic_shares_offered?: number
+  automatic_gross_proceeds?: string
+  override_final_ticker?: string
+  override_exchange?: string
+  override_offer_price?: string
+  override_shares_offered?: number
+  override_listing_date?: string | null
   override_note?: string
   override_updated_at?: string | null
 }
@@ -138,6 +173,41 @@ export interface NotificationLog {
   created_at: string
 }
 
+export interface NotificationBatch {
+  id: number
+  sync_run_id: number
+  source: string
+  trigger: string
+  channel: string
+  target: string
+  status: string
+  item_count: number
+  sent_count: number
+  suppressed_count: number
+  failed_count: number
+  retry_count: number
+  suppression_summary?: string
+  error_message?: string
+  sent_at?: string | null
+  created_at: string
+}
+
+export interface NotificationBatchItem {
+  id: number
+  batch_id: number
+  entity_kind: string
+  filing_id: string
+  ticker?: string
+  cik?: string
+  company_name: string
+  filing_type: string
+  title: string
+  filing_url: string
+  event_at: string
+  status: string
+  reason: string
+}
+
 export interface SyncRun {
   id: number
   started_at: string
@@ -148,6 +218,7 @@ export interface SyncRun {
   new_filings: number
   failed_targets: number
   error_message?: string
+  warning_message?: string
   created_at: string
   updated_at: string
 }

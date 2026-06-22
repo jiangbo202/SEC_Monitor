@@ -12,6 +12,7 @@ type SyncRun struct {
 	NewFilings     int        `json:"new_filings"`
 	FailedTargets  int        `json:"failed_targets"`
 	ErrorMessage   string     `gorm:"type:text" json:"error_message"`
+	WarningMessage string     `gorm:"type:text" json:"warning_message,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
