@@ -28,13 +28,13 @@ func withSQLiteForeignKeys(dsn string) string {
 func Migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&Security{},
+		&UniverseBatch{},
 		&Listing{},
 		&ClassificationSnapshot{},
 		&ProviderRun{},
 		&MarketHoliday{},
 		&PriceSnapshot{},
 		&ShareSnapshot{},
-		&UniverseBatch{},
 		&UniverseSnapshot{},
 		&ManualSecurityOverride{},
 	)

@@ -100,7 +100,7 @@ type ProviderRun struct {
 type MarketHoliday struct {
 	Date            string    `json:"date" gorm:"size:10;primaryKey;autoIncrement:false"`
 	Name            string    `json:"name" gorm:"size:128"`
-	CalendarVersion string    `json:"calendar_version" gorm:"size:64;primaryKey;autoIncrement:false"`
+	CalendarVersion string    `json:"calendar_version" gorm:"size:64;primaryKey;autoIncrement:false;index:idx_market_holidays_calendar_version"`
 	SourceURL       string    `json:"source_url" gorm:"size:2048"`
 	ReviewedBy      string    `json:"reviewed_by" gorm:"size:128"`
 	CompleteYear    bool      `json:"complete_year"`
@@ -137,15 +137,17 @@ type ShareSnapshot struct {
 }
 
 type UniverseBatch struct {
-	BatchID               string             `json:"batch_id" gorm:"size:64;primaryKey"`
-	Status                string             `json:"status" gorm:"size:16;index"`
-	UniverseSourceVersion string             `json:"universe_source_version" gorm:"size:128"`
-	PriceSourceVersion    string             `json:"price_source_version" gorm:"size:128"`
-	ShareSourceVersion    string             `json:"share_source_version" gorm:"size:128"`
-	StartedAt             time.Time          `json:"started_at"`
-	CompletedAt           *time.Time         `json:"completed_at"`
-	ErrorMessage          string             `json:"error_message" gorm:"type:text"`
-	Snapshots             []UniverseSnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	BatchID               string                   `json:"batch_id" gorm:"size:64;primaryKey"`
+	Status                string                   `json:"status" gorm:"size:16;index"`
+	UniverseSourceVersion string                   `json:"universe_source_version" gorm:"size:128"`
+	PriceSourceVersion    string                   `json:"price_source_version" gorm:"size:128"`
+	ShareSourceVersion    string                   `json:"share_source_version" gorm:"size:128"`
+	StartedAt             time.Time                `json:"started_at"`
+	CompletedAt           *time.Time               `json:"completed_at"`
+	ErrorMessage          string                   `json:"error_message" gorm:"type:text"`
+	Classifications       []ClassificationSnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	ProviderRuns          []ProviderRun            `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	Snapshots             []UniverseSnapshot       `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
 type UniverseSnapshot struct {
@@ -176,6 +178,7 @@ type ManualSecurityOverride struct {
 	Active          bool      `json:"active" gorm:"index"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	Security        Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
 type Evidence struct {

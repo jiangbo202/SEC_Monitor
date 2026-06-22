@@ -184,6 +184,9 @@ func TestMigrateEnforcesCompositeUniqueness(t *testing.T) {
 
 func TestMarketHolidayIdentityIncludesCalendarVersion(t *testing.T) {
 	db := openMigratedTestDatabase(t)
+	if !db.Migrator().HasIndex(&MarketHoliday{}, "idx_market_holidays_calendar_version") {
+		t.Fatal("Migrate did not create calendar version lookup index")
+	}
 	holiday := MarketHoliday{Date: "2026-01-01", CalendarVersion: "v1", Name: "New Year's Day"}
 	if err := db.Create(&holiday).Error; err != nil {
 		t.Fatalf("create first calendar version: %v", err)
@@ -213,12 +216,15 @@ func TestDiscoveryForeignKeysRejectOrphans(t *testing.T) {
 		record any
 	}{
 		{name: "listing security", record: &Listing{SecurityID: missingID, Ticker: "ORPHAN", ValidFrom: time.Now()}},
-		{name: "classification security", record: &ClassificationSnapshot{BatchID: "orphan", SecurityID: missingID}},
+		{name: "classification security", record: &ClassificationSnapshot{BatchID: "batch-1", SecurityID: missingID}},
+		{name: "classification batch", record: &ClassificationSnapshot{BatchID: "missing", SecurityID: 1}},
+		{name: "provider run batch", record: &ProviderRun{BatchID: "missing", Provider: "test"}},
 		{name: "share security", record: &ShareSnapshot{SecurityID: missingID, Instant: time.Now(), Accession: "orphan"}},
 		{name: "universe batch", record: &UniverseSnapshot{BatchID: "missing", SecurityID: 1}},
 		{name: "universe security", record: &UniverseSnapshot{BatchID: "batch-1", SecurityID: missingID}},
 		{name: "universe price evidence", record: &UniverseSnapshot{BatchID: "batch-1", SecurityID: 1, PriceSnapshotID: &missingID}},
 		{name: "universe share evidence", record: &UniverseSnapshot{BatchID: "batch-1", SecurityID: 1, ShareSnapshotID: &missingID}},
+		{name: "manual override security", record: &ManualSecurityOverride{SecurityID: missingID, Active: true}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -244,8 +250,22 @@ func TestDiscoveryForeignKeysRestrictReferencedDeletes(t *testing.T) {
 		{
 			name: "classification security",
 			setup: func(t *testing.T, db *gorm.DB) any {
-				mustCreate(t, db, &ClassificationSnapshot{BatchID: "classification", SecurityID: 1})
+				mustCreate(t, db, &ClassificationSnapshot{BatchID: "batch-1", SecurityID: 1})
 				return &Security{ID: 1}
+			},
+		},
+		{
+			name: "classification batch",
+			setup: func(t *testing.T, db *gorm.DB) any {
+				mustCreate(t, db, &ClassificationSnapshot{BatchID: "batch-1", SecurityID: 1})
+				return &UniverseBatch{BatchID: "batch-1"}
+			},
+		},
+		{
+			name: "provider run batch",
+			setup: func(t *testing.T, db *gorm.DB) any {
+				mustCreate(t, db, &ProviderRun{BatchID: "batch-1", Provider: "test"})
+				return &UniverseBatch{BatchID: "batch-1"}
 			},
 		},
 		{
@@ -285,6 +305,13 @@ func TestDiscoveryForeignKeysRestrictReferencedDeletes(t *testing.T) {
 				mustCreate(t, db, &share)
 				mustCreate(t, db, &UniverseSnapshot{BatchID: "batch-1", SecurityID: 1, ShareSnapshotID: &share.ID})
 				return &share
+			},
+		},
+		{
+			name: "manual override security",
+			setup: func(t *testing.T, db *gorm.DB) any {
+				mustCreate(t, db, &ManualSecurityOverride{SecurityID: 1, Active: true})
+				return &Security{ID: 1}
 			},
 		},
 	}
