@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -49,6 +50,9 @@ func ParseSECTickerExchange(r io.Reader) ([]SecuritySourceRecord, error) {
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("decode SEC ticker exchange: %w", err)
 	}
+	if err := requireJSONEOF(dec); err != nil {
+		return nil, fmt.Errorf("decode SEC ticker exchange: %w", err)
+	}
 	idx := map[string]int{}
 	for i, n := range f.Fields {
 		idx[n] = i
@@ -84,13 +88,24 @@ func ParseSECTickerExchange(r io.Reader) ([]SecuritySourceRecord, error) {
 		if json.Unmarshal(values[idx["name"]], &name) != nil || json.Unmarshal(values[idx["ticker"]], &ticker) != nil || json.Unmarshal(values[idx["exchange"]], &exchange) != nil {
 			return nil, fmt.Errorf("row %d invalid string field", row+1)
 		}
+		name = strings.TrimSpace(name)
 		ticker = strings.ToUpper(strings.TrimSpace(ticker))
+		exchange = strings.TrimSpace(exchange)
 		if ticker == "" {
 			return nil, fmt.Errorf("row %d empty ticker", row+1)
 		}
+		if name == "" {
+			return nil, fmt.Errorf("row %d empty name", row+1)
+		}
+		if exchange == "" {
+			return nil, fmt.Errorf("row %d empty exchange", row+1)
+		}
 		rec := SecuritySourceRecord{CIK: fmt.Sprintf("%010d", n), Ticker: ticker, CompanyName: name, SecurityName: name, Exchange: exchange}
-		if old, ok := seen[ticker]; ok && old.CIK != rec.CIK {
-			return nil, fmt.Errorf("row %d duplicate ticker %q maps to different CIK", row+1, ticker)
+		if old, ok := seen[ticker]; ok {
+			if !reflect.DeepEqual(old, rec) {
+				return nil, fmt.Errorf("row %d conflicting duplicate ticker %q", row+1, ticker)
+			}
+			continue
 		}
 		seen[ticker] = rec
 	}
@@ -174,18 +189,18 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 		if m[1] == "0000000000" {
 			return nil, fmt.Errorf("invalid SEC submissions CIK in entry %q", f.Name)
 		}
-		data, n, err := readZIPEntry(f, limits.MaxEntryBytes)
-		if err != nil {
+		if err := checkDeclaredZIPSize(f, limits.MaxEntryBytes, limits.MaxTotalBytes-total); err != nil {
 			return nil, err
+		}
+		var s submission
+		n, err := decodeZIPJSON(f, limits.MaxEntryBytes, &s, false)
+		if err != nil {
+			return nil, fmt.Errorf("submission CIK %s: %w", m[1], err)
 		}
 		if n > limits.MaxTotalBytes-total {
 			return nil, fmt.Errorf("ZIP aggregate decoded bytes exceed limit")
 		}
 		total += n
-		var s submission
-		if err = json.Unmarshal(data, &s); err != nil {
-			return nil, fmt.Errorf("submission CIK %s: %w", m[1], err)
-		}
 		cik, err := normalizeCIK(s.CIK)
 		if err != nil {
 			return nil, fmt.Errorf("submission CIK %s: invalid cik", m[1])
@@ -199,10 +214,17 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 				return nil, fmt.Errorf("submission CIK %s recent %s length mismatch", cik, name)
 			}
 		}
-		rec := SecuritySourceRecord{CIK: cik, CompanyName: s.Name, SecurityName: s.Name, StateOfIncorporation: s.State}
+		name := strings.TrimSpace(s.Name)
+		if name == "" {
+			return nil, fmt.Errorf("submission CIK %s empty name", cik)
+		}
+		rec := SecuritySourceRecord{CIK: cik, CompanyName: name, SecurityName: name, StateOfIncorporation: strings.TrimSpace(s.State)}
 		if s.SIC != "" {
+			if strings.Trim(s.SIC, "0123456789") != "" {
+				return nil, fmt.Errorf("submission CIK %s invalid SIC", cik)
+			}
 			rec.SIC, err = strconv.Atoi(s.SIC)
-			if err != nil {
+			if err != nil || rec.SIC < 0 || rec.SIC > 9999 {
 				return nil, fmt.Errorf("submission CIK %s invalid SIC", cik)
 			}
 		}
@@ -227,6 +249,12 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 			if (form == "8-K" || form == "8-K/A") && len(s.Filings.Recent.Items) > 0 && containsItem201(s.Filings.Recent.Items[j]) {
 				rec.HasBusinessCombinationItem201 = true
 			}
+		}
+		if old, ok := out[cik]; ok {
+			if !reflect.DeepEqual(old, rec) {
+				return nil, fmt.Errorf("submission CIK %s conflicting duplicate archive entry", cik)
+			}
+			continue
 		}
 		out[cik] = rec
 	}
@@ -269,7 +297,7 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 		return nil, err
 	}
 	var out []ShareFact
-	seen := map[string]ShareFact{}
+	entriesByCIK := map[string][]ShareFact{}
 	var total int64
 	for i, f := range z.File {
 		if f.FileInfo().IsDir() {
@@ -291,37 +319,29 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 		if _, ok := allowed[m[1]]; !ok {
 			continue
 		}
-		data, n, err := readZIPEntry(f, limits.MaxEntryBytes)
-		if err != nil {
+		if err := checkDeclaredZIPSize(f, limits.MaxEntryBytes, limits.MaxTotalBytes-total); err != nil {
 			return nil, err
+		}
+		var doc companyFactsDocument
+		n, err := decodeZIPJSON(f, limits.MaxEntryBytes, &doc, true)
+		if err != nil {
+			return nil, fmt.Errorf("companyfacts CIK %s: %w", m[1], err)
 		}
 		if n > limits.MaxTotalBytes-total {
 			return nil, fmt.Errorf("ZIP aggregate decoded bytes exceed limit")
 		}
 		total += n
-		var doc struct {
-			CIK   json.RawMessage `json:"cik"`
-			Facts map[string]map[string]struct {
-				Units map[string][]struct {
-					Val                    json.Number `json:"val"`
-					End, Filed, Form, Accn string
-				} `json:"units"`
-			} `json:"facts"`
-		}
-		dec := json.NewDecoder(strings.NewReader(string(data)))
-		dec.UseNumber()
-		if err = dec.Decode(&doc); err != nil {
-			return nil, fmt.Errorf("companyfacts CIK %s: %w", m[1], err)
-		}
 		cik, err := normalizeCIK(doc.CIK)
 		if err != nil || cik != m[1] {
 			return nil, fmt.Errorf("companyfacts CIK %s invalid cik", m[1])
 		}
-		for _, spec := range []struct{ ns, concept string }{{"dei", "EntityCommonStockSharesOutstanding"}, {"us-gaap", "CommonStockSharesOutstanding"}} {
-			concept, ok := doc.Facts[spec.ns][spec.concept]
-			if !ok {
-				continue
-			}
+		var entryFacts []ShareFact
+		entrySeen := map[string]ShareFact{}
+		for _, spec := range []struct {
+			ns, concept string
+			data        companyFactsConcept
+		}{{"dei", "EntityCommonStockSharesOutstanding", doc.Facts.DEI.EntityCommonStockSharesOutstanding}, {"us-gaap", "CommonStockSharesOutstanding", doc.Facts.USGAAP.CommonStockSharesOutstanding}} {
+			concept := spec.data
 			for unit, facts := range concept.Units {
 				if unit != "shares" {
 					return nil, fmt.Errorf("companyfacts %s/%s:%s: invalid unit %q", cik, spec.ns, spec.concept, unit)
@@ -346,20 +366,55 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 						source = "https://www.sec.gov/Archives/edgar/data/" + strings.TrimLeft(cik, "0") + "/" + strings.ReplaceAll(x.Accn, "-", "") + "/"
 					}
 					fact := ShareFact{CIK: cik, Concept: spec.ns + ":" + spec.concept, Unit: "shares", Form: x.Form, Accession: x.Accn, Instant: instant, FiledAt: filed, Shares: shares, SourceURL: source}
-					if old, ok := seen[key]; ok {
+					if old, ok := entrySeen[key]; ok {
 						if old != fact {
 							return nil, fmt.Errorf("companyfacts %s conflicting duplicate fact", context)
 						}
 						continue
 					}
-					seen[key] = fact
-					out = append(out, fact)
+					entrySeen[key] = fact
+					entryFacts = append(entryFacts, fact)
 				}
 			}
 		}
+		sortShareFacts(entryFacts)
+		if old, ok := entriesByCIK[cik]; ok {
+			if !reflect.DeepEqual(old, entryFacts) {
+				return nil, fmt.Errorf("companyfacts CIK %s conflicting duplicate archive entry", cik)
+			}
+			continue
+		}
+		entriesByCIK[cik] = entryFacts
+		out = append(out, entryFacts...)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
+	sortShareFacts(out)
+	return out, nil
+}
+
+type companyFactsFact struct {
+	Val                    json.Number `json:"val"`
+	End, Filed, Form, Accn string
+}
+
+type companyFactsConcept struct {
+	Units map[string][]companyFactsFact `json:"units"`
+}
+
+type companyFactsDocument struct {
+	CIK   json.RawMessage `json:"cik"`
+	Facts struct {
+		DEI struct {
+			EntityCommonStockSharesOutstanding companyFactsConcept `json:"EntityCommonStockSharesOutstanding"`
+		} `json:"dei"`
+		USGAAP struct {
+			CommonStockSharesOutstanding companyFactsConcept `json:"CommonStockSharesOutstanding"`
+		} `json:"us-gaap"`
+	} `json:"facts"`
+}
+
+func sortShareFacts(facts []ShareFact) {
+	sort.Slice(facts, func(i, j int) bool {
+		a, b := facts[i], facts[j]
 		if a.CIK != b.CIK {
 			return a.CIK < b.CIK
 		}
@@ -371,7 +426,6 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 		}
 		return a.Accession < b.Accession
 	})
-	return out, nil
 }
 
 func parseShares(n json.Number) (int64, error) {
@@ -391,26 +445,74 @@ func validateParseLimits(l ZIPParseLimits) error {
 	}
 	return nil
 }
-func readZIPEntry(f *zip.File, max int64) ([]byte, int64, error) {
+
+type countingLimitReader struct {
+	r         io.Reader
+	remaining int64
+	read      int64
+	name      string
+}
+
+func (r *countingLimitReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.remaining == 0 {
+		var probe [1]byte
+		n, err := r.r.Read(probe[:])
+		if n > 0 {
+			return 0, fmt.Errorf("ZIP entry %q exceeds decoded byte limit", r.name)
+		}
+		return 0, err
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.r.Read(p)
+	r.remaining -= int64(n)
+	r.read += int64(n)
+	return n, err
+}
+
+func decodeZIPJSON(f *zip.File, max int64, dst any, useNumber bool) (int64, error) {
 	r, err := f.Open()
 	if err != nil {
-		return nil, 0, err
+		return 0, err
 	}
 	defer r.Close()
-	lr := io.LimitReader(r, max)
-	data, err := io.ReadAll(lr)
-	if err != nil {
-		return nil, 0, err
+	lr := &countingLimitReader{r: r, remaining: max, name: f.Name}
+	dec := json.NewDecoder(lr)
+	if useNumber {
+		dec.UseNumber()
 	}
-	var extra [1]byte
-	n, extraErr := r.Read(extra[:])
-	if n > 0 {
-		return nil, 0, fmt.Errorf("ZIP entry %q exceeds decoded byte limit", f.Name)
+	if err := dec.Decode(dst); err != nil {
+		return lr.read, err
 	}
-	if extraErr != nil && extraErr != io.EOF {
-		return nil, 0, extraErr
+	if err := requireJSONEOF(dec); err != nil {
+		return lr.read, err
 	}
-	return data, int64(len(data)), nil
+	return lr.read, nil
+}
+
+func requireJSONEOF(dec *json.Decoder) error {
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("trailing JSON value")
+		}
+		return fmt.Errorf("trailing data: %w", err)
+	}
+	return nil
+}
+
+func checkDeclaredZIPSize(f *zip.File, entryLimit, remainingTotal int64) error {
+	if f.UncompressedSize64 > uint64(entryLimit) {
+		return fmt.Errorf("ZIP entry %q exceeds decoded byte limit", f.Name)
+	}
+	if f.UncompressedSize64 > uint64(remainingTotal) {
+		return fmt.Errorf("ZIP aggregate decoded bytes exceed limit")
+	}
+	return nil
 }
 
 func (s SECBulkSource) validateDownloader() error {

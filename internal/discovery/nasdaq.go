@@ -43,6 +43,12 @@ var otherHeader = []string{"ACT Symbol", "Security Name", "Exchange", "CQS Symbo
 
 func ParseNasdaqListed(r io.Reader) ([]SecuritySourceRecord, string, error) {
 	return parseNasdaq(r, listedHeader, func(fields []string, line int) (SecuritySourceRecord, error) {
+		if fields[0] == "" {
+			return SecuritySourceRecord{}, fmt.Errorf("line %d: empty ticker", line)
+		}
+		if fields[1] == "" {
+			return SecuritySourceRecord{}, fmt.Errorf("line %d: empty security name", line)
+		}
 		test, err := parseYN(fields[3])
 		if err != nil {
 			return SecuritySourceRecord{}, fmt.Errorf("line %d: Test Issue: %w", line, err)
@@ -57,6 +63,12 @@ func ParseNasdaqListed(r io.Reader) ([]SecuritySourceRecord, string, error) {
 
 func ParseNasdaqOther(r io.Reader) ([]SecuritySourceRecord, string, error) {
 	return parseNasdaq(r, otherHeader, func(fields []string, line int) (SecuritySourceRecord, error) {
+		if fields[0] == "" {
+			return SecuritySourceRecord{}, fmt.Errorf("line %d: empty ticker", line)
+		}
+		if fields[1] == "" {
+			return SecuritySourceRecord{}, fmt.Errorf("line %d: empty security name", line)
+		}
 		exchanges := map[string]string{"N": "NYSE", "A": "NYSE American", "P": "NYSE Arca", "Z": "Cboe BZX", "V": "IEX"}
 		exchange, ok := exchanges[fields[2]]
 		if !ok {
@@ -96,13 +108,19 @@ func parseNasdaq(r io.Reader, expected []string, makeRecord func([]string, int) 
 			continue
 		}
 		if strings.HasPrefix(text, "File Creation Time:") {
-			if strings.Contains(text, "|") {
+			footerFields := strings.Split(raw, "|")
+			for _, trailing := range footerFields[1:] {
+				if strings.TrimSpace(trailing) != "" {
+					return nil, "", fmt.Errorf("line %d: malformed File Creation Time footer", line)
+				}
+			}
+			if !strings.HasPrefix(strings.TrimSpace(footerFields[0]), "File Creation Time:") {
 				return nil, "", fmt.Errorf("line %d: malformed File Creation Time footer", line)
 			}
 			if footer != "" {
 				return nil, "", fmt.Errorf("duplicate footer at line %d", line)
 			}
-			footer = strings.TrimSpace(strings.TrimPrefix(text, "File Creation Time:"))
+			footer = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(footerFields[0]), "File Creation Time:"))
 			if footer == "" {
 				return nil, "", fmt.Errorf("empty footer at line %d", line)
 			}

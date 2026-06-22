@@ -13,7 +13,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestParseNasdaqListed(t *testing.T) {
-	in := "\r\nSymbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\r\n brk.b | Berkshire |Q|N|N|100|Y|N\r\nFile Creation Time: 0621202618:00\r\n"
+	in := "\r\nSymbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\r\n brk.b | Berkshire |Q|N|N|100|Y|N\r\nFile Creation Time: 0621202618:00|||||||\r\n"
 	records, version, err := ParseNasdaqListed(strings.NewReader(in))
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestParseNasdaqOtherExchangeMappings(t *testing.T) {
 	for _, r := range []string{"n|N|N|n|N|100|N|n", "a|A|A|a|N|100|N|a", "p|P|P|p|N|100|N|p", "z|Z|Z|z|N|100|N|z", "v|V|V|v|N|100|Y|v"} {
 		rows.WriteString(r + "\n")
 	}
-	rows.WriteString("File Creation Time: 06212026\n")
+	rows.WriteString("File Creation Time: 06212026|||||||\n")
 	recs, _, err := ParseNasdaqOther(strings.NewReader(rows.String()))
 	if err != nil {
 		t.Fatal(err)
@@ -69,8 +69,8 @@ func TestParseNasdaqErrors(t *testing.T) {
 }
 
 func TestNasdaqDirectorySource(t *testing.T) {
-	listed := "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\nA|Alpha|Q|N|N|100|N|N\nFile Creation Time: one\n"
-	other := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\nB|Beta|N|B|N|100|N|B\nFile Creation Time: two\n"
+	listed := "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\nA|Alpha|Q|N|N|100|N|N\nFile Creation Time: one|||||||\n"
+	other := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\nB|Beta|N|B|N|100|N|B\nFile Creation Time: two|||||||\n"
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body := listed
 		if strings.Contains(r.URL.Path, "other") {

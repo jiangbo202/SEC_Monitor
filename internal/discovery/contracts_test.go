@@ -19,7 +19,7 @@ func TestParseNasdaqHeaderAndDuplicateContracts(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"header whitespace", "\n Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\n", "line 2"},
 		{"leading blank row error", "\n\n" + header + "A|bad\nFile Creation Time: x\n", "line 4"},
-		{"footer fields", header + "A|Alpha|Q|N|N|100|N|N\nFile Creation Time: x|extra\n", "line 3"},
+		{"footer fields", header + "A|Alpha|Q|N|N|100|N|N\nFile Creation Time: x|||||||extra\n", "line 3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := ParseNasdaqListed(strings.NewReader(tc.body))
@@ -28,9 +28,22 @@ func TestParseNasdaqHeaderAndDuplicateContracts(t *testing.T) {
 			}
 		})
 	}
-	body := header + "A|Alpha|Q|N|N|100|N|N\nA|Alpha|Q|N|N|100|N|N\nFile Creation Time: x\n"
+	body := header + "A|Alpha|Q|N|N|100|N|N\nA|Alpha|Q|N|N|100|N|N\nFile Creation Time: x|||||||\n"
 	if records, _, err := ParseNasdaqListed(strings.NewReader(body)); err != nil || len(records) != 1 {
 		t.Fatalf("records/error = %#v %v", records, err)
+	}
+}
+
+func TestParseNasdaqAcceptsOnlyEmptyPaddedFooterFields(t *testing.T) {
+	listed := "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\n" +
+		"A|Alpha|Q|N|N|100|N|N\nFile Creation Time: 0621202618:00|||||||\n"
+	if records, stamp, err := ParseNasdaqListed(strings.NewReader(listed)); err != nil || len(records) != 1 || stamp != "0621202618:00" {
+		t.Fatalf("listed records/stamp/error = %#v %q %v", records, stamp, err)
+	}
+	other := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\n" +
+		"B|Beta|N|B|N|100|N|B\nFile Creation Time: 0621202618:00|||||||\n"
+	if records, stamp, err := ParseNasdaqOther(strings.NewReader(other)); err != nil || len(records) != 1 || stamp != "0621202618:00" {
+		t.Fatalf("other records/stamp/error = %#v %q %v", records, stamp, err)
 	}
 }
 
@@ -68,10 +81,18 @@ func TestParseNasdaqMergeDedupesExactAndRejectsConflict(t *testing.T) {
 	if err != nil || len(merged) != 1 {
 		t.Fatalf("exact duplicate = %#v %v", merged, err)
 	}
-	changed := record
-	changed.CompanyName = "Other"
-	if _, err := mergeNasdaqRecords([]SecuritySourceRecord{record}, []SecuritySourceRecord{changed}); err == nil {
-		t.Fatal("conflicting duplicate accepted")
+	for _, field := range []string{"name", "exchange"} {
+		changed := record
+		if field == "name" {
+			changed.CompanyName = "Other"
+		} else {
+			changed.Exchange = "NYSE"
+		}
+		for _, pair := range [][2]SecuritySourceRecord{{record, changed}, {changed, record}} {
+			if _, err := mergeNasdaqRecords([]SecuritySourceRecord{pair[0]}, []SecuritySourceRecord{pair[1]}); err == nil {
+				t.Fatalf("conflicting duplicate %s accepted in order %#v", field, pair)
+			}
+		}
 	}
 }
 
@@ -117,6 +138,36 @@ func TestParseSECTickerRowContracts(t *testing.T) {
 	}
 }
 
+func TestParseSECTickerRejectsTrailingJSONEmptyFieldsAndConflictsInEitherOrder(t *testing.T) {
+	for _, in := range []string{
+		`{"fields":["cik","name","ticker","exchange"],"data":[[1,"A","A","Nasdaq"]]} garbage`,
+		`{"fields":["cik","name","ticker","exchange"],"data":[[1," ","A","Nasdaq"]]}`,
+		`{"fields":["cik","name","ticker","exchange"],"data":[[1,"A","A"," "]]}`,
+	} {
+		if _, err := ParseSECTickerExchange(strings.NewReader(in)); err == nil {
+			t.Fatalf("accepted invalid ticker payload %q", in)
+		}
+	}
+	for _, changed := range []string{`[1,"Other","A","Nasdaq"]`, `[1,"Alpha","A","NYSE"]`} {
+		base := `[1,"Alpha","A","Nasdaq"]`
+		for _, pair := range [][2]string{{base, changed}, {changed, base}} {
+			in := `{"fields":["cik","name","ticker","exchange"],"data":[` + pair[0] + `,` + pair[1] + `]}`
+			if _, err := ParseSECTickerExchange(strings.NewReader(in)); err == nil || !strings.Contains(err.Error(), "duplicate ticker") {
+				t.Fatalf("conflict order %#v error = %v", pair, err)
+			}
+		}
+	}
+}
+
+func TestParseNasdaqRejectsEmptyTickerAndSecurityName(t *testing.T) {
+	header := "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\n"
+	for _, row := range []string{"|Alpha|Q|N|N|100|N|N", "A| |Q|N|N|100|N|N"} {
+		if _, _, err := ParseNasdaqListed(strings.NewReader(header + row + "\nFile Creation Time: x|||||||\n")); err == nil || !strings.Contains(err.Error(), "line 2") {
+			t.Fatalf("accepted row %q: %v", row, err)
+		}
+	}
+}
+
 func TestParseSECTickerRequiredFieldsAndCIKTypes(t *testing.T) {
 	for _, missing := range []string{"cik", "name", "ticker", "exchange"} {
 		t.Run("missing-"+missing, func(t *testing.T) {
@@ -147,7 +198,7 @@ func TestParseSECTickerRequiredFieldsAndCIKTypes(t *testing.T) {
 
 func TestParseSECSubmissionsZIPDirectoryAndItemForms(t *testing.T) {
 	p := zipFileWithDirectory(t, "safe/", map[string]string{
-		"CIK0000001234.json": `{"cik":1234,"filings":{"recent":{"form":["8-K/A","8-K-A"],"items":["2.01","2.01"]}}}`,
+		"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["8-K/A","8-K-A"],"items":["2.01","2.01"]}}}`,
 	})
 	z, err := zip.OpenReader(p)
 	if err != nil {
@@ -161,7 +212,7 @@ func TestParseSECSubmissionsZIPDirectoryAndItemForms(t *testing.T) {
 	if !m["0000001234"].HasBusinessCombinationItem201 {
 		t.Fatal("8-K/A item 2.01 not detected")
 	}
-	p = zipFile(t, map[string]string{"CIK0000001234.json": `{"cik":1234,"filings":{"recent":{"form":["8-K-A"],"items":["2.01"]}}}`})
+	p = zipFile(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["8-K-A"],"items":["2.01"]}}}`})
 	z, err = zip.OpenReader(p)
 	if err != nil {
 		t.Fatal(err)
@@ -176,8 +227,60 @@ func TestParseSECSubmissionsZIPDirectoryAndItemForms(t *testing.T) {
 	}
 }
 
+func TestParseSECSubmissionsRejectsTrailingJSONNameSICAndDuplicateCIKConflicts(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"trailing", `{"name":"Acme","cik":1234} garbage`},
+		{"missing-name", `{"cik":1234}`},
+		{"empty-name", `{"name":" ","cik":1234}`},
+		{"negative-sic", `{"name":"Acme","cik":1234,"sic":"-1"}`},
+		{"large-sic", `{"name":"Acme","cik":1234,"sic":"10000"}`},
+		{"nondigit-sic", `{"name":"Acme","cik":1234,"sic":"1x"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := zipFile(t, map[string]string{"CIK0000001234.json": tc.body})
+			z, err := zip.OpenReader(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = ParseSECSubmissionsZIP(&z.Reader, ZIPParseLimits{MaxEntryBytes: 2000, MaxTotalBytes: 2000})
+			z.Close()
+			if err == nil || !strings.Contains(err.Error(), "1234") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+
+	base := `{"name":"Acme","cik":1234,"sic":"","stateOfIncorporation":"DE"}`
+	if records, err := parseSubmissionEntries(t, []task4ZIPEntry{{"CIK0000001234.json", base}, {"CIK0000001234.json", base}}); err != nil || len(records) != 1 {
+		t.Fatalf("exact duplicate = %#v %v", records, err)
+	}
+	changed := `{"name":"Other","cik":1234,"sic":"","stateOfIncorporation":"DE"}`
+	for _, entries := range [][]task4ZIPEntry{
+		{{"CIK0000001234.json", base}, {"CIK0000001234.json", changed}},
+		{{"CIK0000001234.json", changed}, {"CIK0000001234.json", base}},
+	} {
+		if _, err := parseSubmissionEntries(t, entries); err == nil || !strings.Contains(err.Error(), "conflicting duplicate") {
+			t.Fatalf("conflict entries %#v error = %v", entries, err)
+		}
+	}
+	for _, sic := range []string{"", "0", "9999"} {
+		body := `{"name":"Acme","cik":1234,"sic":"` + sic + `"}`
+		records, err := parseSubmissionEntries(t, []task4ZIPEntry{{"CIK0000001234.json", body}})
+		if err != nil {
+			t.Fatalf("valid SIC %q: %v", sic, err)
+		}
+		want := 0
+		if sic == "9999" {
+			want = 9999
+		}
+		if records["0000001234"].SIC != want {
+			t.Fatalf("SIC %q = %d", sic, records["0000001234"].SIC)
+		}
+	}
+}
+
 func TestParseSECSubmissionsUniqueFormsAndForeignAnnualOrdering(t *testing.T) {
-	body := `{"cik":1234,"filings":{"recent":{"form":["20-F","20-F","40-F","20-F/A"],"filingDate":["2025-01-01","2025-01-01","2026-01-01","2027-01-01"]}}}`
+	body := `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["20-F","20-F","40-F","20-F/A"],"filingDate":["2025-01-01","2025-01-01","2026-01-01","2027-01-01"]}}}`
 	p := zipFile(t, map[string]string{"CIK0000001234.json": body})
 	z, e := zip.OpenReader(p)
 	if e != nil {
@@ -195,7 +298,7 @@ func TestParseSECSubmissionsUniqueFormsAndForeignAnnualOrdering(t *testing.T) {
 	if record.LatestAnnualForm != "40-F" {
 		t.Fatalf("latest annual = %q", record.LatestAnnualForm)
 	}
-	body = `{"cik":1234,"filings":{"recent":{"form":["20-F","40-F"],"filingDate":["2026-02-01","2026-01-01"]}}}`
+	body = `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["20-F","40-F"],"filingDate":["2026-02-01","2026-01-01"]}}}`
 	p = zipFile(t, map[string]string{"CIK0000001234.json": body})
 	z, e = zip.OpenReader(p)
 	if e != nil {
@@ -255,23 +358,49 @@ func TestParseSECCompanyFactsBothConceptsAllowedAndAllFacts(t *testing.T) {
 	}
 }
 
+func TestParseSECCompanyFactsSelectiveDecodeTrailingJSONAndDuplicateCIKIdentity(t *testing.T) {
+	largeUnrelated := strings.Repeat(`{"val":9,"end":"2026-01-01","filed":"2026-01-02"},`, 2000) + `{"val":9,"end":"2026-01-01","filed":"2026-01-02"}`
+	body := `{"cik":1234,"facts":{"us-gaap":{"Assets":{"units":{"USD":[` + largeUnrelated + `]}},"CommonStockSharesOutstanding":{"units":{"shares":[{"val":3,"end":"2026-03-01","filed":"2026-03-02","accn":"c"}]}}}}}`
+	entries := []task4ZIPEntry{{"CIK0000001234.json", body}}
+	facts, err := parseCompanyFactEntries(t, entries, int64(len(body)))
+	if err != nil || len(facts) != 1 || facts[0].Shares != 3 {
+		t.Fatalf("selective facts/error = %#v %v", facts, err)
+	}
+	if _, err := parseCompanyFactEntries(t, []task4ZIPEntry{{"CIK0000001234.json", body + " garbage"}}, int64(len(body)+8)); err == nil {
+		t.Fatal("companyfacts trailing JSON accepted")
+	}
+
+	a := `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1,"end":"2026-01-01","filed":"2026-01-02","accn":"a"}]}}}}}`
+	b := `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":2,"end":"2026-02-01","filed":"2026-02-02","accn":"b"}]}}}}}`
+	for _, pair := range [][]task4ZIPEntry{
+		{{"CIK0000001234.json", a}, {"CIK0000001234.json", b}},
+		{{"CIK0000001234.json", b}, {"CIK0000001234.json", a}},
+	} {
+		if _, err := parseCompanyFactEntries(t, pair, 5000); err == nil || !strings.Contains(err.Error(), "conflicting duplicate") {
+			t.Fatalf("nonidentical duplicate entries %#v error = %v", pair, err)
+		}
+	}
+	if facts, err := parseCompanyFactEntries(t, []task4ZIPEntry{{"CIK0000001234.json", a}, {"CIK0000001234.json", a}}, 5000); err != nil || len(facts) != 1 {
+		t.Fatalf("identical duplicate entries = %#v %v", facts, err)
+	}
+}
+
 func TestParseSECZIPEntryLimitBoundaries(t *testing.T) {
-	p := zipFile(t, map[string]string{"CIK0000001234.json": "12345"})
-	z, e := zip.OpenReader(p)
-	if e != nil {
-		t.Fatal(e)
+	body := `{"name":"Acme","cik":1234}`
+	entries := []task4ZIPEntry{{"CIK0000001234.json", body}}
+	if _, err := parseSubmissionEntriesWithLimit(t, entries, int64(len(body))); err != nil {
+		t.Fatalf("exact boundary: %v", err)
 	}
-	defer z.Close()
-	if b, n, e := readZIPEntry(z.File[0], 5); e != nil || n != 5 || string(b) != "12345" {
-		t.Fatalf("boundary = %q %d %v", b, n, e)
+	if _, err := parseSubmissionEntriesWithLimit(t, entries, int64(len(body)-1)); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("one over error = %v", err)
 	}
-	if b, n, e := readZIPEntry(z.File[0], math.MaxInt64); e != nil || n != 5 || string(b) != "12345" {
-		t.Fatalf("max int limit: %q %d %v", b, n, e)
+	if _, err := parseSubmissionEntriesWithLimit(t, entries, math.MaxInt64); err != nil {
+		t.Fatalf("max int limit: %v", err)
 	}
 }
 
 func TestParseSECZIPAggregateMaxIntDoesNotOverflow(t *testing.T) {
-	p := zipFile(t, map[string]string{"CIK0000001234.json": `{"cik":1234}`, "CIK0000001235.json": `{"cik":1235}`})
+	p := zipFile(t, map[string]string{"CIK0000001234.json": `{"name":"A","cik":1234}`, "CIK0000001235.json": `{"name":"B","cik":1235}`})
 	z, e := zip.OpenReader(p)
 	if e != nil {
 		t.Fatal(e)
@@ -402,4 +531,60 @@ func zipFileWithDirectory(t *testing.T, dir string, entries map[string]string) s
 		t.Fatal(e)
 	}
 	return p
+}
+
+type task4ZIPEntry struct {
+	name string
+	body string
+}
+
+func orderedZIPFile(t *testing.T, entries []task4ZIPEntry) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "ordered.zip")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	for _, entry := range entries {
+		x, err := w.Create(entry.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := x.Write([]byte(entry.body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func parseSubmissionEntries(t *testing.T, entries []task4ZIPEntry) (map[string]SecuritySourceRecord, error) {
+	t.Helper()
+	return parseSubmissionEntriesWithLimit(t, entries, 1<<20)
+}
+
+func parseSubmissionEntriesWithLimit(t *testing.T, entries []task4ZIPEntry, limit int64) (map[string]SecuritySourceRecord, error) {
+	t.Helper()
+	z, err := zip.OpenReader(orderedZIPFile(t, entries))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+	return ParseSECSubmissionsZIP(&z.Reader, ZIPParseLimits{MaxEntries: 100, MaxEntryBytes: limit, MaxTotalBytes: math.MaxInt64})
+}
+
+func parseCompanyFactEntries(t *testing.T, entries []task4ZIPEntry, limit int64) ([]ShareFact, error) {
+	t.Helper()
+	z, err := zip.OpenReader(orderedZIPFile(t, entries))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+	return ParseSECCompanyFactsZIP(&z.Reader, map[string]struct{}{"0000001234": {}}, ZIPParseLimits{MaxEntries: 100, MaxEntryBytes: limit, MaxTotalBytes: math.MaxInt64})
 }
