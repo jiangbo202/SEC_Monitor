@@ -57,14 +57,15 @@ func TestParseSECSubmissionsAllowsLegacyMissingAcceptance(t *testing.T) {
 
 func TestEnrichShareFactsWithAcceptance(t *testing.T) {
 	accepted := mustAcceptanceTime(t, "2026-05-01T12:34:56.123Z")
+	filed := mustAcceptanceTime(t, "2026-05-01T23:30:00-07:00")
 	facts := []ShareFact{
-		{CIK: "0000001234", Accession: "a", Shares: 10},
+		{CIK: "0000001234", Accession: "a", Form: "10-Q", FiledAt: filed, Shares: 10},
 		{CIK: "0000001234", Accession: "unmatched", Shares: 20},
 	}
 	before := append([]ShareFact(nil), facts...)
 	metadata := []FilingMetadata{
-		{CIK: "0000001234", Accession: "a", AcceptedAt: accepted},
-		{CIK: "0000001234", Accession: "a", AcceptedAt: accepted},
+		{CIK: "0000001234", Accession: "a", Form: "10-Q", FiledAt: mustAcceptanceTime(t, "2026-05-01T00:00:00Z"), AcceptedAt: accepted},
+		{CIK: "0000001234", Accession: "a", Form: "10-Q", FiledAt: mustAcceptanceTime(t, "2026-05-01T00:00:00Z"), AcceptedAt: accepted},
 	}
 	got, err := EnrichShareFactsWithAcceptance(facts, metadata)
 	if err != nil {
@@ -85,6 +86,9 @@ func TestEnrichShareFactsWithAcceptance(t *testing.T) {
 func TestEnrichShareFactsRejectsMetadataConflicts(t *testing.T) {
 	t1 := mustAcceptanceTime(t, "2026-05-01T12:34:56Z")
 	t2 := t1.Add(time.Second)
+	filed := mustAcceptanceTime(t, "2026-05-01T00:00:00Z")
+	fact := ShareFact{CIK: "0000001234", Accession: "a", Form: "10-Q", FiledAt: filed}
+	metadata := FilingMetadata{CIK: "0000001234", Accession: "a", Form: "10-Q", FiledAt: filed, AcceptedAt: t1}
 	tests := []struct {
 		name     string
 		facts    []ShareFact
@@ -95,13 +99,50 @@ func TestEnrichShareFactsRejectsMetadataConflicts(t *testing.T) {
 		{name: "missing accession", metadata: []FilingMetadata{{CIK: "0000001234", AcceptedAt: t1}}},
 		{name: "missing CIK", metadata: []FilingMetadata{{Accession: "a", AcceptedAt: t1}}},
 		{name: "fact CIK mismatch", facts: []ShareFact{{CIK: "0000001235", Accession: "a"}}, metadata: []FilingMetadata{{CIK: "0000001234", Accession: "a", AcceptedAt: t1}}},
-		{name: "existing accepted time", facts: []ShareFact{{CIK: "0000001234", Accession: "a", AcceptedAt: t2}}, metadata: []FilingMetadata{{CIK: "0000001234", Accession: "a", AcceptedAt: t1}}},
+		{name: "form mismatch", facts: []ShareFact{fact}, metadata: []FilingMetadata{func() FilingMetadata { m := metadata; m.Form = "10-K"; return m }()}},
+		{name: "filed date mismatch", facts: []ShareFact{fact}, metadata: []FilingMetadata{func() FilingMetadata { m := metadata; m.FiledAt = filed.AddDate(0, 0, 1); return m }()}},
+		{name: "existing accepted time", facts: []ShareFact{func() ShareFact { f := fact; f.AcceptedAt = t2; return f }()}, metadata: []FilingMetadata{metadata}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			before := append([]ShareFact(nil), test.facts...)
 			_, err := EnrichShareFactsWithAcceptance(test.facts, test.metadata)
 			if err == nil || !strings.Contains(err.Error(), "acceptance metadata") {
 				t.Fatalf("error = %v", err)
+			}
+			if !reflect.DeepEqual(test.facts, before) {
+				t.Fatalf("input facts mutated: got %#v want %#v", test.facts, before)
+			}
+		})
+	}
+}
+
+func TestEnrichShareFactsSkipsMissingFilingIdentity(t *testing.T) {
+	accepted := mustAcceptanceTime(t, "2026-05-01T12:34:56Z")
+	filed := mustAcceptanceTime(t, "2026-05-01T00:00:00Z")
+	metadata := []FilingMetadata{{CIK: "0000001234", Accession: "a", Form: "10-Q", FiledAt: filed, AcceptedAt: accepted}}
+	tests := []struct {
+		name     string
+		fact     ShareFact
+		metadata []FilingMetadata
+	}{
+		{name: "missing fact form", fact: ShareFact{CIK: "0000001234", Accession: "a", FiledAt: filed}},
+		{name: "missing fact filed date", fact: ShareFact{CIK: "0000001234", Accession: "a", Form: "10-Q"}},
+		{name: "missing metadata form", fact: ShareFact{CIK: "0000001234", Accession: "a", Form: "10-Q", FiledAt: filed}, metadata: []FilingMetadata{{CIK: "0000001234", Accession: "a", FiledAt: filed, AcceptedAt: accepted}}},
+		{name: "missing metadata filed date", fact: ShareFact{CIK: "0000001234", Accession: "a", Form: "10-Q", FiledAt: filed}, metadata: []FilingMetadata{{CIK: "0000001234", Accession: "a", Form: "10-Q", AcceptedAt: accepted}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			caseMetadata := test.metadata
+			if caseMetadata == nil {
+				caseMetadata = metadata
+			}
+			got, err := EnrichShareFactsWithAcceptance([]ShareFact{test.fact}, caseMetadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got[0].AcceptedAt.IsZero() {
+				t.Fatalf("accepted at = %v, want zero", got[0].AcceptedAt)
 			}
 		})
 	}

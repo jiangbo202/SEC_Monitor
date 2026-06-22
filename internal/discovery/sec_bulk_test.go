@@ -227,16 +227,16 @@ func TestSECBulkSourceSharesDefersMissingAcceptanceToLatestSelection(t *testing.
 	)
 	companyFacts := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":10,"end":"2025-12-31","filed":"2026-01-02","form":"10-K","accn":"` + oldAccession + `"},{"val":20,"end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"` + latestAccession + `"}]}}}}}`})
 	tests := []struct {
-		name, matchedAccession, acceptance string
-		wantStatus, wantReason             string
-		wantShares                         int64
+		name, matchedAccession, form, filed, acceptance string
+		wantStatus, wantReason                          string
+		wantShares                                      int64
 	}{
-		{name: "irrelevant historical fact is unmatched", matchedAccession: latestAccession, acceptance: "2026-05-01T12:34:56Z", wantStatus: QualityStatusValid, wantReason: ReasonShareSelected, wantShares: 20},
-		{name: "latest fact is unmatched", matchedAccession: oldAccession, acceptance: "2026-01-02T12:34:56Z", wantStatus: QualityStatusMissing, wantReason: ReasonShareAcceptedAtMissing},
+		{name: "irrelevant historical fact is unmatched", matchedAccession: latestAccession, form: "10-Q", filed: "2026-05-01", acceptance: "2026-05-01T12:34:56Z", wantStatus: QualityStatusValid, wantReason: ReasonShareSelected, wantShares: 20},
+		{name: "latest fact is unmatched", matchedAccession: oldAccession, form: "10-K", filed: "2026-01-02", acceptance: "2026-01-02T12:34:56Z", wantStatus: QualityStatusMissing, wantReason: ReasonShareAcceptedAtMissing},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			submissions := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["10-Q"],"accessionNumber":["` + test.matchedAccession + `"],"filingDate":["2026-05-01"],"acceptanceDateTime":["` + test.acceptance + `"]}}}`})
+			submissions := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["` + test.form + `"],"accessionNumber":["` + test.matchedAccession + `"],"filingDate":["` + test.filed + `"],"acceptanceDateTime":["` + test.acceptance + `"]}}}`})
 			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				body := companyFacts
 				if strings.Contains(r.URL.Path, "sub") {

@@ -298,7 +298,7 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 var secAccessionNumber = regexp.MustCompile(`^[0-9]{10}-[0-9]{2}-[0-9]{6}$`)
 
 // EnrichShareFactsWithAcceptance returns a copy of facts with SEC acceptance
-// timestamps joined by CIK and accession number.
+// timestamps joined by CIK and accession number after validating filing identity.
 func EnrichShareFactsWithAcceptance(facts []ShareFact, metadata []FilingMetadata) ([]ShareFact, error) {
 	byAccession := make(map[string]FilingMetadata, len(metadata))
 	for _, filing := range metadata {
@@ -325,6 +325,15 @@ func EnrichShareFactsWithAcceptance(facts []ShareFact, metadata []FilingMetadata
 		if filing.CIK != strings.TrimSpace(out[i].CIK) {
 			return nil, fmt.Errorf("acceptance metadata conflict for accession %q: CIK mismatch", filing.Accession)
 		}
+		if out[i].Form == "" || out[i].FiledAt.IsZero() || filing.Form == "" || filing.FiledAt.IsZero() {
+			continue
+		}
+		if out[i].Form != filing.Form {
+			return nil, fmt.Errorf("acceptance metadata conflict for CIK %s accession %s: form mismatch", filing.CIK, filing.Accession)
+		}
+		if !sameCivilDate(out[i].FiledAt, filing.FiledAt) {
+			return nil, fmt.Errorf("acceptance metadata conflict for CIK %s accession %s: filed date mismatch", filing.CIK, filing.Accession)
+		}
 		if filing.AcceptedAt.IsZero() {
 			continue
 		}
@@ -334,6 +343,12 @@ func EnrichShareFactsWithAcceptance(facts []ShareFact, metadata []FilingMetadata
 		out[i].AcceptedAt = filing.AcceptedAt
 	}
 	return out, nil
+}
+
+func sameCivilDate(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
 }
 
 func sameFilingMetadata(a, b FilingMetadata) bool {
