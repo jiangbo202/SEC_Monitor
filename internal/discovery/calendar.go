@@ -311,6 +311,114 @@ func hashCalendarDates(dates []string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(copyOfDates, "\n"))))
 }
 
+func backfillLegacyNYSECalendarManifest(tx *gorm.DB) error {
+	desiredYears, desiredHolidays, err := trustedDefaultNYSECalendarRows()
+	if err != nil {
+		return err
+	}
+
+	var existingYears []MarketCalendarYear
+	if err := tx.Where("calendar_version = ?", DefaultNYSECalendarVersion).Find(&existingYears).Error; err != nil {
+		return fmt.Errorf("load legacy NYSE calendar years: %w", err)
+	}
+	if len(existingYears) != len(desiredYears) {
+		return legacyCalendarConflict("calendar year set differs from the reviewed seed")
+	}
+	for _, existing := range existingYears {
+		desired, ok := desiredYears[existing.Year]
+		if !ok || existing.CalendarVersion != desired.CalendarVersion || existing.Year != desired.Year ||
+			existing.Complete != desired.Complete || existing.SourceURL != desired.SourceURL ||
+			existing.ReviewedBy != desired.ReviewedBy || !existing.ReviewedAt.Equal(desired.ReviewedAt) {
+			return legacyCalendarConflict("calendar year %d audit metadata differs from the reviewed seed", existing.Year)
+		}
+	}
+
+	var existingHolidays []MarketHoliday
+	if err := tx.Where("calendar_version = ? AND complete_year = ?", DefaultNYSECalendarVersion, true).Find(&existingHolidays).Error; err != nil {
+		return fmt.Errorf("load legacy NYSE holidays: %w", err)
+	}
+	if len(existingHolidays) != len(desiredHolidays) {
+		return legacyCalendarConflict("complete-year holiday set differs from the reviewed seed")
+	}
+	for _, existing := range existingHolidays {
+		desired, ok := desiredHolidays[existing.Date]
+		if !ok || existing != desired {
+			return legacyCalendarConflict("holiday %s differs from the reviewed seed", existing.Date)
+		}
+	}
+
+	for _, desired := range desiredYears {
+		result := tx.Model(&MarketCalendarYear{}).
+			Where("calendar_version = ? AND year = ?", desired.CalendarVersion, desired.Year).
+			Updates(map[string]any{
+				"expected_holiday_count": desired.ExpectedHolidayCount,
+				"holiday_dates_sha256":   desired.HolidayDatesSHA256,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("backfill legacy NYSE calendar year %d: %w", desired.Year, result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return legacyCalendarConflict("calendar year %d disappeared during backfill", desired.Year)
+		}
+	}
+	return nil
+}
+
+func trustedDefaultNYSECalendarRows() (map[int]MarketCalendarYear, map[string]MarketHoliday, error) {
+	reader := csv.NewReader(strings.NewReader(defaultNYSECalendarCSV))
+	if _, err := reader.Read(); err != nil {
+		return nil, nil, fmt.Errorf("read trusted NYSE calendar header: %w", err)
+	}
+	years := make(map[int]MarketCalendarYear)
+	holidays := make(map[string]MarketHoliday)
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("read trusted NYSE calendar row: %w", err)
+		}
+		if len(record) != 8 {
+			return nil, nil, errors.New("trusted NYSE calendar seed is invalid")
+		}
+		year, yearErr := strconv.Atoi(record[1])
+		reviewedAt, reviewedErr := time.Parse(time.RFC3339, record[6])
+		complete, completeErr := strconv.ParseBool(record[7])
+		if yearErr != nil || reviewedErr != nil || completeErr != nil {
+			return nil, nil, errors.New("trusted NYSE calendar seed is invalid")
+		}
+		dates, knownYear := nyseCalendarManifest[DefaultNYSECalendarVersion][year]
+		if record[0] != DefaultNYSECalendarVersion || !knownYear {
+			return nil, nil, errors.New("trusted NYSE calendar seed does not match its manifest")
+		}
+		years[year] = MarketCalendarYear{
+			CalendarVersion:      record[0],
+			Year:                 year,
+			Complete:             complete,
+			ExpectedHolidayCount: len(dates),
+			HolidayDatesSHA256:   hashCalendarDates(dates),
+			SourceURL:            record[4],
+			ReviewedBy:           record[5],
+			ReviewedAt:           reviewedAt,
+		}
+		holidays[record[2]] = MarketHoliday{
+			Date:            record[2],
+			Name:            record[3],
+			CalendarVersion: record[0],
+			SourceURL:       record[4],
+			ReviewedBy:      record[5],
+			CompleteYear:    complete,
+			ReviewedAt:      reviewedAt,
+		}
+	}
+	return years, holidays, nil
+}
+
+func legacyCalendarConflict(format string, args ...any) error {
+	return fmt.Errorf("%w: legacy NYSE calendar "+format, append([]any{ErrCalendarSeedConflict}, args...)...)
+}
+
 func validateNYSESourceURL(value string) error {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "www.nyse.com" || parsed.Path != "/markets/hours-calendars" || parsed.RawQuery != "" || parsed.Fragment != "" {

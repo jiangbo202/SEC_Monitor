@@ -1,8 +1,11 @@
 package discovery
 
 import (
+	"encoding/csv"
 	"errors"
+	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +79,182 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 			t.Fatalf("Migrate created DTO table %s", dtoTable)
 		}
 	}
+}
+
+func TestMigrateBackfillsLegacyCalendarManifest(t *testing.T) {
+	db := openLegacyCalendarDatabase(t, false)
+	if err := db.Create(&MarketHoliday{
+		Date:            "2026-08-14",
+		Name:            "Manual exceptional closure",
+		CalendarVersion: DefaultNYSECalendarVersion,
+		SourceURL:       "https://example.test/manual-review",
+		ReviewedBy:      "operator",
+		ReviewedAt:      time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC),
+		CompleteYear:    false,
+	}).Error; err != nil {
+		t.Fatalf("insert manual exceptional closure: %v", err)
+	}
+
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate legacy calendar: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("repeat Migrate legacy calendar: %v", err)
+	}
+
+	for year, dates := range nyseCalendarManifest[DefaultNYSECalendarVersion] {
+		var calendarYear MarketCalendarYear
+		if err := db.First(&calendarYear, "calendar_version = ? AND year = ?", DefaultNYSECalendarVersion, year).Error; err != nil {
+			t.Fatalf("load migrated calendar year %d: %v", year, err)
+		}
+		if calendarYear.ExpectedHolidayCount != len(dates) || calendarYear.HolidayDatesSHA256 != hashCalendarDates(dates) {
+			t.Fatalf("year %d manifest = (%d, %q), want (%d, %q)", year, calendarYear.ExpectedHolidayCount, calendarYear.HolidayDatesSHA256, len(dates), hashCalendarDates(dates))
+		}
+	}
+	var manual MarketHoliday
+	if err := db.First(&manual, "calendar_version = ? AND date = ?", DefaultNYSECalendarVersion, "2026-08-14").Error; err != nil {
+		t.Fatalf("load preserved manual closure: %v", err)
+	}
+	if manual.CompleteYear {
+		t.Fatal("manual exceptional closure became part of the complete-year manifest")
+	}
+}
+
+func TestMigrateRejectsUntrustedLegacyCalendarManifest(t *testing.T) {
+	tests := []struct {
+		name            string
+		manifestColumns bool
+		tamper          func(*gorm.DB) error
+	}{
+		{
+			name: "missing calendar year",
+			tamper: func(db *gorm.DB) error {
+				return db.Exec("DELETE FROM market_calendar_years WHERE calendar_version = ? AND year = ?", DefaultNYSECalendarVersion, 2026).Error
+			},
+		},
+		{
+			name: "missing base holiday",
+			tamper: func(db *gorm.DB) error {
+				return db.Delete(&MarketHoliday{}, "calendar_version = ? AND date = ?", DefaultNYSECalendarVersion, "2026-07-03").Error
+			},
+		},
+		{
+			name: "wrong base holiday",
+			tamper: func(db *gorm.DB) error {
+				return db.Model(&MarketHoliday{}).Where("calendar_version = ? AND date = ?", DefaultNYSECalendarVersion, "2026-07-03").Update("name", "tampered").Error
+			},
+		},
+		{
+			name: "extra base holiday",
+			tamper: func(db *gorm.DB) error {
+				return db.Create(&MarketHoliday{Date: "2026-08-14", Name: "Unexpected closure", CalendarVersion: DefaultNYSECalendarVersion, SourceURL: "https://www.nyse.com/markets/hours-calendars", ReviewedBy: "sec-monitor-maintainers", ReviewedAt: time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC), CompleteYear: true}).Error
+			},
+		},
+		{
+			name: "incomplete calendar year",
+			tamper: func(db *gorm.DB) error {
+				return db.Exec("UPDATE market_calendar_years SET complete = ? WHERE calendar_version = ? AND year = ?", false, DefaultNYSECalendarVersion, 2026).Error
+			},
+		},
+		{
+			name: "different review metadata",
+			tamper: func(db *gorm.DB) error {
+				return db.Exec("UPDATE market_calendar_years SET reviewed_by = ? WHERE calendar_version = ? AND year = ?", "tampered", DefaultNYSECalendarVersion, 2026).Error
+			},
+		},
+		{
+			name: "different holiday review metadata",
+			tamper: func(db *gorm.DB) error {
+				return db.Model(&MarketHoliday{}).Where("calendar_version = ? AND date = ?", DefaultNYSECalendarVersion, "2026-07-03").Update("reviewed_by", "tampered").Error
+			},
+		},
+		{
+			name: "official holiday marked incomplete",
+			tamper: func(db *gorm.DB) error {
+				return db.Model(&MarketHoliday{}).Where("calendar_version = ? AND date = ?", DefaultNYSECalendarVersion, "2026-07-03").Update("complete_year", false).Error
+			},
+		},
+		{
+			name: "only one manifest column was absent",
+			tamper: func(db *gorm.DB) error {
+				return db.Exec("ALTER TABLE market_calendar_years ADD COLUMN expected_holiday_count integer NOT NULL DEFAULT 0").Error
+			},
+		},
+		{
+			name:            "preexisting zero manifest columns",
+			manifestColumns: true,
+			tamper:          func(*gorm.DB) error { return nil },
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := openLegacyCalendarDatabase(t, test.manifestColumns)
+			if err := test.tamper(db); err != nil {
+				t.Fatalf("tamper legacy calendar: %v", err)
+			}
+			if err := Migrate(db); !errors.Is(err, ErrCalendarSeedConflict) {
+				t.Fatalf("Migrate error = %v, want ErrCalendarSeedConflict", err)
+			}
+			if !test.manifestColumns && test.name != "only one manifest column was absent" {
+				if db.Migrator().HasColumn(&MarketCalendarYear{}, "ExpectedHolidayCount") || db.Migrator().HasColumn(&MarketCalendarYear{}, "HolidayDatesSHA256") {
+					t.Fatal("failed migration left manifest columns behind")
+				}
+			}
+		})
+	}
+}
+
+func openLegacyCalendarDatabase(t *testing.T, manifestColumns bool) *gorm.DB {
+	t.Helper()
+	db := openUnmigratedCalendarDatabase(t)
+	manifestDDL := ""
+	if manifestColumns {
+		manifestDDL = ", expected_holiday_count integer NOT NULL DEFAULT 0, holiday_dates_sha256 text NOT NULL DEFAULT ''"
+	}
+	if err := db.Exec("CREATE TABLE market_calendar_years (calendar_version text NOT NULL, year integer NOT NULL, complete numeric NOT NULL, source_url text, reviewed_by text, reviewed_at datetime" + manifestDDL + ", PRIMARY KEY (calendar_version, year))").Error; err != nil {
+		t.Fatalf("create legacy calendar years: %v", err)
+	}
+	if err := db.Exec("CREATE TABLE market_holidays (date text NOT NULL, name text, calendar_version text NOT NULL, source_url text, reviewed_by text, complete_year numeric, reviewed_at datetime, PRIMARY KEY (date, calendar_version))").Error; err != nil {
+		t.Fatalf("create legacy market holidays: %v", err)
+	}
+
+	reader := csv.NewReader(strings.NewReader(defaultNYSECalendarCSV))
+	if _, err := reader.Read(); err != nil {
+		t.Fatalf("read seed header: %v", err)
+	}
+	insertedYears := make(map[int]bool)
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read seed row: %v", err)
+		}
+		year, err := strconv.Atoi(record[1])
+		if err != nil {
+			t.Fatalf("parse seed year: %v", err)
+		}
+		reviewedAt, err := time.Parse(time.RFC3339, record[6])
+		if err != nil {
+			t.Fatalf("parse seed review time: %v", err)
+		}
+		complete, err := strconv.ParseBool(record[7])
+		if err != nil {
+			t.Fatalf("parse seed completeness: %v", err)
+		}
+		if !insertedYears[year] {
+			if err := db.Exec("INSERT INTO market_calendar_years (calendar_version, year, complete, source_url, reviewed_by, reviewed_at) VALUES (?, ?, ?, ?, ?, ?)", record[0], year, complete, record[4], record[5], reviewedAt).Error; err != nil {
+				t.Fatalf("insert legacy calendar year %d: %v", year, err)
+			}
+			insertedYears[year] = true
+		}
+		if err := db.Exec("INSERT INTO market_holidays (date, name, calendar_version, source_url, reviewed_by, complete_year, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?)", record[2], record[3], record[0], record[4], record[5], complete, reviewedAt).Error; err != nil {
+			t.Fatalf("insert legacy holiday %s: %v", record[2], err)
+		}
+	}
+	return db
 }
 
 func TestMigrateEnforcesCompositeUniqueness(t *testing.T) {

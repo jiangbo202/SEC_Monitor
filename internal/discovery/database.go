@@ -26,20 +26,32 @@ func withSQLiteForeignKeys(dsn string) string {
 }
 
 func Migrate(db *gorm.DB) error {
-	if err := db.AutoMigrate(
-		&Security{},
-		&UniverseBatch{},
-		&Listing{},
-		&ClassificationSnapshot{},
-		&ProviderRun{},
-		&MarketHoliday{},
-		&MarketCalendarYear{},
-		&PriceSnapshot{},
-		&ShareSnapshot{},
-		&UniverseSnapshot{},
-		&ManualSecurityOverride{},
-	); err != nil {
-		return err
-	}
-	return SeedDefaultNYSEMarketCalendar(db.Statement.Context, db)
+	return db.Transaction(func(tx *gorm.DB) error {
+		hadCalendarYearTable := tx.Migrator().HasTable(&MarketCalendarYear{})
+		hadHolidayCount := tx.Migrator().HasColumn(&MarketCalendarYear{}, "ExpectedHolidayCount")
+		hadHolidayHash := tx.Migrator().HasColumn(&MarketCalendarYear{}, "HolidayDatesSHA256")
+		legacyCalendarManifest := hadCalendarYearTable && !hadHolidayCount && !hadHolidayHash
+
+		if err := tx.AutoMigrate(
+			&Security{},
+			&UniverseBatch{},
+			&Listing{},
+			&ClassificationSnapshot{},
+			&ProviderRun{},
+			&MarketHoliday{},
+			&MarketCalendarYear{},
+			&PriceSnapshot{},
+			&ShareSnapshot{},
+			&UniverseSnapshot{},
+			&ManualSecurityOverride{},
+		); err != nil {
+			return err
+		}
+		if legacyCalendarManifest {
+			if err := backfillLegacyNYSECalendarManifest(tx); err != nil {
+				return err
+			}
+		}
+		return SeedDefaultNYSEMarketCalendar(tx.Statement.Context, tx)
+	})
 }
