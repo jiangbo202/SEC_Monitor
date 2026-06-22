@@ -494,12 +494,11 @@ func TestSECBulkSourceConsumesOnlyRequiredInputs(t *testing.T) {
 	metadataVersion := v.SHA256
 	calls = nil
 	s.TickerURL = ""
-	s.SubmissionsURL = ""
 	_, fv, e := s.LoadLatestShares(context.Background(), map[string]struct{}{"0000001234": {}})
 	if e != nil {
 		t.Fatal(e)
 	}
-	if !reflect.DeepEqual(calls, []string{"/facts"}) {
+	if !reflect.DeepEqual(calls, []string{"/facts", "/sub"}) {
 		t.Fatalf("fact calls = %v", calls)
 	}
 	if fv.SHA256 == metadataVersion {

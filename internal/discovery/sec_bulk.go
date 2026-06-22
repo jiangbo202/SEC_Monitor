@@ -645,13 +645,14 @@ func (s SECBulkSource) Load(ctx context.Context) ([]SecuritySourceRecord, Source
 	return mappings, bulkVersion("sec-bulk", a, b), nil
 }
 
-// LoadLatestShares returns all eligible facts. Task 8 applies the latest-fact selection policy.
+// LoadLatestShares returns company facts enriched with SEC acceptance times.
+// It fails closed when either archive is unavailable or a fact cannot be joined.
 func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]struct{}) ([]ShareFact, SourceVersion, error) {
 	if err := s.validateDownloader(); err != nil {
 		return nil, SourceVersion{}, err
 	}
-	if s.CompanyFactsURL == "" {
-		return nil, SourceVersion{}, fmt.Errorf("SEC companyfacts URL is required")
+	if s.CompanyFactsURL == "" || s.SubmissionsURL == "" {
+		return nil, SourceVersion{}, fmt.Errorf("SEC companyfacts and submissions URLs are required")
 	}
 	c, err := s.Downloader.Download(ctx, s.CompanyFactsURL, "companyfacts.zip", nil)
 	if err != nil {
@@ -666,7 +667,33 @@ func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
-	return facts, bulkVersion("sec-companyfacts", c), nil
+	submissions, err := s.Downloader.Download(ctx, s.SubmissionsURL, "submissions.zip", nil)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	metadataZIP, err := OpenSafeZIP(submissions.Path, limitEntries(s.Limits), s.Limits.MaxTotalBytes)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	records, err := ParseSECSubmissionsZIP(&metadataZIP.Reader, s.Limits)
+	metadataZIP.Close()
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	metadata := make([]FilingMetadata, 0)
+	for cik := range allowed {
+		metadata = append(metadata, records[cik].FilingMetadata...)
+	}
+	facts, err = EnrichShareFactsWithAcceptance(facts, metadata)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	for _, fact := range facts {
+		if fact.AcceptedAt.IsZero() {
+			return nil, SourceVersion{}, fmt.Errorf("acceptance metadata missing for CIK %s accession %s", fact.CIK, fact.Accession)
+		}
+	}
+	return facts, bulkVersion("sec-companyfacts-submissions", c, submissions), nil
 }
 func limitEntries(l ZIPParseLimits) int {
 	if l.MaxEntries > 0 {

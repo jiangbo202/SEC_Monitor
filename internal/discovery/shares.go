@@ -8,22 +8,23 @@ import (
 )
 
 const (
-	ReasonShareSelected          = "share_selected"
-	ReasonShareFactMissing       = "share_fact_missing"
-	ReasonShareFactConflict      = "share_fact_conflict"
-	ReasonShareAcceptedAtMissing = "share_accepted_at_missing"
-	ReasonShareFactStale         = "share_fact_stale"
-	ReasonShareCapitalEvent      = "share_capital_event"
-	ReasonShareMultipleClasses   = "share_multiple_classes"
-	ReasonShareSplitMismatch     = "share_split_mismatch"
+	ReasonShareSelected               = "share_selected"
+	ReasonShareFactMissing            = "share_fact_missing"
+	ReasonShareFactConflict           = "share_fact_conflict"
+	ReasonShareAcceptedAtMissing      = "share_accepted_at_missing"
+	ReasonShareFactStale              = "share_fact_stale"
+	ReasonShareCapitalEvent           = "share_capital_event"
+	ReasonShareEventAcceptedAtMissing = "share_event_accepted_at_missing"
+	ReasonShareMultipleClasses        = "share_multiple_classes"
+	ReasonShareSplitMismatch          = "share_split_mismatch"
 )
 
-const maxShareFactAge = 150 * 24 * time.Hour
+const maxShareFactAgeDays = 150
 
 type CapitalEvent struct {
-	CIK, Kind, Accession string
-	EffectiveAt          time.Time
-	ChangesShares        bool
+	CIK, Kind, Accession    string
+	EffectiveAt, AcceptedAt time.Time
+	ChangesShares           bool
 }
 
 type ShareSelection struct {
@@ -33,8 +34,8 @@ type ShareSelection struct {
 }
 
 // SelectShareSnapshot selects a point-in-time SEC cover fact without mutating
-// the inputs. The 150-day boundary is an exact UTC duration: exactly 150 days
-// is valid and any greater duration is stale.
+// the inputs. Age is measured by UTC civil dates because SEC instant facts are
+// civil dates: every time on the 150th day is valid and day 151 is stale.
 func SelectShareSnapshot(facts []ShareFact, events []CapitalEvent, asOf time.Time) ShareSelection {
 	if asOf.IsZero() {
 		return shareResult(nil, QualityStatusMissing, ReasonShareFactMissing)
@@ -93,17 +94,34 @@ func SelectShareSnapshot(facts []ShareFact, events []CapitalEvent, asOf time.Tim
 			continue
 		}
 		kind := normalizeCapitalEventKind(event.Kind)
-		if kind == "multiple_class" || kind == "multiple_classes" || kind == "multi_class" {
+		multipleClasses := kind == "multiple_class" || kind == "multiple_classes" || kind == "multi_class"
+		splitAfterFact := event.EffectiveAt.After(selected.Instant) && (kind == "split" || kind == "stock_split" || kind == "reverse_split")
+		sharesChangedAfterFact := event.ChangesShares && event.EffectiveAt.After(selected.Instant)
+		if !multipleClasses && !splitAfterFact && !sharesChangedAfterFact {
+			continue
+		}
+		if event.AcceptedAt.IsZero() {
+			return shareResult(selected, QualityStatusMissing, ReasonShareEventAcceptedAtMissing)
+		}
+		if event.AcceptedAt.After(asOf) {
+			continue
+		}
+		if multipleClasses {
 			return shareResult(selected, QualityStatusConflict, ReasonShareMultipleClasses)
 		}
-		if event.EffectiveAt.After(selected.Instant) && (kind == "split" || kind == "stock_split" || kind == "reverse_split") {
+		if splitAfterFact {
 			return shareResult(selected, QualityStatusConflict, ReasonShareSplitMismatch)
 		}
-		if event.ChangesShares && event.EffectiveAt.After(selected.Instant) {
+		if sharesChangedAfterFact {
 			return shareResult(selected, QualityStatusConflict, ReasonShareCapitalEvent)
 		}
 	}
-	if asOf.UTC().Sub(selected.Instant.UTC()) > maxShareFactAge {
+	asOfDate := utcCivilDate(asOf)
+	instantDate := utcCivilDate(selected.Instant)
+	if instantDate.After(asOfDate) {
+		return shareResult(selected, QualityStatusMissing, ReasonShareFactMissing)
+	}
+	if instantDate.Before(asOfDate.AddDate(0, 0, -maxShareFactAgeDays)) {
 		return shareResult(selected, QualityStatusStale, ReasonShareFactStale)
 	}
 	return shareResult(selected, QualityStatusValid, ReasonShareSelected)
@@ -131,10 +149,17 @@ func selectAcceptedShareFact(candidates []ShareFact) (*ShareFact, string, string
 	if len(candidates) == 0 {
 		return nil, QualityStatusMissing, ReasonShareFactMissing
 	}
+	missingAcceptance := false
+	values := make(map[int64]struct{}, len(candidates))
 	for i := range candidates {
-		if candidates[i].AcceptedAt.IsZero() {
+		values[candidates[i].Shares] = struct{}{}
+		missingAcceptance = missingAcceptance || candidates[i].AcceptedAt.IsZero()
+	}
+	if missingAcceptance {
+		if len(values) > 1 {
 			return nil, QualityStatusConflict, ReasonShareAcceptedAtMissing
 		}
+		return nil, QualityStatusMissing, ReasonShareAcceptedAtMissing
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if !candidates[i].AcceptedAt.Equal(candidates[j].AcceptedAt) {
@@ -149,6 +174,11 @@ func selectAcceptedShareFact(candidates []ShareFact) (*ShareFact, string, string
 	}
 	selected := candidates[0]
 	return &selected, QualityStatusValid, ReasonShareSelected
+}
+
+func utcCivilDate(value time.Time) time.Time {
+	year, month, day := value.UTC().Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
 
 func shareConceptPriority(concept string) int {

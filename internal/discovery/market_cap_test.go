@@ -42,6 +42,29 @@ func TestQualifiedSmallCapBoundaries(t *testing.T) {
 	}
 }
 
+func TestComputeSmallCapQualificationUsesUnroundedProduct(t *testing.T) {
+	tests := []struct {
+		name                   string
+		closeMicros, shares    int64
+		wantCap                int64
+		wantQualified, wantErr bool
+	}{
+		{name: "exact lower bound", closeMicros: 30_000_000_000_000, shares: 1, wantCap: 30_000_000, wantQualified: true},
+		{name: "one micro-dollar below lower", closeMicros: 29_999_999_999_999, shares: 1, wantCap: 29_999_999},
+		{name: "exact upper bound", closeMicros: 1_000_000_000_000_000, shares: 1, wantCap: 1_000_000_000, wantQualified: true},
+		{name: "one micro-dollar above upper", closeMicros: 1_000_000_000_000_001, shares: 1, wantCap: 1_000_000_000},
+		{name: "overflow", closeMicros: math.MaxInt64, shares: 2, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			capUSD, qualified, err := ComputeSmallCapQualification(test.closeMicros, test.shares)
+			if capUSD != test.wantCap || qualified != test.wantQualified || (err != nil) != test.wantErr {
+				t.Fatalf("got (%d,%t,%v), want (%d,%t,err=%t)", capUSD, qualified, err, test.wantCap, test.wantQualified, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateMarketCapPriceUsesTradingDays(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	calendar, err := NewDatabaseMarketCalendar(db, DefaultNYSECalendarVersion)

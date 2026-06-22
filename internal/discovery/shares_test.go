@@ -37,13 +37,13 @@ func TestSelectSharesDeterministicSelection(t *testing.T) {
 			f.AcceptedAt = time.Time{}
 			return f
 		}()}, wantStatus: QualityStatusConflict, wantReason: ReasonShareAcceptedAtMissing},
-		{name: "single fact missing accepted", facts: []ShareFact{func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }()}, wantStatus: QualityStatusConflict, wantReason: ReasonShareAcceptedAtMissing},
+		{name: "single fact missing accepted", facts: []ShareFact{func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }()}, wantStatus: QualityStatusMissing, wantReason: ReasonShareAcceptedAtMissing},
 		{name: "same shares missing accepted", facts: []ShareFact{func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }(), func() ShareFact {
 			f := withShare(base, base.Concept, "0002", base.Shares)
 			f.AcceptedAt = time.Time{}
 			return f
-		}()}, wantStatus: QualityStatusConflict, wantReason: ReasonShareAcceptedAtMissing},
-		{name: "exact duplicates missing accepted", facts: []ShareFact{func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }(), func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }()}, wantStatus: QualityStatusConflict, wantReason: ReasonShareAcceptedAtMissing},
+		}()}, wantStatus: QualityStatusMissing, wantReason: ReasonShareAcceptedAtMissing},
+		{name: "exact duplicates missing accepted", facts: []ShareFact{func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }(), func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }()}, wantStatus: QualityStatusMissing, wantReason: ReasonShareAcceptedAtMissing},
 		{name: "all highest accepted ties must agree", facts: []ShareFact{func() ShareFact { f := withShare(base, base.Concept, "0001", 10); return f }(), func() ShareFact {
 			f := withShare(base, base.Concept, "0002", 10)
 			return f
@@ -92,8 +92,9 @@ func TestSelectSharesExcludesFactsAcceptedAfterAsOf(t *testing.T) {
 }
 
 func TestSelectSharesQualityBoundariesAndEvents(t *testing.T) {
-	asOf := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	asOf := time.Date(2026, 6, 1, 23, 59, 59, 0, time.UTC)
 	fact := ShareFact{CIK: "0000000001", Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "0001", Instant: asOf.AddDate(0, 0, -150), FiledAt: asOf.AddDate(0, 0, -10), AcceptedAt: asOf.AddDate(0, 0, -10).Add(time.Hour), Shares: 40_000_000, SourceURL: "https://www.sec.gov/Archives/edgar/data/1/0001/a.htm"}
+	accepted := asOf.AddDate(0, 0, -1)
 	tests := []struct {
 		name           string
 		fact           ShareFact
@@ -101,12 +102,16 @@ func TestSelectSharesQualityBoundariesAndEvents(t *testing.T) {
 		status, reason string
 	}{
 		{name: "150 days valid", fact: fact, status: QualityStatusValid, reason: ReasonShareSelected},
-		{name: "over 150 days stale", fact: func() ShareFact { f := fact; f.Instant = f.Instant.Add(-time.Second); return f }(), status: QualityStatusStale, reason: ReasonShareFactStale},
-		{name: "post instant financing", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "financing", Accession: "8k1", EffectiveAt: fact.Instant.Add(time.Hour), ChangesShares: true}}, status: QualityStatusConflict, reason: ReasonShareCapitalEvent},
-		{name: "event covered by newer fact", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "issuance", Accession: "8k1", EffectiveAt: fact.Instant.Add(-time.Hour), ChangesShares: true}}, status: QualityStatusValid, reason: ReasonShareSelected},
-		{name: "other issuer event ignored", fact: fact, events: []CapitalEvent{{CIK: "0000000002", Kind: "ATM", Accession: "8k1", EffectiveAt: fact.Instant.Add(time.Hour), ChangesShares: true}}, status: QualityStatusValid, reason: ReasonShareSelected},
-		{name: "multiple classes", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "multiple_class", EffectiveAt: asOf}}, status: QualityStatusConflict, reason: ReasonShareMultipleClasses},
-		{name: "split mismatch", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "reverse_split", EffectiveAt: fact.Instant.Add(time.Hour), ChangesShares: true}}, status: QualityStatusConflict, reason: ReasonShareSplitMismatch},
+		{name: "151st civil day stale", fact: func() ShareFact { f := fact; f.Instant = f.Instant.AddDate(0, 0, -1); return f }(), status: QualityStatusStale, reason: ReasonShareFactStale},
+		{name: "future civil date fails closed", fact: func() ShareFact { f := fact; f.Instant = asOf.Add(time.Hour); return f }(), status: QualityStatusMissing, reason: ReasonShareFactMissing},
+		{name: "post instant financing", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "financing", Accession: "8k1", EffectiveAt: fact.Instant.Add(time.Hour), AcceptedAt: accepted, ChangesShares: true}}, status: QualityStatusConflict, reason: ReasonShareCapitalEvent},
+		{name: "event covered by newer fact", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "issuance", Accession: "8k1", EffectiveAt: fact.Instant.Add(-time.Hour), AcceptedAt: accepted, ChangesShares: true}}, status: QualityStatusValid, reason: ReasonShareSelected},
+		{name: "other issuer event ignored", fact: fact, events: []CapitalEvent{{CIK: "0000000002", Kind: "ATM", Accession: "8k1", EffectiveAt: fact.Instant.Add(time.Hour), AcceptedAt: accepted, ChangesShares: true}}, status: QualityStatusValid, reason: ReasonShareSelected},
+		{name: "multiple classes", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "multiple_class", EffectiveAt: asOf, AcceptedAt: asOf}}, status: QualityStatusConflict, reason: ReasonShareMultipleClasses},
+		{name: "split mismatch", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "reverse_split", EffectiveAt: fact.Instant.Add(time.Hour), AcceptedAt: accepted, ChangesShares: true}}, status: QualityStatusConflict, reason: ReasonShareSplitMismatch},
+		{name: "missing event acceptance fails closed", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "financing", EffectiveAt: fact.Instant.Add(time.Hour), ChangesShares: true}}, status: QualityStatusMissing, reason: ReasonShareEventAcceptedAtMissing},
+		{name: "future disclosure ignored in replay", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "financing", EffectiveAt: fact.Instant.Add(time.Hour), AcceptedAt: asOf.Add(time.Nanosecond), ChangesShares: true}}, status: QualityStatusValid, reason: ReasonShareSelected},
+		{name: "acceptance at as-of included", fact: fact, events: []CapitalEvent{{CIK: fact.CIK, Kind: "financing", EffectiveAt: fact.Instant.Add(time.Hour), AcceptedAt: asOf, ChangesShares: true}}, status: QualityStatusConflict, reason: ReasonShareCapitalEvent},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -115,6 +120,15 @@ func TestSelectSharesQualityBoundariesAndEvents(t *testing.T) {
 				t.Fatalf("got %#v, want status=%q reason=%q", got, test.status, test.reason)
 			}
 		})
+	}
+}
+
+func TestSelectSharesAgeUsesUTCCivilDates(t *testing.T) {
+	asOf := time.Date(2026, 11, 1, 23, 30, 0, 0, time.FixedZone("local", -5*60*60))
+	instant := time.Date(2026, 6, 5, 23, 59, 59, 0, time.UTC) // 150 UTC civil days before asOf (Nov 2 UTC).
+	fact := ShareFact{CIK: "1", Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "a", Instant: instant, FiledAt: asOf.AddDate(0, 0, -1), AcceptedAt: asOf.AddDate(0, 0, -1), Shares: 1, SourceURL: "https://sec.test/a"}
+	if got := SelectShareSnapshot([]ShareFact{fact}, nil, asOf); got.QualityStatus != QualityStatusValid {
+		t.Fatalf("150th UTC civil day at arbitrary times = %#v, want valid", got)
 	}
 }
 

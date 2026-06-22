@@ -34,6 +34,24 @@ func ComputeMarketCapUSD(closeMicros, shares int64) (int64, error) {
 	return closeMicros * shares / marketCapMicrosPerUSD, nil
 }
 
+// ComputeSmallCapQualification is the only recommended Task 9 entry point for
+// computing and qualifying market cap. It compares the exact micro-dollar
+// product before flooring the returned display value to whole USD.
+func ComputeSmallCapQualification(closeMicros, shares int64) (marketCapUSD int64, qualified bool, err error) {
+	if closeMicros <= 0 || shares <= 0 {
+		return 0, false, errors.New("price and shares must be positive")
+	}
+	if closeMicros > math.MaxInt64/shares {
+		return 0, false, errors.New("market cap multiplication overflows int64")
+	}
+	product := closeMicros * shares
+	marketCapUSD = product / marketCapMicrosPerUSD
+	qualified = product >= MinimumSmallCapUSD*marketCapMicrosPerUSD && product <= MaximumSmallCapUSD*marketCapMicrosPerUSD
+	return marketCapUSD, qualified, nil
+}
+
+// IsQualifiedSmallCapUSD qualifies an already-rounded display value. New
+// qualification code must use ComputeSmallCapQualification instead.
 func IsQualifiedSmallCapUSD(marketCapUSD int64) bool {
 	return marketCapUSD >= MinimumSmallCapUSD && marketCapUSD <= MaximumSmallCapUSD
 }

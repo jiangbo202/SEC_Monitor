@@ -176,8 +176,8 @@ func TestParseSECCompanyFactsAggregateLimit(t *testing.T) {
 
 func TestSECBulkSource(t *testing.T) {
 	tickers := `{"fields":["cik","name","ticker","exchange"],"data":[[1234,"Acme","ACME","Nasdaq"]]}`
-	sub := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"sic":"3571","stateOfIncorporation":"DE","filings":{"recent":{"form":[],"accessionNumber":[],"filingDate":[]}}}`})
-	cf := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"cik":1234,"facts":{}}`})
+	sub := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"sic":"3571","stateOfIncorporation":"DE","filings":{"recent":{"form":["10-Q"],"accessionNumber":["0000001234-26-000001"],"filingDate":["2026-05-01"],"acceptanceDateTime":["2026-05-01T12:34:56Z"]}}}`})
+	cf := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":40000000,"end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"0000001234-26-000001"}]}}}}}`})
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var b []byte
 		switch {
@@ -202,8 +202,32 @@ func TestSECBulkSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(facts) != 0 || fv.Source != "sec-companyfacts" {
+	if len(facts) != 1 || facts[0].AcceptedAt.IsZero() || fv.Source != "sec-companyfacts-submissions" {
 		t.Fatalf("facts/version=%#v %#v", facts, fv)
+	}
+	selection := SelectShareSnapshot(facts, nil, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if selection.QualityStatus != QualityStatusValid {
+		t.Fatalf("integrated source selection = %#v, want valid", selection)
+	}
+}
+
+func TestSECBulkSourceSharesFailsClosedWithoutAcceptanceMetadata(t *testing.T) {
+	cf := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1,"end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"0000001234-26-000001"}]}}}}}`})
+	sub := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":[],"accessionNumber":[],"filingDate":[]}}}`})
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := cf
+		if strings.Contains(r.URL.Path, "sub") {
+			body = sub
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header), Request: r}, nil
+	})}
+	base := SECBulkSource{Downloader: &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1 << 20}, CompanyFactsURL: "https://x.test/facts", Limits: ZIPParseLimits{MaxEntries: 10, MaxEntryBytes: 1 << 20, MaxTotalBytes: 1 << 20}}
+	if _, _, err := base.LoadLatestShares(context.Background(), map[string]struct{}{"0000001234": {}}); err == nil || !strings.Contains(err.Error(), "submissions URL") {
+		t.Fatalf("missing submissions URL error = %v", err)
+	}
+	base.SubmissionsURL = "https://x.test/sub"
+	if facts, _, err := base.LoadLatestShares(context.Background(), map[string]struct{}{"0000001234": {}}); err == nil || len(facts) != 0 || !strings.Contains(err.Error(), "acceptance metadata") {
+		t.Fatalf("missing acceptance metadata got facts=%#v err=%v", facts, err)
 	}
 }
 
