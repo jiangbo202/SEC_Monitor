@@ -179,20 +179,30 @@ func TestClassifySecurityRequiresValidSICBeforeInclusion(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name, wantReason string
-		sic              int
-		mutate           func(*SecuritySourceRecord)
+		name, wantReason, wantStatus, wantConfidence string
+		sic                                          int
+		mutate                                       func(*SecuritySourceRecord)
 	}{
-		{"SPAC wins", ReasonSPAC, 6770, func(*SecuritySourceRecord) {}},
-		{"financial wins", ReasonFinancialCompany, 6000, func(*SecuritySourceRecord) {}},
-		{"test wins", ReasonTestIssue, 0, func(r *SecuritySourceRecord) { r.TestIssue = true }},
+		{"test wins", ReasonTestIssue, EffectiveStatusExcluded, ConfidenceHigh, 0, func(r *SecuritySourceRecord) { r.TestIssue = true }},
+		{"ETF wins", ReasonFundOrETF, EffectiveStatusExcluded, ConfidenceHigh, 0, func(r *SecuritySourceRecord) { r.ETF = true }},
+		{"SPAC wins", ReasonSPAC, EffectiveStatusExcluded, ConfidenceHigh, 6770, func(*SecuritySourceRecord) {}},
+		{"financial wins", ReasonFinancialCompany, EffectiveStatusExcluded, ConfidenceHigh, 6000, func(*SecuritySourceRecord) {}},
+		{"inactive listing wins", ReasonNotActiveListed, EffectiveStatusExcluded, ConfidenceHigh, 0, func(r *SecuritySourceRecord) { r.Exchange = "OTC" }},
+		{"mapping conflict wins", ReasonMappingConflict, EffectiveStatusDataInsufficient, ConfidenceLow, 0, func(r *SecuritySourceRecord) { r.MappingStatus = MappingStatusConflict }},
+		{"missing identity wins", ReasonSecurityTypeUnresolved, EffectiveStatusDataInsufficient, ConfidenceLow, 0, func(r *SecuritySourceRecord) { r.CIK = "" }},
 	} {
-		r := validClassificationRecord()
-		r.SIC = tc.sic
-		tc.mutate(&r)
-		if got := ClassifySecurity(r, nil); got.ReasonCode != tc.wantReason {
-			t.Errorf("%s => %+v", tc.name, got)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			r := validClassificationRecord()
+			r.SIC = tc.sic
+			tc.mutate(&r)
+			got := ClassifySecurity(r, nil)
+			if got.ReasonCode != tc.wantReason || got.Status != tc.wantStatus || got.Confidence != tc.wantConfidence {
+				t.Fatalf("classification = %+v", got)
+			}
+			if tc.name == "missing identity wins" && (len(got.Evidence) == 0 || got.Evidence[0].Field != "cik") {
+				t.Fatalf("evidence = %+v", got.Evidence)
+			}
+		})
 	}
 }
 

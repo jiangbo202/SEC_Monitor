@@ -147,9 +147,6 @@ func classifySecurityAutomatic(record SecuritySourceRecord) Classification {
 	if record.SIC >= 6000 && record.SIC <= 6799 {
 		return withEvidence(excluded(ReasonFinancialCompany, "sic", strconv.Itoa(record.SIC)), transitionEvidence)
 	}
-	if record.SIC < 100 || record.SIC > 9999 {
-		return withEvidence(unresolved(ReasonSecurityTypeUnresolved, "sic", strconv.Itoa(record.SIC)), transitionEvidence)
-	}
 	if record.Exchange != "Nasdaq" && record.Exchange != "NYSE" && record.Exchange != "NYSE American" {
 		return withEvidence(excluded(ReasonNotActiveListed, "exchange", record.Exchange), transitionEvidence)
 	}
@@ -174,6 +171,9 @@ func classifySecurityAutomatic(record SecuritySourceRecord) Classification {
 	}
 	if field, value, invalid := invalidIdentity(record); invalid {
 		return withEvidence(unresolved(ReasonSecurityTypeUnresolved, field, value), transitionEvidence)
+	}
+	if record.SIC < 100 || record.SIC > 9999 {
+		return withEvidence(unresolved(ReasonSecurityTypeUnresolved, "sic", strconv.Itoa(record.SIC)), transitionEvidence)
 	}
 	if (annualForm == "10-K" || annualForm == "10-K/A") && hasExactForm(record.RecentForms, "10-Q", "10-Q/A") && containsWholeTerm(record.SecurityName, commonSecurityTerms) {
 		return withEvidence(Classification{
