@@ -97,6 +97,17 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadDiscoveryTaskTimeoutFallsBackForNonPositiveOrInvalidValues(t *testing.T) {
+	for _, value := range []string{"0", "-1", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("SMALL_CAP_TASK_TIMEOUT_MINUTES", value)
+			if got := Load().Discovery.TaskTimeoutMin; got != 60 {
+				t.Fatalf("task timeout = %d, want 60", got)
+			}
+		})
+	}
+}
+
 func TestLoadTableDrivenEnvOverrides(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -143,7 +154,6 @@ func TestLoadFallsBackForInvalidTypedValues(t *testing.T) {
 	t.Setenv("SEC_TIMEOUT_MS", "bad")
 	t.Setenv("DATA_RETENTION_DAYS", "bad")
 	t.Setenv("STORAGE_BY_DAY", "bad")
-	t.Setenv("SMALL_CAP_TASK_TIMEOUT_MINUTES", "bad")
 
 	cfg := Load()
 	if cfg.SEC.TimeoutMS != 10000 {
@@ -154,8 +164,5 @@ func TestLoadFallsBackForInvalidTypedValues(t *testing.T) {
 	}
 	if cfg.System.StorageByDay {
 		t.Fatalf("storage by day should fall back to false")
-	}
-	if cfg.Discovery.TaskTimeoutMin != 60 {
-		t.Fatalf("discovery task timeout = %d", cfg.Discovery.TaskTimeoutMin)
 	}
 }

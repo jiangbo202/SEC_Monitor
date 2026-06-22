@@ -44,6 +44,7 @@ func runWithDependencies(cfg config.Config, serve func(app *gin.Engine, address 
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
+	defer closeDatabase(db)
 	if err := deps.migrateMainDatabase(db); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
@@ -51,6 +52,7 @@ func runWithDependencies(cfg config.Config, serve func(app *gin.Engine, address 
 	if err != nil {
 		return fmt.Errorf("open discovery database: %w", err)
 	}
+	defer closeDatabase(discoveryDB)
 	if err := deps.migrateDiscoveryDB(discoveryDB); err != nil {
 		return fmt.Errorf("migrate discovery database: %w", err)
 	}
@@ -65,4 +67,11 @@ func runWithDependencies(cfg config.Config, serve func(app *gin.Engine, address 
 		return fmt.Errorf("run server: %w", err)
 	}
 	return nil
+}
+
+func closeDatabase(db *gorm.DB) {
+	sqlDB, err := db.DB()
+	if err == nil {
+		_ = sqlDB.Close()
+	}
 }

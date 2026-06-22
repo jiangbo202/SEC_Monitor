@@ -70,7 +70,7 @@ func Load() Config {
 			SECSubmissionsURL:    valueOrDefault("SMALL_CAP_SEC_SUBMISSIONS_URL", "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"),
 			SECCompanyFactsURL:   valueOrDefault("SMALL_CAP_SEC_COMPANY_FACTS_URL", "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"),
 			StooqURLs:            commaSeparatedValues("SMALL_CAP_STOOQ_URLS"),
-			TaskTimeoutMin:       intOrDefault("SMALL_CAP_TASK_TIMEOUT_MINUTES", 60),
+			TaskTimeoutMin:       positiveIntOrDefault("SMALL_CAP_TASK_TIMEOUT_MINUTES", 60),
 		},
 		SEC: SECConfig{
 			BaseURL:   valueOrDefault("SEC_BASE_URL", "https://data.sec.gov"),
@@ -113,6 +113,14 @@ func intOrDefault(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func positiveIntOrDefault(key string, fallback int) int {
+	value := intOrDefault(key, fallback)
+	if value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func boolOrDefault(key string, fallback bool) bool {

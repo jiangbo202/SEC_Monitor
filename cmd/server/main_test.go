@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -12,6 +13,102 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func openLifecycleTestDatabase(t *testing.T) (*gorm.DB, *sql.DB) {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open lifecycle test database: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get lifecycle sql database: %v", err)
+	}
+	return db, sqlDB
+}
+
+func assertDatabaseClosed(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if err := db.Ping(); err == nil {
+		t.Fatal("database Ping succeeded after close")
+	}
+}
+
+func TestRunWithDependenciesClosesMainDatabaseWhenDiscoveryOpenFails(t *testing.T) {
+	mainDB, mainSQL := openLifecycleTestDatabase(t)
+
+	err := runWithDependencies(config.Config{}, func(*gin.Engine, string) error { return nil }, startupDependencies{
+		openMainDatabase:      func(config.DatabaseConfig) (*gorm.DB, error) { return mainDB, nil },
+		migrateMainDatabase:   func(*gorm.DB) error { return nil },
+		openDiscoveryDatabase: func(config.DatabaseConfig) (*gorm.DB, error) { return nil, errors.New("open failed") },
+		migrateDiscoveryDB:    func(*gorm.DB) error { return nil },
+		newRouter:             router.New,
+	})
+	if err == nil {
+		t.Fatal("runWithDependencies expected error")
+	}
+	assertDatabaseClosed(t, mainSQL)
+}
+
+func TestRunWithDependenciesClosesMainDatabaseWhenMainMigrationFails(t *testing.T) {
+	mainDB, mainSQL := openLifecycleTestDatabase(t)
+
+	err := runWithDependencies(config.Config{}, func(*gin.Engine, string) error { return nil }, startupDependencies{
+		openMainDatabase:      func(config.DatabaseConfig) (*gorm.DB, error) { return mainDB, nil },
+		migrateMainDatabase:   func(*gorm.DB) error { return errors.New("migrate failed") },
+		openDiscoveryDatabase: func(config.DatabaseConfig) (*gorm.DB, error) { return nil, nil },
+		migrateDiscoveryDB:    func(*gorm.DB) error { return nil },
+		newRouter:             router.New,
+	})
+	if err == nil {
+		t.Fatal("runWithDependencies expected error")
+	}
+	assertDatabaseClosed(t, mainSQL)
+}
+
+func TestRunWithDependenciesClosesDatabasesWhenDiscoveryMigrationFails(t *testing.T) {
+	mainDB, mainSQL := openLifecycleTestDatabase(t)
+	discoveryDB, discoverySQL := openLifecycleTestDatabase(t)
+
+	err := runWithDependencies(config.Config{}, func(*gin.Engine, string) error { return nil }, startupDependencies{
+		openMainDatabase:      func(config.DatabaseConfig) (*gorm.DB, error) { return mainDB, nil },
+		migrateMainDatabase:   func(*gorm.DB) error { return nil },
+		openDiscoveryDatabase: func(config.DatabaseConfig) (*gorm.DB, error) { return discoveryDB, nil },
+		migrateDiscoveryDB:    func(*gorm.DB) error { return errors.New("migrate failed") },
+		newRouter:             router.New,
+	})
+	if err == nil {
+		t.Fatal("runWithDependencies expected error")
+	}
+	assertDatabaseClosed(t, mainSQL)
+	assertDatabaseClosed(t, discoverySQL)
+}
+
+func TestRunWithDependenciesKeepsDatabasesOpenUntilServeReturnsThenClosesThem(t *testing.T) {
+	mainDB, mainSQL := openLifecycleTestDatabase(t)
+	discoveryDB, discoverySQL := openLifecycleTestDatabase(t)
+
+	err := runWithDependencies(config.Config{}, func(*gin.Engine, string) error {
+		if err := mainSQL.Ping(); err != nil {
+			t.Fatalf("main database closed during serve: %v", err)
+		}
+		if err := discoverySQL.Ping(); err != nil {
+			t.Fatalf("discovery database closed during serve: %v", err)
+		}
+		return nil
+	}, startupDependencies{
+		openMainDatabase:      func(config.DatabaseConfig) (*gorm.DB, error) { return mainDB, nil },
+		migrateMainDatabase:   func(*gorm.DB) error { return nil },
+		openDiscoveryDatabase: func(config.DatabaseConfig) (*gorm.DB, error) { return discoveryDB, nil },
+		migrateDiscoveryDB:    func(*gorm.DB) error { return nil },
+		newRouter:             func(router.Dependencies) *gin.Engine { return gin.New() },
+	})
+	if err != nil {
+		t.Fatalf("runWithDependencies: %v", err)
+	}
+	assertDatabaseClosed(t, mainSQL)
+	assertDatabaseClosed(t, discoverySQL)
+}
 
 func TestRunWithDependenciesWrapsDiscoveryStartupErrors(t *testing.T) {
 	mainDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
