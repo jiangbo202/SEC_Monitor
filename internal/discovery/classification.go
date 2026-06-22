@@ -1,10 +1,10 @@
 package discovery
 
 import (
-	"regexp"
-	"sort"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 )
 
 const ClassificationRuleVersion = "v1"
@@ -33,10 +33,8 @@ type Classification struct {
 	Evidence   []Evidence
 }
 
-var (
-	nonCommonSecurityPattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])(warrants?|rights?|preferred( (stock|shares?))?|depositary shares?|units?)($|[^a-z0-9])`)
-	commonSecurityPattern    = regexp.MustCompile(`(?i)(^|[^a-z0-9])(common stock|common shares|ordinary shares?)($|[^a-z0-9])`)
-)
+var nonCommonSecurityTerms = []string{"warrant", "warrants", "right", "rights", "preferred", "preferred stock", "preferred share", "preferred shares", "depositary share", "depositary shares", "unit", "units"}
+var commonSecurityTerms = []string{"common stock", "common shares", "ordinary share", "ordinary shares"}
 
 var usJurisdictions = func() map[string]struct{} {
 	codes := strings.Fields("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC PR VI GU AS MP")
@@ -60,8 +58,20 @@ func ClassifySecurity(record SecuritySourceRecord, overrides []ManualSecurityOve
 		Evidence{Field: "override_id", Value: strconv.FormatUint(uint64(selected.ID), 10), Source: ReasonManualOverride},
 		Evidence{Field: "operator", Value: selected.Operator, Source: ReasonManualOverride},
 		Evidence{Field: "reason", Value: selected.Reason, Source: ReasonManualOverride},
-		Evidence{Field: "source", Value: selected.SourceURL, Source: ReasonManualOverride},
 	)
+	if selected.SourceURL != "" {
+		evidence = append(evidence, Evidence{Field: "source", Value: selected.SourceURL, Source: ReasonManualOverride})
+	}
+	evidence = append(evidence, Evidence{Field: "updated_at", Value: selected.UpdatedAt.Format(time.RFC3339), Source: ReasonManualOverride})
+
+	if !validManualOverride(selected) {
+		return Classification{
+			Status:     EffectiveStatusDataInsufficient,
+			Confidence: ConfidenceLow,
+			ReasonCode: ReasonInvalidManualOverride,
+			Evidence:   evidence,
+		}
+	}
 
 	switch selected.EffectiveStatus {
 	case EffectiveStatusIncluded, EffectiveStatusExcluded, EffectiveStatusDataInsufficient:
@@ -89,7 +99,7 @@ func classifySecurityAutomatic(record SecuritySourceRecord) Classification {
 	if record.ETF {
 		return excluded(ReasonFundOrETF, "etf", "true")
 	}
-	if nonCommonSecurityPattern.MatchString(record.SecurityName) {
+	if containsWholeTerm(record.SecurityName, nonCommonSecurityTerms) {
 		return excluded(ReasonNonCommonSecurity, "security_name", record.SecurityName)
 	}
 	if form, ok := matchingForm(record.RecentForms, func(form string) bool {
@@ -137,16 +147,35 @@ func classifySecurityAutomatic(record SecuritySourceRecord) Classification {
 	if record.SIC >= 6000 && record.SIC <= 6799 {
 		return withEvidence(excluded(ReasonFinancialCompany, "sic", strconv.Itoa(record.SIC)), transitionEvidence)
 	}
+	if record.SIC < 100 || record.SIC > 9999 {
+		return withEvidence(unresolved(ReasonSecurityTypeUnresolved, "sic", strconv.Itoa(record.SIC)), transitionEvidence)
+	}
 	if record.Exchange != "Nasdaq" && record.Exchange != "NYSE" && record.Exchange != "NYSE American" {
 		return withEvidence(excluded(ReasonNotActiveListed, "exchange", record.Exchange), transitionEvidence)
 	}
 	if record.MappingStatus != MappingStatusCurrent {
 		return withEvidence(unresolved(ReasonMappingConflict, "mapping_status", record.MappingStatus), transitionEvidence)
 	}
+	if record.BlankCheckIssuer && record.HasBusinessCombinationItem201 {
+		completed, verified := "", ""
+		if record.BusinessCombinationCompletedAt != nil {
+			completed = record.BusinessCombinationCompletedAt.Format(time.RFC3339)
+		}
+		if record.MappingVerifiedAt != nil {
+			verified = record.MappingVerifiedAt.Format(time.RFC3339)
+		}
+		transitionEvidence = append(transitionEvidence,
+			Evidence{Field: "business_combination_completed_at", Value: completed, Source: ClassificationRuleVersion},
+			Evidence{Field: "mapping_verified_at", Value: verified, Source: ClassificationRuleVersion},
+		)
+		if record.BusinessCombinationCompletedAt == nil || record.MappingVerifiedAt == nil || record.MappingVerifiedAt.Before(*record.BusinessCombinationCompletedAt) {
+			return Classification{Status: EffectiveStatusDataInsufficient, Confidence: ConfidenceLow, ReasonCode: ReasonSecurityTypeUnresolved, Evidence: transitionEvidence}
+		}
+	}
 	if field, value, invalid := invalidIdentity(record); invalid {
 		return withEvidence(unresolved(ReasonSecurityTypeUnresolved, field, value), transitionEvidence)
 	}
-	if (annualForm == "10-K" || annualForm == "10-K/A") && hasExactForm(record.RecentForms, "10-Q", "10-Q/A") && commonSecurityPattern.MatchString(record.SecurityName) {
+	if (annualForm == "10-K" || annualForm == "10-K/A") && hasExactForm(record.RecentForms, "10-Q", "10-Q/A") && containsWholeTerm(record.SecurityName, commonSecurityTerms) {
 		return withEvidence(Classification{
 			Included:   true,
 			Status:     EffectiveStatusIncluded,
@@ -237,20 +266,48 @@ func firstExactForm(forms []string, candidates ...string) string {
 }
 
 func selectManualOverride(securityID uint, overrides []ManualSecurityOverride) (ManualSecurityOverride, bool) {
-	matches := make([]ManualSecurityOverride, 0)
+	var selected ManualSecurityOverride
+	found := false
 	for _, override := range overrides {
-		if override.Active && override.SecurityID == securityID {
-			matches = append(matches, override)
+		if !override.Active || override.SecurityID != securityID {
+			continue
+		}
+		if !found || override.UpdatedAt.After(selected.UpdatedAt) || (override.UpdatedAt.Equal(selected.UpdatedAt) && override.ID > selected.ID) {
+			selected = override
+			found = true
 		}
 	}
-	if len(matches) == 0 {
-		return ManualSecurityOverride{}, false
+	return selected, found
+}
+
+func validManualOverride(override ManualSecurityOverride) bool {
+	if override.ID == 0 || override.SecurityID == 0 || strings.TrimSpace(override.Operator) == "" || strings.TrimSpace(override.Reason) == "" || override.UpdatedAt.IsZero() {
+		return false
 	}
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].UpdatedAt.Equal(matches[j].UpdatedAt) {
-			return matches[i].ID > matches[j].ID
+	return override.EffectiveStatus == EffectiveStatusIncluded || override.EffectiveStatus == EffectiveStatusExcluded || override.EffectiveStatus == EffectiveStatusDataInsufficient
+}
+
+// Exact override duplicates retain their original input order because selection
+// only replaces the current maximum when UpdatedAt or ID is strictly greater.
+func containsWholeTerm(value string, terms []string) bool {
+	runes := []rune(strings.ToLower(value))
+	for _, term := range terms {
+		needle := []rune(term)
+		for start := 0; start+len(needle) <= len(runes); start++ {
+			if string(runes[start:start+len(needle)]) != term {
+				continue
+			}
+			leftBoundary := start == 0 || (!unicode.IsLetter(runes[start-1]) && !unicode.IsNumber(runes[start-1]))
+			end := start + len(needle)
+			rightBoundary := end == len(runes) || (!unicode.IsLetter(runes[end]) && !unicode.IsNumber(runes[end]))
+			if leftBoundary && rightBoundary {
+				return true
+			}
 		}
-		return matches[i].UpdatedAt.After(matches[j].UpdatedAt)
-	})
-	return matches[0], true
+	}
+	return false
+}
+
+func ClassificationGoldReady(totalCases, minimumCasesPerGroup int, independentlySourced bool) bool {
+	return independentlySourced && totalCases >= 120 && minimumCasesPerGroup >= 10
 }

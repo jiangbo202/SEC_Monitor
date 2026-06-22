@@ -262,7 +262,7 @@ git commit -m "feat: parse listed securities and SEC bulk metadata"
 **Files:**
 - Create: `internal/discovery/classification.go`
 - Create: `internal/discovery/classification_test.go`
-- Create: `internal/discovery/testdata/gold/security_classification.csv`
+- Create: `internal/discovery/testdata/security_classification_matrix.csv`
 
 - [ ] **Step 1: Encode the specification as failing table-driven cases**
 
@@ -285,16 +285,16 @@ Normalize security names only for matching; keep original evidence. Treat a de-S
 
 - [ ] **Step 4: Add a fixture coverage assertion and run tests**
 
-The fixture validator must require at least 120 approved rows and at least 10 rows per reason group before provider activation; smaller unit fixtures may run during development but activation remains blocked.
+The synthetic contract-matrix validator must require at least 120 rows and at least 10 rows per reason group. It is not independently sourced gold evidence and cannot activate the provider. Activation remains blocked until the later Task 12/20-day validation curates real, independently sourced gold cases meeting the same thresholds.
 
-Run: `gofmt -w internal/discovery && go test ./internal/discovery -run 'TestClassifySecurity|TestClassificationGoldCoverage' -v`
+Run: `gofmt -w internal/discovery && go test ./internal/discovery -run 'TestClassifySecurity|TestSecurityClassificationContractMatrix' -v`
 
-Expected: PASS after the checked-in gold fixture meets coverage.
+Expected: PASS after the checked-in synthetic contract matrix meets structural coverage; real-gold activation remains false.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/discovery/classification.go internal/discovery/classification_test.go internal/discovery/testdata/gold/security_classification.csv
+git add internal/discovery/classification.go internal/discovery/classification_test.go internal/discovery/testdata/security_classification_matrix.csv
 git commit -m "feat: classify discovery securities deterministically"
 ```
 

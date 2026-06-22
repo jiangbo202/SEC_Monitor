@@ -18,6 +18,7 @@ func validClassificationRecord() SecuritySourceRecord {
 		CompanyName:          "Acme Corporation",
 		Exchange:             "Nasdaq",
 		SecurityName:         "Acme Common Stock",
+		SIC:                  7372,
 		StateOfIncorporation: "DE",
 		LatestAnnualForm:     "10-K",
 		RecentForms:          []string{"10-Q"},
@@ -70,6 +71,22 @@ func TestClassifySecurityNonCommonWholePhrases(t *testing.T) {
 		r.SecurityName = name
 		if got := ClassifySecurity(r, nil); !got.Included {
 			t.Errorf("substring false positive %q => %+v", name, got)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		excluded bool
+	}{
+		{"公司Warrant公司 Common Stock", false},
+		{"会社Preferred会社 Common Stock", false},
+		{"公司—Warrant，股份", true},
+		{"会社（Preferred）株式", true},
+	} {
+		r := validClassificationRecord()
+		r.SecurityName = tc.name
+		got := ClassifySecurity(r, nil)
+		if (got.ReasonCode == ReasonNonCommonSecurity) != tc.excluded {
+			t.Errorf("Unicode boundary %q => %+v", tc.name, got)
 		}
 	}
 }
@@ -141,7 +158,47 @@ func TestClassifySecuritySICBoundariesAndDeSPAC(t *testing.T) {
 	}
 }
 
+func TestClassifySecurityRequiresValidSICBeforeInclusion(t *testing.T) {
+	for _, sic := range []int{-1, 0, 1, 99, 10000} {
+		r := validClassificationRecord()
+		r.SIC = sic
+		got := ClassifySecurity(r, nil)
+		if got.Included || got.Status != EffectiveStatusDataInsufficient || got.Confidence != ConfidenceLow || got.ReasonCode != ReasonSecurityTypeUnresolved {
+			t.Errorf("SIC %d => %+v", sic, got)
+		}
+		if len(got.Evidence) != 1 || got.Evidence[0].Field != "sic" || got.Evidence[0].Value != strconv.Itoa(sic) {
+			t.Errorf("SIC %d evidence => %+v", sic, got.Evidence)
+		}
+	}
+	for _, sic := range []int{100, 9999} {
+		r := validClassificationRecord()
+		r.SIC = sic
+		if got := ClassifySecurity(r, nil); !got.Included {
+			t.Errorf("valid SIC %d => %+v", sic, got)
+		}
+	}
+
+	for _, tc := range []struct {
+		name, wantReason string
+		sic              int
+		mutate           func(*SecuritySourceRecord)
+	}{
+		{"SPAC wins", ReasonSPAC, 6770, func(*SecuritySourceRecord) {}},
+		{"financial wins", ReasonFinancialCompany, 6000, func(*SecuritySourceRecord) {}},
+		{"test wins", ReasonTestIssue, 0, func(r *SecuritySourceRecord) { r.TestIssue = true }},
+	} {
+		r := validClassificationRecord()
+		r.SIC = tc.sic
+		tc.mutate(&r)
+		if got := ClassifySecurity(r, nil); got.ReasonCode != tc.wantReason {
+			t.Errorf("%s => %+v", tc.name, got)
+		}
+	}
+}
+
 func TestClassifySecurityDeSPACTransitionTable(t *testing.T) {
+	completedAt := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	verifiedAt := completedAt
 	tests := []struct {
 		name                  string
 		sic                   int
@@ -179,8 +236,18 @@ func TestClassifySecurityDeSPACTransitionTable(t *testing.T) {
 			r.BlankCheckIssuer = tt.blankCheck
 			r.HasBusinessCombinationItem201 = tt.item201
 			r.MappingStatus = tt.mappingStatus
+			if tt.blankCheck && tt.item201 && tt.sic != 6770 {
+				r.BusinessCombinationCompletedAt = &completedAt
+				r.MappingVerifiedAt = &verifiedAt
+			}
 			got := ClassifySecurity(r, nil)
-			if got.ReasonCode != tt.wantReason || got.Included != tt.wantIncluded {
+			wantStatus, wantConfidence := EffectiveStatusExcluded, ConfidenceHigh
+			if tt.wantIncluded {
+				wantStatus = EffectiveStatusIncluded
+			} else if tt.wantReason == ReasonSecurityTypeUnresolved || tt.wantReason == ReasonMappingConflict {
+				wantStatus, wantConfidence = EffectiveStatusDataInsufficient, ConfidenceLow
+			}
+			if got.ReasonCode != tt.wantReason || got.Included != tt.wantIncluded || got.Status != wantStatus || got.Confidence != wantConfidence {
 				t.Fatalf("classification = %+v", got)
 			}
 			hasCompletedEvidence := false
@@ -198,6 +265,48 @@ func TestClassifySecurityDeSPACTransitionTable(t *testing.T) {
 			}
 			if hasStaleSICEvidence != tt.wantStaleSICEvidence {
 				t.Fatalf("stale-SIC evidence=%v, want %v: %+v", hasStaleSICEvidence, tt.wantStaleSICEvidence, got.Evidence)
+			}
+		})
+	}
+}
+
+func TestClassifySecurityDeSPACRequiresPostCompletionMappingVerification(t *testing.T) {
+	completed := time.Date(2026, 5, 2, 3, 4, 5, 0, time.UTC)
+	before, equal, after := completed.Add(-time.Second), completed, completed.Add(time.Second)
+	tests := []struct {
+		name       string
+		completed  *time.Time
+		verified   *time.Time
+		included   bool
+		wantFields []string
+	}{
+		{"missing completion", nil, &after, false, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at"}},
+		{"missing verification", &completed, nil, false, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at", "mapping_verified_at"}},
+		{"verification before completion", &completed, &before, false, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at", "mapping_verified_at"}},
+		{"verification equal completion", &completed, &equal, true, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at", "mapping_verified_at", "mapping_status"}},
+		{"verification after completion", &completed, &after, true, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at", "mapping_verified_at", "mapping_status"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := validClassificationRecord()
+			r.BlankCheckIssuer = true
+			r.HasBusinessCombinationItem201 = true
+			r.BusinessCombinationCompletedAt = tt.completed
+			r.MappingVerifiedAt = tt.verified
+			got := ClassifySecurity(r, nil)
+			wantStatus, wantConfidence := EffectiveStatusDataInsufficient, ConfidenceLow
+			if tt.included {
+				wantStatus, wantConfidence = EffectiveStatusIncluded, ConfidenceHigh
+			}
+			if got.Included != tt.included || got.Status != wantStatus || got.Confidence != wantConfidence {
+				t.Fatalf("classification = %+v", got)
+			}
+			fields := make([]string, len(got.Evidence))
+			for i := range got.Evidence {
+				fields[i] = got.Evidence[i].Field
+			}
+			if !reflect.DeepEqual(fields[:len(tt.wantFields)], tt.wantFields) {
+				t.Fatalf("evidence fields = %v, want prefix %v", fields, tt.wantFields)
 			}
 		})
 	}
@@ -266,7 +375,7 @@ func TestClassifySecurityOverrides(t *testing.T) {
 	for _, e := range got.Evidence {
 		values[e.Field] = e.Value
 	}
-	for k, v := range map[string]string{"automatic_reason": ReasonTestIssue, "override_id": "4", "operator": "reviewer", "reason": "verified", "source": "https://example.test/evidence"} {
+	for k, v := range map[string]string{"automatic_reason": ReasonTestIssue, "override_id": "4", "operator": "reviewer", "reason": "verified", "source": "https://example.test/evidence", "updated_at": t1.Format(time.RFC3339)} {
 		if values[k] != v {
 			t.Errorf("evidence %s=%q, want %q (%+v)", k, values[k], v, got.Evidence)
 		}
@@ -283,10 +392,69 @@ func TestClassifySecurityOverrides(t *testing.T) {
 	}
 }
 
+func TestClassifySecurityRejectsUnauditableSelectedOverride(t *testing.T) {
+	now := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
+	valid := ManualSecurityOverride{ID: 1, SecurityID: 42, Active: true, EffectiveStatus: EffectiveStatusIncluded, Operator: "reviewer", Reason: "checked", UpdatedAt: now}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ManualSecurityOverride)
+	}{
+		{"zero id", func(o *ManualSecurityOverride) { o.ID = 0 }},
+		{"zero security id", func(o *ManualSecurityOverride) { o.SecurityID = 0 }},
+		{"blank operator", func(o *ManualSecurityOverride) { o.Operator = " \t" }},
+		{"blank reason", func(o *ManualSecurityOverride) { o.Reason = "\n" }},
+		{"zero updated at", func(o *ManualSecurityOverride) { o.UpdatedAt = time.Time{} }},
+		{"invalid status", func(o *ManualSecurityOverride) { o.EffectiveStatus = "maybe" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := valid
+			tc.mutate(&o)
+			securityID := o.SecurityID
+			got := ClassifySecurity(SecuritySourceRecord{SecurityID: securityID}, []ManualSecurityOverride{o})
+			if got.Status != EffectiveStatusDataInsufficient || got.Confidence != ConfidenceLow || got.ReasonCode != ReasonInvalidManualOverride {
+				t.Fatalf("classification = %+v", got)
+			}
+		})
+	}
+
+	withoutSource := valid
+	got := ClassifySecurity(validClassificationRecord(), []ManualSecurityOverride{withoutSource})
+	for _, evidence := range got.Evidence {
+		if evidence.Field == "source" {
+			t.Fatalf("empty optional source emitted: %+v", got.Evidence)
+		}
+	}
+}
+
+func TestClassifySecurityOverrideSelectionUsesUpdatedAtThenIDAndStableExactTie(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	makeOverride := func(id uint, updated time.Time, reason string) ManualSecurityOverride {
+		return ManualSecurityOverride{ID: id, SecurityID: 42, Active: true, EffectiveStatus: EffectiveStatusExcluded, Operator: "reviewer", Reason: reason, UpdatedAt: updated}
+	}
+	overrides := []ManualSecurityOverride{
+		makeOverride(9, t0, "old"),
+		makeOverride(4, t0.Add(time.Hour), "lower id"),
+		makeOverride(5, t0.Add(time.Hour), "first exact tie"),
+		makeOverride(5, t0.Add(time.Hour), "second exact tie"),
+	}
+	before := append([]ManualSecurityOverride(nil), overrides...)
+	got := ClassifySecurity(validClassificationRecord(), overrides)
+	values := map[string]string{}
+	for _, evidence := range got.Evidence {
+		values[evidence.Field] = evidence.Value
+	}
+	if values["override_id"] != "5" || values["reason"] != "first exact tie" {
+		t.Fatalf("selected evidence = %+v", got.Evidence)
+	}
+	if !reflect.DeepEqual(overrides, before) {
+		t.Fatalf("overrides mutated: %+v", overrides)
+	}
+}
+
 func TestClassifySecurityDeterministicAndDoesNotMutateInputs(t *testing.T) {
 	r := validClassificationRecord()
 	r.RecentForms = []string{"10-Q", "8-K"}
-	o := []ManualSecurityOverride{{ID: 8, SecurityID: 42, Active: true, EffectiveStatus: EffectiveStatusExcluded, UpdatedAt: time.Unix(5, 0), Reason: "review"}}
+	o := []ManualSecurityOverride{{ID: 8, SecurityID: 42, Active: true, EffectiveStatus: EffectiveStatusExcluded, UpdatedAt: time.Unix(5, 0), Reason: "review", Operator: "reviewer"}}
 	rBefore := r
 	rBefore.RecentForms = append([]string(nil), r.RecentForms...)
 	oBefore := append([]ManualSecurityOverride(nil), o...)
@@ -301,8 +469,8 @@ func TestClassifySecurityDeterministicAndDoesNotMutateInputs(t *testing.T) {
 	}
 }
 
-func TestClassificationGoldCoverage(t *testing.T) {
-	f, err := os.Open("testdata/gold/security_classification.csv")
+func TestSecurityClassificationContractMatrix(t *testing.T) {
+	f, err := os.Open("testdata/security_classification_matrix.csv")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,42 +480,80 @@ func TestClassificationGoldCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rows) < 2 {
-		t.Fatal("gold fixture is empty")
+		t.Fatal("contract matrix is empty")
 	}
 	head := map[string]int{}
 	for i, v := range rows[0] {
 		head[v] = i
 	}
-	required := []string{"case_id", "group", "security_name", "test_issue", "etf", "sic", "state", "annual_form", "recent_forms", "exchange", "mapping_status", "cik", "ticker", "company_name", "expected_status", "expected_reason", "expected_included", "expected_confidence", "review_status"}
+	required := []string{"case_id", "group", "security_name", "test_issue", "etf", "sic", "state", "annual_form", "recent_forms", "exchange", "mapping_status", "cik", "ticker", "company_name", "expected_status", "expected_reason", "expected_included", "expected_confidence", "contract_status"}
 	for _, col := range required {
 		if _, ok := head[col]; !ok {
 			t.Fatalf("missing column %q", col)
 		}
 	}
 	counts := map[string]int{}
+	validReasons := map[string]bool{
+		ReasonTestIssue: true, ReasonFundOrETF: true, ReasonNonCommonSecurity: true,
+		ReasonInvestmentCompany: true, ReasonSPAC: true, ReasonForeignOrADR: true,
+		ReasonFinancialCompany: true, ReasonNotActiveListed: true, ReasonMappingConflict: true,
+		ReasonSecurityTypeUnresolved: true, ReasonDomesticOperatingCommon: true,
+	}
 	for line, row := range rows[1:] {
 		get := func(k string) string { return row[head[k]] }
-		if get("review_status") != "approved" {
-			t.Fatalf("line %d not approved", line+2)
+		if get("contract_status") != "synthetic" {
+			t.Fatalf("line %d contract status %q", line+2, get("contract_status"))
 		}
 		sic, err := strconv.Atoi(get("sic"))
 		if err != nil {
 			t.Fatalf("line %d SIC: %v", line+2, err)
 		}
-		r := SecuritySourceRecord{SecurityID: uint(line + 1), CIK: get("cik"), Ticker: get("ticker"), CompanyName: get("company_name"), SecurityName: get("security_name"), TestIssue: get("test_issue") == "true", ETF: get("etf") == "true", SIC: sic, StateOfIncorporation: get("state"), LatestAnnualForm: get("annual_form"), RecentForms: strings.Split(get("recent_forms"), ";"), Exchange: get("exchange"), MappingStatus: get("mapping_status")}
+		testIssue, err := strconv.ParseBool(get("test_issue"))
+		if err != nil {
+			t.Fatalf("line %d test_issue: %v", line+2, err)
+		}
+		etf, err := strconv.ParseBool(get("etf"))
+		if err != nil {
+			t.Fatalf("line %d etf: %v", line+2, err)
+		}
+		wantIncluded, err := strconv.ParseBool(get("expected_included"))
+		if err != nil {
+			t.Fatalf("line %d expected_included: %v", line+2, err)
+		}
+		if get("expected_status") != EffectiveStatusIncluded && get("expected_status") != EffectiveStatusExcluded && get("expected_status") != EffectiveStatusDataInsufficient {
+			t.Fatalf("line %d expected_status %q", line+2, get("expected_status"))
+		}
+		if get("expected_confidence") != ConfidenceHigh && get("expected_confidence") != ConfidenceLow {
+			t.Fatalf("line %d expected_confidence %q", line+2, get("expected_confidence"))
+		}
+		if get("mapping_status") != "" && get("mapping_status") != MappingStatusCurrent && get("mapping_status") != MappingStatusConflict && get("mapping_status") != MappingStatusExpired && get("mapping_status") != "stale" {
+			t.Fatalf("line %d mapping_status %q", line+2, get("mapping_status"))
+		}
+		if !validReasons[get("expected_reason")] || get("group") == "" {
+			t.Fatalf("line %d has invalid reason/group", line+2)
+		}
+		r := SecuritySourceRecord{SecurityID: uint(line + 1), CIK: get("cik"), Ticker: get("ticker"), CompanyName: get("company_name"), SecurityName: get("security_name"), TestIssue: testIssue, ETF: etf, SIC: sic, StateOfIncorporation: get("state"), LatestAnnualForm: get("annual_form"), RecentForms: strings.Split(get("recent_forms"), ";"), Exchange: get("exchange"), MappingStatus: get("mapping_status")}
 		got := ClassifySecurity(r, nil)
-		wantIncluded, _ := strconv.ParseBool(get("expected_included"))
 		if got.Status != get("expected_status") || got.ReasonCode != get("expected_reason") || got.Included != wantIncluded || got.Confidence != get("expected_confidence") {
 			t.Errorf("%s: got %+v", get("case_id"), got)
 		}
 		counts[get("group")]++
 	}
 	if len(rows)-1 < 120 {
-		t.Errorf("gold cases=%d, want >=120", len(rows)-1)
+		t.Errorf("contract matrix cases=%d, want >=120", len(rows)-1)
 	}
 	for _, group := range []string{"test", "etf", "non-common", "investment", "spac", "foreign", "financial", "inactive", "mapping-conflict", "unresolved", "included"} {
 		if counts[group] < 10 {
 			t.Errorf("group %s cases=%d, want >=10", group, counts[group])
 		}
+	}
+}
+
+func TestClassificationGoldActivationRequiresIndependentCases(t *testing.T) {
+	if ClassificationGoldReady(121, 10, false) {
+		t.Fatal("synthetic contract matrix must not activate classification")
+	}
+	if !ClassificationGoldReady(120, 10, true) {
+		t.Fatal("independent gold meeting thresholds should be ready")
 	}
 }

@@ -230,6 +230,7 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 		}
 		forms := map[string]bool{}
 		var annualDate time.Time
+		var businessCombinationDate time.Time
 		for j, form := range s.Filings.Recent.Form {
 			if !forms[form] {
 				forms[form] = true
@@ -248,7 +249,13 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 			}
 			if (form == "8-K" || form == "8-K/A") && len(s.Filings.Recent.Items) > 0 && containsItem201(s.Filings.Recent.Items[j]) {
 				rec.HasBusinessCombinationItem201 = true
+				if !d.IsZero() && (businessCombinationDate.IsZero() || d.After(businessCombinationDate)) {
+					businessCombinationDate = d
+				}
 			}
+		}
+		if !businessCombinationDate.IsZero() {
+			rec.BusinessCombinationCompletedAt = &businessCombinationDate
 		}
 		if old, ok := out[cik]; ok {
 			if !reflect.DeepEqual(old, rec) {

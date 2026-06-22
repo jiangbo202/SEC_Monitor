@@ -155,7 +155,7 @@ B 级必须满足市值、季度收入增长 >20%、行业分 ≥7、基本面�
 
 实现计划必须创建以下离线 fixtures；单元测试不访问真实外网：
 
-- `testdata/gold/security_classification.csv`：至少 120 个证券，覆盖普通股及每种排除原因，每类至少 10 个。
+- `testdata/security_classification_matrix.csv`：至少 120 个合成契约矩阵案例，覆盖普通股及每种排除原因，每类至少 10 个；它不属于独立来源的 gold evidence。分类激活仍需 Task 12/连续 20 个交易日验证阶段策划真实、独立来源的 gold cases。
 - `testdata/gold/xbrl_periods.json`：至少 50 个公司/期间案例，覆盖季度累计还原、第四季度推导、修订、53 周财年、扩展标签、单位冲突和不可比期间。
 - `testdata/gold/form4/`：至少 200 份 ownership XML，其中至少 60 份 code P 买入，并覆盖 A/M/F/G、衍生表、多人申报和 4/A。
 - `testdata/gold/financing_events.json`：至少 200 个事件，覆盖 shelf、ATM 建立/使用、424B5、PIPE、权证、反向拆股、Going Concern 和解除状态。

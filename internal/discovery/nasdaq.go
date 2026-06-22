@@ -11,24 +11,27 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 )
 
 type SecuritySourceRecord struct {
-	SecurityID                    uint
-	CIK                           string
-	Ticker                        string
-	CompanyName                   string
-	Exchange                      string
-	SecurityName                  string
-	TestIssue                     bool
-	ETF                           bool
-	SIC                           int
-	StateOfIncorporation          string
-	LatestAnnualForm              string
-	RecentForms                   []string
-	HasBusinessCombinationItem201 bool
-	BlankCheckIssuer              bool
-	MappingStatus                 string
+	SecurityID                     uint
+	CIK                            string
+	Ticker                         string
+	CompanyName                    string
+	Exchange                       string
+	SecurityName                   string
+	TestIssue                      bool
+	ETF                            bool
+	SIC                            int
+	StateOfIncorporation           string
+	LatestAnnualForm               string
+	RecentForms                    []string
+	HasBusinessCombinationItem201  bool
+	BusinessCombinationCompletedAt *time.Time
+	BlankCheckIssuer               bool
+	MappingStatus                  string
+	MappingVerifiedAt              *time.Time
 }
 
 type SecurityMetadataSource interface {

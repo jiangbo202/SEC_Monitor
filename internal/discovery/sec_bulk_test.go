@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func zipFile(t *testing.T, entries map[string]string) string {
@@ -66,8 +67,28 @@ func TestParseSECSubmissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	x := m["0000001234"]
-	if x.CompanyName != "Acme" || x.SIC != 3571 || x.LatestAnnualForm != "10-K/A" || !x.HasBusinessCombinationItem201 || len(x.RecentForms) != 4 {
+	wantCompleted := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if x.CompanyName != "Acme" || x.SIC != 3571 || x.LatestAnnualForm != "10-K/A" || !x.HasBusinessCombinationItem201 || x.BusinessCombinationCompletedAt == nil || !x.BusinessCombinationCompletedAt.Equal(wantCompleted) || len(x.RecentForms) != 4 {
 		t.Fatalf("metadata = %#v", x)
+	}
+}
+
+func TestParseSECSubmissionsCapturesLatestBusinessCombinationCompletionDate(t *testing.T) {
+	body := `{"name":"Acme","cik":"1234","filings":{"recent":{"form":["8-K","8-K/A","8-K","10-Q"],"filingDate":["2026-05-01","2026-06-02","2026-06-01","2026-06-03"],"items":["2.01","2.01","1.01","2.01"]}}}`
+	p := zipFile(t, map[string]string{"CIK0000001234.json": body})
+	z, err := OpenSafeZIP(p, 10, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+	m, err := ParseSECSubmissionsZIP(&z.Reader, ZIPParseLimits{MaxEntryBytes: 1 << 20, MaxTotalBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
+	got := m["0000001234"]
+	if !got.HasBusinessCombinationItem201 || got.BusinessCombinationCompletedAt == nil || !got.BusinessCombinationCompletedAt.Equal(want) {
+		t.Fatalf("metadata = %#v", got)
 	}
 }
 

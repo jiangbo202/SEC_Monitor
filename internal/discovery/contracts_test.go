@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseNasdaqHeaderAndDuplicateContracts(t *testing.T) {
@@ -198,7 +199,7 @@ func TestParseSECTickerRequiredFieldsAndCIKTypes(t *testing.T) {
 
 func TestParseSECSubmissionsZIPDirectoryAndItemForms(t *testing.T) {
 	p := zipFileWithDirectory(t, "safe/", map[string]string{
-		"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["8-K/A","8-K-A"],"items":["2.01","2.01"]}}}`,
+		"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["8-K/A","8-K-A"],"filingDate":["2026-06-01","2026-06-02"],"items":["2.01","2.01"]}}}`,
 	})
 	z, err := zip.OpenReader(p)
 	if err != nil {
@@ -211,6 +212,10 @@ func TestParseSECSubmissionsZIPDirectoryAndItemForms(t *testing.T) {
 	}
 	if !m["0000001234"].HasBusinessCombinationItem201 {
 		t.Fatal("8-K/A item 2.01 not detected")
+	}
+	wantCompleted := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if got := m["0000001234"].BusinessCombinationCompletedAt; got == nil || !got.Equal(wantCompleted) {
+		t.Fatalf("completion date = %v, want %v", got, wantCompleted)
 	}
 	p = zipFile(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["8-K-A"],"items":["2.01"]}}}`})
 	z, err = zip.OpenReader(p)
