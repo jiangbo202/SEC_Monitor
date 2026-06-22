@@ -38,6 +38,7 @@ func Migrate(db *gorm.DB) error {
 			&Listing{},
 			&ClassificationSnapshot{},
 			&ProviderRun{},
+			&ProviderHealth{},
 			&MarketHoliday{},
 			&MarketCalendarYear{},
 			&PriceSnapshot{},

@@ -93,8 +93,22 @@ type ProviderRun struct {
 	CoveragePct        float64   `json:"coverage_pct"`
 	ValidationErrorPct float64   `json:"validation_error_pct"`
 	Timely             bool      `json:"timely"`
+	GoldProvider       string    `json:"gold_provider" gorm:"size:64"`
+	GoldSourceURL      string    `json:"gold_source_url" gorm:"size:2048"`
+	GoldSHA256         string    `json:"gold_sha256" gorm:"size:64"`
+	GoldRows           int       `json:"gold_rows"`
+	GoldErrorPct       float64   `json:"gold_error_pct"`
 	ErrorMessage       string    `json:"error_message" gorm:"type:text"`
 	CreatedAt          time.Time `json:"created_at"`
+}
+
+type ProviderHealth struct {
+	Provider             string    `json:"provider" gorm:"size:64;primaryKey;autoIncrement:false"`
+	Status               string    `json:"status" gorm:"size:16;index"`
+	QualifiedTradingDays int       `json:"qualified_trading_days"`
+	FailureStreak        int       `json:"failure_streak"`
+	LastTradeDate        string    `json:"last_trade_date" gorm:"size:10"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type MarketHoliday struct {

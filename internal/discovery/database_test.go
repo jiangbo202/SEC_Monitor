@@ -59,6 +59,7 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 		{name: "listings", model: &Listing{}},
 		{name: "classification_snapshots", model: &ClassificationSnapshot{}},
 		{name: "provider_runs", model: &ProviderRun{}},
+		{name: "provider_healths", model: &ProviderHealth{}},
 		{name: "market_holidays", model: &MarketHoliday{}},
 		{name: "price_snapshots", model: &PriceSnapshot{}},
 		{name: "share_snapshots", model: &ShareSnapshot{}},
