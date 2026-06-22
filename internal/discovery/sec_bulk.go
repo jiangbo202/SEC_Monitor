@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -67,8 +68,12 @@ func ParseSECTickerExchange(r io.Reader) ([]SecuritySourceRecord, error) {
 				return nil, fmt.Errorf("row %d has too few fields", row+1)
 			}
 		}
+		rawCIK := bytes.TrimSpace(values[idx["cik"]])
+		if len(rawCIK) == 0 || rawCIK[0] < '0' || rawCIK[0] > '9' {
+			return nil, fmt.Errorf("row %d invalid cik type", row+1)
+		}
 		var cik json.Number
-		if err := json.Unmarshal(values[idx["cik"]], &cik); err != nil {
+		if err := json.Unmarshal(rawCIK, &cik); err != nil {
 			return nil, fmt.Errorf("row %d invalid cik type", row+1)
 		}
 		n, err := strconv.ParseInt(string(cik), 10, 64)
