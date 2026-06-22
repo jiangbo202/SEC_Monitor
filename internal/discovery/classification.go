@@ -98,6 +98,17 @@ func classifySecurityAutomatic(record SecuritySourceRecord) Classification {
 		return excluded(ReasonInvestmentCompany, "recent_forms", form)
 	}
 	if record.SIC == 6770 {
+		if record.HasBusinessCombinationItem201 {
+			return Classification{
+				Status:     EffectiveStatusDataInsufficient,
+				Confidence: ConfidenceLow,
+				ReasonCode: ReasonSecurityTypeUnresolved,
+				Evidence: []Evidence{
+					{Field: "business_combination_item_2_01", Value: "true", Source: ClassificationRuleVersion},
+					{Field: "stale_spac_sic", Value: strconv.Itoa(record.SIC), Source: ClassificationRuleVersion},
+				},
+			}
+		}
 		return excluded(ReasonSPAC, "sic", strconv.Itoa(record.SIC))
 	}
 	if record.BlankCheckIssuer && !record.HasBusinessCombinationItem201 {

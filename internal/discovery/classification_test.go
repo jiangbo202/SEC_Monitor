@@ -151,24 +151,25 @@ func TestClassifySecurityDeSPACTransitionTable(t *testing.T) {
 		wantReason            string
 		wantIncluded          bool
 		wantCompletedEvidence bool
+		wantStaleSICEvidence  bool
 	}{
-		{"6770 not blank before combination current", 6770, false, false, MappingStatusCurrent, ReasonSPAC, false, false},
-		{"6770 not blank after combination current", 6770, false, true, MappingStatusCurrent, ReasonSPAC, false, false},
-		{"6770 blank before combination current", 6770, true, false, MappingStatusCurrent, ReasonSPAC, false, false},
-		{"6770 blank after combination current", 6770, true, true, MappingStatusCurrent, ReasonSPAC, false, false},
-		{"6770 not blank before combination conflict", 6770, false, false, MappingStatusConflict, ReasonSPAC, false, false},
-		{"6770 not blank after combination conflict", 6770, false, true, MappingStatusConflict, ReasonSPAC, false, false},
-		{"6770 blank before combination conflict", 6770, true, false, MappingStatusConflict, ReasonSPAC, false, false},
-		{"6770 blank after combination conflict", 6770, true, true, MappingStatusConflict, ReasonSPAC, false, false},
-		{"operating not blank before combination current", 3571, false, false, MappingStatusCurrent, ReasonDomesticOperatingCommon, true, false},
-		{"operating not blank after combination current", 3571, false, true, MappingStatusCurrent, ReasonDomesticOperatingCommon, true, false},
-		{"operating blank before combination current", 3571, true, false, MappingStatusCurrent, ReasonSPAC, false, false},
-		{"operating blank after combination current", 3571, true, true, MappingStatusCurrent, ReasonDomesticOperatingCommon, true, true},
-		{"operating not blank before combination conflict", 3571, false, false, MappingStatusConflict, ReasonMappingConflict, false, false},
-		{"operating not blank after combination conflict", 3571, false, true, MappingStatusConflict, ReasonMappingConflict, false, false},
-		{"operating blank before combination conflict", 3571, true, false, MappingStatusConflict, ReasonSPAC, false, false},
-		{"operating blank after combination conflict", 3571, true, true, MappingStatusConflict, ReasonMappingConflict, false, true},
-		{"operating blank after combination missing mapping", 3571, true, true, "", ReasonMappingConflict, false, true},
+		{"6770 not blank before combination current", 6770, false, false, MappingStatusCurrent, ReasonSPAC, false, false, false},
+		{"6770 not blank after combination current", 6770, false, true, MappingStatusCurrent, ReasonSecurityTypeUnresolved, false, true, true},
+		{"6770 blank before combination current", 6770, true, false, MappingStatusCurrent, ReasonSPAC, false, false, false},
+		{"6770 blank after combination current", 6770, true, true, MappingStatusCurrent, ReasonSecurityTypeUnresolved, false, true, true},
+		{"6770 not blank before combination conflict", 6770, false, false, MappingStatusConflict, ReasonSPAC, false, false, false},
+		{"6770 not blank after combination conflict", 6770, false, true, MappingStatusConflict, ReasonSecurityTypeUnresolved, false, true, true},
+		{"6770 blank before combination conflict", 6770, true, false, MappingStatusConflict, ReasonSPAC, false, false, false},
+		{"6770 blank after combination conflict", 6770, true, true, MappingStatusConflict, ReasonSecurityTypeUnresolved, false, true, true},
+		{"operating not blank before combination current", 3571, false, false, MappingStatusCurrent, ReasonDomesticOperatingCommon, true, false, false},
+		{"operating not blank after combination current", 3571, false, true, MappingStatusCurrent, ReasonDomesticOperatingCommon, true, false, false},
+		{"operating blank before combination current", 3571, true, false, MappingStatusCurrent, ReasonSPAC, false, false, false},
+		{"operating blank after combination current", 3571, true, true, MappingStatusCurrent, ReasonDomesticOperatingCommon, true, true, false},
+		{"operating not blank before combination conflict", 3571, false, false, MappingStatusConflict, ReasonMappingConflict, false, false, false},
+		{"operating not blank after combination conflict", 3571, false, true, MappingStatusConflict, ReasonMappingConflict, false, false, false},
+		{"operating blank before combination conflict", 3571, true, false, MappingStatusConflict, ReasonSPAC, false, false, false},
+		{"operating blank after combination conflict", 3571, true, true, MappingStatusConflict, ReasonMappingConflict, false, true, false},
+		{"operating blank after combination missing mapping", 3571, true, true, "", ReasonMappingConflict, false, true, false},
 	}
 
 	for _, tt := range tests {
@@ -183,13 +184,20 @@ func TestClassifySecurityDeSPACTransitionTable(t *testing.T) {
 				t.Fatalf("classification = %+v", got)
 			}
 			hasCompletedEvidence := false
+			hasStaleSICEvidence := false
 			for _, evidence := range got.Evidence {
 				if evidence.Field == "business_combination_item_2_01" && evidence.Value == "true" {
 					hasCompletedEvidence = true
 				}
+				if evidence.Field == "stale_spac_sic" && evidence.Value == "6770" {
+					hasStaleSICEvidence = true
+				}
 			}
 			if hasCompletedEvidence != tt.wantCompletedEvidence {
 				t.Fatalf("completed-combination evidence=%v, want %v: %+v", hasCompletedEvidence, tt.wantCompletedEvidence, got.Evidence)
+			}
+			if hasStaleSICEvidence != tt.wantStaleSICEvidence {
+				t.Fatalf("stale-SIC evidence=%v, want %v: %+v", hasStaleSICEvidence, tt.wantStaleSICEvidence, got.Evidence)
 			}
 		})
 	}
