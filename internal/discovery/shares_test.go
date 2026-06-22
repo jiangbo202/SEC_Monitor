@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -121,6 +122,80 @@ func TestSelectSharesQualityBoundariesAndEvents(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSelectSharesCapitalEventQualificationIsDeterministic(t *testing.T) {
+	asOf := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	fact := ShareFact{CIK: "0000000001", Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "0001", Instant: asOf.AddDate(0, -1, 0), FiledAt: asOf.AddDate(0, 0, -10), AcceptedAt: asOf.AddDate(0, 0, -10), Shares: 40_000_000, SourceURL: "https://www.sec.gov/a"}
+	accepted := asOf.Add(-time.Hour)
+	afterFact := fact.Instant.Add(time.Hour)
+
+	tests := []struct {
+		name   string
+		events []CapitalEvent
+		reason string
+	}{
+		{
+			name: "confirmed conflict beats missing acceptance",
+			events: []CapitalEvent{
+				{CIK: fact.CIK, Kind: "financing", EffectiveAt: afterFact, ChangesShares: true},
+				{CIK: fact.CIK, Kind: "issuance", EffectiveAt: afterFact, AcceptedAt: accepted, ChangesShares: true},
+			},
+			reason: ReasonShareCapitalEvent,
+		},
+		{
+			name: "split beats capital event",
+			events: []CapitalEvent{
+				{CIK: fact.CIK, Kind: "issuance", EffectiveAt: afterFact, AcceptedAt: accepted, ChangesShares: true},
+				{CIK: fact.CIK, Kind: "reverse_split", EffectiveAt: afterFact, AcceptedAt: accepted, ChangesShares: true},
+			},
+			reason: ReasonShareSplitMismatch,
+		},
+		{
+			name: "multiple classes beats all other outcomes",
+			events: []CapitalEvent{
+				{CIK: fact.CIK, Kind: "financing", EffectiveAt: afterFact, ChangesShares: true},
+				{CIK: fact.CIK, Kind: "issuance", EffectiveAt: afterFact, AcceptedAt: accepted, ChangesShares: true},
+				{CIK: fact.CIK, Kind: "stock_split", EffectiveAt: afterFact, AcceptedAt: accepted, ChangesShares: true},
+				{CIK: fact.CIK, Kind: "multiple_class", EffectiveAt: fact.Instant, AcceptedAt: accepted},
+			},
+			reason: ReasonShareMultipleClasses,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for permutationIndex, events := range capitalEventPermutations(test.events) {
+				before := append([]CapitalEvent(nil), events...)
+				got := SelectShareSnapshot([]ShareFact{fact}, events, asOf)
+				if got.QualityStatus != QualityStatusConflict || got.ReasonCode != test.reason {
+					t.Fatalf("permutation %d got %#v, want conflict reason=%q", permutationIndex, got, test.reason)
+				}
+				if !reflect.DeepEqual(events, before) {
+					t.Fatalf("permutation %d mutated input: got %#v want %#v", permutationIndex, events, before)
+				}
+			}
+		})
+	}
+}
+
+func capitalEventPermutations(events []CapitalEvent) [][]CapitalEvent {
+	working := append([]CapitalEvent(nil), events...)
+	permutations := make([][]CapitalEvent, 0)
+	var visit func(int)
+	visit = func(index int) {
+		if index == len(working) {
+			permutations = append(permutations, append([]CapitalEvent(nil), working...))
+			return
+		}
+		for i := index; i < len(working); i++ {
+			working[index], working[i] = working[i], working[index]
+			visit(index + 1)
+			working[index], working[i] = working[i], working[index]
+		}
+	}
+	visit(0)
+	return permutations
 }
 
 func TestSelectSharesAgeUsesUTCCivilDates(t *testing.T) {

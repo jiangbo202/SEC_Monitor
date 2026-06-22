@@ -89,6 +89,10 @@ func SelectShareSnapshot(facts []ShareFact, events []CapitalEvent, asOf time.Tim
 		return shareResult(nil, status, reason)
 	}
 
+	multipleClassesConflict := false
+	splitConflict := false
+	capitalEventConflict := false
+	missingEventAcceptance := false
 	for _, event := range events {
 		if event.CIK != selected.CIK || event.EffectiveAt.IsZero() || event.EffectiveAt.After(asOf) {
 			continue
@@ -101,20 +105,31 @@ func SelectShareSnapshot(facts []ShareFact, events []CapitalEvent, asOf time.Tim
 			continue
 		}
 		if event.AcceptedAt.IsZero() {
-			return shareResult(selected, QualityStatusMissing, ReasonShareEventAcceptedAtMissing)
+			missingEventAcceptance = true
+			continue
 		}
 		if event.AcceptedAt.After(asOf) {
 			continue
 		}
 		if multipleClasses {
-			return shareResult(selected, QualityStatusConflict, ReasonShareMultipleClasses)
+			multipleClassesConflict = true
+		} else if splitAfterFact {
+			splitConflict = true
+		} else if sharesChangedAfterFact {
+			capitalEventConflict = true
 		}
-		if splitAfterFact {
-			return shareResult(selected, QualityStatusConflict, ReasonShareSplitMismatch)
-		}
-		if sharesChangedAfterFact {
-			return shareResult(selected, QualityStatusConflict, ReasonShareCapitalEvent)
-		}
+	}
+	if multipleClassesConflict {
+		return shareResult(selected, QualityStatusConflict, ReasonShareMultipleClasses)
+	}
+	if splitConflict {
+		return shareResult(selected, QualityStatusConflict, ReasonShareSplitMismatch)
+	}
+	if capitalEventConflict {
+		return shareResult(selected, QualityStatusConflict, ReasonShareCapitalEvent)
+	}
+	if missingEventAcceptance {
+		return shareResult(selected, QualityStatusMissing, ReasonShareEventAcceptedAtMissing)
 	}
 	asOfDate := utcCivilDate(asOf)
 	instantDate := utcCivilDate(selected.Instant)
