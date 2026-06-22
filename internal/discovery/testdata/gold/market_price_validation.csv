@@ -1,3 +1,3 @@
-symbol,trade_date,open,high,low,close,volume,currency,is_adjusted
-BRK.B,2026-06-18,500.000001,501,499.5,500.123456,1000,USD,false
-PER,2026-06-18,10,11,9,10.25,2000,USD,false
+symbol,trade_date,expected_close,source_url,observed_at,reviewer,source_provider,source_tier,fallback_reason,case_type
+BRK.B,2026-06-18,500.123456,https://example.invalid/pending/BRK.B,2026-06-20T12:00:00Z,pending-review,exchange-pending,exchange,,multi_class
+PER,2026-06-18,10.250000,https://example.invalid/pending/PER,2026-06-20T12:00:00Z,pending-review,exchange-pending,issuer_ir,,ticker_change

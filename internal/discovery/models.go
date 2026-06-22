@@ -108,6 +108,9 @@ type ProviderHealth struct {
 	QualifiedTradingDays int       `json:"qualified_trading_days"`
 	FailureStreak        int       `json:"failure_streak"`
 	LastTradeDate        string    `json:"last_trade_date" gorm:"size:10"`
+	WindowJSON           string    `json:"window_json" gorm:"type:text"`
+	GoldEvidenceReady    bool      `json:"gold_evidence_ready"`
+	GoldSHA256           string    `json:"gold_sha256" gorm:"size:64"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
 

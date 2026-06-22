@@ -31,6 +31,11 @@ func Migrate(db *gorm.DB) error {
 		hadHolidayCount := tx.Migrator().HasColumn(&MarketCalendarYear{}, "ExpectedHolidayCount")
 		hadHolidayHash := tx.Migrator().HasColumn(&MarketCalendarYear{}, "HolidayDatesSHA256")
 		legacyCalendarManifest := hadCalendarYearTable && !hadHolidayCount && !hadHolidayHash
+		hadProviderHealthTable := tx.Migrator().HasTable(&ProviderHealth{})
+		hadProviderWindow := tx.Migrator().HasColumn(&ProviderHealth{}, "WindowJSON")
+		hadProviderGoldReady := tx.Migrator().HasColumn(&ProviderHealth{}, "GoldEvidenceReady")
+		hadProviderGoldSHA := tx.Migrator().HasColumn(&ProviderHealth{}, "GoldSHA256")
+		legacyProviderHealth := hadProviderHealthTable && (!hadProviderWindow || !hadProviderGoldReady || !hadProviderGoldSHA)
 
 		if err := tx.AutoMigrate(
 			&Security{},
@@ -51,6 +56,14 @@ func Migrate(db *gorm.DB) error {
 		if legacyCalendarManifest {
 			if err := backfillLegacyNYSECalendarManifest(tx); err != nil {
 				return err
+			}
+		}
+		if legacyProviderHealth {
+			if err := tx.Model(&ProviderHealth{}).Where("1 = 1").Updates(map[string]any{
+				"status": ProviderStatusValidation, "qualified_trading_days": 0, "failure_streak": 0,
+				"last_trade_date": "", "window_json": "", "gold_evidence_ready": false, "gold_sha256": "",
+			}).Error; err != nil {
+				return fmt.Errorf("invalidate legacy provider health: %w", err)
 			}
 		}
 		return SeedDefaultNYSEMarketCalendar(tx.Statement.Context, tx)

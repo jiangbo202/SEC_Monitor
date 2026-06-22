@@ -5,16 +5,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	_ "embed"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -28,13 +31,20 @@ const (
 
 	maxPriceCSVBytes = 64 << 20
 	maxPriceCSVRows  = 2_000_000
+	maxPriceZIPFiles = 16
 
 	ProviderActivationTradingDays = 20
 	ProviderDegradedFailureDays   = 3
 	MinimumIndependentGoldRows    = 100
-	DefaultPriceCoveragePct       = 95.0
+	DefaultPriceCoveragePct       = 98.0
+	DefaultPriceTimelyPct         = 95.0
 	DefaultValidationErrorPct     = 0.0
 	DefaultIndependentErrorPct    = 1.0
+)
+
+var (
+	ErrPriceImportConflict    = errors.New("price import conflict")
+	ErrGoldEvidenceIncomplete = errors.New("independent gold evidence incomplete")
 )
 
 type PriceFormat string
@@ -71,11 +81,17 @@ type PriceValidationOptions struct {
 	Expected      []Listing
 }
 
-type GoldProvenance struct {
-	Provider  string
-	SourceURL string
-	SHA256    string
+type GoldValidationResult struct {
+	ready     bool
+	rows      int
+	errorPct  float64
+	sha256    string
+	reviewers int
+	caseTypes int
 }
+
+//go:embed testdata/gold/market_price_validation.csv
+var frozenMarketGoldCSV []byte
 
 // ParsePriceCSV parses the complete input before returning any records. Dates
 // are New York civil midnights, not UTC instants converted into New York.
@@ -117,23 +133,87 @@ func ImportPriceCSV(ctx context.Context, db *gorm.DB, input io.Reader, format Pr
 	if err != nil {
 		return ProviderResult{}, err
 	}
-	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, record := range records {
-			snapshot := PriceSnapshot{
-				Source: result.Provider, SourceVersion: result.SourceVersion, Symbol: record.Symbol,
-				TradeDate: record.TradeDate, CloseMicros: record.CloseMicros, Volume: record.Volume,
-				Currency: record.Currency, Adjusted: record.Adjusted, QualityStatus: QualityStatusValid,
-			}
-			if createErr := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&snapshot).Error; createErr != nil {
-				return fmt.Errorf("persist price snapshot: %w", createErr)
-			}
+	snapshots := make([]PriceSnapshot, len(records))
+	for index, record := range records {
+		snapshots[index] = PriceSnapshot{
+			Source: record.Source, SourceVersion: result.SourceVersion, Symbol: record.Symbol,
+			TradeDate: record.TradeDate, CloseMicros: record.CloseMicros, Volume: record.Volume,
+			Currency: record.Currency, Adjusted: record.Adjusted, QualityStatus: QualityStatusValid,
 		}
-		return nil
+	}
+	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return persistPriceSnapshotsInBatches(tx, snapshots)
 	})
 	if err != nil {
 		return ProviderResult{}, err
 	}
 	return result, nil
+}
+
+const priceImportBatchSize = 400
+
+func persistPriceSnapshotsInBatches(tx *gorm.DB, snapshots []PriceSnapshot) error {
+	type sourceKey struct{ source, version string }
+	groups := make(map[sourceKey][]PriceSnapshot)
+	groupOrder := make([]sourceKey, 0)
+	for _, snapshot := range snapshots {
+		key := sourceKey{source: snapshot.Source, version: snapshot.SourceVersion}
+		if _, exists := groups[key]; !exists {
+			groupOrder = append(groupOrder, key)
+		}
+		groups[key] = append(groups[key], snapshot)
+	}
+	for _, key := range groupOrder {
+		group := groups[key]
+		for start := 0; start < len(group); start += priceImportBatchSize {
+			end := start + priceImportBatchSize
+			if end > len(group) {
+				end = len(group)
+			}
+			chunk := group[start:end]
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(chunk, priceImportBatchSize).Error; err != nil {
+				return fmt.Errorf("persist price snapshot batch: %w", err)
+			}
+			persisted, err := loadPriceSnapshotChunk(tx, chunk)
+			if err != nil {
+				return err
+			}
+			for _, expected := range chunk {
+				actual, exists := persisted[priceSnapshotDayKey(expected.Symbol, expected.TradeDate)]
+				if !exists {
+					return fmt.Errorf("persisted price snapshot is missing for %s %s", expected.Symbol, expected.TradeDate.Format(time.DateOnly))
+				}
+				if actual.CloseMicros != expected.CloseMicros || actual.Volume != expected.Volume || actual.Currency != expected.Currency || actual.Adjusted != expected.Adjusted || actual.QualityStatus != expected.QualityStatus {
+					return fmt.Errorf("%w for %s %s", ErrPriceImportConflict, expected.Symbol, expected.TradeDate.Format(time.DateOnly))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func loadPriceSnapshotChunk(tx *gorm.DB, chunk []PriceSnapshot) (map[string]PriceSnapshot, error) {
+	where := make([]string, 0, len(chunk))
+	arguments := make([]any, 0, len(chunk)*2+2)
+	arguments = append(arguments, chunk[0].Source, chunk[0].SourceVersion)
+	for _, snapshot := range chunk {
+		where = append(where, "(symbol = ? AND trade_date = ?)")
+		arguments = append(arguments, snapshot.Symbol, snapshot.TradeDate)
+	}
+	var rows []PriceSnapshot
+	query := "source = ? AND source_version = ? AND (" + strings.Join(where, " OR ") + ")"
+	if err := tx.Where(query, arguments...).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("read persisted price snapshot batch: %w", err)
+	}
+	result := make(map[string]PriceSnapshot, len(rows))
+	for _, row := range rows {
+		result[priceSnapshotDayKey(row.Symbol, row.TradeDate)] = row
+	}
+	return result, nil
+}
+
+func priceSnapshotDayKey(symbol string, date time.Time) string {
+	return symbol + "\x00" + date.Format(time.DateOnly)
 }
 
 func readBoundedPriceInput(input io.Reader) ([]byte, error) {
@@ -152,9 +232,19 @@ func readBoundedPriceInput(input io.Reader) ([]byte, error) {
 }
 
 func readSingleCSVFromZIP(payload []byte) ([]byte, error) {
+	entryCount, err := zipCentralDirectoryEntryCount(payload)
+	if err != nil {
+		return nil, err
+	}
+	if entryCount > maxPriceZIPFiles {
+		return nil, fmt.Errorf("price ZIP exceeds %d entries", maxPriceZIPFiles)
+	}
 	reader, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
 	if err != nil {
 		return nil, fmt.Errorf("open price ZIP: %w", err)
+	}
+	if len(reader.File) > maxPriceZIPFiles {
+		return nil, fmt.Errorf("price ZIP exceeds %d entries", maxPriceZIPFiles)
 	}
 	var selected *zip.File
 	for _, file := range reader.File {
@@ -180,6 +270,70 @@ func readSingleCSVFromZIP(payload []byte) ([]byte, error) {
 	return readBoundedPriceInput(opened)
 }
 
+func zipCentralDirectoryEntryCount(payload []byte) (int, error) {
+	const (
+		eocdSignature = uint32(0x06054b50)
+		eocdSize      = 22
+		maxComment    = 1<<16 - 1
+	)
+	start := len(payload) - eocdSize
+	minimum := start - maxComment
+	if minimum < 0 {
+		minimum = 0
+	}
+	for offset := start; offset >= minimum; offset-- {
+		if binary.LittleEndian.Uint32(payload[offset:offset+4]) != eocdSignature {
+			continue
+		}
+		commentLength := int(binary.LittleEndian.Uint16(payload[offset+20 : offset+22]))
+		if offset+eocdSize+commentLength != len(payload) {
+			continue
+		}
+		if binary.LittleEndian.Uint16(payload[offset+4:offset+6]) != 0 || binary.LittleEndian.Uint16(payload[offset+6:offset+8]) != 0 {
+			return 0, errors.New("multi-disk price ZIPs are not supported")
+		}
+		entriesOnDisk := binary.LittleEndian.Uint16(payload[offset+8 : offset+10])
+		count := binary.LittleEndian.Uint16(payload[offset+10 : offset+12])
+		centralSize := binary.LittleEndian.Uint32(payload[offset+12 : offset+16])
+		centralOffset := binary.LittleEndian.Uint32(payload[offset+16 : offset+20])
+		if count == ^uint16(0) || centralSize == ^uint32(0) || centralOffset == ^uint32(0) {
+			return 0, errors.New("ZIP64 price archives are not supported")
+		}
+		if entriesOnDisk != count || uint64(centralOffset)+uint64(centralSize) != uint64(offset) {
+			return 0, errors.New("price ZIP central directory is inconsistent")
+		}
+		if int(count) > maxPriceZIPFiles {
+			return int(count), nil
+		}
+		if !validateZIPCentralDirectory(payload, int(centralOffset), int(centralSize), int(count)) {
+			return 0, errors.New("price ZIP central directory is invalid")
+		}
+		return int(count), nil
+	}
+	return 0, errors.New("price ZIP end record is missing")
+}
+
+func validateZIPCentralDirectory(payload []byte, offset, size, entries int) bool {
+	if offset < 0 || size < 0 || offset > len(payload) || size > len(payload)-offset {
+		return false
+	}
+	position := offset
+	end := offset + size
+	for entry := 0; entry < entries; entry++ {
+		if position > end-46 || binary.LittleEndian.Uint32(payload[position:position+4]) != 0x02014b50 {
+			return false
+		}
+		nameLength := int(binary.LittleEndian.Uint16(payload[position+28 : position+30]))
+		extraLength := int(binary.LittleEndian.Uint16(payload[position+30 : position+32]))
+		commentLength := int(binary.LittleEndian.Uint16(payload[position+32 : position+34]))
+		position += 46 + nameLength + extraLength + commentLength
+		if position > end {
+			return false
+		}
+	}
+	return position == end
+}
+
 func parsePriceRecords(ctx context.Context, payload []byte, format PriceFormat, options PriceValidationOptions) ([]PriceRecord, error) {
 	if format != PriceFormatNormalized && format != PriceFormatStooq {
 		return nil, fmt.Errorf("unsupported price format %q", format)
@@ -198,8 +352,9 @@ func parsePriceRecords(ctx context.Context, payload []byte, format PriceFormat, 
 	if err != nil {
 		return nil, fmt.Errorf("read price CSV header: %w", err)
 	}
-	wantHeader := []string{"symbol", "trade_date", "open", "high", "low", "close", "volume", "currency", "is_adjusted"}
+	wantHeader := []string{"symbol", "trade_date", "open", "high", "low", "close", "volume", "currency", "is_adjusted", "source"}
 	stooqExtended := false
+	normalizedCloseOnly := false
 	if format == PriceFormatStooq {
 		wantHeader = []string{"<TICKER>", "<PER>", "<DATE>", "<OPEN>", "<HIGH>", "<LOW>", "<CLOSE>", "<VOL>"}
 		extendedHeader := []string{"<TICKER>", "<PER>", "<DATE>", "<TIME>", "<OPEN>", "<HIGH>", "<LOW>", "<CLOSE>", "<VOL>", "<OPENINT>"}
@@ -207,6 +362,9 @@ func parsePriceRecords(ctx context.Context, payload []byte, format PriceFormat, 
 		if stooqExtended {
 			wantHeader = extendedHeader
 		}
+	} else if equalCSVHeader(header, []string{"symbol", "trade_date", "close", "currency", "is_adjusted", "source"}) {
+		wantHeader = []string{"symbol", "trade_date", "close", "currency", "is_adjusted", "source"}
+		normalizedCloseOnly = true
 	}
 	if !equalCSVHeader(header, wantHeader) {
 		return nil, fmt.Errorf("price CSV header does not match %s schema", format)
@@ -237,7 +395,7 @@ func parsePriceRecords(ctx context.Context, payload []byte, format PriceFormat, 
 		if stooqExtended {
 			row = []string{row[0], row[1], row[2], row[4], row[5], row[6], row[7], row[8]}
 		}
-		record, parseErr := parsePriceRow(row, format, newYork, symbols, options.Provider)
+		record, parseErr := parsePriceRow(row, format, normalizedCloseOnly, newYork, symbols, options.Provider)
 		if parseErr != nil {
 			return nil, fmt.Errorf("price CSV line %d: %w", line, parseErr)
 		}
@@ -254,8 +412,8 @@ func parsePriceRecords(ctx context.Context, payload []byte, format PriceFormat, 
 	return records, nil
 }
 
-func parsePriceRow(row []string, format PriceFormat, newYork *time.Location, symbols map[string]string, source string) (PriceRecord, error) {
-	symbol, dateText := row[0], row[1]
+func parsePriceRow(row []string, format PriceFormat, normalizedCloseOnly bool, newYork *time.Location, symbols map[string]string, source string) (PriceRecord, error) {
+	symbol, dateText := strings.ToUpper(row[0]), row[1]
 	priceOffset := 2
 	currency := "USD"
 	adjusted := false
@@ -269,6 +427,14 @@ func parsePriceRow(row []string, format PriceFormat, newYork *time.Location, sym
 			return PriceRecord{}, fmt.Errorf("invalid trade date %q", dateText)
 		}
 		dateText = dateText[:4] + "-" + dateText[4:6] + "-" + dateText[6:]
+	} else if normalizedCloseOnly {
+		currency = row[3]
+		var err error
+		adjusted, err = strconv.ParseBool(row[4])
+		if err != nil {
+			return PriceRecord{}, fmt.Errorf("invalid is_adjusted %q", row[4])
+		}
+		source = row[5]
 	} else {
 		currency = row[7]
 		var err error
@@ -276,9 +442,12 @@ func parsePriceRow(row []string, format PriceFormat, newYork *time.Location, sym
 		if err != nil {
 			return PriceRecord{}, fmt.Errorf("invalid is_adjusted %q", row[8])
 		}
+		source = row[9]
 	}
 	if canonical, exists := symbols[symbol]; exists {
 		symbol = canonical
+	} else if len(symbols) > 0 {
+		return PriceRecord{}, fmt.Errorf("symbol %q has no active ticker mapping", symbol)
 	}
 	if symbol == "" {
 		return PriceRecord{}, errors.New("symbol is required")
@@ -288,19 +457,35 @@ func parsePriceRow(row []string, format PriceFormat, newYork *time.Location, sym
 		return PriceRecord{}, err
 	}
 	prices := make([]int64, 4)
-	for i := range prices {
-		prices[i], err = parsePriceMicros(row[priceOffset+i])
+	volume := int64(0)
+	if normalizedCloseOnly {
+		prices[3], err = parsePriceMicros(row[2])
 		if err != nil {
-			return PriceRecord{}, fmt.Errorf("invalid %s price: %w", []string{"open", "high", "low", "close"}[i], err)
+			return PriceRecord{}, fmt.Errorf("invalid close price: %w", err)
+		}
+		prices[0], prices[1], prices[2] = prices[3], prices[3], prices[3]
+	} else {
+		for i := range prices {
+			prices[i], err = parsePriceMicros(row[priceOffset+i])
+			if err != nil {
+				return PriceRecord{}, fmt.Errorf("invalid %s price: %w", []string{"open", "high", "low", "close"}[i], err)
+			}
+		}
+		volumeIndex := 6
+		if format == PriceFormatStooq {
+			volumeIndex = 7
+		}
+		volume, err = strconv.ParseInt(row[volumeIndex], 10, 64)
+		if err != nil || volume < 0 {
+			return PriceRecord{}, fmt.Errorf("invalid volume %q", row[volumeIndex])
 		}
 	}
-	volumeIndex := 6
-	if format == PriceFormatStooq {
-		volumeIndex = 7
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return PriceRecord{}, errors.New("source is required")
 	}
-	volume, err := strconv.ParseInt(row[volumeIndex], 10, 64)
-	if err != nil || volume < 0 {
-		return PriceRecord{}, fmt.Errorf("invalid volume %q", row[volumeIndex])
+	if len(source) > 64 {
+		return PriceRecord{}, errors.New("source exceeds 64 bytes")
 	}
 	record := PriceRecord{Symbol: symbol, TradeDate: tradeDate, OpenMicros: prices[0], HighMicros: prices[1], LowMicros: prices[2], CloseMicros: prices[3], Volume: volume, Currency: currency, Adjusted: adjusted, Source: source}
 	if err := validateOHLC(record); err != nil {
@@ -320,13 +505,13 @@ func parsePriceMicros(value string) (int64, error) {
 		return 0, errors.New("price must be positive")
 	}
 	parts := strings.Split(value, ".")
-	if len(parts) > 2 || parts[0] == "" {
+	if len(parts) > 2 || !asciiDigits(parts[0]) {
 		return 0, errors.New("invalid decimal")
 	}
 	fraction := ""
 	if len(parts) == 2 {
 		fraction = parts[1]
-		if fraction == "" {
+		if !asciiDigits(fraction) {
 			return 0, errors.New("invalid decimal")
 		}
 	}
@@ -334,7 +519,8 @@ func parsePriceMicros(value string) (int64, error) {
 		return 0, errors.New("price precision exceeds 6 decimal places")
 	}
 	whole, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || whole > (int64(^uint64(0)>>1)-999999)/1_000_000 {
+	const maxInt64 = int64(^uint64(0) >> 1)
+	if err != nil || whole > maxInt64/1_000_000 {
 		return 0, errors.New("price is out of range")
 	}
 	fraction += strings.Repeat("0", 6-len(fraction))
@@ -345,11 +531,26 @@ func parsePriceMicros(value string) (int64, error) {
 			return 0, errors.New("invalid decimal")
 		}
 	}
+	if whole == maxInt64/1_000_000 && frac > maxInt64%1_000_000 {
+		return 0, errors.New("price is out of range")
+	}
 	micros := whole*1_000_000 + frac
 	if micros <= 0 {
 		return 0, errors.New("price must be positive")
 	}
 	return micros, nil
+}
+
+func asciiDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < '0' || value[index] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateOHLC(record PriceRecord) error {
@@ -377,8 +578,14 @@ func parseCivilDate(value string, location *time.Location) (time.Time, error) {
 func expectedSymbolMapping(expected []Listing) (map[string]string, error) {
 	mapping := make(map[string]string)
 	for _, listing := range expected {
-		canonical := strings.TrimSpace(listing.Ticker)
-		provider := strings.TrimSpace(listing.ProviderTicker)
+		if listing.MappingStatus == MappingStatusConflict {
+			return nil, fmt.Errorf("ticker %q has mapping conflict", listing.Ticker)
+		}
+		if listing.MappingStatus == MappingStatusExpired {
+			return nil, fmt.Errorf("ticker %q mapping is expired", listing.Ticker)
+		}
+		canonical := strings.ToUpper(strings.TrimSpace(listing.Ticker))
+		provider := strings.ToUpper(strings.TrimSpace(listing.ProviderTicker))
 		if canonical == "" {
 			continue
 		}
@@ -438,7 +645,7 @@ func validatePriceBatch(ctx context.Context, records []PriceRecord, options Pric
 	}
 	expectedSet := make(map[string]struct{})
 	for _, listing := range options.Expected {
-		if ticker := strings.TrimSpace(listing.Ticker); ticker != "" {
+		if ticker := strings.ToUpper(strings.TrimSpace(listing.Ticker)); ticker != "" {
 			expectedSet[ticker] = struct{}{}
 		}
 	}
@@ -456,12 +663,30 @@ func validatePriceBatch(ctx context.Context, records []PriceRecord, options Pric
 	if now.IsZero() {
 		return ProviderResult{}, errors.New("validation clock is required")
 	}
-	deadline := time.Date(effectiveDate.Year(), effectiveDate.Month(), effectiveDate.Day()+1, 12, 0, 0, 0, newYork)
+	nextDate, err := nextTradingDate(ctx, options.Calendar, effectiveDate)
+	if err != nil {
+		return ProviderResult{}, fmt.Errorf("find next trading date: %w", err)
+	}
+	deadline := time.Date(nextDate.Year(), nextDate.Month(), nextDate.Day(), 12, 0, 0, 0, newYork)
 	return ProviderResult{
 		Provider: options.Provider, Status: ProviderStatusValidation, SourceVersion: options.SourceVersion,
 		EffectiveDate: effectiveDate, Records: len(records), Expected: len(expectedSet), CoveragePct: coverage,
 		ValidationErrorPct: 0, Timely: !now.After(deadline),
 	}, nil
+}
+
+func nextTradingDate(ctx context.Context, calendar MarketCalendar, after time.Time) (time.Time, error) {
+	for offset := 1; offset <= 14; offset++ {
+		candidate := after.AddDate(0, 0, offset)
+		trading, err := calendar.IsTradingDate(ctx, candidate.Format(time.DateOnly))
+		if err != nil {
+			return time.Time{}, err
+		}
+		if trading {
+			return candidate, nil
+		}
+	}
+	return time.Time{}, errors.New("no trading date found within 14 calendar days")
 }
 
 func equalCSVHeader(got, want []string) bool {
@@ -476,32 +701,113 @@ func equalCSVHeader(got, want []string) bool {
 	return true
 }
 
-func CompareIndependentPrices(primary, gold []PriceRecord, provenance GoldProvenance) (float64, error) {
-	if err := validateGoldProvenance(provenance); err != nil {
-		return 0, errors.New("independent gold provenance requires provider, HTTPS source URL, and SHA256")
+func LoadFrozenMarketGold(primary []PriceRecord, primaryProvider string, now time.Time) (GoldValidationResult, error) {
+	return validateIndependentGoldCSV(bytes.NewReader(frozenMarketGoldCSV), primary, primaryProvider, now)
+}
+
+func validateIndependentGoldCSV(input io.Reader, primary []PriceRecord, primaryProvider string, now time.Time) (GoldValidationResult, error) {
+	payload, err := readBoundedPriceInput(input)
+	if err != nil {
+		return GoldValidationResult{}, err
 	}
-	goldByKey := make(map[string]PriceRecord, len(gold))
-	for _, record := range gold {
-		goldByKey[record.Symbol+"\x00"+record.TradeDate.Format(time.DateOnly)] = record
+	if strings.TrimSpace(primaryProvider) == "" || now.IsZero() {
+		return GoldValidationResult{}, errors.New("primary provider and validation clock are required")
 	}
-	comparisons := 0
-	totalError := float64(0)
+	primaryByKey := make(map[string]PriceRecord, len(primary))
 	for _, record := range primary {
-		goldRecord, exists := goldByKey[record.Symbol+"\x00"+record.TradeDate.Format(time.DateOnly)]
-		if !exists || goldRecord.CloseMicros <= 0 {
-			continue
+		primaryByKey[record.Symbol+"\x00"+record.TradeDate.Format(time.DateOnly)] = record
+	}
+	reader := csv.NewReader(bytes.NewReader(payload))
+	reader.FieldsPerRecord = 10
+	header, err := reader.Read()
+	if err != nil || !equalCSVHeader(header, []string{"symbol", "trade_date", "expected_close", "source_url", "observed_at", "reviewer", "source_provider", "source_tier", "fallback_reason", "case_type"}) {
+		return GoldValidationResult{}, errors.New("independent gold CSV header is invalid")
+	}
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return GoldValidationResult{}, err
+	}
+	seen := make(map[string]struct{})
+	symbols := make(map[string]struct{})
+	reviewers := make(map[string]struct{})
+	caseTypes := make(map[string]struct{})
+	maximumError := float64(0)
+	rows := 0
+	for line := 2; ; line++ {
+		row, readErr := reader.Read()
+		if errors.Is(readErr, io.EOF) {
+			break
 		}
-		difference := record.CloseMicros - goldRecord.CloseMicros
+		if readErr != nil {
+			return GoldValidationResult{}, fmt.Errorf("read independent gold line %d: %w", line, readErr)
+		}
+		for i := range row {
+			row[i] = strings.TrimSpace(row[i])
+		}
+		symbol := strings.ToUpper(row[0])
+		tradeDate, dateErr := parseCivilDate(row[1], newYork)
+		expectedClose, priceErr := parsePriceMicros(row[2])
+		sourceURL, urlErr := url.Parse(row[3])
+		observedAt, observedErr := time.Parse(time.RFC3339, row[4])
+		if symbol == "" || dateErr != nil || priceErr != nil || urlErr != nil || sourceURL.Scheme != "https" || sourceURL.Host == "" || sourceURL.User != nil || observedErr != nil || observedAt.After(now) {
+			return GoldValidationResult{}, fmt.Errorf("independent gold line %d has invalid evidence", line)
+		}
+		if row[5] == "" || row[6] == "" || strings.EqualFold(row[6], primaryProvider) {
+			return GoldValidationResult{}, fmt.Errorf("independent gold line %d lacks an independent provider or reviewer", line)
+		}
+		switch row[7] {
+		case "exchange", "issuer_ir":
+			if row[8] != "" {
+				return GoldValidationResult{}, fmt.Errorf("independent gold line %d has an unexpected fallback reason", line)
+			}
+		case "other":
+			if row[8] == "" {
+				return GoldValidationResult{}, fmt.Errorf("independent gold line %d requires a fallback reason", line)
+			}
+		default:
+			return GoldValidationResult{}, fmt.Errorf("independent gold line %d has invalid source tier", line)
+		}
+		switch row[9] {
+		case "split", "ticker_change", "multi_class", "delisted":
+		default:
+			return GoldValidationResult{}, fmt.Errorf("independent gold line %d has invalid case type", line)
+		}
+		key := symbol + "\x00" + tradeDate.Format(time.DateOnly)
+		if _, exists := seen[key]; exists {
+			return GoldValidationResult{}, fmt.Errorf("independent gold line %d is duplicated", line)
+		}
+		seen[key] = struct{}{}
+		primaryRecord, exists := primaryByKey[key]
+		if !exists || primaryRecord.CloseMicros <= 0 {
+			return GoldValidationResult{}, fmt.Errorf("independent gold line %d has no matching primary price", line)
+		}
+		if !strings.EqualFold(strings.TrimSpace(primaryRecord.Source), strings.TrimSpace(primaryProvider)) {
+			return GoldValidationResult{}, fmt.Errorf("independent gold line %d primary source does not match provider", line)
+		}
+		difference := primaryRecord.CloseMicros - expectedClose
 		if difference < 0 {
 			difference = -difference
 		}
-		totalError += float64(difference) * 100 / float64(goldRecord.CloseMicros)
-		comparisons++
+		errorPct := float64(difference) * 100 / float64(expectedClose)
+		if errorPct > maximumError {
+			maximumError = errorPct
+		}
+		symbols[symbol] = struct{}{}
+		reviewers[row[5]] = struct{}{}
+		caseTypes[row[9]] = struct{}{}
+		rows++
 	}
-	if comparisons < MinimumIndependentGoldRows {
-		return 0, fmt.Errorf("independent gold comparison has %d rows, want at least %d", comparisons, MinimumIndependentGoldRows)
+	if rows < MinimumIndependentGoldRows {
+		return GoldValidationResult{}, fmt.Errorf("%w: comparison has %d rows, want at least %d", ErrGoldEvidenceIncomplete, rows, MinimumIndependentGoldRows)
 	}
-	return totalError / float64(comparisons), nil
+	if len(symbols) < MinimumIndependentGoldRows {
+		return GoldValidationResult{}, fmt.Errorf("%w: covers %d securities, want at least %d", ErrGoldEvidenceIncomplete, len(symbols), MinimumIndependentGoldRows)
+	}
+	if len(caseTypes) != 4 {
+		return GoldValidationResult{}, fmt.Errorf("%w: required case types are missing", ErrGoldEvidenceIncomplete)
+	}
+	hash := sha256.Sum256(payload)
+	return GoldValidationResult{ready: maximumError <= DefaultIndependentErrorPct, rows: rows, errorPct: maximumError, sha256: hex.EncodeToString(hash[:]), reviewers: len(reviewers), caseTypes: len(caseTypes)}, nil
 }
 
 type DownloadedPriceProviderOptions struct {
@@ -514,17 +820,19 @@ type DownloadedPriceProviderOptions struct {
 }
 
 type DownloadedPriceProvider struct {
-	options DownloadedPriceProviderOptions
-	prior   *CacheMetadata
-	mu      sync.Mutex
+	options     DownloadedPriceProviderOptions
+	prior       *CacheMetadata
+	initialized bool
 }
+
+var priceProviderLifecycleLocks Downloader
 
 func NewDownloadedPriceProvider(options DownloadedPriceProviderOptions) (*DownloadedPriceProvider, error) {
 	parsed, err := url.Parse(options.URL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
 		return nil, errors.New("price provider URL must be HTTPS without user info")
 	}
-	if strings.TrimSpace(options.Provider) == "" || strings.TrimSpace(options.CacheKey) == "" || options.Downloader == nil {
+	if strings.TrimSpace(options.Provider) == "" || !safeCacheKey(options.CacheKey) || options.Downloader == nil {
 		return nil, errors.New("price provider, cache key, and downloader are required")
 	}
 	if options.Format == "" {
@@ -534,10 +842,17 @@ func NewDownloadedPriceProvider(options DownloadedPriceProviderOptions) (*Downlo
 }
 
 func (provider *DownloadedPriceProvider) Load(ctx context.Context, expected []Listing) ([]PriceRecord, ProviderResult, error) {
-	provider.mu.Lock()
-	defer provider.mu.Unlock()
+	unlock, err := priceProviderLifecycleLocks.lockCachePath(ctx, provider.candidateDataPath())
+	if err != nil {
+		return nil, ProviderResult{}, fmt.Errorf("wait for price provider cache lifecycle: %w", err)
+	}
+	defer unlock()
+	if err := provider.initializeValidatedCache(); err != nil {
+		return nil, ProviderResult{}, err
+	}
 
-	download, err := provider.options.Downloader.Download(ctx, provider.options.URL, provider.options.CacheKey, provider.prior)
+	candidateKey := provider.options.CacheKey + ".candidate"
+	download, err := provider.options.Downloader.Download(ctx, provider.options.URL, candidateKey, provider.prior)
 	if err != nil {
 		return nil, ProviderResult{}, err
 	}
@@ -558,10 +873,16 @@ func (provider *DownloadedPriceProvider) Load(ctx context.Context, expected []Li
 	}
 	records, result, err := ParsePriceCSV(ctx, file, provider.options.Format, validation)
 	if err != nil {
+		_ = provider.restoreValidatedCandidate()
 		return nil, ProviderResult{}, fmt.Errorf("validate downloaded price file: %w", err)
 	}
 	if result.SHA256 != download.SHA256 {
+		_ = provider.restoreValidatedCandidate()
 		return nil, ProviderResult{}, errors.New("downloaded price SHA256 changed during validation")
+	}
+	if err := provider.promoteValidatedDownload(download); err != nil {
+		_ = provider.restoreValidatedCandidate()
+		return nil, ProviderResult{}, err
 	}
 	provider.prior = &CacheMetadata{
 		Path: download.Path, SourceURL: download.SourceURL, CacheKey: download.CacheKey, FinalURL: download.FinalURL,
@@ -571,65 +892,397 @@ func (provider *DownloadedPriceProvider) Load(ctx context.Context, expected []Li
 	return records, result, nil
 }
 
-type ProviderDayResult struct {
-	TradeDate time.Time
-	qualified bool
+type validatedPriceCacheState struct {
+	SourceURL, FinalURL, ETag, LastModified, SHA256, ContentType string
+	Size                                                         int64
 }
 
-// EvaluateProviderDay is the only constructor for external callers. A day is
-// qualified only when every documented activation threshold passes and the
-// independent comparison carries auditable provenance.
-func EvaluateProviderDay(result ProviderResult, goldRows int, goldErrorPct float64, provenance GoldProvenance) (ProviderDayResult, error) {
-	day := ProviderDayResult{TradeDate: result.EffectiveDate}
-	if result.EffectiveDate.IsZero() {
-		return day, errors.New("provider effective date is required")
+func (provider *DownloadedPriceProvider) initializeValidatedCache() error {
+	if provider.initialized {
+		return nil
 	}
-	if err := validateGoldProvenance(provenance); err != nil {
-		return day, err
+	stateBytes, err := os.ReadFile(provider.validatedStatePath())
+	if errors.Is(err, os.ErrNotExist) {
+		provider.initialized = true
+		return nil
 	}
-	if goldRows < MinimumIndependentGoldRows {
-		return day, fmt.Errorf("independent gold comparison has %d rows, want at least %d", goldRows, MinimumIndependentGoldRows)
+	if err != nil {
+		return fmt.Errorf("read validated price cache metadata: %w", err)
 	}
-	if goldErrorPct < 0 {
-		return day, errors.New("independent gold error percentage cannot be negative")
+	var state validatedPriceCacheState
+	if err := json.Unmarshal(stateBytes, &state); err != nil {
+		return fmt.Errorf("decode validated price cache metadata: %w", err)
 	}
-	day.qualified = result.CoveragePct >= DefaultPriceCoveragePct &&
-		result.ValidationErrorPct <= DefaultValidationErrorPct && result.Timely &&
-		goldErrorPct <= DefaultIndependentErrorPct
-	return day, nil
+	if state.SourceURL != provider.options.URL || !validSHA256(state.SHA256) || state.Size < 0 {
+		return errors.New("validated price cache metadata does not match provider")
+	}
+	validatedPath := provider.validatedDataPathForSHA(state.SHA256)
+	validated := CacheMetadata{Path: validatedPath, SourceURL: state.SourceURL, CacheKey: provider.options.CacheKey + ".validated." + state.SHA256, FinalURL: state.FinalURL, ETag: state.ETag, LastModified: state.LastModified, SHA256: state.SHA256, ContentType: state.ContentType, Size: state.Size}
+	if err := verifyCachedFile(&validated, validated.Path, validated.SourceURL, validated.CacheKey); err != nil {
+		return fmt.Errorf("verify validated price cache: %w", err)
+	}
+	if err := copyFileAtomically(validated.Path, provider.candidateDataPath()); err != nil {
+		return fmt.Errorf("restore validated price candidate: %w", err)
+	}
+	provider.prior = &CacheMetadata{Path: provider.candidateDataPath(), SourceURL: state.SourceURL, CacheKey: provider.options.CacheKey + ".candidate", FinalURL: state.FinalURL, ETag: state.ETag, LastModified: state.LastModified, SHA256: state.SHA256, ContentType: state.ContentType, Size: state.Size}
+	provider.initialized = true
+	return nil
 }
 
-func validateGoldProvenance(provenance GoldProvenance) error {
-	parsedURL, err := url.Parse(provenance.SourceURL)
-	if strings.TrimSpace(provenance.Provider) == "" || err != nil || parsedURL.Scheme != "https" || parsedURL.Host == "" || parsedURL.User != nil || len(provenance.SHA256) != 64 {
-		return errors.New("independent gold provenance requires provider, HTTPS source URL, and SHA256")
+func (provider *DownloadedPriceProvider) promoteValidatedDownload(download DownloadResult) error {
+	if err := copyFileAtomically(download.Path, provider.validatedDataPathForSHA(download.SHA256)); err != nil {
+		return fmt.Errorf("promote validated price cache: %w", err)
 	}
-	if _, err := hex.DecodeString(provenance.SHA256); err != nil {
-		return errors.New("independent gold provenance SHA256 is invalid")
+	state := validatedPriceCacheState{SourceURL: provider.options.URL, FinalURL: download.FinalURL, ETag: download.ETag, LastModified: download.LastModified, SHA256: download.SHA256, ContentType: download.ContentType, Size: download.Size}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("encode validated price cache metadata: %w", err)
+	}
+	if err := writeFileAtomically(provider.validatedStatePath(), encoded); err != nil {
+		return fmt.Errorf("persist validated price cache metadata: %w", err)
 	}
 	return nil
 }
 
-func AdvanceProviderHealth(state ProviderHealth, day ProviderDayResult) ProviderHealth {
-	date := day.TradeDate.Format(time.DateOnly)
-	if date == "0001-01-01" || (state.LastTradeDate != "" && date <= state.LastTradeDate) {
-		return state
+func (provider *DownloadedPriceProvider) restoreValidatedCandidate() error {
+	if provider.prior == nil {
+		_ = os.Remove(provider.candidateDataPath())
+		return nil
 	}
-	state.LastTradeDate = date
+	return copyFileAtomically(provider.validatedDataPathForSHA(provider.prior.SHA256), provider.candidateDataPath())
+}
+
+func (provider *DownloadedPriceProvider) candidateDataPath() string {
+	return absolutePriceCachePath(provider.options.Downloader.CacheDir, provider.options.CacheKey+".candidate")
+}
+
+func (provider *DownloadedPriceProvider) validatedDataPath() string {
+	if provider.prior == nil {
+		return provider.validatedDataPathForSHA("")
+	}
+	return provider.validatedDataPathForSHA(provider.prior.SHA256)
+}
+
+func (provider *DownloadedPriceProvider) validatedDataPathForSHA(sha string) string {
+	return absolutePriceCachePath(provider.options.Downloader.CacheDir, provider.options.CacheKey+".validated."+sha)
+}
+
+func (provider *DownloadedPriceProvider) validatedStatePath() string {
+	return absolutePriceCachePath(provider.options.Downloader.CacheDir, provider.options.CacheKey+".validated.json")
+}
+
+func absolutePriceCachePath(directory, name string) string {
+	path, err := filepath.Abs(filepath.Join(directory, name))
+	if err != nil {
+		return filepath.Join(directory, name)
+	}
+	return path
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func copyFileAtomically(source, destination string) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	info, err := input.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.New("price cache source is not a regular file")
+	}
+	temp, err := os.CreateTemp(filepath.Dir(destination), ".price-cache-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if _, err := io.Copy(temp, input); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, destination); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(destination))
+}
+
+func writeFileAtomically(destination string, payload []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(destination), ".price-state-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if _, err := temp.Write(payload); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, destination); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(destination))
+}
+
+type ProviderDayResult struct {
+	TradeDate    time.Time
+	coveragePct  float64
+	timely       bool
+	validationOK bool
+	goldReady    bool
+	goldSHA256   string
+}
+
+// EvaluateProviderDay validates only the compiled frozen-gold file and binds
+// it to result.Provider and the parsed primary records. Incomplete evidence is
+// a normal validation state, not an activation error.
+func EvaluateProviderDay(result ProviderResult, primary []PriceRecord, now time.Time) (ProviderDayResult, error) {
+	hash := sha256.Sum256(frozenMarketGoldCSV)
+	day := ProviderDayResult{
+		TradeDate: result.EffectiveDate, coveragePct: result.CoveragePct, timely: result.Timely,
+		validationOK: result.ValidationErrorPct <= DefaultValidationErrorPct, goldSHA256: hex.EncodeToString(hash[:]),
+	}
+	if result.EffectiveDate.IsZero() {
+		return day, errors.New("provider effective date is required")
+	}
+	if result.Expected <= 0 {
+		return day, errors.New("provider activation requires a non-empty expected universe")
+	}
+	gold, err := LoadFrozenMarketGold(primary, result.Provider, now)
+	if err != nil {
+		if errors.Is(err, ErrGoldEvidenceIncomplete) {
+			return day, nil
+		}
+		return day, fmt.Errorf("validate frozen market gold: %w", err)
+	}
+	day.goldReady = gold.ready && gold.rows >= MinimumIndependentGoldRows && gold.errorPct >= 0 && gold.errorPct <= DefaultIndependentErrorPct && gold.caseTypes == 4
+	return day, nil
+}
+
+type providerWindowDay struct {
+	Date         string  `json:"date"`
+	CoveragePct  float64 `json:"coverage_pct"`
+	Timely       bool    `json:"timely"`
+	ValidationOK bool    `json:"validation_ok"`
+	GoldReady    bool    `json:"gold_ready"`
+}
+
+func AdvanceProviderHealth(ctx context.Context, calendar MarketCalendar, state ProviderHealth, day ProviderDayResult) (ProviderHealth, error) {
+	if calendar == nil {
+		return state, errors.New("market calendar is required")
+	}
+	date := day.TradeDate.Format(time.DateOnly)
+	if date == "0001-01-01" {
+		return state, errors.New("provider trade date is required")
+	}
+	trading, err := calendar.IsTradingDate(ctx, date)
+	if err != nil {
+		return state, fmt.Errorf("validate provider trading date: %w", err)
+	}
+	if !trading {
+		return state, fmt.Errorf("provider date %s is not a trading date", date)
+	}
+	if state.LastTradeDate != "" && date <= state.LastTradeDate {
+		return state, fmt.Errorf("provider date %s must be after %s", date, state.LastTradeDate)
+	}
+	var window []providerWindowDay
+	if state.WindowJSON != "" {
+		if err := json.Unmarshal([]byte(state.WindowJSON), &window); err != nil {
+			return state, fmt.Errorf("decode provider health window: %w", err)
+		}
+	}
+	if err := validateProviderHealthWindow(ctx, calendar, state, window); err != nil {
+		return state, err
+	}
 	if state.Status == "" {
 		state.Status = ProviderStatusValidation
 	}
-	if day.qualified {
-		state.QualifiedTradingDays++
+	if !validSHA256(day.goldSHA256) {
+		return state, errors.New("provider day requires frozen gold SHA256")
+	}
+	if state.GoldSHA256 != "" && state.GoldSHA256 != day.goldSHA256 {
+		state.Status = ProviderStatusValidation
+		state.QualifiedTradingDays = 0
 		state.FailureStreak = 0
-		if state.Status == ProviderStatusValidation && state.QualifiedTradingDays >= ProviderActivationTradingDays {
-			state.Status = ProviderStatusActive
+		state.LastTradeDate = ""
+		state.WindowJSON = ""
+		state.GoldEvidenceReady = false
+		window = nil
+	}
+	state.GoldSHA256 = day.goldSHA256
+	state.GoldEvidenceReady = day.goldReady
+	if state.LastTradeDate != "" {
+		newYork, loadErr := time.LoadLocation("America/New_York")
+		if loadErr != nil {
+			return state, loadErr
 		}
+		lastDate, parseErr := parseCivilDate(state.LastTradeDate, newYork)
+		if parseErr != nil {
+			return state, fmt.Errorf("invalid provider last trade date: %w", parseErr)
+		}
+		cursor := lastDate
+		for missing := 0; ; missing++ {
+			if missing > 370 {
+				return state, errors.New("provider trading-date gap exceeds one year")
+			}
+			expectedNext, nextErr := nextTradingDate(ctx, calendar, cursor)
+			if nextErr != nil {
+				return state, fmt.Errorf("find consecutive provider trading date: %w", nextErr)
+			}
+			nextText := expectedNext.Format(time.DateOnly)
+			if nextText == date {
+				break
+			}
+			if nextText > date {
+				return state, fmt.Errorf("provider date %s precedes next trading date %s", date, nextText)
+			}
+			applyProviderHealthDay(&state, &window, providerWindowDay{Date: nextText})
+			cursor = expectedNext
+		}
+	}
+	applyProviderHealthDay(&state, &window, providerWindowDay{Date: date, CoveragePct: day.coveragePct, Timely: day.timely, ValidationOK: day.validationOK, GoldReady: day.goldReady})
+	encoded, err := json.Marshal(window)
+	if err != nil {
+		return state, fmt.Errorf("encode provider health window: %w", err)
+	}
+	state.WindowJSON = string(encoded)
+	return state, nil
+}
+
+func validateProviderHealthWindow(ctx context.Context, calendar MarketCalendar, state ProviderHealth, window []providerWindowDay) error {
+	switch state.Status {
+	case "", ProviderStatusValidation, ProviderStatusActive, ProviderStatusDegraded, ProviderStatusFailed:
+	default:
+		return fmt.Errorf("provider health has invalid status %q", state.Status)
+	}
+	if state.FailureStreak < 0 {
+		return errors.New("provider health failure streak is invalid")
+	}
+	if state.GoldEvidenceReady && !validSHA256(state.GoldSHA256) {
+		return errors.New("provider health gold evidence lacks a valid SHA256")
+	}
+	if len(window) > ProviderActivationTradingDays || state.QualifiedTradingDays != len(window) {
+		return errors.New("provider health window length is inconsistent")
+	}
+	if len(window) == 0 {
+		if state.LastTradeDate != "" || state.Status == ProviderStatusActive {
+			return errors.New("provider health has active or dated state without a window")
+		}
+		return nil
+	}
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return err
+	}
+	var previous time.Time
+	for index, entry := range window {
+		if entry.CoveragePct < 0 || entry.CoveragePct > 100 {
+			return fmt.Errorf("provider health window entry %d has invalid coverage", index)
+		}
+		date, parseErr := parseCivilDate(entry.Date, newYork)
+		if parseErr != nil {
+			return fmt.Errorf("provider health window entry %d: %w", index, parseErr)
+		}
+		trading, calendarErr := calendar.IsTradingDate(ctx, entry.Date)
+		if calendarErr != nil {
+			return fmt.Errorf("validate provider health window entry %d: %w", index, calendarErr)
+		}
+		if !trading {
+			return fmt.Errorf("provider health window entry %d is not a trading date", index)
+		}
+		if index > 0 {
+			next, nextErr := nextTradingDate(ctx, calendar, previous)
+			if nextErr != nil || next.Format(time.DateOnly) != entry.Date {
+				return fmt.Errorf("provider health window entry %d is not consecutive", index)
+			}
+		}
+		previous = date
+	}
+	if window[len(window)-1].Date != state.LastTradeDate {
+		return errors.New("provider health last date does not match its window")
+	}
+	if state.Status == ProviderStatusActive {
+		if len(window) != ProviderActivationTradingDays || !validSHA256(state.GoldSHA256) || state.FailureStreak >= ProviderDegradedFailureDays {
+			return errors.New("active provider health lacks a complete validated window")
+		}
+		if !providerWindowPasses(window) && (state.FailureStreak == 0 || trailingProviderFailures(window) < state.FailureStreak) {
+			return errors.New("active provider health window does not support its status")
+		}
+	}
+	return nil
+}
+
+func applyProviderHealthDay(state *ProviderHealth, window *[]providerWindowDay, day providerWindowDay) {
+	state.LastTradeDate = day.Date
+	*window = append(*window, day)
+	if len(*window) > ProviderActivationTradingDays {
+		*window = (*window)[len(*window)-ProviderActivationTradingDays:]
+	}
+	state.QualifiedTradingDays = len(*window)
+	dailyPass := providerWindowDayPasses(day)
+	if dailyPass {
+		state.FailureStreak = 0
 	} else {
 		state.FailureStreak++
 		if state.Status == ProviderStatusActive && state.FailureStreak >= ProviderDegradedFailureDays {
 			state.Status = ProviderStatusDegraded
 		}
 	}
-	return state
+	if state.Status == ProviderStatusValidation && len(*window) == ProviderActivationTradingDays && state.GoldEvidenceReady && providerWindowPasses(*window) {
+		state.Status = ProviderStatusActive
+	}
+}
+
+func providerWindowPasses(window []providerWindowDay) bool {
+	if len(window) != ProviderActivationTradingDays {
+		return false
+	}
+	coverageTotal := float64(0)
+	timely := 0
+	for _, day := range window {
+		coverageTotal += day.CoveragePct
+		if day.Timely {
+			timely++
+		}
+		if !day.ValidationOK || !day.GoldReady {
+			return false
+		}
+	}
+	return coverageTotal/float64(len(window)) >= DefaultPriceCoveragePct &&
+		float64(timely)*100/float64(len(window)) >= DefaultPriceTimelyPct
+}
+
+func providerWindowDayPasses(day providerWindowDay) bool {
+	return day.CoveragePct >= DefaultPriceCoveragePct && day.Timely && day.ValidationOK && day.GoldReady
+}
+
+func trailingProviderFailures(window []providerWindowDay) int {
+	failures := 0
+	for index := len(window) - 1; index >= 0; index-- {
+		if providerWindowDayPasses(window[index]) {
+			break
+		}
+		failures++
+	}
+	return failures
 }

@@ -6,7 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -15,9 +15,9 @@ import (
 	"time"
 )
 
-const normalizedPrices = `symbol,trade_date,open,high,low,close,volume,currency,is_adjusted
-BRK.B,2026-06-18,500.000001,501,499.5,500.123456,1000,USD,false
-PER,2026-06-18,10,11,9,10.25,2000,USD,false
+const normalizedPrices = `symbol,trade_date,open,high,low,close,volume,currency,is_adjusted,source
+BRK.B,2026-06-18,500.000001,501,499.5,500.123456,1000,USD,false,row-source
+PER,2026-06-18,10,11,9,10.25,2000,USD,false,row-source
 `
 
 func TestParsePricesNormalizedAndExactMicros(t *testing.T) {
@@ -81,24 +81,26 @@ func TestParsePricesStooqStandardASCIIColumns(t *testing.T) {
 }
 
 func TestPriceValidationRejectsInvalidRows(t *testing.T) {
-	header := "symbol,trade_date,open,high,low,close,volume,currency,is_adjusted\n"
+	header := "symbol,trade_date,open,high,low,close,volume,currency,is_adjusted,source\n"
 	tests := []struct {
 		name string
 		rows string
 		want string
 	}{
-		{"adjusted", "ACME,2026-06-18,1,2,1,1,1,USD,true\n", "adjusted"},
-		{"non USD", "ACME,2026-06-18,1,2,1,1,1,EUR,false\n", "USD"},
-		{"negative volume", "ACME,2026-06-18,1,2,1,1,-1,USD,false\n", "volume"},
-		{"zero price", "ACME,2026-06-18,0,2,1,1,1,USD,false\n", "positive"},
-		{"invalid OHLC", "ACME,2026-06-18,3,2,1,1,1,USD,false\n", "OHLC"},
-		{"duplicate", "ACME,2026-06-18,1,2,1,1,1,USD,false\nACME,2026-06-18,1,2,1,1,1,USD,false\n", "duplicate"},
-		{"invalid date", "ACME,2026-02-30,1,2,1,1,1,USD,false\n", "date"},
-		{"non trading", "ACME,2026-06-19,1,2,1,1,1,USD,false\n", "trading"},
-		{"future", "ACME,2026-06-22,1,2,1,1,1,USD,false\n", "future"},
-		{"stale", "ACME,2026-06-17,1,2,1,1,1,USD,false\n", "stale"},
-		{"too precise", "ACME,2026-06-18,1.0000001,2,1,1,1,USD,false\n", "precision"},
-		{"overflow", "ACME,2026-06-18,9223372036854,9223372036854,9223372036854,9223372036854,1,USD,false\n", "range"},
+		{"adjusted", "ACME,2026-06-18,1,2,1,1,1,USD,true,manual\n", "adjusted"},
+		{"non USD", "ACME,2026-06-18,1,2,1,1,1,EUR,false,manual\n", "USD"},
+		{"negative volume", "ACME,2026-06-18,1,2,1,1,-1,USD,false,manual\n", "volume"},
+		{"zero price", "ACME,2026-06-18,0,2,1,1,1,USD,false,manual\n", "positive"},
+		{"invalid OHLC", "ACME,2026-06-18,3,2,1,1,1,USD,false,manual\n", "OHLC"},
+		{"duplicate", "ACME,2026-06-18,1,2,1,1,1,USD,false,manual\nACME,2026-06-18,1,2,1,1,1,USD,false,manual\n", "duplicate"},
+		{"invalid date", "ACME,2026-02-30,1,2,1,1,1,USD,false,manual\n", "date"},
+		{"non trading", "ACME,2026-06-19,1,2,1,1,1,USD,false,manual\n", "trading"},
+		{"future", "ACME,2026-06-22,1,2,1,1,1,USD,false,manual\n", "future"},
+		{"stale", "ACME,2026-06-17,1,2,1,1,1,USD,false,manual\n", "stale"},
+		{"too precise", "ACME,2026-06-18,1.0000001,2,1,1,1,USD,false,manual\n", "precision"},
+		{"plus whole", "ACME,2026-06-18,+1,2,1,1,1,USD,false,manual\n", "decimal"},
+		{"plus fraction", "ACME,2026-06-18,1.+1,2,1,1,1,USD,false,manual\n", "decimal"},
+		{"overflow", "ACME,2026-06-18,9223372036854.775808,9223372036854.775808,9223372036854.775808,9223372036854.775808,1,USD,false,manual\n", "range"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -112,7 +114,7 @@ func TestPriceValidationRejectsInvalidRows(t *testing.T) {
 
 func TestPriceValidationCoverageUsesUniqueExpectedListings(t *testing.T) {
 	opts := marketValidationOptions(t, []Listing{{Ticker: "ACME"}, {Ticker: "ACME"}, {Ticker: "OTHER"}})
-	input := "symbol,trade_date,open,high,low,close,volume,currency,is_adjusted\nACME,2026-06-18,1,2,1,1,1,USD,false\n"
+	input := "symbol,trade_date,open,high,low,close,volume,currency,is_adjusted,source\nACME,2026-06-18,1,2,1,1,1,USD,false,manual\n"
 	_, result, err := ParsePriceCSV(context.Background(), strings.NewReader(input), PriceFormatNormalized, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -134,8 +136,8 @@ func TestPriceValidationTimelinessBoundaryAndDST(t *testing.T) {
 		now    time.Time
 		timely bool
 	}{
-		{"at boundary", time.Date(2026, 6, 19, 12, 0, 0, 0, mustNY(t)), true},
-		{"after boundary", time.Date(2026, 6, 19, 12, 0, 0, 1, mustNY(t)), false},
+		{"at boundary", time.Date(2026, 6, 22, 12, 0, 0, 0, mustNY(t)), true},
+		{"after boundary", time.Date(2026, 6, 22, 12, 0, 0, 1, mustNY(t)), false},
 		{"DST instant before", time.Date(2026, 3, 10, 15, 59, 0, 0, time.UTC), true},
 		{"DST instant after", time.Date(2026, 3, 10, 16, 0, 1, 0, time.UTC), false},
 	} {
@@ -144,7 +146,7 @@ func TestPriceValidationTimelinessBoundaryAndDST(t *testing.T) {
 			if strings.HasPrefix(test.name, "DST") {
 				date = "2026-03-09"
 			}
-			input := "symbol,trade_date,open,high,low,close,volume,currency,is_adjusted\nACME," + date + ",1,2,1,1,1,USD,false\n"
+			input := "symbol,trade_date,open,high,low,close,volume,currency,is_adjusted,source\nACME," + date + ",1,2,1,1,1,USD,false,manual\n"
 			opts := marketValidationOptions(t, []Listing{{Ticker: "ACME"}})
 			opts.Now = test.now
 			opts.EffectiveDate = civilDate(t, date)
@@ -160,7 +162,7 @@ func TestPriceValidationTimelinessBoundaryAndDST(t *testing.T) {
 }
 
 func TestPriceValidationTreatsEffectiveDateAsCivilDate(t *testing.T) {
-	input := "symbol,trade_date,open,high,low,close,volume,currency,is_adjusted\nACME,2026-06-18,1,2,1,1,1,USD,false\n"
+	input := "symbol,trade_date,open,high,low,close,volume,currency,is_adjusted,source\nACME,2026-06-18,1,2,1,1,1,USD,false,manual\n"
 	opts := marketValidationOptions(t, []Listing{{Ticker: "ACME"}})
 	// UTC midnight represents the supplied civil date. Converting this instant
 	// to New York before extracting the date would incorrectly produce June 17.
@@ -188,6 +190,10 @@ func TestImportPriceCSVIsAtomicAndIdempotent(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("snapshot count = %d", count)
 	}
+	var sources []string
+	if err := db.Model(&PriceSnapshot{}).Distinct().Pluck("source", &sources).Error; err != nil || len(sources) != 1 || sources[0] != "row-source" {
+		t.Fatalf("persisted sources = %v, err = %v", sources, err)
+	}
 
 	bad := strings.Replace(normalizedPrices, "2000,USD,false", "-1,USD,false", 1)
 	if _, err := ImportPriceCSV(context.Background(), db, strings.NewReader(bad), PriceFormatNormalized, opts); err == nil {
@@ -196,6 +202,10 @@ func TestImportPriceCSVIsAtomicAndIdempotent(t *testing.T) {
 	db.Model(&PriceSnapshot{}).Count(&count)
 	if count != 2 {
 		t.Fatalf("failed import changed snapshot count to %d", count)
+	}
+	conflict := strings.Replace(normalizedPrices, "10.25,2000", "10.5,2000", 1)
+	if _, err := ImportPriceCSV(context.Background(), db, strings.NewReader(conflict), PriceFormatNormalized, opts); !errors.Is(err, ErrPriceImportConflict) {
+		t.Fatalf("conflicting idempotency error = %v", err)
 	}
 }
 
@@ -269,89 +279,52 @@ func TestDownloadedPriceProviderConcurrentLoads(t *testing.T) {
 }
 
 func TestPriceValidationRequiresIndependentGoldProvenance(t *testing.T) {
-	records := make([]PriceRecord, 100)
-	gold := make([]PriceRecord, 100)
-	for i := range records {
-		symbol := fmt.Sprintf("S%03d", i)
-		records[i] = PriceRecord{Symbol: symbol, TradeDate: civilDate(t, "2026-06-18"), CloseMicros: 1_000_000}
-		gold[i] = records[i]
+	primary := []PriceRecord{
+		{Symbol: "BRK.B", TradeDate: civilDate(t, "2026-06-18"), CloseMicros: 500_123_456, Source: "stooq"},
+		{Symbol: "PER", TradeDate: civilDate(t, "2026-06-18"), CloseMicros: 10_250_000, Source: "stooq"},
 	}
-	if _, err := CompareIndependentPrices(records, gold, GoldProvenance{}); err == nil {
-		t.Fatal("gold without provenance accepted")
-	}
-	if _, err := CompareIndependentPrices(records[:99], gold[:99], GoldProvenance{Provider: "gold", SourceURL: "https://gold.example.test", SHA256: strings.Repeat("a", 64)}); err == nil {
-		t.Fatal("fewer than 100 gold rows accepted")
-	}
-	gold[99].CloseMicros = 1_100_000
-	errorPct, err := CompareIndependentPrices(records, gold, GoldProvenance{Provider: "gold", SourceURL: "https://gold.example.test", SHA256: strings.Repeat("a", 64)})
-	if err != nil || errorPct <= 0 {
-		t.Fatalf("CompareIndependentPrices() = %v, %v", errorPct, err)
+	if _, err := LoadFrozenMarketGold(primary, "stooq", time.Now()); err == nil || !strings.Contains(err.Error(), "want at least 100") {
+		t.Fatalf("incomplete frozen gold should block activation: %v", err)
 	}
 }
 
 func TestProviderStateTransitions(t *testing.T) {
-	state := ProviderHealth{Provider: "prices", Status: ProviderStatusValidation}
-	day := civilDate(t, "2026-05-20")
-	for i := 0; i < 19; i++ {
-		state = AdvanceProviderHealth(state, ProviderDayResult{TradeDate: day.AddDate(0, 0, i), qualified: true})
+	calendar := &stubMarketCalendar{}
+	state := activatedProviderHealth(t, calendar)
+	last := civilDate(t, state.LastTradeDate)
+	first, _ := nextTradingDate(context.Background(), calendar, last)
+	day := ProviderDayResult{TradeDate: first, coveragePct: 90, timely: true, validationOK: true, goldReady: true, goldSHA256: testGoldSHA}
+	var err error
+	state, err = AdvanceProviderHealth(context.Background(), calendar, state, day)
+	if err != nil || state.FailureStreak != 1 {
+		t.Fatalf("failure state = %+v, err=%v", state, err)
 	}
-	if state.Status != ProviderStatusValidation || state.QualifiedTradingDays != 19 {
-		t.Fatalf("after 19 = %+v", state)
-	}
-	state = AdvanceProviderHealth(state, ProviderDayResult{TradeDate: day.AddDate(0, 0, 19), qualified: true})
-	if state.Status != ProviderStatusActive {
-		t.Fatalf("after 20 = %+v", state)
-	}
-	for i := 0; i < 2; i++ {
-		state = AdvanceProviderHealth(state, ProviderDayResult{TradeDate: day.AddDate(0, 0, 20+i), qualified: false})
-	}
-	if state.Status != ProviderStatusActive || state.FailureStreak != 2 {
-		t.Fatalf("after two failures = %+v", state)
-	}
-	state = AdvanceProviderHealth(state, ProviderDayResult{TradeDate: day.AddDate(0, 0, 22), qualified: false})
-	if state.Status != ProviderStatusDegraded {
-		t.Fatalf("after three failures = %+v", state)
-	}
-	state = AdvanceProviderHealth(state, ProviderDayResult{TradeDate: day.AddDate(0, 0, 23), qualified: true})
-	if state.FailureStreak != 0 {
-		t.Fatalf("successful day did not reset failure streak: %+v", state)
-	}
-	unchanged := AdvanceProviderHealth(state, ProviderDayResult{TradeDate: day.AddDate(0, 0, 23), qualified: false})
-	if unchanged != state {
-		t.Fatalf("duplicate date changed state: before %+v after %+v", state, unchanged)
+	second, _ := nextTradingDate(context.Background(), calendar, first)
+	day = ProviderDayResult{TradeDate: second, coveragePct: 100, timely: true, validationOK: true, goldReady: true, goldSHA256: testGoldSHA}
+	state, err = AdvanceProviderHealth(context.Background(), calendar, state, day)
+	if err != nil || state.FailureStreak != 0 {
+		t.Fatalf("successful day did not reset failure streak: %+v, err=%v", state, err)
 	}
 }
 
 func TestEvaluateProviderDayEnforcesEveryThreshold(t *testing.T) {
-	base := ProviderResult{EffectiveDate: civilDate(t, "2026-06-18"), CoveragePct: DefaultPriceCoveragePct, ValidationErrorPct: 0, Timely: true}
-	provenance := GoldProvenance{Provider: "independent", SourceURL: "https://gold.example.test/prices.csv", SHA256: strings.Repeat("a", 64)}
-	qualified, err := EvaluateProviderDay(base, MinimumIndependentGoldRows, DefaultIndependentErrorPct, provenance)
-	if err != nil || !qualified.qualified {
-		t.Fatalf("qualified day = %+v, error = %v", qualified, err)
+	base := ProviderResult{Provider: "stooq", EffectiveDate: civilDate(t, "2026-06-18"), Expected: 100, CoveragePct: DefaultPriceCoveragePct, ValidationErrorPct: 0, Timely: true}
+	primary := []PriceRecord{
+		{Symbol: "BRK.B", TradeDate: civilDate(t, "2026-06-18"), CloseMicros: 500_123_456, Source: "stooq"},
+		{Symbol: "PER", TradeDate: civilDate(t, "2026-06-18"), CloseMicros: 10_250_000, Source: "stooq"},
 	}
-	tests := []struct {
-		name       string
-		mutate     func(*ProviderResult)
-		goldRows   int
-		goldError  float64
-		provenance GoldProvenance
-	}{
-		{name: "low coverage", mutate: func(result *ProviderResult) { result.CoveragePct-- }, goldRows: 100, goldError: 0, provenance: provenance},
-		{name: "late", mutate: func(result *ProviderResult) { result.Timely = false }, goldRows: 100, goldError: 0, provenance: provenance},
-		{name: "validation error", mutate: func(result *ProviderResult) { result.ValidationErrorPct = 0.01 }, goldRows: 100, goldError: 0, provenance: provenance},
-		{name: "gold mismatch", mutate: func(*ProviderResult) {}, goldRows: 100, goldError: DefaultIndependentErrorPct + 0.01, provenance: provenance},
-		{name: "insufficient gold", mutate: func(*ProviderResult) {}, goldRows: 99, goldError: 0, provenance: provenance},
-		{name: "missing provenance", mutate: func(*ProviderResult) {}, goldRows: 100, goldError: 0, provenance: GoldProvenance{}},
+	day, err := EvaluateProviderDay(base, primary, time.Now())
+	if err != nil || day.goldReady || day.goldSHA256 == "" {
+		t.Fatalf("incomplete frozen evidence day = %+v, error = %v", day, err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			result := base
-			test.mutate(&result)
-			day, evalErr := EvaluateProviderDay(result, test.goldRows, test.goldError, test.provenance)
-			if evalErr == nil && day.qualified {
-				t.Fatalf("day qualified with failing threshold: %+v", day)
-			}
-		})
+	badPrimary := append([]PriceRecord(nil), primary...)
+	badPrimary[0].Source = "not-stooq"
+	if _, err := EvaluateProviderDay(base, badPrimary, time.Now()); err == nil || !strings.Contains(err.Error(), "primary source") {
+		t.Fatalf("malformed frozen evidence error = %v", err)
+	}
+	base.Expected = 0
+	if _, err := EvaluateProviderDay(base, primary, time.Now()); err == nil {
+		t.Fatal("empty expected universe accepted for activation")
 	}
 }
 

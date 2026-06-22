@@ -82,6 +82,33 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 	}
 }
 
+func TestMigrateInvalidatesLegacyProviderActivation(t *testing.T) {
+	db, err := OpenDatabase(config.DatabaseConfig{Type: "sqlite", DSN: "file:legacy-provider-health?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE provider_healths (
+		provider text PRIMARY KEY, status text, qualified_trading_days integer,
+		failure_streak integer, last_trade_date text, updated_at datetime
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO provider_healths(provider,status,qualified_trading_days,failure_streak,last_trade_date)
+		VALUES ('stooq','active',20,0,'2026-06-18')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var health ProviderHealth
+	if err := db.First(&health, "provider = ?", "stooq").Error; err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != ProviderStatusValidation || health.QualifiedTradingDays != 0 || health.LastTradeDate != "" || health.GoldEvidenceReady || health.GoldSHA256 != "" || health.WindowJSON != "" {
+		t.Fatalf("legacy provider health was not invalidated: %+v", health)
+	}
+}
+
 func TestMigrateBackfillsLegacyCalendarManifest(t *testing.T) {
 	db := openLegacyCalendarDatabase(t, false)
 	if err := db.Create(&MarketHoliday{
