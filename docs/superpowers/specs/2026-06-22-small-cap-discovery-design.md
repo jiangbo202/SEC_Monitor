@@ -30,6 +30,20 @@
 
 前一子项目验收通过后才能为后一子项目编写实施计划。不得在风险引擎完成前将“预筛公司”展示为 A/B 候选。
 
+### 1.2 产品、进程与数据库边界
+
+小盘股发现属于 SEC Monitor 同一产品和仓库，但作为独立研究域实现：
+
+- 代码放入独立 `internal/discovery` 边界，不把自动发现逻辑加入现有 watch-target 或 filing service。
+- HTTP API、前端、配置入口、审计和 Telegram 继续由现有 SEC Monitor 提供。
+- 分析型数据使用独立 SQLite `data/small_cap.db`，配置项为 `SMALL_CAP_DATABASE_DSN`；启用 `LOCAL_DATA_BY_DAY=1` 时对应为 `data/YYYY-MM-DD/small_cap.db`。现有 `data/sec_monitor.db` 保留任务配置、运行摘要、通知批次和操作审计。
+- 自动发现公司不会自动创建 `WatchTarget`；用户可以通过明确操作把候选加入人工监控。
+- 第一阶段任务仍在 `cmd/server` 进程内运行，但 discovery 全量任务全局最多一个，设置独立超时、内存/批量写入上限，不能阻塞健康检查和普通查询。
+- 跨库不使用分布式事务。`small_cap.db` 先原子完成并标记 evaluation batch；主库再用确定性 `event_key` 幂等写入运行摘要和通知。重复投递不能产生重复通知。
+- 备份与恢复必须同时包含两个数据库，并验证 batch/event 引用完整性。
+
+只有满足任一条件时才新增同仓库 `cmd/discovery-worker`：连续 5 次全量处理超过 60 分钟、server RSS 超过 4GB、API p95 延迟因任务连续 3 次超过 500ms，或 SQLite 写锁导致普通请求连续 3 次失败。拆 worker 不改变数据库和事件契约。
+
 ## 2. 范围
 
 ### 2.1 纳入范围
@@ -410,7 +424,7 @@ proposed → registered → active → partially_used → exhausted/expired/with
 
 正式启用 B 级前，必须完成覆盖初筛池至少 90% 公司的行业映射；否则未映射公司只进入 `watch`，并在运行报告中显示行业覆盖缺口。
 
-行业毛利率基准使用具备有效可比数据的美国经营性普通股，按本地行业分组，每季度重算并保存基准版本；不得只用当日 A/B 候选作为样本。
+行业毛利率基准使用当季度预筛池内具备有效可比数据的经营性普通股，按本地行业分组，每季度重算并保存基准版本；不得只用当日 A/B 候选作为样本。
 
 ### 11.8 评分校准
 
@@ -616,7 +630,7 @@ small_cap.b_min_sector_score = 7
 - `candidate_snapshots`：等级、硬条件结果和迁移原因。
 - `social_heat_snapshots`：可选 Reddit 指标。
 
-现有 `filings`、`sync_runs`、`notification_batches`、配置、审计日志和 Telegram 服务继续复用。所有新表仍使用 SQLite 和 GORM migration。
+研究域表位于独立 `small_cap.db`，仍使用 SQLite 和 GORM migration。现有主库中的 `filings`、`sync_runs`、`notification_batches`、配置、审计日志和 Telegram 服务继续复用；跨库仅通过 batch ID、event key 和来源引用关联，不创建跨库外键。
 
 ### 17.1 SQLite 容量与保留
 
@@ -656,7 +670,9 @@ small_cap.b_min_sector_score = 7
 
 ### 19.2 量化验收
 
-- 全量日批次在项目默认开发机器上 60 分钟内完成；增量 SEC 事件批次 10 分钟内完成。
+- 参考环境为 Apple Silicon 8 核、16GB RAM、本地 SSD、100Mbps 网络和空闲系统；验收记录实际 CPU、Go 版本、输入批次大小及冷/热缓存状态。
+- 完整日批次端到端在 60 分钟内完成；输入已下载时解析与写库不超过 40 分钟；增量 SEC 事件批次 10 分钟内完成。
+- server 峰值 RSS 不超过 4GB；全量任务期间健康检查持续成功，普通 API p95 不超过 500ms。
 - 行情覆盖率、及时率达到 4.1 的门槛，否则自动晋级保持关闭。
 - 初筛池公司 CIK 映射成功率不低于 99%，证券类型明确率不低于 98%。
 - 具备标准 XBRL 数据的抽样公司中，季度收入还原与人工核验一致率不低于 98%。
@@ -664,7 +680,7 @@ small_cap.b_min_sector_score = 7
 - 已确认融资和 A/B 阻断风险在标注样本上的 precision 不低于 95%、recall 不低于 90%。
 - 高置信度重大合同/上调指引通知 precision 不低于 90%。
 - 相同输入版本重复评分结果完全一致，重复运行不产生额外通知。
-- 正常运行 12 个月的预计 SQLite 数据量不超过 5GB；超过预算必须先调整快照压缩策略。
+- 正常运行 12 个月的 `small_cap.db` 预计数据量不超过 5GB；超过预算必须先调整快照压缩策略。
 - 任何数据源失败都不得将超过 1% 的现有候选错误迁移为 `excluded`；应保持旧等级并标记数据过期。
 
 ### 19.3 自动化测试

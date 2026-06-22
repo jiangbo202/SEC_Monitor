@@ -25,6 +25,13 @@
 - 30M～1B USD 预筛池。
 - Provider 覆盖率、及时率、异常率和启用状态。
 
+## 2.1 存储与运行边界
+
+- 本子项目的证券主数据、价格、股本、市值和预筛快照写入 `data/small_cap.db`；`LOCAL_DATA_BY_DAY=1` 时使用对应日期目录下的 `small_cap.db`。
+- 主库只保存任务配置、运行摘要和审计；跨库引用使用字符串 batch ID，不使用外键。
+- 第一阶段在现有 server 进程内运行，全量 discovery 任务全局互斥；批量写入每事务最多 1,000 行，并在批次之间释放执行权。
+- 任务默认超时 60 分钟。超时只终止当前未发布批次，不修改上一成功快照。
+
 ## 3. 范围
 
 纳入 Nasdaq、NYSE、NYSE American 的美国经营性普通股；排除 OTC、基金、ETF/ETN、ADR、SPAC、金融企业、权证、优先股、单位证券、测试证券和退市证券。
@@ -53,6 +60,33 @@
 
 每条结论保存命中规则、证据字段和规则版本。弱规则单独命中不能产生高置信度纳入。
 
+### 5.1 v1 可执行规则
+
+规则按表格顺序执行，先命中的强排除规则优先：
+
+| 条件 | 结果 | 原因码 |
+|---|---|---|
+| Nasdaq Trader `Test Issue=Y` | 排除 | `test_issue` |
+| Nasdaq Trader `ETF=Y` | 排除 | `fund_or_etf` |
+| 证券名称包含 warrant、right、preferred、depositary share、unit，或 Ticker/Issue Type 明确为对应证券 | 排除 | `non_common_security` |
+| 最近有效注册/定期表单属于 N-1A、N-2、N-CSR、N-CSRS、485 系列 | 排除 | `investment_company` |
+| SEC SIC 为 6770，或 S-1 明确为 blank check 且尚无 8-K Item 2.01 完成业务合并 | 排除 | `spac` |
+| 最近年度报告为 20-F/40-F，或注册文件为 F-1/F-3，或 SEC 注册地不在美国及其属地 | 排除 | `foreign_or_adr` |
+| SEC SIC 在 6000～6799 | 排除 | `financial_company` |
+| Nasdaq/NYSE/NYSE American 当前目录不存在，且无当日临时映射 | 排除 | `not_active_listed` |
+| SEC 映射、交易所目录、公司 submissions 均指向同一 CIK/Ticker，且公司最近 18 个月提交 10-K/10-Q | 高置信度纳入 | `domestic_operating_common` |
+| 只有名称或单一弱证据支持普通股 | 数据不足 | `security_type_unresolved` |
+
+业务合并后的原 SPAC 只有在 8-K Item 2.01 已完成、Ticker/公司名映射更新，并且后续 SEC 元数据不再为 SIC 6770 后才能重新评估。规则冲突时保存全部证据并进入 `insufficient_data`。
+
+### 5.2 CIK 与 Ticker 冲突
+
+- SEC `company_tickers_exchange.json` 是 CIK/Ticker 主映射，交易所目录用于确认当前上市状态。
+- Provider Ticker 统一大写；`.`、`-` 等类别分隔符通过版本化映射表转换，不能直接删除标点。
+- 同一交易日一个规范 Ticker 映射到多个有效 CIK，或同一 CIK 出现多个无法区分类别的有效 Ticker时，状态为 `mapping_conflict`。
+- Ticker 变更关闭旧映射的 `valid_to` 并创建新映射，不修改历史价格的原始 Ticker。
+- 人工解决冲突必须保存理由和来源；清除覆盖后恢复自动判断。
+
 ## 6. 市值
 
 ```text
@@ -77,12 +111,37 @@ Stooq Provider 默认处于 `validation`。连续收集至少 20 个交易日后
 
 全部通过后才能切换为 `active`。连续 3 个交易日不达标时切换为 `degraded`，停止新增预筛公司，保留上一成功结果并告警。
 
-CSV 导入必须使用同一 Provider 契约，校验交易日、Ticker、价格为正、重复行和覆盖率；人工导入不能绕过质量门槛。
+### 7.1 Stooq 获取契约
+
+Stooq 官方历史数据页要求浏览器校验，当前不能可靠确认长期稳定的机器可读批量 URL。因此 v1 不在代码中写死未经验证的地址：
+
+- 配置 `small_cap.market.stooq.urls` 接受一个或多个管理员从 Stooq 官方历史数据页确认的 HTTPS ZIP/CSV URL。
+- 技术验证保存每个 URL 的最终响应 URL、ETag/Last-Modified、Content-Type、文件大小、SHA-256、获取时间和人工确认来源。
+- 下载内容必须能解析为未复权日线 OHLCV；若无法证明 Close 为未复权收盘价，Provider 不得转为 active。
+- 页面结构变化、验证挑战或 URL 失效时不尝试绕过，进入 degraded 并使用 CSV 降级。
+- Parser 接受带表头的 CSV，或 Stooq ASCII 字段 `<TICKER>,<PER>,<DATE>,<TIME>,<OPEN>,<HIGH>,<LOW>,<CLOSE>,<VOL>,<OPENINT>`；`PER` 必须为日线，DATE 规范化为 `YYYY-MM-DD`。
+
+所有 Provider 必须归一化为：
+
+```text
+symbol,trade_date,open,high,low,close,volume,currency,is_adjusted,source
+```
+
+其中价格大于 0、volume 不得为负、currency 必须为 USD、`is_adjusted` 必须明确为 false。市值计算拒绝 adjusted close。
+
+### 7.2 CSV 降级契约
+
+CSV 使用 UTF-8、逗号分隔和上述固定表头；每个 symbol/trade_date 只能一行。允许仅提供 `symbol,trade_date,close,currency,is_adjusted,source`，缺失 OHLCV 字段为空。导入必须校验交易日、Ticker 映射、价格、重复行、覆盖率和文件 SHA-256，且不能绕过 active 门槛。
+
+第二来源核验使用冻结的 `market_price_validation.csv`：至少 100 个 symbol/date，记录 `expected_close`、`source_url`、`observed_at` 和 reviewer。来源优先使用该证券主上市交易所的公开历史/报价页，其次使用发行人 Investor Relations 历史价格页；两者均不可用时，才允许使用另一独立公开来源并在记录中说明原因。不得复用 Stooq 数据。验收以冻结文件为准，避免每次测试访问外网。
 
 ## 8. 调度与一致性
 
 - 调度时区为 `America/New_York`。
-- 使用 NYSE 交易日历，休市日不创建缺失告警。
+- 不新增第三方日历依赖。使用版本化 `market_holidays` 表，按 NYSE 官方日历预置当前年份及后两年完整休市日期；Go 使用 `time.LoadLocation("America/New_York")`。
+- 日历来源固定为 https://www.nyse.com/markets/hours-calendars；每个年度版本保存来源 URL、抓取/确认日期和审核人。
+- 周六、周日和表内休市日不是交易日；提前收市仍是交易日。临时休市通过带来源 URL 的人工覆盖加入。
+- 当前年份不存在完整日历版本时暂停新晋级并告警，不能退化为简单周一至周五。
 - 证券池、价格和股本全部成功后才创建完整预筛批次。
 - 部分失败批次保存诊断，但不能覆盖最后成功的 active snapshot。
 
@@ -101,6 +160,8 @@ CSV 导入必须使用同一 Provider 契约，校验交易日、Ticker、价格
 - 相同输入重复运行结果完全一致。
 - 数据源失败不会把现有预筛公司批量移出。
 - 每家公司都能解释纳入/排除原因及市值使用的价格和股本来源。
-- 全量日批次在默认开发机器上 20 分钟内完成。
+- 参考环境为 Apple Silicon 8 核、16GB RAM、本地 SSD、100Mbps 网络、空闲系统；记录实际 CPU 型号和 Go 版本。
+- 性能数据集至少包含 8,000 条证券目录、7,000 条当日价格、1,500 条股本事实和 90 天预筛历史；不足时使用固定合成数据补足，但真实与合成记录数必须分别报告。
+- 已下载输入的解析、归一化和写库在 20 分钟内完成；端到端下载加处理在 40 分钟内完成，峰值 RSS 不超过 2GB。
 
 验收通过后才能开始研究与风险评分引擎；若行情验证失败，先更换 Provider 或接受 CSV 半自动模式。
