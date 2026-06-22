@@ -26,16 +26,20 @@ func withSQLiteForeignKeys(dsn string) string {
 }
 
 func Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&Security{},
 		&UniverseBatch{},
 		&Listing{},
 		&ClassificationSnapshot{},
 		&ProviderRun{},
 		&MarketHoliday{},
+		&MarketCalendarYear{},
 		&PriceSnapshot{},
 		&ShareSnapshot{},
 		&UniverseSnapshot{},
 		&ManualSecurityOverride{},
-	)
+	); err != nil {
+		return err
+	}
+	return SeedDefaultNYSEMarketCalendar(db.Statement.Context, db)
 }

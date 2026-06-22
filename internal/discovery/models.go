@@ -107,6 +107,15 @@ type MarketHoliday struct {
 	ReviewedAt      time.Time `json:"reviewed_at"`
 }
 
+type MarketCalendarYear struct {
+	CalendarVersion string    `json:"calendar_version" gorm:"size:64;primaryKey;autoIncrement:false"`
+	Year            int       `json:"year" gorm:"primaryKey;autoIncrement:false"`
+	Complete        bool      `json:"complete"`
+	SourceURL       string    `json:"source_url" gorm:"size:2048"`
+	ReviewedBy      string    `json:"reviewed_by" gorm:"size:128"`
+	ReviewedAt      time.Time `json:"reviewed_at"`
+}
+
 type PriceSnapshot struct {
 	ID            uint      `json:"id"`
 	Source        string    `json:"source" gorm:"size:64;uniqueIndex:idx_price_source_version_symbol_date,priority:1"`
