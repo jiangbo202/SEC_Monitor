@@ -16,6 +16,17 @@ func OpenDatabase(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	return gorm.Open(sqlite.Open(cfg.DSN), &gorm.Config{})
 }
 
-func Migrate(_ *gorm.DB) error {
-	return nil
+func Migrate(db *gorm.DB) error {
+	return db.AutoMigrate(
+		&Security{},
+		&Listing{},
+		&ClassificationSnapshot{},
+		&ProviderRun{},
+		&MarketHoliday{},
+		&PriceSnapshot{},
+		&ShareSnapshot{},
+		&UniverseBatch{},
+		&UniverseSnapshot{},
+		&ManualSecurityOverride{},
+	)
 }
