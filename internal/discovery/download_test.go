@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -478,6 +479,72 @@ func TestDownloaderDoesNotSerializeDifferentCacheKeys(t *testing.T) {
 		if err := <-errs; err != nil {
 			t.Fatalf("Download() error = %v", err)
 		}
+	}
+}
+
+func TestDownloaderCanceledWhileWaitingForSameCacheKey(t *testing.T) {
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	defer release()
+	var transportCalls atomic.Int32
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if transportCalls.Add(1) == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		}
+		return responseForRequest(request, http.StatusOK, "content"), nil
+	})}
+	d := &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 100}
+
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := d.Download(context.Background(), "https://example.test/source", "same", nil)
+		firstResult <- err
+	}()
+	<-firstEntered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	secondStarted := make(chan struct{})
+	secondResult := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, err := d.Download(ctx, "https://example.test/source", "same", nil)
+		secondResult <- err
+	}()
+	<-secondStarted
+	cancel()
+
+	select {
+	case err := <-secondResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Download() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		release()
+		err := <-secondResult
+		t.Fatalf("canceled waiter returned only after active download released: %v", err)
+	}
+	if got := transportCalls.Load(); got != 1 {
+		t.Fatalf("transport calls = %d, want 1 before active release", got)
+	}
+
+	release()
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first Download() error = %v", err)
+	}
+	for i := range 12 {
+		key := fmt.Sprintf("repeat-%d", i%3)
+		if _, err := d.Download(context.Background(), "https://example.test/source", key, nil); err != nil {
+			t.Fatalf("repeated Download(%q) error = %v", key, err)
+		}
+	}
+	d.locksMu.Lock()
+	lockCount := len(d.locks)
+	d.locksMu.Unlock()
+	if lockCount != 0 {
+		t.Fatalf("keyed lock entries = %d, want 0", lockCount)
 	}
 }
 

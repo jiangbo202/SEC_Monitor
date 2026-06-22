@@ -42,13 +42,20 @@ type DownloadResult struct {
 	NotModified  bool
 }
 
+// Downloader is stateful. Use it through a pointer and do not copy it after
+// the first call to Download.
 type Downloader struct {
 	Client   *http.Client
 	CacheDir string
 	MaxBytes int64
 
 	locksMu sync.Mutex
-	locks   map[string]*sync.Mutex
+	locks   map[string]*cachePathLock
+}
+
+type cachePathLock struct {
+	semaphore  chan struct{}
+	references int
 }
 
 func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, prior *CacheMetadata) (DownloadResult, error) {
@@ -67,7 +74,10 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	}
 	// This prevents in-process writers from racing for one cache path. A
 	// cross-process lock is deferred until discovery has a worker process.
-	unlock := d.lockCachePath(cachePath)
+	unlock, err := d.lockCachePath(ctx, cachePath)
+	if err != nil {
+		return DownloadResult{}, fmt.Errorf("wait for download cache lock: %w", err)
+	}
 	defer unlock()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
@@ -171,19 +181,49 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	}, nil
 }
 
-func (d *Downloader) lockCachePath(cachePath string) func() {
+func (d *Downloader) lockCachePath(ctx context.Context, cachePath string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	d.locksMu.Lock()
 	if d.locks == nil {
-		d.locks = make(map[string]*sync.Mutex)
+		d.locks = make(map[string]*cachePathLock)
 	}
 	lock := d.locks[cachePath]
 	if lock == nil {
-		lock = &sync.Mutex{}
+		lock = &cachePathLock{semaphore: make(chan struct{}, 1)}
+		lock.semaphore <- struct{}{}
 		d.locks[cachePath] = lock
 	}
+	lock.references++
 	d.locksMu.Unlock()
-	lock.Lock()
-	return lock.Unlock
+
+	select {
+	case <-ctx.Done():
+		d.releaseCachePathLockReference(cachePath, lock)
+		return nil, ctx.Err()
+	case <-lock.semaphore:
+	}
+	if err := ctx.Err(); err != nil {
+		lock.semaphore <- struct{}{}
+		d.releaseCachePathLockReference(cachePath, lock)
+		return nil, err
+	}
+
+	return func() {
+		lock.semaphore <- struct{}{}
+		d.releaseCachePathLockReference(cachePath, lock)
+	}, nil
+}
+
+func (d *Downloader) releaseCachePathLockReference(cachePath string, lock *cachePathLock) {
+	d.locksMu.Lock()
+	lock.references--
+	if lock.references == 0 && d.locks[cachePath] == lock {
+		delete(d.locks, cachePath)
+	}
+	d.locksMu.Unlock()
 }
 
 func verifyCachedFile(prior *CacheMetadata, expectedPath, sourceURL, cacheKey string) error {
