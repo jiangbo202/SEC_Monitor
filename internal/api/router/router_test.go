@@ -77,6 +77,32 @@ func TestRouterCreatesAndListsWatchTargets(t *testing.T) {
 	}
 }
 
+func TestRouterConstructsWithDiscoveryDatabase(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main db: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
+		&model.IPOFiling{}, &model.IPOCompanyOverride{},
+	); err != nil {
+		t.Fatalf("migrate main db: %v", err)
+	}
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+
+	r := New(Dependencies{Config: config.Config{}, DB: db, DiscoveryDB: discoveryDB})
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRouterServesWebAppFallback(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

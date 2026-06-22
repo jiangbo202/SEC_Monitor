@@ -2,12 +2,117 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
+	"sec_monitor/internal/api/router"
 	"sec_monitor/internal/config"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
+
+func TestRunWithDependenciesWrapsDiscoveryStartupErrors(t *testing.T) {
+	mainDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main test database: %v", err)
+	}
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery test database: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		open    func(config.DatabaseConfig) (*gorm.DB, error)
+		migrate func(*gorm.DB) error
+		want    string
+	}{
+		{
+			name: "open discovery database",
+			open: func(config.DatabaseConfig) (*gorm.DB, error) {
+				return nil, errors.New("open failed")
+			},
+			migrate: func(*gorm.DB) error { return nil },
+			want:    "open discovery database: open failed",
+		},
+		{
+			name: "migrate discovery database",
+			open: func(config.DatabaseConfig) (*gorm.DB, error) {
+				return discoveryDB, nil
+			},
+			migrate: func(*gorm.DB) error { return errors.New("migrate failed") },
+			want:    "migrate discovery database: migrate failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runWithDependencies(config.Config{}, func(*gin.Engine, string) error { return nil }, startupDependencies{
+				openMainDatabase:      func(config.DatabaseConfig) (*gorm.DB, error) { return mainDB, nil },
+				migrateMainDatabase:   func(*gorm.DB) error { return nil },
+				openDiscoveryDatabase: tt.open,
+				migrateDiscoveryDB:    tt.migrate,
+				newRouter:             router.New,
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("runWithDependencies error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunWithDependenciesPassesBothDatabaseHandles(t *testing.T) {
+	mainDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main test database: %v", err)
+	}
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery test database: %v", err)
+	}
+	var got router.Dependencies
+	served := false
+	var calls []string
+	err = runWithDependencies(config.Config{}, func(*gin.Engine, string) error {
+		calls = append(calls, "serve")
+		served = true
+		return nil
+	}, startupDependencies{
+		openMainDatabase: func(config.DatabaseConfig) (*gorm.DB, error) {
+			calls = append(calls, "open main")
+			return mainDB, nil
+		},
+		migrateMainDatabase: func(*gorm.DB) error {
+			calls = append(calls, "migrate main")
+			return nil
+		},
+		openDiscoveryDatabase: func(config.DatabaseConfig) (*gorm.DB, error) {
+			calls = append(calls, "open discovery")
+			return discoveryDB, nil
+		},
+		migrateDiscoveryDB: func(*gorm.DB) error {
+			calls = append(calls, "migrate discovery")
+			return nil
+		},
+		newRouter: func(deps router.Dependencies) *gin.Engine {
+			calls = append(calls, "router")
+			got = deps
+			return gin.New()
+		},
+	})
+	if err != nil {
+		t.Fatalf("runWithDependencies: %v", err)
+	}
+	if !served || got.DB != mainDB || got.DiscoveryDB != discoveryDB {
+		t.Fatalf("served=%v main=%p discovery=%p", served, got.DB, got.DiscoveryDB)
+	}
+	wantCalls := []string{"open main", "migrate main", "open discovery", "migrate discovery", "router", "serve"}
+	if strings.Join(calls, ",") != strings.Join(wantCalls, ",") {
+		t.Fatalf("calls = %v, want %v", calls, wantCalls)
+	}
+}
 
 func TestRunTableDriven(t *testing.T) {
 	tests := []struct {
@@ -19,7 +124,11 @@ func TestRunTableDriven(t *testing.T) {
 	}{
 		{
 			name: "opens migrates and serves",
-			cfg:  config.Config{Server: config.ServerConfig{Address: "127.0.0.1:0"}, Database: config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"}},
+			cfg: config.Config{
+				Server:    config.ServerConfig{Address: "127.0.0.1:0"},
+				Database:  config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"},
+				Discovery: config.DiscoveryConfig{Database: config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"}},
+			},
 			serve: func(app *gin.Engine, address string) error {
 				if address != "127.0.0.1:0" {
 					t.Fatalf("address = %q", address)
@@ -36,7 +145,10 @@ func TestRunTableDriven(t *testing.T) {
 		},
 		{
 			name: "serve error",
-			cfg:  config.Config{Database: config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"}},
+			cfg: config.Config{
+				Database:  config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"},
+				Discovery: config.DiscoveryConfig{Database: config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"}},
+			},
 			serve: func(app *gin.Engine, address string) error {
 				return errors.New("listen failed")
 			},

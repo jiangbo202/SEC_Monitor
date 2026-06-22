@@ -21,11 +21,12 @@ import (
 )
 
 type Dependencies struct {
-	Config     config.Config
-	DB         *gorm.DB
-	SEC        sec.Client
-	Notifier   telegram.Notifier
-	WebDistDir string
+	Config      config.Config
+	DB          *gorm.DB
+	DiscoveryDB *gorm.DB
+	SEC         sec.Client
+	Notifier    telegram.Notifier
+	WebDistDir  string
 }
 
 func New(deps Dependencies) *gin.Engine {
