@@ -14,11 +14,13 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"unicode"
+	"sync"
 )
 
 type CacheMetadata struct {
 	Path         string
+	SourceURL    string
+	CacheKey     string
 	FinalURL     string
 	ETag         string
 	LastModified string
@@ -29,6 +31,8 @@ type CacheMetadata struct {
 
 type DownloadResult struct {
 	Path         string
+	SourceURL    string
+	CacheKey     string
 	FinalURL     string
 	ETag         string
 	LastModified string
@@ -42,6 +46,9 @@ type Downloader struct {
 	Client   *http.Client
 	CacheDir string
 	MaxBytes int64
+
+	locksMu sync.Mutex
+	locks   map[string]*sync.Mutex
 }
 
 func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, prior *CacheMetadata) (DownloadResult, error) {
@@ -54,6 +61,14 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	if !safeCacheKey(cacheKey) {
 		return DownloadResult{}, fmt.Errorf("unsafe download cache key %q", cacheKey)
 	}
+	cachePath, err := filepath.Abs(filepath.Join(d.CacheDir, cacheKey))
+	if err != nil {
+		return DownloadResult{}, fmt.Errorf("resolve download cache path: %w", err)
+	}
+	// This prevents in-process writers from racing for one cache path. A
+	// cross-process lock is deferred until discovery has a worker process.
+	unlock := d.lockCachePath(cachePath)
+	defer unlock()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
@@ -85,18 +100,15 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified {
-		if prior == nil || prior.Path == "" {
+		if prior == nil {
 			return DownloadResult{}, fmt.Errorf("download returned 304 without cached file metadata")
 		}
-		if info, statErr := os.Stat(prior.Path); statErr != nil || info.IsDir() {
-			if statErr == nil {
-				statErr = fmt.Errorf("path is a directory")
-			}
-			return DownloadResult{}, fmt.Errorf("cached file unavailable for 304 response: %w", statErr)
+		if err := verifyCachedFile(prior, cachePath, sourceURL, cacheKey); err != nil {
+			return DownloadResult{}, err
 		}
-		return resultFromMetadata(*prior, true), nil
+		return notModifiedResult(*prior, resp, sourceURL, cacheKey), nil
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	if resp.StatusCode != http.StatusOK {
 		return DownloadResult{}, fmt.Errorf("download from host %q returned HTTP %d", req.URL.Host, resp.StatusCode)
 	}
 	if resp.ContentLength > d.MaxBytes {
@@ -134,11 +146,13 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 		return DownloadResult{}, fmt.Errorf("close temporary download file: %w", err)
 	}
 
-	cachePath := filepath.Join(d.CacheDir, cacheKey)
 	if err := os.Rename(tempPath, cachePath); err != nil {
 		return DownloadResult{}, fmt.Errorf("replace cached download: %w", err)
 	}
 	keepTemp = true
+	if err := syncDirectory(filepath.Dir(cachePath)); err != nil {
+		return DownloadResult{}, fmt.Errorf("sync download cache directory: %w", err)
+	}
 
 	finalURL := sourceURL
 	if resp.Request != nil && resp.Request.URL != nil {
@@ -146,6 +160,8 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	}
 	return DownloadResult{
 		Path:         cachePath,
+		SourceURL:    sourceURL,
+		CacheKey:     cacheKey,
 		FinalURL:     finalURL,
 		ETag:         resp.Header.Get("ETag"),
 		LastModified: resp.Header.Get("Last-Modified"),
@@ -153,6 +169,85 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 		ContentType:  resp.Header.Get("Content-Type"),
 		Size:         written,
 	}, nil
+}
+
+func (d *Downloader) lockCachePath(cachePath string) func() {
+	d.locksMu.Lock()
+	if d.locks == nil {
+		d.locks = make(map[string]*sync.Mutex)
+	}
+	lock := d.locks[cachePath]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		d.locks[cachePath] = lock
+	}
+	d.locksMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
+func verifyCachedFile(prior *CacheMetadata, expectedPath, sourceURL, cacheKey string) error {
+	if prior.Path != expectedPath || prior.SourceURL != sourceURL || prior.CacheKey != cacheKey {
+		return fmt.Errorf("cached file metadata does not match this download")
+	}
+	info, err := os.Lstat(expectedPath)
+	if err != nil {
+		return fmt.Errorf("cached file unavailable")
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("cached file is not a regular file")
+	}
+	if info.Size() != prior.Size {
+		return fmt.Errorf("cached file size does not match metadata")
+	}
+
+	file, err := os.Open(expectedPath)
+	if err != nil {
+		return fmt.Errorf("cached file unavailable")
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("cached file changed during validation")
+	}
+	hash := sha256.New()
+	size, err := io.Copy(hash, file)
+	if err != nil {
+		return fmt.Errorf("cached file validation failed")
+	}
+	if size != prior.Size || hex.EncodeToString(hash.Sum(nil)) != prior.SHA256 {
+		return fmt.Errorf("cached file size or SHA256 does not match metadata")
+	}
+	return nil
+}
+
+func notModifiedResult(prior CacheMetadata, resp *http.Response, sourceURL, cacheKey string) DownloadResult {
+	result := resultFromMetadata(prior, true)
+	result.SourceURL = sourceURL
+	result.CacheKey = cacheKey
+	if resp.Request != nil && resp.Request.URL != nil {
+		result.FinalURL = resp.Request.URL.String()
+	}
+	if etag := resp.Header.Get("ETag"); etag != "" {
+		result.ETag = etag
+	}
+	if lastModified := resp.Header.Get("Last-Modified"); lastModified != "" {
+		result.LastModified = lastModified
+	}
+	return result
+}
+
+func syncDirectory(directory string) error {
+	dir, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 type downloadRequestError struct {
@@ -201,6 +296,8 @@ func copyWithHardLimit(dst io.Writer, src io.Reader, maxBytes int64) (written in
 func resultFromMetadata(metadata CacheMetadata, notModified bool) DownloadResult {
 	return DownloadResult{
 		Path:         metadata.Path,
+		SourceURL:    metadata.SourceURL,
+		CacheKey:     metadata.CacheKey,
 		FinalURL:     metadata.FinalURL,
 		ETag:         metadata.ETag,
 		LastModified: metadata.LastModified,
@@ -212,13 +309,26 @@ func resultFromMetadata(metadata CacheMetadata, notModified bool) DownloadResult
 }
 
 func safeCacheKey(key string) bool {
-	if key == "" || key == "." || key == ".." {
+	if key == "" || key == "." || key == ".." || strings.HasSuffix(key, ".") {
 		return false
 	}
-	for _, r := range key {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
+	for i := 0; i < len(key); i++ {
+		character := key[i]
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.' {
 			continue
 		}
+		return false
+	}
+	base := key
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.ToUpper(base)
+	if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" {
+		return false
+	}
+	if len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9' {
 		return false
 	}
 	return true
@@ -254,6 +364,10 @@ func OpenSafeZIP(filename string, maxEntries int, maxUncompressedBytes int64) (*
 		if !safeZIPName(file.Name) {
 			return nil, fmt.Errorf("ZIP archive contains unsafe entry name %q", file.Name)
 		}
+		mode := file.Mode()
+		if !mode.IsRegular() && !mode.IsDir() {
+			return nil, fmt.Errorf("ZIP archive contains unsupported entry mode for %q", file.Name)
+		}
 		size := file.UncompressedSize64
 		if size > limit {
 			return nil, fmt.Errorf("ZIP entry %q exceeds uncompressed size limit", file.Name)
@@ -277,7 +391,7 @@ func safeZIPName(name string) bool {
 		return false
 	}
 	cleaned := path.Clean(normalized)
-	return cleaned != ".." && !strings.HasPrefix(cleaned, "../")
+	return cleaned != "." && cleaned != ".." && !strings.HasPrefix(cleaned, "../")
 }
 
 func hasWindowsDrivePrefix(name string) bool {

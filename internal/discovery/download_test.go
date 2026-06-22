@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -36,6 +38,9 @@ func TestDownloaderSuccessfulDownload(t *testing.T) {
 	wantHash := sha256.Sum256(payload)
 	if result.Path != filepath.Join(cacheDir, "nasdaq-symbols") {
 		t.Fatalf("Path = %q, want deterministic cache path", result.Path)
+	}
+	if result.SourceURL != "https://example.test/source" || result.CacheKey != "nasdaq-symbols" {
+		t.Errorf("source binding = (%q, %q)", result.SourceURL, result.CacheKey)
 	}
 	if result.FinalURL != "https://example.test/source" {
 		t.Errorf("FinalURL = %q, want source URL", result.FinalURL)
@@ -83,12 +88,15 @@ func TestDownloaderReturnsRedirectFinalURL(t *testing.T) {
 func TestDownloaderConditionalNotModified(t *testing.T) {
 	cacheDir := t.TempDir()
 	cachePath := filepath.Join(cacheDir, "symbols")
-	if err := os.WriteFile(cachePath, []byte("old"), 0o600); err != nil {
+	content := []byte("old")
+	if err := os.WriteFile(cachePath, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	wantHash := sha256.Sum256(content)
+	sourceURL := "https://example.test/symbols"
 	prior := &CacheMetadata{
-		Path: cachePath, FinalURL: "https://cached.example/final", ETag: `"old"`,
-		LastModified: "Sun, 21 Jun 2026 12:00:00 GMT", SHA256: "abc", ContentType: "text/plain", Size: 3,
+		Path: cachePath, SourceURL: sourceURL, CacheKey: "symbols", FinalURL: "https://cached.example/final", ETag: `"old"`,
+		LastModified: "Sun, 21 Jun 2026 12:00:00 GMT", SHA256: hex.EncodeToString(wantHash[:]), ContentType: "text/plain", Size: 3,
 	}
 	client := clientForHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("If-None-Match"); got != prior.ETag {
@@ -97,19 +105,21 @@ func TestDownloaderConditionalNotModified(t *testing.T) {
 		if got := r.Header.Get("If-Modified-Since"); got != prior.LastModified {
 			t.Errorf("If-Modified-Since = %q, want %q", got, prior.LastModified)
 		}
+		w.Header().Set("ETag", `"new"`)
+		w.Header().Set("Last-Modified", "Mon, 22 Jun 2026 12:00:00 GMT")
 		w.WriteHeader(http.StatusNotModified)
 	}))
 
 	d := Downloader{Client: client, CacheDir: cacheDir, MaxBytes: 10}
-	result, err := d.Download(context.Background(), "https://example.test/symbols", "symbols", prior)
+	result, err := d.Download(context.Background(), sourceURL, "symbols", prior)
 	if err != nil {
 		t.Fatalf("Download() error = %v", err)
 	}
 	if !result.NotModified {
 		t.Fatal("NotModified = false, want true")
 	}
-	if result.Path != prior.Path || result.FinalURL != prior.FinalURL || result.ETag != prior.ETag ||
-		result.LastModified != prior.LastModified || result.SHA256 != prior.SHA256 ||
+	if result.Path != prior.Path || result.SourceURL != sourceURL || result.CacheKey != "symbols" || result.FinalURL != sourceURL || result.ETag != `"new"` ||
+		result.LastModified != "Mon, 22 Jun 2026 12:00:00 GMT" || result.SHA256 != prior.SHA256 ||
 		result.ContentType != prior.ContentType || result.Size != prior.Size {
 		t.Errorf("result = %+v, want prior metadata %+v", result, prior)
 	}
@@ -120,11 +130,70 @@ func TestDownloaderNotModifiedRequiresCachedFile(t *testing.T) {
 		w.WriteHeader(http.StatusNotModified)
 	}))
 
-	prior := &CacheMetadata{Path: filepath.Join(t.TempDir(), "missing"), ETag: `"old"`}
-	d := Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 10}
-	_, err := d.Download(context.Background(), "https://example.test/symbols", "symbols", prior)
+	cacheDir := t.TempDir()
+	sourceURL := "https://example.test/symbols"
+	prior := &CacheMetadata{Path: filepath.Join(cacheDir, "symbols"), SourceURL: sourceURL, CacheKey: "symbols", ETag: `"old"`}
+	d := Downloader{Client: client, CacheDir: cacheDir, MaxBytes: 10}
+	_, err := d.Download(context.Background(), sourceURL, "symbols", prior)
 	if err == nil || !strings.Contains(err.Error(), "cached file") {
 		t.Fatalf("Download() error = %v, want missing cached file error", err)
+	}
+}
+
+func TestDownloaderNotModifiedRejectsUntrustedCacheMetadata(t *testing.T) {
+	const sourceURL = "https://user-secret:password@example.test/symbols?token=query-secret"
+	client := clientForHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+
+	tests := []struct {
+		name   string
+		mutate func(*CacheMetadata, string)
+	}{
+		{"wrong path", func(prior *CacheMetadata, cacheDir string) {
+			prior.Path = filepath.Join(cacheDir, "other")
+			if err := os.WriteFile(prior.Path, []byte("trusted"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"wrong key", func(prior *CacheMetadata, _ string) { prior.CacheKey = "other" }},
+		{"wrong source", func(prior *CacheMetadata, _ string) { prior.SourceURL = "https://other-secret@example.test/source" }},
+		{"wrong size", func(prior *CacheMetadata, _ string) { prior.Size++ }},
+		{"wrong hash", func(prior *CacheMetadata, _ string) { prior.SHA256 = strings.Repeat("0", 64) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cacheDir := t.TempDir()
+			prior := writeCacheMetadata(t, cacheDir, "symbols", sourceURL, []byte("trusted"))
+			tt.mutate(prior, cacheDir)
+			d := Downloader{Client: client, CacheDir: cacheDir, MaxBytes: 100}
+			_, err := d.Download(context.Background(), sourceURL, "symbols", prior)
+			if err == nil || !strings.Contains(err.Error(), "cached file") {
+				t.Fatalf("Download() error = %v, want cached file validation error", err)
+			}
+			assertErrorDoesNotContain(t, err, "user-secret", "password", "query-secret", "other-secret", sourceURL)
+		})
+	}
+}
+
+func TestDownloaderNotModifiedRejectsSymlink(t *testing.T) {
+	cacheDir := t.TempDir()
+	const sourceURL = "https://example.test/symbols"
+	target := filepath.Join(cacheDir, "target")
+	if err := os.WriteFile(target, []byte("trusted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(cacheDir, "symbols")
+	if err := os.Symlink(target, cachePath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	prior := metadataForContent(cachePath, "symbols", sourceURL, []byte("trusted"))
+	client := clientForHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	d := Downloader{Client: client, CacheDir: cacheDir, MaxBytes: 100}
+	if _, err := d.Download(context.Background(), sourceURL, "symbols", prior); err == nil {
+		t.Fatal("Download() error = nil, want symlink rejection")
 	}
 }
 
@@ -273,8 +342,150 @@ func TestDownloaderMaxBytesAndAtomicReplacement(t *testing.T) {
 	assertNoTempFiles(t, cacheDir)
 }
 
+func TestDownloaderRejectsNon200ContentResponses(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusPartialContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			cacheDir := t.TempDir()
+			cachePath := filepath.Join(cacheDir, "status")
+			if err := os.WriteFile(cachePath, []byte("old-good"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			client := clientForHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, "replacement")
+			}))
+			d := Downloader{Client: client, CacheDir: cacheDir, MaxBytes: 100}
+			if _, err := d.Download(context.Background(), "https://example.test/status", "status", nil); err == nil {
+				t.Fatal("Download() error = nil")
+			}
+			assertFileContent(t, cachePath, "old-good")
+		})
+	}
+}
+
+func TestDownloaderSerializesSameCacheKey(t *testing.T) {
+	var calls atomic.Int32
+	var active atomic.Int32
+	var overlapped atomic.Bool
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondEntered := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		if active.Add(1) > 1 {
+			overlapped.Store(true)
+		}
+		defer active.Add(-1)
+		if call == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		} else {
+			close(secondEntered)
+			<-releaseSecond
+		}
+		body := fmt.Sprintf("content-%d", call)
+		return responseForRequest(request, http.StatusOK, body), nil
+	})}
+	d := &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 100}
+
+	type outcome struct {
+		result       DownloadResult
+		contentMatch bool
+		err          error
+	}
+	results := make(chan outcome, 2)
+	download := func() {
+		result, err := d.Download(context.Background(), "https://example.test/source", "same", nil)
+		match := false
+		if err == nil {
+			content, readErr := os.ReadFile(result.Path)
+			if readErr != nil {
+				err = readErr
+			} else {
+				hash := sha256.Sum256(content)
+				match = result.SHA256 == hex.EncodeToString(hash[:])
+			}
+		}
+		results <- outcome{result, match, err}
+	}
+	go func() {
+		download()
+	}()
+	<-firstEntered
+	secondStarted := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		download()
+	}()
+	<-secondStarted
+	time.Sleep(20 * time.Millisecond)
+	close(releaseFirst)
+
+	seenHashes := map[string]bool{}
+	first := <-results
+	select {
+	case <-secondEntered:
+	case <-time.After(time.Second):
+		t.Fatal("second same-key request did not start after first completed")
+	}
+	close(releaseSecond)
+	for _, outcome := range []outcome{first, <-results} {
+		if outcome.err != nil {
+			t.Fatalf("Download() error = %v", outcome.err)
+		}
+		if !outcome.contentMatch {
+			t.Fatal("completed result hash did not match cached content at return")
+		}
+		seenHashes[outcome.result.SHA256] = true
+	}
+	if overlapped.Load() {
+		t.Fatal("same-key transports overlapped")
+	}
+	for _, content := range []string{"content-1", "content-2"} {
+		hash := sha256.Sum256([]byte(content))
+		if !seenHashes[hex.EncodeToString(hash[:])] {
+			t.Errorf("missing completed result for %q", content)
+		}
+	}
+}
+
+func TestDownloaderDoesNotSerializeDifferentCacheKeys(t *testing.T) {
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		entered <- struct{}{}
+		<-release
+		return responseForRequest(request, http.StatusOK, request.URL.Path), nil
+	})}
+	d := &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 100}
+	errs := make(chan error, 2)
+	for _, key := range []string{"one", "two"} {
+		go func(key string) {
+			_, err := d.Download(context.Background(), "https://example.test/"+key, key, nil)
+			errs <- err
+		}(key)
+	}
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("different cache keys were serialized")
+		}
+	}
+	close(release)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("Download() error = %v", err)
+		}
+	}
+}
+
 func TestDownloaderRejectsUnsafeCacheKeys(t *testing.T) {
-	tests := []string{"", ".", "..", "../escape", "a/b", `a\b`, "/absolute", "two words", "line\nbreak"}
+	tests := []string{
+		"", ".", "..", "../escape", "a/b", `a\b`, "/absolute", "two words", "line\nbreak", "unicode-é", "trailing.",
+		"CON", "con.txt", "PrN.data", "AUX", "NUL.log", "COM1", "com9.zip", "LPT1", "lpt9.csv",
+	}
 	for _, key := range tests {
 		t.Run(key, func(t *testing.T) {
 			d := Downloader{Client: http.DefaultClient, CacheDir: t.TempDir(), MaxBytes: 10}
@@ -285,7 +496,7 @@ func TestDownloaderRejectsUnsafeCacheKeys(t *testing.T) {
 	}
 }
 
-func TestOpenSafeZIPAcceptsNestedEntries(t *testing.T) {
+func TestSafeZIPAcceptsNestedEntries(t *testing.T) {
 	path := makeZIP(t, []zipEntry{{"nested/", true, 0}, {"nested/file.txt", false, 4}})
 	zr, err := OpenSafeZIP(path, 2, 4)
 	if err != nil {
@@ -299,8 +510,10 @@ func TestOpenSafeZIPAcceptsNestedEntries(t *testing.T) {
 	}
 }
 
-func TestOpenSafeZIPRejectsUnsafeNames(t *testing.T) {
+func TestSafeZIPRejectsUnsafeNames(t *testing.T) {
 	tests := []string{
+		".",
+		"dir/..",
 		"/absolute.txt",
 		"../escape.txt",
 		"nested/../../escape.txt",
@@ -320,7 +533,28 @@ func TestOpenSafeZIPRejectsUnsafeNames(t *testing.T) {
 	}
 }
 
-func TestOpenSafeZIPRejectsLimits(t *testing.T) {
+func TestSafeZIPRejectsSpecialModes(t *testing.T) {
+	tests := []struct {
+		name string
+		mode os.FileMode
+	}{
+		{"symlink", os.ModeSymlink | 0o777},
+		{"named pipe", os.ModeNamedPipe | 0o600},
+		{"device", os.ModeDevice | 0o600},
+		{"socket", os.ModeSocket | 0o600},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			archivePath := makeZIPWithMode(t, "special", tt.mode)
+			if zr, err := OpenSafeZIP(archivePath, 1, 10); err == nil {
+				_ = zr.Close()
+				t.Fatal("OpenSafeZIP() error = nil")
+			}
+		})
+	}
+}
+
+func TestSafeZIPRejectsLimits(t *testing.T) {
 	t.Run("invalid arguments", func(t *testing.T) {
 		path := makeZIP(t, []zipEntry{{"file", false, 1}})
 		for _, tc := range []struct {
@@ -359,7 +593,7 @@ func TestOpenSafeZIPRejectsLimits(t *testing.T) {
 	})
 }
 
-func TestOpenSafeZIPRejectsMalformedArchive(t *testing.T) {
+func TestSafeZIPRejectsMalformedArchive(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.zip")
 	if err := os.WriteFile(path, []byte("not a zip"), 0o600); err != nil {
 		t.Fatal(err)
@@ -432,6 +666,54 @@ func makeZIP(t *testing.T, entries []zipEntry) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func makeZIPWithMode(t *testing.T, name string, mode os.FileMode) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "mode.zip")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(file)
+	header := &zip.FileHeader{Name: name, Method: zip.Store}
+	header.SetMode(mode)
+	if _, err := zw.CreateHeader(header); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeCacheMetadata(t *testing.T, cacheDir, cacheKey, sourceURL string, content []byte) *CacheMetadata {
+	t.Helper()
+	path := filepath.Join(cacheDir, cacheKey)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return metadataForContent(path, cacheKey, sourceURL, content)
+}
+
+func metadataForContent(path, cacheKey, sourceURL string, content []byte) *CacheMetadata {
+	hash := sha256.Sum256(content)
+	return &CacheMetadata{
+		Path: path, SourceURL: sourceURL, CacheKey: cacheKey, FinalURL: sourceURL,
+		SHA256: hex.EncodeToString(hash[:]), Size: int64(len(content)), ContentType: "text/plain",
+	}
+}
+
+func responseForRequest(request *http.Request, status int, body string) *http.Response {
+	response := httptest.NewRecorder()
+	response.WriteHeader(status)
+	_, _ = io.WriteString(response, body)
+	result := response.Result()
+	result.Request = request
+	return result
 }
 
 func assertFileContent(t *testing.T, path, want string) {
