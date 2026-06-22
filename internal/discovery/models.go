@@ -160,6 +160,7 @@ type ShareSnapshot struct {
 	QualityStatus string    `json:"quality_status" gorm:"size:16;index"`
 	Shares        int64     `json:"shares"`
 	FiledAt       time.Time `json:"filed_at"`
+	AcceptedAt    time.Time `json:"accepted_at"`
 	CreatedAt     time.Time `json:"created_at"`
 	Security      Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }

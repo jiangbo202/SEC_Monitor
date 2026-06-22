@@ -21,7 +21,7 @@ import (
 
 type ShareFact struct {
 	CIK, Concept, Unit, Form, Accession string
-	Instant, FiledAt                    time.Time
+	Instant, FiledAt, AcceptedAt        time.Time
 	Shares                              int64
 	SourceURL                           string
 }
