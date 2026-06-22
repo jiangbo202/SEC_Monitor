@@ -14,6 +14,7 @@ import (
 )
 
 type SecuritySourceRecord struct {
+	SecurityID                    uint
 	CIK                           string
 	Ticker                        string
 	CompanyName                   string
@@ -26,6 +27,8 @@ type SecuritySourceRecord struct {
 	LatestAnnualForm              string
 	RecentForms                   []string
 	HasBusinessCombinationItem201 bool
+	BlankCheckIssuer              bool
+	MappingStatus                 string
 }
 
 type SecurityMetadataSource interface {
