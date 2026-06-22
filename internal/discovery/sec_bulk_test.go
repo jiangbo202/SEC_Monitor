@@ -117,6 +117,9 @@ func TestParseSECCompanyFacts(t *testing.T) {
 func TestParseSECCompanyFactsConflictAndMalformed(t *testing.T) {
 	for _, body := range []string{
 		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1,"end":"bad","filed":"2026-01-01","accn":"x"}]}}}}}`,
+		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1,"end":"2026-01-01","filed":"bad","accn":"x"}]}}}}}`,
+		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":-1,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,
+		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1.5,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,
 		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1,"end":"2026-01-01","filed":"2026-01-02","accn":"x"},{"val":2,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,
 		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"USD":[{"val":1,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,
 		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":9223372036854775808.0,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,

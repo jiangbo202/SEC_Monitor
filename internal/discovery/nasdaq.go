@@ -83,18 +83,22 @@ func parseNasdaq(r io.Reader, expected []string, makeRecord func([]string, int) 
 	byTicker := make(map[string]SecuritySourceRecord)
 	for s.Scan() {
 		line++
-		text := strings.TrimSpace(s.Text())
+		raw := strings.TrimSuffix(s.Text(), "\r")
+		text := strings.TrimSpace(raw)
 		if text == "" {
 			continue
 		}
 		if !headerSeen {
-			if !reflect.DeepEqual(splitTrim(text), expected) {
-				return nil, "", fmt.Errorf("invalid Nasdaq header")
+			if !reflect.DeepEqual(strings.Split(raw, "|"), expected) {
+				return nil, "", fmt.Errorf("line %d: invalid Nasdaq header", line)
 			}
 			headerSeen = true
 			continue
 		}
 		if strings.HasPrefix(text, "File Creation Time:") {
+			if strings.Contains(text, "|") {
+				return nil, "", fmt.Errorf("line %d: malformed File Creation Time footer", line)
+			}
 			if footer != "" {
 				return nil, "", fmt.Errorf("duplicate footer at line %d", line)
 			}
@@ -191,7 +195,10 @@ func (s NasdaqDirectorySource) Load(ctx context.Context) ([]SecuritySourceRecord
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
-	records := append(ra, rb...)
+	records, err := mergeNasdaqRecords(ra, rb)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].Ticker == records[j].Ticker {
 			return records[i].Exchange < records[j].Exchange
@@ -200,4 +207,24 @@ func (s NasdaqDirectorySource) Load(ctx context.Context) ([]SecuritySourceRecord
 	})
 	h := sha256.Sum256([]byte(a.SHA256 + "\n" + b.SHA256))
 	return records, SourceVersion{Source: "nasdaq-directory", Version: va + "+" + vb, SHA256: hex.EncodeToString(h[:])}, nil
+}
+
+func mergeNasdaqRecords(feeds ...[]SecuritySourceRecord) ([]SecuritySourceRecord, error) {
+	byTicker := make(map[string]SecuritySourceRecord)
+	for _, feed := range feeds {
+		for _, record := range feed {
+			if old, ok := byTicker[record.Ticker]; ok {
+				if !reflect.DeepEqual(old, record) {
+					return nil, fmt.Errorf("conflicting duplicate ticker %q across Nasdaq feeds", record.Ticker)
+				}
+				continue
+			}
+			byTicker[record.Ticker] = record
+		}
+	}
+	result := make([]SecuritySourceRecord, 0, len(byTicker))
+	for _, record := range byTicker {
+		result = append(result, record)
+	}
+	return result, nil
 }

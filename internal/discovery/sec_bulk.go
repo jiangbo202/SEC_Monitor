@@ -59,6 +59,9 @@ func ParseSECTickerExchange(r io.Reader) ([]SecuritySourceRecord, error) {
 	}
 	seen := map[string]SecuritySourceRecord{}
 	for row, values := range f.Data {
+		if len(values) != len(f.Fields) {
+			return nil, fmt.Errorf("row %d has %d fields, expected %d", row+1, len(values), len(f.Fields))
+		}
 		for _, i := range idx {
 			if i >= len(values) {
 				return nil, fmt.Errorf("row %d has too few fields", row+1)
@@ -69,7 +72,7 @@ func ParseSECTickerExchange(r io.Reader) ([]SecuritySourceRecord, error) {
 			return nil, fmt.Errorf("row %d invalid cik type", row+1)
 		}
 		n, err := strconv.ParseInt(string(cik), 10, 64)
-		if err != nil || n < 0 || n > 9999999999 {
+		if err != nil || n <= 0 || n > 9999999999 {
 			return nil, fmt.Errorf("row %d invalid cik", row+1)
 		}
 		var name, ticker, exchange string
@@ -151,6 +154,9 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 	var total int64
 	for i, f := range z.File {
 		if f.FileInfo().IsDir() {
+			if !safeZIPName(f.Name) {
+				return nil, fmt.Errorf("invalid SEC submissions ZIP directory %q", f.Name)
+			}
 			continue
 		}
 		if limits.MaxEntries > 0 && i >= limits.MaxEntries {
@@ -160,11 +166,14 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 		if m == nil {
 			return nil, fmt.Errorf("invalid SEC submissions ZIP entry %q", f.Name)
 		}
+		if m[1] == "0000000000" {
+			return nil, fmt.Errorf("invalid SEC submissions CIK in entry %q", f.Name)
+		}
 		data, n, err := readZIPEntry(f, limits.MaxEntryBytes)
 		if err != nil {
 			return nil, err
 		}
-		if total > limits.MaxTotalBytes-n {
+		if n > limits.MaxTotalBytes-total {
 			return nil, fmt.Errorf("ZIP aggregate decoded bytes exceed limit")
 		}
 		total += n
@@ -210,7 +219,7 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 				rec.LatestAnnualForm = form
 				annualDate = d
 			}
-			if (form == "8-K" || form == "8-K-A" || form == "8-K/A") && len(s.Filings.Recent.Items) > 0 && containsItem201(s.Filings.Recent.Items[j]) {
+			if (form == "8-K" || form == "8-K/A") && len(s.Filings.Recent.Items) > 0 && containsItem201(s.Filings.Recent.Items[j]) {
 				rec.HasBusinessCombinationItem201 = true
 			}
 		}
@@ -244,7 +253,7 @@ func normalizeCIK(raw json.RawMessage) (string, error) {
 		}
 	}
 	v, err := strconv.ParseInt(string(n), 10, 64)
-	if err != nil || v < 0 || v > 9999999999 {
+	if err != nil || v <= 0 || v > 9999999999 {
 		return "", fmt.Errorf("invalid")
 	}
 	return fmt.Sprintf("%010d", v), nil
@@ -255,10 +264,13 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 		return nil, err
 	}
 	var out []ShareFact
-	seen := map[string]int64{}
+	seen := map[string]ShareFact{}
 	var total int64
 	for i, f := range z.File {
 		if f.FileInfo().IsDir() {
+			if !safeZIPName(f.Name) {
+				return nil, fmt.Errorf("invalid SEC companyfacts ZIP directory %q", f.Name)
+			}
 			continue
 		}
 		if limits.MaxEntries > 0 && i >= limits.MaxEntries {
@@ -268,6 +280,9 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 		if m == nil {
 			return nil, fmt.Errorf("invalid SEC companyfacts ZIP entry %q", f.Name)
 		}
+		if m[1] == "0000000000" {
+			return nil, fmt.Errorf("invalid SEC companyfacts CIK in entry %q", f.Name)
+		}
 		if _, ok := allowed[m[1]]; !ok {
 			continue
 		}
@@ -275,7 +290,7 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 		if err != nil {
 			return nil, err
 		}
-		if total > limits.MaxTotalBytes-n {
+		if n > limits.MaxTotalBytes-total {
 			return nil, fmt.Errorf("ZIP aggregate decoded bytes exceed limit")
 		}
 		total += n
@@ -321,18 +336,19 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 						return nil, fmt.Errorf("companyfacts %s: invalid filed date", context)
 					}
 					key := cik + "|" + spec.ns + ":" + spec.concept + "|" + x.End + "|" + x.Accn
-					if old, ok := seen[key]; ok {
-						if old != shares {
-							return nil, fmt.Errorf("companyfacts %s conflicting duplicate fact", context)
-						}
-						continue
-					}
-					seen[key] = shares
 					source := "https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik + ".json"
 					if x.Accn != "" {
 						source = "https://www.sec.gov/Archives/edgar/data/" + strings.TrimLeft(cik, "0") + "/" + strings.ReplaceAll(x.Accn, "-", "") + "/"
 					}
-					out = append(out, ShareFact{CIK: cik, Concept: spec.ns + ":" + spec.concept, Unit: "shares", Form: x.Form, Accession: x.Accn, Instant: instant, FiledAt: filed, Shares: shares, SourceURL: source})
+					fact := ShareFact{CIK: cik, Concept: spec.ns + ":" + spec.concept, Unit: "shares", Form: x.Form, Accession: x.Accn, Instant: instant, FiledAt: filed, Shares: shares, SourceURL: source}
+					if old, ok := seen[key]; ok {
+						if old != fact {
+							return nil, fmt.Errorf("companyfacts %s conflicting duplicate fact", context)
+						}
+						continue
+					}
+					seen[key] = fact
+					out = append(out, fact)
 				}
 			}
 		}
@@ -376,37 +392,40 @@ func readZIPEntry(f *zip.File, max int64) ([]byte, int64, error) {
 		return nil, 0, err
 	}
 	defer r.Close()
-	lr := io.LimitReader(r, max+1)
+	lr := io.LimitReader(r, max)
 	data, err := io.ReadAll(lr)
 	if err != nil {
 		return nil, 0, err
 	}
-	if int64(len(data)) > max {
+	var extra [1]byte
+	n, extraErr := r.Read(extra[:])
+	if n > 0 {
 		return nil, 0, fmt.Errorf("ZIP entry %q exceeds decoded byte limit", f.Name)
+	}
+	if extraErr != nil && extraErr != io.EOF {
+		return nil, 0, extraErr
 	}
 	return data, int64(len(data)), nil
 }
 
-func (s SECBulkSource) downloads(ctx context.Context) (DownloadResult, DownloadResult, DownloadResult, error) {
+func (s SECBulkSource) validateDownloader() error {
 	if s.Downloader == nil {
-		return DownloadResult{}, DownloadResult{}, DownloadResult{}, fmt.Errorf("SEC downloader is required")
+		return fmt.Errorf("SEC downloader is required")
 	}
-	if s.TickerURL == "" || s.SubmissionsURL == "" || s.CompanyFactsURL == "" {
-		return DownloadResult{}, DownloadResult{}, DownloadResult{}, fmt.Errorf("SEC bulk URLs are required")
-	}
-	a, e := s.Downloader.Download(ctx, s.TickerURL, "company_tickers_exchange.json", nil)
-	if e != nil {
-		return a, DownloadResult{}, DownloadResult{}, e
-	}
-	b, e := s.Downloader.Download(ctx, s.SubmissionsURL, "submissions.zip", nil)
-	if e != nil {
-		return a, b, DownloadResult{}, e
-	}
-	c, e := s.Downloader.Download(ctx, s.CompanyFactsURL, "companyfacts.zip", nil)
-	return a, b, c, e
+	return nil
 }
 func (s SECBulkSource) Load(ctx context.Context) ([]SecuritySourceRecord, SourceVersion, error) {
-	a, b, c, err := s.downloads(ctx)
+	if err := s.validateDownloader(); err != nil {
+		return nil, SourceVersion{}, err
+	}
+	if s.TickerURL == "" || s.SubmissionsURL == "" {
+		return nil, SourceVersion{}, fmt.Errorf("SEC metadata URLs are required")
+	}
+	a, err := s.Downloader.Download(ctx, s.TickerURL, "company_tickers_exchange.json", nil)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	b, err := s.Downloader.Download(ctx, s.SubmissionsURL, "submissions.zip", nil)
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
@@ -436,12 +455,18 @@ func (s SECBulkSource) Load(ctx context.Context) ([]SecuritySourceRecord, Source
 			mappings[i].Exchange = exchange
 		}
 	}
-	return mappings, bulkVersion("sec-bulk", a, b, c), nil
+	return mappings, bulkVersion("sec-bulk", a, b), nil
 }
 
 // LoadLatestShares returns all eligible facts. Task 8 applies the latest-fact selection policy.
 func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]struct{}) ([]ShareFact, SourceVersion, error) {
-	a, b, c, err := s.downloads(ctx)
+	if err := s.validateDownloader(); err != nil {
+		return nil, SourceVersion{}, err
+	}
+	if s.CompanyFactsURL == "" {
+		return nil, SourceVersion{}, fmt.Errorf("SEC companyfacts URL is required")
+	}
+	c, err := s.Downloader.Download(ctx, s.CompanyFactsURL, "companyfacts.zip", nil)
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
@@ -454,7 +479,7 @@ func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
-	return facts, bulkVersion("sec-companyfacts", a, b, c), nil
+	return facts, bulkVersion("sec-companyfacts", c), nil
 }
 func limitEntries(l ZIPParseLimits) int {
 	if l.MaxEntries > 0 {
