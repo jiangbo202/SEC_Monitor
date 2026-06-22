@@ -63,6 +63,7 @@ type Listing struct {
 	ValidTo        *time.Time `json:"valid_to"`
 	Source         string     `json:"source" gorm:"size:64"`
 	MappingStatus  string     `json:"mapping_status" gorm:"size:16;index"`
+	Security       Security   `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
 type ClassificationSnapshot struct {
@@ -76,6 +77,7 @@ type ClassificationSnapshot struct {
 	RuleVersion  string    `json:"rule_version" gorm:"size:64"`
 	EvidenceJSON string    `json:"evidence_json" gorm:"type:text"`
 	CreatedAt    time.Time `json:"created_at"`
+	Security     Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
 type ProviderRun struct {
@@ -96,9 +98,9 @@ type ProviderRun struct {
 }
 
 type MarketHoliday struct {
-	Date            string    `json:"date" gorm:"size:10;primaryKey"`
+	Date            string    `json:"date" gorm:"size:10;primaryKey;autoIncrement:false"`
 	Name            string    `json:"name" gorm:"size:128"`
-	CalendarVersion string    `json:"calendar_version" gorm:"size:64"`
+	CalendarVersion string    `json:"calendar_version" gorm:"size:64;primaryKey;autoIncrement:false"`
 	SourceURL       string    `json:"source_url" gorm:"size:2048"`
 	ReviewedBy      string    `json:"reviewed_by" gorm:"size:128"`
 	CompleteYear    bool      `json:"complete_year"`
@@ -131,32 +133,37 @@ type ShareSnapshot struct {
 	Shares        int64     `json:"shares"`
 	FiledAt       time.Time `json:"filed_at"`
 	CreatedAt     time.Time `json:"created_at"`
+	Security      Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
 type UniverseBatch struct {
-	BatchID               string     `json:"batch_id" gorm:"size:64;primaryKey"`
-	Status                string     `json:"status" gorm:"size:16;index"`
-	UniverseSourceVersion string     `json:"universe_source_version" gorm:"size:128"`
-	PriceSourceVersion    string     `json:"price_source_version" gorm:"size:128"`
-	ShareSourceVersion    string     `json:"share_source_version" gorm:"size:128"`
-	StartedAt             time.Time  `json:"started_at"`
-	CompletedAt           *time.Time `json:"completed_at"`
-	ErrorMessage          string     `json:"error_message" gorm:"type:text"`
+	BatchID               string             `json:"batch_id" gorm:"size:64;primaryKey"`
+	Status                string             `json:"status" gorm:"size:16;index"`
+	UniverseSourceVersion string             `json:"universe_source_version" gorm:"size:128"`
+	PriceSourceVersion    string             `json:"price_source_version" gorm:"size:128"`
+	ShareSourceVersion    string             `json:"share_source_version" gorm:"size:128"`
+	StartedAt             time.Time          `json:"started_at"`
+	CompletedAt           *time.Time         `json:"completed_at"`
+	ErrorMessage          string             `json:"error_message" gorm:"type:text"`
+	Snapshots             []UniverseSnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
 type UniverseSnapshot struct {
-	ID              uint      `json:"id"`
-	BatchID         string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_universe_batch_security,priority:1;index"`
-	SecurityID      uint      `json:"security_id" gorm:"uniqueIndex:idx_universe_batch_security,priority:2;index"`
-	Ticker          string    `json:"ticker" gorm:"size:32;index:idx_universe_snapshots_ticker"`
-	MarketCapUSD    int64     `json:"market_cap_usd" gorm:"index:idx_universe_snapshots_market_cap"`
-	Included        bool      `json:"included" gorm:"index:idx_universe_snapshots_included"`
-	Status          string    `json:"status" gorm:"size:32;index:idx_universe_snapshots_status"`
-	ReasonCode      string    `json:"reason_code" gorm:"size:64"`
-	QualityStatus   string    `json:"quality_status" gorm:"size:16"`
-	PriceSnapshotID uint      `json:"price_snapshot_id"`
-	ShareSnapshotID uint      `json:"share_snapshot_id"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              uint           `json:"id"`
+	BatchID         string         `json:"batch_id" gorm:"size:64;uniqueIndex:idx_universe_batch_security,priority:1;index"`
+	SecurityID      uint           `json:"security_id" gorm:"uniqueIndex:idx_universe_batch_security,priority:2;index"`
+	Ticker          string         `json:"ticker" gorm:"size:32;index:idx_universe_snapshots_ticker"`
+	MarketCapUSD    int64          `json:"market_cap_usd" gorm:"index:idx_universe_snapshots_market_cap"`
+	Included        bool           `json:"included" gorm:"index:idx_universe_snapshots_included"`
+	Status          string         `json:"status" gorm:"size:32;index:idx_universe_snapshots_status"`
+	ReasonCode      string         `json:"reason_code" gorm:"size:64"`
+	QualityStatus   string         `json:"quality_status" gorm:"size:16"`
+	PriceSnapshotID *uint          `json:"price_snapshot_id"`
+	ShareSnapshotID *uint          `json:"share_snapshot_id"`
+	CreatedAt       time.Time      `json:"created_at"`
+	Security        Security       `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	PriceEvidence   *PriceSnapshot `json:"-" gorm:"foreignKey:PriceSnapshotID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	ShareEvidence   *ShareSnapshot `json:"-" gorm:"foreignKey:ShareSnapshotID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
 type ManualSecurityOverride struct {
