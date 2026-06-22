@@ -26,7 +26,7 @@ noncommon02,non-common,Acme Warrants,false,false,3571,DE,10-K,10-Q,Nasdaq,curren
 noncommon03,non-common,Acme Right,false,false,3571,DE,10-K,10-Q,Nasdaq,current,0000000025,NC03,Acme,excluded,non_common_security,false,high,approved
 noncommon04,non-common,Acme Rights,false,false,3571,DE,10-K,10-Q,Nasdaq,current,0000000026,NC04,Acme,excluded,non_common_security,false,high,approved
 noncommon05,non-common,Acme Preferred Stock,false,false,3571,DE,10-K,10-Q,Nasdaq,current,0000000027,NC05,Acme,excluded,non_common_security,false,high,approved
-noncommon06,non-common,Acme Preferred Share,false,false,3571,DE,10-K,10-Q,Nasdaq,current,0000000028,NC06,Acme,excluded,non_common_security,false,high,approved
+noncommon06,non-common,Acme 8% Preferred Series A,false,false,3571,DE,10-K,10-Q,Nasdaq,current,0000000028,NC06,Acme,excluded,non_common_security,false,high,approved
 noncommon07,non-common,Acme Preferred Shares,false,false,3571,DE,10-K,10-Q,Nasdaq,current,0000000029,NC07,Acme,excluded,non_common_security,false,high,approved
 noncommon08,non-common,Acme Depositary Share,false,false,3571,DE,10-K,10-Q,Nasdaq,current,0000000030,NC08,Acme,excluded,non_common_security,false,high,approved
 noncommon09,non-common,Acme Depositary Shares,false,false,3571,DE,10-K,10-Q,Nasdaq,current,0000000031,NC09,Acme,excluded,non_common_security,false,high,approved

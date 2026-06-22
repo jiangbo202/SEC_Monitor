@@ -58,14 +58,14 @@ func TestClassifySecurityRulePrecedenceAndEvidence(t *testing.T) {
 }
 
 func TestClassifySecurityNonCommonWholePhrases(t *testing.T) {
-	for _, name := range []string{"ACME WARRANT", "Acme warrants", "Acme RIGHT", "Acme rights", "Acme Preferred Stock", "Acme preferred shares", "Acme Depositary Share", "Acme depositary shares", "Acme Unit", "Acme units"} {
+	for _, name := range []string{"ACME WARRANT", "Acme warrants", "Acme RIGHT", "Acme rights", "Acme Preferred Stock", "Acme preferred shares", "Acme 8% Preferred Series A", "ACME PREFERRED", "Acme Depositary Share", "Acme depositary shares", "Acme Unit", "Acme units"} {
 		r := validClassificationRecord()
 		r.SecurityName = name
 		if got := ClassifySecurity(r, nil); got.ReasonCode != ReasonNonCommonSecurity {
 			t.Errorf("%q => %+v", name, got)
 		}
 	}
-	for _, name := range []string{"United Common Stock", "Unitil Common Stock"} {
+	for _, name := range []string{"United Common Stock", "Unitil Common Stock", "Preferredly Common Stock", "Unpreferred Common Stock"} {
 		r := validClassificationRecord()
 		r.SecurityName = name
 		if got := ClassifySecurity(r, nil); !got.Included {
@@ -139,21 +139,59 @@ func TestClassifySecuritySICBoundariesAndDeSPAC(t *testing.T) {
 			t.Errorf("SIC %d => %+v", tc.sic, got)
 		}
 	}
-	r := validClassificationRecord()
-	r.SIC = 6770
-	r.HasBusinessCombinationItem201 = true
-	if got := ClassifySecurity(r, nil); got.ReasonCode != ReasonSPAC {
-		t.Fatalf("item 2.01 alone => %+v", got)
+}
+
+func TestClassifySecurityDeSPACTransitionTable(t *testing.T) {
+	tests := []struct {
+		name                  string
+		sic                   int
+		blankCheck            bool
+		item201               bool
+		mappingStatus         string
+		wantReason            string
+		wantIncluded          bool
+		wantCompletedEvidence bool
+	}{
+		{"6770 not blank before combination current", 6770, false, false, MappingStatusCurrent, ReasonSPAC, false, false},
+		{"6770 not blank after combination current", 6770, false, true, MappingStatusCurrent, ReasonSPAC, false, false},
+		{"6770 blank before combination current", 6770, true, false, MappingStatusCurrent, ReasonSPAC, false, false},
+		{"6770 blank after combination current", 6770, true, true, MappingStatusCurrent, ReasonSPAC, false, false},
+		{"6770 not blank before combination conflict", 6770, false, false, MappingStatusConflict, ReasonSPAC, false, false},
+		{"6770 not blank after combination conflict", 6770, false, true, MappingStatusConflict, ReasonSPAC, false, false},
+		{"6770 blank before combination conflict", 6770, true, false, MappingStatusConflict, ReasonSPAC, false, false},
+		{"6770 blank after combination conflict", 6770, true, true, MappingStatusConflict, ReasonSPAC, false, false},
+		{"operating not blank before combination current", 3571, false, false, MappingStatusCurrent, ReasonDomesticOperatingCommon, true, false},
+		{"operating not blank after combination current", 3571, false, true, MappingStatusCurrent, ReasonDomesticOperatingCommon, true, false},
+		{"operating blank before combination current", 3571, true, false, MappingStatusCurrent, ReasonSPAC, false, false},
+		{"operating blank after combination current", 3571, true, true, MappingStatusCurrent, ReasonDomesticOperatingCommon, true, true},
+		{"operating not blank before combination conflict", 3571, false, false, MappingStatusConflict, ReasonMappingConflict, false, false},
+		{"operating not blank after combination conflict", 3571, false, true, MappingStatusConflict, ReasonMappingConflict, false, false},
+		{"operating blank before combination conflict", 3571, true, false, MappingStatusConflict, ReasonSPAC, false, false},
+		{"operating blank after combination conflict", 3571, true, true, MappingStatusConflict, ReasonMappingConflict, false, true},
+		{"operating blank after combination missing mapping", 3571, true, true, "", ReasonMappingConflict, false, true},
 	}
-	r.SIC = 3571
-	r.BlankCheckIssuer = false
-	r.MappingStatus = MappingStatusCurrent
-	if got := ClassifySecurity(r, nil); !got.Included {
-		t.Fatalf("completed re-mapped company => %+v", got)
-	}
-	r.BlankCheckIssuer = true
-	if got := ClassifySecurity(r, nil); got.ReasonCode != ReasonSPAC {
-		t.Fatalf("explicit blank check => %+v", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := validClassificationRecord()
+			r.SIC = tt.sic
+			r.BlankCheckIssuer = tt.blankCheck
+			r.HasBusinessCombinationItem201 = tt.item201
+			r.MappingStatus = tt.mappingStatus
+			got := ClassifySecurity(r, nil)
+			if got.ReasonCode != tt.wantReason || got.Included != tt.wantIncluded {
+				t.Fatalf("classification = %+v", got)
+			}
+			hasCompletedEvidence := false
+			for _, evidence := range got.Evidence {
+				if evidence.Field == "business_combination_item_2_01" && evidence.Value == "true" {
+					hasCompletedEvidence = true
+				}
+			}
+			if hasCompletedEvidence != tt.wantCompletedEvidence {
+				t.Fatalf("completed-combination evidence=%v, want %v: %+v", hasCompletedEvidence, tt.wantCompletedEvidence, got.Evidence)
+			}
+		})
 	}
 }
 

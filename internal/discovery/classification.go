@@ -34,7 +34,7 @@ type Classification struct {
 }
 
 var (
-	nonCommonSecurityPattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])(warrants?|rights?|preferred (stock|shares?)|depositary shares?|units?)($|[^a-z0-9])`)
+	nonCommonSecurityPattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])(warrants?|rights?|preferred( (stock|shares?))?|depositary shares?|units?)($|[^a-z0-9])`)
 	commonSecurityPattern    = regexp.MustCompile(`(?i)(^|[^a-z0-9])(common stock|common shares|ordinary shares?)($|[^a-z0-9])`)
 )
 
@@ -100,36 +100,43 @@ func classifySecurityAutomatic(record SecuritySourceRecord) Classification {
 	if record.SIC == 6770 {
 		return excluded(ReasonSPAC, "sic", strconv.Itoa(record.SIC))
 	}
-	if record.BlankCheckIssuer {
+	if record.BlankCheckIssuer && !record.HasBusinessCombinationItem201 {
 		return excluded(ReasonSPAC, "blank_check_issuer", "true")
+	}
+	var transitionEvidence []Evidence
+	if record.BlankCheckIssuer && record.HasBusinessCombinationItem201 {
+		transitionEvidence = []Evidence{
+			{Field: "blank_check_issuer", Value: "true", Source: ClassificationRuleVersion},
+			{Field: "business_combination_item_2_01", Value: "true", Source: ClassificationRuleVersion},
+		}
 	}
 	annualForm := strings.TrimSpace(record.LatestAnnualForm)
 	if annualForm == "20-F" || annualForm == "40-F" {
-		return excluded(ReasonForeignOrADR, "latest_annual_form", annualForm)
+		return withEvidence(excluded(ReasonForeignOrADR, "latest_annual_form", annualForm), transitionEvidence)
 	}
 	if form, ok := matchingForm(record.RecentForms, func(form string) bool { return form == "F-1" || form == "F-3" }); ok {
-		return excluded(ReasonForeignOrADR, "recent_forms", form)
+		return withEvidence(excluded(ReasonForeignOrADR, "recent_forms", form), transitionEvidence)
 	}
 	state := strings.ToUpper(strings.TrimSpace(record.StateOfIncorporation))
 	if state != "" {
 		if _, domestic := usJurisdictions[state]; !domestic {
-			return excluded(ReasonForeignOrADR, "state_of_incorporation", state)
+			return withEvidence(excluded(ReasonForeignOrADR, "state_of_incorporation", state), transitionEvidence)
 		}
 	}
 	if record.SIC >= 6000 && record.SIC <= 6799 {
-		return excluded(ReasonFinancialCompany, "sic", strconv.Itoa(record.SIC))
+		return withEvidence(excluded(ReasonFinancialCompany, "sic", strconv.Itoa(record.SIC)), transitionEvidence)
 	}
 	if record.Exchange != "Nasdaq" && record.Exchange != "NYSE" && record.Exchange != "NYSE American" {
-		return excluded(ReasonNotActiveListed, "exchange", record.Exchange)
+		return withEvidence(excluded(ReasonNotActiveListed, "exchange", record.Exchange), transitionEvidence)
 	}
 	if record.MappingStatus != MappingStatusCurrent {
-		return unresolved(ReasonMappingConflict, "mapping_status", record.MappingStatus)
+		return withEvidence(unresolved(ReasonMappingConflict, "mapping_status", record.MappingStatus), transitionEvidence)
 	}
 	if field, value, invalid := invalidIdentity(record); invalid {
-		return unresolved(ReasonSecurityTypeUnresolved, field, value)
+		return withEvidence(unresolved(ReasonSecurityTypeUnresolved, field, value), transitionEvidence)
 	}
 	if (annualForm == "10-K" || annualForm == "10-K/A") && hasExactForm(record.RecentForms, "10-Q", "10-Q/A") && commonSecurityPattern.MatchString(record.SecurityName) {
-		return Classification{
+		return withEvidence(Classification{
 			Included:   true,
 			Status:     EffectiveStatusIncluded,
 			Confidence: ConfidenceHigh,
@@ -140,9 +147,17 @@ func classifySecurityAutomatic(record SecuritySourceRecord) Classification {
 				{Field: "recent_forms", Value: firstExactForm(record.RecentForms, "10-Q", "10-Q/A"), Source: ClassificationRuleVersion},
 				{Field: "security_name", Value: record.SecurityName, Source: ClassificationRuleVersion},
 			},
-		}
+		}, transitionEvidence)
 	}
-	return unresolved(ReasonSecurityTypeUnresolved, "security_name", record.SecurityName)
+	return withEvidence(unresolved(ReasonSecurityTypeUnresolved, "security_name", record.SecurityName), transitionEvidence)
+}
+
+func withEvidence(classification Classification, evidence []Evidence) Classification {
+	if len(evidence) == 0 {
+		return classification
+	}
+	classification.Evidence = append(append([]Evidence(nil), evidence...), classification.Evidence...)
+	return classification
 }
 
 func excluded(reason, field, value string) Classification {
