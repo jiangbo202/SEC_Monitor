@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -141,14 +142,19 @@ func TestDownloaderRejectsFailuresAndClosesBodies(t *testing.T) {
 	})
 
 	t.Run("network error", func(t *testing.T) {
+		cause := errors.New("transport failed")
 		client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-			return nil, errors.New("transport failed")
+			return nil, cause
 		})}
 		d := Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 10}
-		_, err := d.Download(context.Background(), "https://example.test/file", "network", nil)
+		_, err := d.Download(context.Background(), "https://user-secret:password@example.test/file?token=query-secret", "network", nil)
 		if err == nil {
 			t.Fatal("Download() error = nil")
 		}
+		if !errors.Is(err, cause) {
+			t.Fatalf("errors.Is(%v, cause) = false", err)
+		}
+		assertErrorDoesNotContain(t, err, "user-secret", "password", "query-secret", "/file", "https://")
 	})
 
 	t.Run("stream error closes response body", func(t *testing.T) {
@@ -168,9 +174,11 @@ func TestDownloaderRejectsFailuresAndClosesBodies(t *testing.T) {
 
 	t.Run("invalid URL", func(t *testing.T) {
 		d := Downloader{Client: http.DefaultClient, CacheDir: t.TempDir(), MaxBytes: 10}
-		if _, err := d.Download(context.Background(), "://bad", "invalid", nil); err == nil {
+		_, err := d.Download(context.Background(), "://user-secret?token=query-secret", "invalid", nil)
+		if err == nil {
 			t.Fatal("Download() error = nil")
 		}
+		assertErrorDoesNotContain(t, err, "user-secret", "query-secret", "://")
 	})
 
 	t.Run("invalid maximum", func(t *testing.T) {
@@ -204,12 +212,37 @@ func TestDownloaderHonorsContextTimeoutAndCancel(t *testing.T) {
 				return nil, request.Context().Err()
 			})}
 			d := Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 10}
-			_, err := d.Download(ctx, "https://example.test/context", "context", nil)
+			_, err := d.Download(ctx, "https://user-secret:password@example.test/context?token=query-secret", "context", nil)
 			if err == nil {
 				t.Fatal("Download() error = nil")
 			}
+			if !errors.Is(err, ctx.Err()) {
+				t.Fatalf("errors.Is(%v, %v) = false", err, ctx.Err())
+			}
+			assertErrorDoesNotContain(t, err, "user-secret", "password", "query-secret", "/context", "https://")
 		})
 	}
+}
+
+func TestDownloaderMaxInt64LimitDoesNotOverflow(t *testing.T) {
+	payload := []byte("nonempty")
+	client := clientForHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	d := Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: math.MaxInt64}
+
+	result, err := d.Download(context.Background(), "https://example.test/max", "max-int64", nil)
+	if err != nil {
+		t.Fatalf("Download() error = %v", err)
+	}
+	wantHash := sha256.Sum256(payload)
+	if result.Size != int64(len(payload)) {
+		t.Errorf("Size = %d, want %d", result.Size, len(payload))
+	}
+	if result.SHA256 != hex.EncodeToString(wantHash[:]) {
+		t.Errorf("SHA256 = %q, want %q", result.SHA256, hex.EncodeToString(wantHash[:]))
+	}
+	assertFileContent(t, result.Path, string(payload))
 }
 
 func TestDownloaderMaxBytesAndAtomicReplacement(t *testing.T) {
@@ -420,5 +453,14 @@ func assertNoTempFiles(t *testing.T, cacheDir string) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temporary files remain: %v", matches)
+	}
+}
+
+func assertErrorDoesNotContain(t *testing.T, err error, secrets ...string) {
+	t.Helper()
+	for _, secret := range secrets {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error %q exposes sensitive URL component %q", err, secret)
+		}
 	}
 }

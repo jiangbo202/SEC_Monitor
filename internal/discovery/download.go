@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -55,7 +57,7 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
-		return DownloadResult{}, fmt.Errorf("create download request: %w", err)
+		return DownloadResult{}, fmt.Errorf("invalid download URL")
 	}
 	if req.URL.Scheme != "http" && req.URL.Scheme != "https" || req.URL.Host == "" {
 		return DownloadResult{}, fmt.Errorf("invalid download URL")
@@ -78,7 +80,7 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		return DownloadResult{}, fmt.Errorf("download from host %q: %w", req.URL.Host, err)
+		return DownloadResult{}, newDownloadRequestError(req.URL.Hostname(), err)
 	}
 	defer resp.Body.Close()
 
@@ -118,11 +120,11 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	}()
 
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(temp, hash), io.LimitReader(resp.Body, d.MaxBytes+1))
+	written, exceeded, err := copyWithHardLimit(io.MultiWriter(temp, hash), resp.Body, d.MaxBytes)
 	if err != nil {
 		return DownloadResult{}, fmt.Errorf("stream download from host %q: %w", req.URL.Host, err)
 	}
-	if written > d.MaxBytes {
+	if exceeded {
 		return DownloadResult{}, fmt.Errorf("download from host %q exceeds maximum size of %d bytes", req.URL.Host, d.MaxBytes)
 	}
 	if err := temp.Sync(); err != nil {
@@ -151,6 +153,49 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 		ContentType:  resp.Header.Get("Content-Type"),
 		Size:         written,
 	}, nil
+}
+
+type downloadRequestError struct {
+	host  string
+	cause error
+}
+
+func (e *downloadRequestError) Error() string {
+	if e.host == "" {
+		return "download request failed"
+	}
+	return fmt.Sprintf("download from host %q failed", e.host)
+}
+
+func (e *downloadRequestError) Unwrap() error { return e.cause }
+
+func newDownloadRequestError(host string, err error) error {
+	cause := err
+	for {
+		urlErr, ok := cause.(*url.Error)
+		if !ok || urlErr.Err == nil {
+			break
+		}
+		cause = urlErr.Err
+	}
+	return &downloadRequestError{host: host, cause: cause}
+}
+
+func copyWithHardLimit(dst io.Writer, src io.Reader, maxBytes int64) (written int64, exceeded bool, err error) {
+	written, err = io.Copy(dst, io.LimitReader(src, maxBytes))
+	if err != nil || written < maxBytes {
+		return written, false, err
+	}
+
+	var extra [1]byte
+	extraBytes, extraErr := io.ReadFull(src, extra[:])
+	if extraBytes > 0 {
+		return written, true, nil
+	}
+	if errors.Is(extraErr, io.EOF) {
+		return written, false, nil
+	}
+	return written, false, extraErr
 }
 
 func resultFromMetadata(metadata CacheMetadata, notModified bool) DownloadResult {
