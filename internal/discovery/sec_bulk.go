@@ -132,18 +132,19 @@ type submission struct {
 	} `json:"filings"`
 }
 type recentFilings struct {
-	Form, AccessionNumber, FilingDate, ReportDate, PrimaryDocument, Items []string
-	present                                                               map[string]bool
+	Form, AccessionNumber, FilingDate, ReportDate, AcceptanceDate, PrimaryDocument, Items []string
+	present                                                                               map[string]bool
 }
 
 func (r *recentFilings) UnmarshalJSON(data []byte) error {
 	type wire struct {
-		Form      []string `json:"form"`
-		Accession []string `json:"accessionNumber"`
-		Filing    []string `json:"filingDate"`
-		Report    []string `json:"reportDate"`
-		Primary   []string `json:"primaryDocument"`
-		Items     []string `json:"items"`
+		Form       []string `json:"form"`
+		Accession  []string `json:"accessionNumber"`
+		Filing     []string `json:"filingDate"`
+		Report     []string `json:"reportDate"`
+		Acceptance []string `json:"acceptanceDateTime"`
+		Primary    []string `json:"primaryDocument"`
+		Items      []string `json:"items"`
 	}
 	var w wire
 	if err := json.Unmarshal(data, &w); err != nil {
@@ -153,6 +154,7 @@ func (r *recentFilings) UnmarshalJSON(data []byte) error {
 	r.AccessionNumber = w.Accession
 	r.FilingDate = w.Filing
 	r.ReportDate = w.Report
+	r.AcceptanceDate = w.Acceptance
 	r.PrimaryDocument = w.Primary
 	r.Items = w.Items
 	r.present = make(map[string]bool)
@@ -160,7 +162,7 @@ func (r *recentFilings) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	for _, name := range []string{"form", "accessionNumber", "filingDate", "reportDate", "primaryDocument", "items"} {
+	for _, name := range []string{"form", "accessionNumber", "filingDate", "reportDate", "acceptanceDateTime", "primaryDocument", "items"} {
 		_, r.present[name] = fields[name]
 	}
 	return nil
@@ -209,7 +211,7 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 			return nil, fmt.Errorf("submission CIK %s does not match filename", cik)
 		}
 		nforms := len(s.Filings.Recent.Form)
-		for name, col := range map[string][]string{"accessionNumber": s.Filings.Recent.AccessionNumber, "filingDate": s.Filings.Recent.FilingDate, "reportDate": s.Filings.Recent.ReportDate, "primaryDocument": s.Filings.Recent.PrimaryDocument, "items": s.Filings.Recent.Items} {
+		for name, col := range map[string][]string{"accessionNumber": s.Filings.Recent.AccessionNumber, "filingDate": s.Filings.Recent.FilingDate, "reportDate": s.Filings.Recent.ReportDate, "acceptanceDateTime": s.Filings.Recent.AcceptanceDate, "primaryDocument": s.Filings.Recent.PrimaryDocument, "items": s.Filings.Recent.Items} {
 			if s.Filings.Recent.present[name] && len(col) != nforms {
 				return nil, fmt.Errorf("submission CIK %s recent %s length mismatch", cik, name)
 			}
@@ -243,6 +245,31 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 					return nil, fmt.Errorf("submission CIK %s invalid filing date", cik)
 				}
 			}
+			if s.Filings.Recent.present["accessionNumber"] {
+				accession := strings.TrimSpace(s.Filings.Recent.AccessionNumber[j])
+				if accession == "" {
+					return nil, fmt.Errorf("submission CIK %s empty accession number", cik)
+				}
+				metadata := FilingMetadata{CIK: cik, Accession: accession, Form: form, FiledAt: d}
+				if s.Filings.Recent.present["reportDate"] && s.Filings.Recent.ReportDate[j] != "" {
+					metadata.ReportAt, err = time.Parse("2006-01-02", s.Filings.Recent.ReportDate[j])
+					if err != nil {
+						return nil, fmt.Errorf("submission CIK %s invalid report date", cik)
+					}
+				}
+				if s.Filings.Recent.present["acceptanceDateTime"] {
+					if !secAccessionNumber.MatchString(accession) {
+						return nil, fmt.Errorf("submission CIK %s invalid accession number", cik)
+					}
+					metadata.AcceptedAt, err = time.Parse(time.RFC3339Nano, s.Filings.Recent.AcceptanceDate[j])
+					if err != nil {
+						return nil, fmt.Errorf("submission CIK %s invalid acceptance date time", cik)
+					}
+				}
+				rec.FilingMetadata = append(rec.FilingMetadata, metadata)
+			} else if s.Filings.Recent.present["acceptanceDateTime"] {
+				return nil, fmt.Errorf("submission CIK %s acceptance date time requires accession number", cik)
+			}
 			if (form == "10-K" || form == "10-K/A" || form == "20-F" || form == "40-F") && (rec.LatestAnnualForm == "" || d.After(annualDate)) {
 				rec.LatestAnnualForm = form
 				annualDate = d
@@ -266,6 +293,52 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 		out[cik] = rec
 	}
 	return out, nil
+}
+
+var secAccessionNumber = regexp.MustCompile(`^[0-9]{10}-[0-9]{2}-[0-9]{6}$`)
+
+// EnrichShareFactsWithAcceptance returns a copy of facts with SEC acceptance
+// timestamps joined by CIK and accession number.
+func EnrichShareFactsWithAcceptance(facts []ShareFact, metadata []FilingMetadata) ([]ShareFact, error) {
+	byAccession := make(map[string]FilingMetadata, len(metadata))
+	for _, filing := range metadata {
+		filing.CIK = strings.TrimSpace(filing.CIK)
+		filing.Accession = strings.TrimSpace(filing.Accession)
+		if filing.CIK == "" || filing.Accession == "" {
+			return nil, fmt.Errorf("acceptance metadata requires CIK and accession")
+		}
+		if old, ok := byAccession[filing.Accession]; ok {
+			if !sameFilingMetadata(old, filing) {
+				return nil, fmt.Errorf("acceptance metadata conflict for accession %q", filing.Accession)
+			}
+			continue
+		}
+		byAccession[filing.Accession] = filing
+	}
+
+	out := append([]ShareFact(nil), facts...)
+	for i := range out {
+		filing, ok := byAccession[strings.TrimSpace(out[i].Accession)]
+		if !ok {
+			continue
+		}
+		if filing.CIK != strings.TrimSpace(out[i].CIK) {
+			return nil, fmt.Errorf("acceptance metadata conflict for accession %q: CIK mismatch", filing.Accession)
+		}
+		if filing.AcceptedAt.IsZero() {
+			continue
+		}
+		if !out[i].AcceptedAt.IsZero() && !out[i].AcceptedAt.Equal(filing.AcceptedAt) {
+			return nil, fmt.Errorf("acceptance metadata conflict for CIK %s accession %s", filing.CIK, filing.Accession)
+		}
+		out[i].AcceptedAt = filing.AcceptedAt
+	}
+	return out, nil
+}
+
+func sameFilingMetadata(a, b FilingMetadata) bool {
+	return a.CIK == b.CIK && a.Accession == b.Accession && a.Form == b.Form &&
+		a.FiledAt.Equal(b.FiledAt) && a.ReportAt.Equal(b.ReportAt) && a.AcceptedAt.Equal(b.AcceptedAt)
 }
 
 func containsItem201(s string) bool {

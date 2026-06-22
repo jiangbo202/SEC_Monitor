@@ -131,24 +131,10 @@ func selectAcceptedShareFact(candidates []ShareFact) (*ShareFact, string, string
 	if len(candidates) == 0 {
 		return nil, QualityStatusMissing, ReasonShareFactMissing
 	}
-	if len(candidates) == 1 {
-		selected := candidates[0]
-		return &selected, QualityStatusValid, ReasonShareSelected
-	}
-	allSameShares := true
-	allAccepted := true
-	for i := 1; i < len(candidates); i++ {
-		allSameShares = allSameShares && candidates[i].Shares == candidates[0].Shares
-	}
 	for i := range candidates {
-		allAccepted = allAccepted && !candidates[i].AcceptedAt.IsZero()
-	}
-	if allSameShares {
-		selected := candidates[0]
-		return &selected, QualityStatusValid, ReasonShareSelected
-	}
-	if !allAccepted {
-		return nil, QualityStatusConflict, ReasonShareAcceptedAtMissing
+		if candidates[i].AcceptedAt.IsZero() {
+			return nil, QualityStatusConflict, ReasonShareAcceptedAtMissing
+		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if !candidates[i].AcceptedAt.Equal(candidates[j].AcceptedAt) {
@@ -156,8 +142,10 @@ func selectAcceptedShareFact(candidates []ShareFact) (*ShareFact, string, string
 		}
 		return candidates[i].Accession < candidates[j].Accession
 	})
-	if candidates[0].AcceptedAt.Equal(candidates[1].AcceptedAt) && candidates[0].Shares != candidates[1].Shares {
-		return nil, QualityStatusConflict, ReasonShareFactConflict
+	for i := 1; i < len(candidates) && candidates[i].AcceptedAt.Equal(candidates[0].AcceptedAt); i++ {
+		if candidates[i].Shares != candidates[0].Shares {
+			return nil, QualityStatusConflict, ReasonShareFactConflict
+		}
 	}
 	selected := candidates[0]
 	return &selected, QualityStatusValid, ReasonShareSelected

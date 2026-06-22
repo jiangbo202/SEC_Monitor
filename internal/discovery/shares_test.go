@@ -15,6 +15,7 @@ func TestSelectSharesDeterministicSelection(t *testing.T) {
 		name       string
 		facts      []ShareFact
 		wantShares int64
+		wantAccn   string
 		wantStatus string
 		wantReason string
 	}{
@@ -36,6 +37,21 @@ func TestSelectSharesDeterministicSelection(t *testing.T) {
 			f.AcceptedAt = time.Time{}
 			return f
 		}()}, wantStatus: QualityStatusConflict, wantReason: ReasonShareAcceptedAtMissing},
+		{name: "single fact missing accepted", facts: []ShareFact{func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }()}, wantStatus: QualityStatusConflict, wantReason: ReasonShareAcceptedAtMissing},
+		{name: "same shares missing accepted", facts: []ShareFact{func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }(), func() ShareFact {
+			f := withShare(base, base.Concept, "0002", base.Shares)
+			f.AcceptedAt = time.Time{}
+			return f
+		}()}, wantStatus: QualityStatusConflict, wantReason: ReasonShareAcceptedAtMissing},
+		{name: "exact duplicates missing accepted", facts: []ShareFact{func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }(), func() ShareFact { f := base; f.AcceptedAt = time.Time{}; return f }()}, wantStatus: QualityStatusConflict, wantReason: ReasonShareAcceptedAtMissing},
+		{name: "all highest accepted ties must agree", facts: []ShareFact{func() ShareFact { f := withShare(base, base.Concept, "0001", 10); return f }(), func() ShareFact {
+			f := withShare(base, base.Concept, "0002", 10)
+			return f
+		}(), func() ShareFact {
+			f := withShare(base, base.Concept, "0003", 20)
+			return f
+		}()}, wantStatus: QualityStatusConflict, wantReason: ReasonShareFactConflict},
+		{name: "same accepted value chooses lowest accession", facts: []ShareFact{withShare(base, base.Concept, "0002", base.Shares), withShare(base, base.Concept, "0001", base.Shares)}, wantShares: base.Shares, wantAccn: "0001", wantStatus: QualityStatusValid, wantReason: ReasonShareSelected},
 		{name: "exact duplicates are harmless", facts: []ShareFact{base, base}, wantShares: 40_000_000, wantStatus: QualityStatusValid, wantReason: ReasonShareSelected},
 		{name: "future facts ignored", facts: []ShareFact{base, withInstant(base, asOf.AddDate(0, 0, 1), "future", 99_000_000)}, wantShares: 40_000_000, wantStatus: QualityStatusValid, wantReason: ReasonShareSelected},
 		{name: "invalid facts ignored", facts: []ShareFact{{}, withShare(base, "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic", "bad", 99), func() ShareFact { f := base; f.Unit = "USD"; f.Accession = "bad2"; return f }(), base}, wantShares: 40_000_000, wantStatus: QualityStatusValid, wantReason: ReasonShareSelected},
@@ -51,12 +67,27 @@ func TestSelectSharesDeterministicSelection(t *testing.T) {
 			if test.wantShares > 0 && (got.Fact == nil || got.Fact.Shares != test.wantShares) {
 				t.Fatalf("selected fact = %#v, want shares=%d", got.Fact, test.wantShares)
 			}
+			if test.wantAccn != "" && (got.Fact == nil || got.Fact.Accession != test.wantAccn) {
+				t.Fatalf("selected fact = %#v, want accession=%q", got.Fact, test.wantAccn)
+			}
 			for i := range before {
 				if before[i] != test.facts[i] {
 					t.Fatalf("input mutated at %d", i)
 				}
 			}
 		})
+	}
+}
+
+func TestSelectSharesExcludesFactsAcceptedAfterAsOf(t *testing.T) {
+	asOf := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	fact := ShareFact{
+		CIK: "0000000001", Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "0001",
+		Instant: asOf.AddDate(0, -1, 0), FiledAt: asOf.Add(-time.Hour), AcceptedAt: asOf.Add(time.Nanosecond), Shares: 40_000_000, SourceURL: "https://www.sec.gov/a",
+	}
+	got := SelectShareSnapshot([]ShareFact{fact}, nil, asOf)
+	if got.QualityStatus != QualityStatusMissing || got.ReasonCode != ReasonShareFactMissing {
+		t.Fatalf("SelectShareSnapshot = %#v, want missing before SEC acceptance", got)
 	}
 }
 

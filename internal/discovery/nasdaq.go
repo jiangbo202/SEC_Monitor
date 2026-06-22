@@ -27,11 +27,17 @@ type SecuritySourceRecord struct {
 	StateOfIncorporation           string
 	LatestAnnualForm               string
 	RecentForms                    []string
+	FilingMetadata                 []FilingMetadata
 	HasBusinessCombinationItem201  bool
 	BusinessCombinationCompletedAt *time.Time
 	BlankCheckIssuer               bool
 	MappingStatus                  string
 	MappingVerifiedAt              *time.Time
+}
+
+type FilingMetadata struct {
+	CIK, Accession, Form          string
+	FiledAt, ReportAt, AcceptedAt time.Time
 }
 
 type SecurityMetadataSource interface {
