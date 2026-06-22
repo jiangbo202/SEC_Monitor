@@ -108,12 +108,14 @@ type MarketHoliday struct {
 }
 
 type MarketCalendarYear struct {
-	CalendarVersion string    `json:"calendar_version" gorm:"size:64;primaryKey;autoIncrement:false"`
-	Year            int       `json:"year" gorm:"primaryKey;autoIncrement:false"`
-	Complete        bool      `json:"complete"`
-	SourceURL       string    `json:"source_url" gorm:"size:2048"`
-	ReviewedBy      string    `json:"reviewed_by" gorm:"size:128"`
-	ReviewedAt      time.Time `json:"reviewed_at"`
+	CalendarVersion      string    `json:"calendar_version" gorm:"size:64;primaryKey;autoIncrement:false"`
+	Year                 int       `json:"year" gorm:"primaryKey;autoIncrement:false"`
+	Complete             bool      `json:"complete"`
+	ExpectedHolidayCount int       `json:"expected_holiday_count"`
+	HolidayDatesSHA256   string    `json:"holiday_dates_sha256" gorm:"size:64"`
+	SourceURL            string    `json:"source_url" gorm:"size:2048"`
+	ReviewedBy           string    `json:"reviewed_by" gorm:"size:128"`
+	ReviewedAt           time.Time `json:"reviewed_at"`
 }
 
 type PriceSnapshot struct {

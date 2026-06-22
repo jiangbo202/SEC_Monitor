@@ -2,27 +2,48 @@ package discovery
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const DefaultNYSECalendarVersion = "nyse-2026-2028-v1"
 
+const (
+	maxNYSECalendarSeedBytes = 1 << 20
+	maxNYSECalendarSeedRows  = 1000
+	calendarReviewClockSkew  = 5 * time.Minute
+)
+
 var ErrCalendarYearMissing = errors.New("market calendar year missing")
+var ErrCalendarSeedConflict = errors.New("market calendar seed conflict")
 
 //go:embed testdata/calendar/nyse_holidays_2026_2028.csv
 var defaultNYSECalendarCSV string
 
+// This manifest is deliberately independent from the embedded CSV. Adding or
+// changing a seed version requires reviewing both artifacts against NYSE's
+// published calendar.
+var nyseCalendarManifest = map[string]map[int][]string{
+	DefaultNYSECalendarVersion: {
+		2026: {"2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"},
+		2027: {"2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24"},
+		2028: {"2028-01-17", "2028-02-21", "2028-04-14", "2028-05-29", "2028-06-19", "2028-07-04", "2028-09-04", "2028-11-23", "2028-12-25"},
+	},
+}
+
 type MarketCalendar interface {
+	IsTradingDate(ctx context.Context, date string) (bool, error)
 	IsTradingDay(ctx context.Context, day time.Time) (bool, error)
 }
 
@@ -46,32 +67,68 @@ func NewDatabaseMarketCalendar(db *gorm.DB, calendarVersion string) (*DatabaseMa
 	return &DatabaseMarketCalendar{db: db, version: calendarVersion, newYork: newYork}, nil
 }
 
+// IsTradingDay interprets day as an instant and evaluates the civil date at
+// that instant in America/New_York. Use IsTradingDate for date-only input.
 func (calendar *DatabaseMarketCalendar) IsTradingDay(ctx context.Context, day time.Time) (bool, error) {
 	localDay := day.In(calendar.newYork)
-	year := localDay.Year()
-	var calendarYear MarketCalendarYear
-	result := calendar.db.WithContext(ctx).
-		Where("calendar_version = ? AND year = ? AND complete = ?", calendar.version, year, true).
-		Limit(1).
-		Find(&calendarYear)
-	if result.Error != nil {
-		return false, fmt.Errorf("load market calendar year: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return false, fmt.Errorf("%w: version %q year %d", ErrCalendarYearMissing, calendar.version, year)
-	}
+	return calendar.isTradingDate(ctx, localDay.Format(time.DateOnly), localDay.Year(), localDay.Weekday())
+}
 
-	if localDay.Weekday() == time.Saturday || localDay.Weekday() == time.Sunday {
-		return false, nil
+// IsTradingDate evaluates a strict YYYY-MM-DD New York civil date without a
+// timezone conversion.
+func (calendar *DatabaseMarketCalendar) IsTradingDate(ctx context.Context, date string) (bool, error) {
+	if len(date) != len(time.DateOnly) {
+		return false, fmt.Errorf("invalid trading date %q: want YYYY-MM-DD", date)
 	}
-	date := localDay.Format(time.DateOnly)
-	var count int64
-	if err := calendar.db.WithContext(ctx).Model(&MarketHoliday{}).
-		Where("calendar_version = ? AND date = ?", calendar.version, date).
-		Count(&count).Error; err != nil {
-		return false, fmt.Errorf("lookup market holiday: %w", err)
+	parsed, err := time.ParseInLocation(time.DateOnly, date, calendar.newYork)
+	if err != nil || parsed.Format(time.DateOnly) != date {
+		return false, fmt.Errorf("invalid trading date %q: want YYYY-MM-DD", date)
 	}
-	return count == 0, nil
+	return calendar.isTradingDate(ctx, date, parsed.Year(), parsed.Weekday())
+}
+
+func (calendar *DatabaseMarketCalendar) isTradingDate(ctx context.Context, date string, year int, weekday time.Weekday) (trading bool, err error) {
+	err = calendar.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var calendarYear MarketCalendarYear
+		result := tx.Where("calendar_version = ? AND year = ? AND complete = ?", calendar.version, year, true).
+			Limit(1).
+			Find(&calendarYear)
+		if result.Error != nil {
+			return fmt.Errorf("load market calendar year: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("%w: version %q year %d", ErrCalendarYearMissing, calendar.version, year)
+		}
+		if manifestYears, knownVersion := nyseCalendarManifest[calendar.version]; knownVersion {
+			expectedDates, knownYear := manifestYears[year]
+			expectedHash := hashCalendarDates(expectedDates)
+			if !knownYear || calendarYear.ExpectedHolidayCount != len(expectedDates) || calendarYear.HolidayDatesSHA256 != expectedHash {
+				return fmt.Errorf("%w: version %q year %d stored manifest metadata mismatch", ErrCalendarYearMissing, calendar.version, year)
+			}
+		}
+
+		var holidays []MarketHoliday
+		if queryErr := tx.Where("calendar_version = ? AND date >= ? AND date <= ?", calendar.version, fmt.Sprintf("%04d-01-01", year), fmt.Sprintf("%04d-12-31", year)).
+			Order("date").Find(&holidays).Error; queryErr != nil {
+			return fmt.Errorf("lookup market holidays: %w", queryErr)
+		}
+		baseDates := make([]string, 0, len(holidays))
+		isHoliday := false
+		for _, holiday := range holidays {
+			if holiday.CompleteYear {
+				baseDates = append(baseDates, holiday.Date)
+			}
+			if holiday.Date == date {
+				isHoliday = true
+			}
+		}
+		if calendarYear.ExpectedHolidayCount > 0 && (len(baseDates) != calendarYear.ExpectedHolidayCount || hashCalendarDates(baseDates) != calendarYear.HolidayDatesSHA256) {
+			return fmt.Errorf("%w: version %q year %d holiday manifest mismatch", ErrCalendarYearMissing, calendar.version, year)
+		}
+		trading = weekday != time.Saturday && weekday != time.Sunday && !isHoliday
+		return nil
+	})
+	return trading, err
 }
 
 func SeedDefaultNYSEMarketCalendar(ctx context.Context, db *gorm.DB) error {
@@ -82,37 +139,55 @@ func SeedNYSEMarketCalendar(ctx context.Context, db *gorm.DB, input io.Reader) e
 	if db == nil {
 		return errors.New("market calendar database is required")
 	}
-	reader := csv.NewReader(input)
-	records, err := reader.ReadAll()
+	limited := &io.LimitedReader{R: input, N: maxNYSECalendarSeedBytes + 1}
+	reader := csv.NewReader(limited)
+	reader.FieldsPerRecord = -1
+	header, err := reader.Read()
 	if err != nil {
-		return fmt.Errorf("read NYSE calendar seed: %w", err)
+		return fmt.Errorf("read NYSE calendar seed header: %w", err)
 	}
-	if len(records) < 2 {
+	if limited.N <= 0 {
+		return fmt.Errorf("NYSE calendar seed exceeds %d bytes", maxNYSECalendarSeedBytes)
+	}
+	if len(header) == 0 {
 		return errors.New("NYSE calendar seed contains no holiday rows")
 	}
 	wantHeader := []string{"calendar_version", "year", "date", "name", "source_url", "reviewed_by", "reviewed_at", "complete"}
-	if len(records[0]) != len(wantHeader) {
-		return fmt.Errorf("NYSE calendar seed header has %d columns, want %d", len(records[0]), len(wantHeader))
+	if len(header) != len(wantHeader) {
+		return fmt.Errorf("NYSE calendar seed header has %d columns, want %d", len(header), len(wantHeader))
 	}
 	for index := range wantHeader {
-		if records[0][index] != wantHeader[index] {
-			return fmt.Errorf("NYSE calendar seed header column %d is %q, want %q", index+1, records[0][index], wantHeader[index])
+		if header[index] != wantHeader[index] {
+			return fmt.Errorf("NYSE calendar seed header column %d is %q, want %q", index+1, header[index], wantHeader[index])
 		}
 	}
 
-	holidays := make([]MarketHoliday, 0, len(records)-1)
+	holidays := make([]MarketHoliday, 0, 32)
 	years := make(map[string]MarketCalendarYear)
-	for index, record := range records[1:] {
-		line := index + 2
+	seenDates := make(map[string]struct{})
+	for line := 2; ; line++ {
+		record, readErr := reader.Read()
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return fmt.Errorf("read NYSE calendar seed line %d: %w", line, readErr)
+		}
+		if line > maxNYSECalendarSeedRows+1 {
+			return fmt.Errorf("NYSE calendar seed exceeds %d rows", maxNYSECalendarSeedRows)
+		}
 		if len(record) != len(wantHeader) {
 			return fmt.Errorf("NYSE calendar seed line %d has %d columns, want %d", line, len(record), len(wantHeader))
+		}
+		for index := range record {
+			record[index] = strings.TrimSpace(record[index])
 		}
 		version := strings.TrimSpace(record[0])
 		year, yearErr := strconv.Atoi(record[1])
 		date, dateErr := time.Parse(time.DateOnly, record[2])
 		reviewedAt, reviewedErr := time.Parse(time.RFC3339, record[6])
 		complete, completeErr := strconv.ParseBool(record[7])
-		if version == "" || strings.TrimSpace(record[3]) == "" || strings.TrimSpace(record[4]) == "" || strings.TrimSpace(record[5]) == "" {
+		if version == "" || record[3] == "" || record[4] == "" || record[5] == "" {
 			return fmt.Errorf("NYSE calendar seed line %d is missing a required audit field", line)
 		}
 		if yearErr != nil || year < 1 {
@@ -130,6 +205,17 @@ func SeedNYSEMarketCalendar(ctx context.Context, db *gorm.DB, input io.Reader) e
 		if completeErr != nil {
 			return fmt.Errorf("NYSE calendar seed line %d has invalid complete value %q", line, record[7])
 		}
+		if err := validateNYSESourceURL(record[4]); err != nil {
+			return fmt.Errorf("NYSE calendar seed line %d has invalid source_url: %w", line, err)
+		}
+		if reviewedAt.After(time.Now().Add(calendarReviewClockSkew)) {
+			return fmt.Errorf("NYSE calendar seed line %d reviewed_at is in the future", line)
+		}
+		dateKey := version + "\x00" + record[2]
+		if _, exists := seenDates[dateKey]; exists {
+			return fmt.Errorf("NYSE calendar seed line %d duplicates version %q date %s", line, version, record[2])
+		}
+		seenDates[dateKey] = struct{}{}
 		calendarYear := MarketCalendarYear{
 			CalendarVersion: version,
 			Year:            year,
@@ -153,18 +239,112 @@ func SeedNYSEMarketCalendar(ctx context.Context, db *gorm.DB, input io.Reader) e
 			ReviewedAt:      reviewedAt,
 		})
 	}
+	if limited.N <= 0 {
+		return fmt.Errorf("NYSE calendar seed exceeds %d bytes", maxNYSECalendarSeedBytes)
+	}
+	if len(holidays) == 0 {
+		return errors.New("NYSE calendar seed contains no holiday rows")
+	}
+	if err := verifyNYSECalendarManifest(years, holidays); err != nil {
+		return err
+	}
 
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, year := range years {
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&year).Error; err != nil {
+			if err := createCalendarYearExact(tx, year); err != nil {
 				return fmt.Errorf("seed NYSE calendar year %d: %w", year.Year, err)
 			}
 		}
 		for index := range holidays {
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&holidays[index]).Error; err != nil {
+			if err := createHolidayExact(tx, holidays[index]); err != nil {
 				return fmt.Errorf("seed NYSE holiday %s: %w", holidays[index].Date, err)
 			}
 		}
 		return nil
 	})
+}
+
+func verifyNYSECalendarManifest(years map[string]MarketCalendarYear, holidays []MarketHoliday) error {
+	datesByVersionYear := make(map[string][]string)
+	versions := make(map[string]struct{})
+	for _, holiday := range holidays {
+		key := fmt.Sprintf("%s\x00%s", holiday.CalendarVersion, holiday.Date[:4])
+		datesByVersionYear[key] = append(datesByVersionYear[key], holiday.Date)
+		versions[holiday.CalendarVersion] = struct{}{}
+	}
+	for version := range versions {
+		manifest, ok := nyseCalendarManifest[version]
+		if !ok {
+			return fmt.Errorf("NYSE calendar seed version %q has no reviewed manifest", version)
+		}
+		for year, expectedDates := range manifest {
+			key := fmt.Sprintf("%s\x00%d", version, year)
+			calendarYear, exists := years[key]
+			if !exists || !calendarYear.Complete {
+				return fmt.Errorf("NYSE calendar seed version %q is missing complete target year %d", version, year)
+			}
+			actualDates := datesByVersionYear[key]
+			sort.Strings(actualDates)
+			if len(actualDates) != len(expectedDates) || hashCalendarDates(actualDates) != hashCalendarDates(expectedDates) {
+				return fmt.Errorf("NYSE calendar seed version %q year %d does not match reviewed holiday manifest", version, year)
+			}
+			calendarYear.ExpectedHolidayCount = len(expectedDates)
+			calendarYear.HolidayDatesSHA256 = hashCalendarDates(expectedDates)
+			years[key] = calendarYear
+		}
+		for key := range years {
+			if strings.HasPrefix(key, version+"\x00") {
+				var year int
+				_, _ = fmt.Sscanf(strings.TrimPrefix(key, version+"\x00"), "%d", &year)
+				if _, exists := manifest[year]; !exists {
+					return fmt.Errorf("NYSE calendar seed version %q contains unexpected year %d", version, year)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func hashCalendarDates(dates []string) string {
+	copyOfDates := append([]string(nil), dates...)
+	sort.Strings(copyOfDates)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(copyOfDates, "\n"))))
+}
+
+func validateNYSESourceURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "www.nyse.com" || parsed.Path != "/markets/hours-calendars" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("must be https://www.nyse.com/markets/hours-calendars")
+	}
+	return nil
+}
+
+func createCalendarYearExact(tx *gorm.DB, desired MarketCalendarYear) error {
+	var existing MarketCalendarYear
+	err := tx.First(&existing, "calendar_version = ? AND year = ?", desired.CalendarVersion, desired.Year).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return tx.Create(&desired).Error
+	}
+	if err != nil {
+		return err
+	}
+	if existing != desired {
+		return fmt.Errorf("%w: version %q year %d", ErrCalendarSeedConflict, desired.CalendarVersion, desired.Year)
+	}
+	return nil
+}
+
+func createHolidayExact(tx *gorm.DB, desired MarketHoliday) error {
+	var existing MarketHoliday
+	err := tx.First(&existing, "calendar_version = ? AND date = ?", desired.CalendarVersion, desired.Date).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return tx.Create(&desired).Error
+	}
+	if err != nil {
+		return err
+	}
+	if existing != desired {
+		return fmt.Errorf("%w: version %q date %s", ErrCalendarSeedConflict, desired.CalendarVersion, desired.Date)
+	}
+	return nil
 }

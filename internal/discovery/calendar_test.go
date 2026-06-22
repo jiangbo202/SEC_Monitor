@@ -3,6 +3,8 @@ package discovery
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +46,52 @@ func TestMarketCalendarTradingDays(t *testing.T) {
 	}
 }
 
+func TestMarketCalendarCivilDateDoesNotShiftToPriorNewYorkDate(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	calendar, err := NewDatabaseMarketCalendar(db, DefaultNYSECalendarVersion)
+	if err != nil {
+		t.Fatalf("NewDatabaseMarketCalendar: %v", err)
+	}
+
+	for _, test := range []struct {
+		date string
+		want bool
+	}{
+		{date: "2026-07-03", want: false},
+		{date: "2026-07-06", want: true},
+	} {
+		got, err := calendar.IsTradingDate(context.Background(), test.date)
+		if err != nil {
+			t.Fatalf("IsTradingDate(%q): %v", test.date, err)
+		}
+		if got != test.want {
+			t.Fatalf("IsTradingDate(%q) = %t, want %t", test.date, got, test.want)
+		}
+	}
+
+	utcMidnight, err := time.Parse(time.DateOnly, "2026-07-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotInstant, err := calendar.IsTradingDay(context.Background(), utcMidnight)
+	if err != nil {
+		t.Fatalf("IsTradingDay: %v", err)
+	}
+	if !gotInstant {
+		t.Fatal("IsTradingDay must retain instant semantics: UTC midnight is July 2 in New York")
+	}
+}
+
+func TestMarketCalendarRejectsInvalidCivilDate(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	calendar, _ := NewDatabaseMarketCalendar(db, DefaultNYSECalendarVersion)
+	for _, date := range []string{"2026-7-03", "2026-07-03T00:00:00Z", " 2026-07-03 ", "2026-02-30"} {
+		if _, err := calendar.IsTradingDate(context.Background(), date); err == nil {
+			t.Fatalf("IsTradingDate(%q) succeeded, want strict YYYY-MM-DD error", date)
+		}
+	}
+}
+
 func TestMarketCalendarSeededHolidays(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	calendar, err := NewDatabaseMarketCalendar(db, DefaultNYSECalendarVersion)
@@ -51,16 +99,19 @@ func TestMarketCalendarSeededHolidays(t *testing.T) {
 		t.Fatalf("NewDatabaseMarketCalendar: %v", err)
 	}
 	var holidays []MarketHoliday
-	if err := db.Where("calendar_version = ?", DefaultNYSECalendarVersion).Order("date").Find(&holidays).Error; err != nil {
+	if err := db.Where("calendar_version = ? AND complete_year = ?", DefaultNYSECalendarVersion, true).Order("date").Find(&holidays).Error; err != nil {
 		t.Fatalf("load seeded holidays: %v", err)
 	}
-	if len(holidays) != 29 {
-		t.Fatalf("seeded holiday count = %d, want 29", len(holidays))
+	wantDates := officialNYSEHolidayDatesForTest()
+	if len(holidays) != len(wantDates) {
+		t.Fatalf("seeded holiday count = %d, want %d", len(holidays), len(wantDates))
 	}
-	for _, holiday := range holidays {
+	for index, holiday := range holidays {
+		if holiday.Date != wantDates[index] {
+			t.Fatalf("seeded holiday[%d] = %q, want independently specified %q", index, holiday.Date, wantDates[index])
+		}
 		t.Run(holiday.Date, func(t *testing.T) {
-			day := parseCalendarTime(t, holiday.Date+"T12:00:00-05:00")
-			got, err := calendar.IsTradingDay(context.Background(), day)
+			got, err := calendar.IsTradingDate(context.Background(), holiday.Date)
 			if err != nil {
 				t.Fatalf("IsTradingDay: %v", err)
 			}
@@ -119,6 +170,40 @@ func TestMarketCalendarFailsClosedForMissingOrIncompleteYear(t *testing.T) {
 	}
 }
 
+func TestMarketCalendarFailsClosedWhenCompleteYearManifestIsCorrupt(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		tamper func(*gorm.DB) error
+	}{
+		{
+			name: "stored manifest metadata",
+			tamper: func(db *gorm.DB) error {
+				return db.Model(&MarketCalendarYear{}).
+					Where("calendar_version = ? AND year = ?", DefaultNYSECalendarVersion, 2026).
+					Updates(map[string]any{"expected_holiday_count": 0, "holiday_dates_sha256": ""}).Error
+			},
+		},
+		{
+			name: "base holiday set",
+			tamper: func(db *gorm.DB) error {
+				return db.Delete(&MarketHoliday{}, "calendar_version = ? AND date = ?", DefaultNYSECalendarVersion, "2026-07-03").Error
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := openMigratedTestDatabase(t)
+			if err := test.tamper(db); err != nil {
+				t.Fatal(err)
+			}
+			calendar, _ := NewDatabaseMarketCalendar(db, DefaultNYSECalendarVersion)
+			got, err := calendar.IsTradingDate(context.Background(), "2026-07-06")
+			if got || !errors.Is(err, ErrCalendarYearMissing) {
+				t.Fatalf("IsTradingDate after manifest corruption = (%t, %v), want false and ErrCalendarYearMissing", got, err)
+			}
+		})
+	}
+}
+
 func TestMarketCalendarVersionIsolation(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	otherVersion := "review-draft-v2"
@@ -140,21 +225,8 @@ func TestMarketCalendarVersionIsolation(t *testing.T) {
 
 func TestMarketCalendarSeedIsIdempotentAndPreservesReview(t *testing.T) {
 	db := openMigratedTestDatabase(t)
-	customReview := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	if err := db.Model(&MarketCalendarYear{}).
-		Where("calendar_version = ? AND year = ?", DefaultNYSECalendarVersion, 2026).
-		Updates(map[string]any{"reviewed_by": "local-reviewer", "reviewed_at": customReview}).Error; err != nil {
-		t.Fatalf("customize review metadata: %v", err)
-	}
 	if err := SeedDefaultNYSEMarketCalendar(context.Background(), db); err != nil {
 		t.Fatalf("second seed: %v", err)
-	}
-	var year MarketCalendarYear
-	if err := db.First(&year, "calendar_version = ? AND year = ?", DefaultNYSECalendarVersion, 2026).Error; err != nil {
-		t.Fatalf("load year: %v", err)
-	}
-	if year.ReviewedBy != "local-reviewer" || !year.ReviewedAt.Equal(customReview) {
-		t.Fatalf("seed overwrote review metadata: %+v", year)
 	}
 	var count int64
 	if err := db.Model(&MarketHoliday{}).Where("calendar_version = ?", DefaultNYSECalendarVersion).Count(&count).Error; err != nil {
@@ -162,6 +234,132 @@ func TestMarketCalendarSeedIsIdempotentAndPreservesReview(t *testing.T) {
 	}
 	if count != 29 {
 		t.Fatalf("holiday count after reseed = %d, want 29", count)
+	}
+}
+
+func TestMarketCalendarMigrationIsIdempotentAndRejectsDatabaseConflicts(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		tamper func(*gorm.DB) error
+	}{
+		{
+			name: "calendar year metadata",
+			tamper: func(db *gorm.DB) error {
+				return db.Model(&MarketCalendarYear{}).Where("calendar_version = ? AND year = ?", DefaultNYSECalendarVersion, 2026).Update("reviewed_by", "tampered").Error
+			},
+		},
+		{
+			name: "holiday content",
+			tamper: func(db *gorm.DB) error {
+				return db.Model(&MarketHoliday{}).Where("calendar_version = ? AND date = ?", DefaultNYSECalendarVersion, "2026-07-03").Update("name", "tampered").Error
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := openMigratedTestDatabase(t)
+			if err := Migrate(db); err != nil {
+				t.Fatalf("repeat Migrate: %v", err)
+			}
+			if err := test.tamper(db); err != nil {
+				t.Fatalf("tamper: %v", err)
+			}
+			err := Migrate(db)
+			if !errors.Is(err, ErrCalendarSeedConflict) {
+				t.Fatalf("Migrate after tamper error = %v, want ErrCalendarSeedConflict", err)
+			}
+		})
+	}
+}
+
+func TestMarketCalendarSeedRequiresCompleteManifest(t *testing.T) {
+	valid := defaultNYSECalendarCSV
+	tests := []struct {
+		name string
+		csv  string
+	}{
+		{name: "missing target year", csv: strings.Join(strings.Split(valid, "\n")[:11], "\n") + "\n"},
+		{name: "missing holiday", csv: strings.Replace(valid, "nyse-2026-2028-v1,2026,2026-07-03,Independence Day (observed),https://www.nyse.com/markets/hours-calendars,sec-monitor-maintainers,2026-06-22T00:00:00Z,true\n", "", 1)},
+		{name: "wrong holiday", csv: strings.Replace(valid, "2026-07-03", "2026-07-02", 1)},
+		{name: "duplicate holiday", csv: valid + strings.Split(valid, "\n")[1] + "\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := openUnmigratedCalendarDatabase(t)
+			if err := db.AutoMigrate(&MarketHoliday{}, &MarketCalendarYear{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := SeedNYSEMarketCalendar(context.Background(), db, strings.NewReader(test.csv)); err == nil {
+				t.Fatal("invalid manifest seed succeeded")
+			}
+		})
+	}
+}
+
+func TestMarketCalendarSeedValidatesAuditMetadata(t *testing.T) {
+	valid := defaultNYSECalendarCSV
+	tests := []struct {
+		name string
+		csv  string
+	}{
+		{name: "non HTTPS source", csv: strings.Replace(valid, "https://www.nyse.com/markets/hours-calendars", "http://www.nyse.com/markets/hours-calendars", 1)},
+		{name: "non NYSE source", csv: strings.Replace(valid, "https://www.nyse.com/markets/hours-calendars", "https://example.test/calendar", 1)},
+		{name: "future review", csv: strings.Replace(valid, "2026-06-22T00:00:00Z", "2099-01-01T00:00:00Z", 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := openUnmigratedCalendarDatabase(t)
+			if err := db.AutoMigrate(&MarketHoliday{}, &MarketCalendarYear{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := SeedNYSEMarketCalendar(context.Background(), db, strings.NewReader(test.csv)); err == nil {
+				t.Fatal("invalid audit seed succeeded")
+			}
+		})
+	}
+}
+
+func TestMarketCalendarSeedTrimsAuditMetadata(t *testing.T) {
+	seed := strings.ReplaceAll(defaultNYSECalendarCSV, "https://www.nyse.com/markets/hours-calendars", "  https://www.nyse.com/markets/hours-calendars  ")
+	seed = strings.ReplaceAll(seed, "sec-monitor-maintainers", "  sec-monitor-maintainers  ")
+	db := openUnmigratedCalendarDatabase(t)
+	if err := db.AutoMigrate(&MarketHoliday{}, &MarketCalendarYear{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedNYSEMarketCalendar(context.Background(), db, strings.NewReader(seed)); err != nil {
+		t.Fatalf("SeedNYSEMarketCalendar: %v", err)
+	}
+	var holiday MarketHoliday
+	if err := db.First(&holiday, "calendar_version = ? AND date = ?", DefaultNYSECalendarVersion, "2026-01-01").Error; err != nil {
+		t.Fatal(err)
+	}
+	if holiday.SourceURL != "https://www.nyse.com/markets/hours-calendars" || holiday.ReviewedBy != "sec-monitor-maintainers" {
+		t.Fatalf("audit metadata was not trimmed: %+v", holiday)
+	}
+}
+
+func TestMarketCalendarReadsCompletenessAndHolidaysInTransaction(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	calendar, _ := NewDatabaseMarketCalendar(db, DefaultNYSECalendarVersion)
+	var queryPools []string
+	callbackName := "test:record-calendar-query-pools"
+	if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "market_calendar_years" || tx.Statement.Table == "market_holidays" {
+			queryPools = append(queryPools, reflect.TypeOf(tx.Statement.ConnPool).String())
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Query().Remove(callbackName) })
+	if _, err := calendar.IsTradingDate(context.Background(), "2026-07-06"); err != nil {
+		t.Fatal(err)
+	}
+	if len(queryPools) < 2 {
+		t.Fatalf("calendar issued %d tracked queries, want completeness and holidays", len(queryPools))
+	}
+	for _, pool := range queryPools {
+		if pool != "*sql.Tx" {
+			t.Fatalf("calendar query used %s, want *sql.Tx consistent snapshot; all=%v", pool, queryPools)
+		}
 	}
 }
 
@@ -173,6 +371,7 @@ func TestMarketCalendarSeedRejectsInvalidRows(t *testing.T) {
 		{name: "invalid date", csv: "calendar_version,year,date,name,source_url,reviewed_by,reviewed_at,complete\nv1,2026,not-a-date,Holiday,https://example.test,reviewer,2026-01-01T00:00:00Z,true\n"},
 		{name: "date year mismatch", csv: "calendar_version,year,date,name,source_url,reviewed_by,reviewed_at,complete\nv1,2026,2027-01-01,Holiday,https://example.test,reviewer,2026-01-01T00:00:00Z,true\n"},
 		{name: "missing audit field", csv: "calendar_version,year,date,name,source_url,reviewed_by,reviewed_at,complete\nv1,2026,2026-01-01,Holiday,,reviewer,2026-01-01T00:00:00Z,true\n"},
+		{name: "oversized seed", csv: strings.Repeat("x", 2<<20)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -192,6 +391,19 @@ func TestMarketCalendarSeedRejectsInvalidRows(t *testing.T) {
 			}
 		})
 	}
+}
+
+func officialNYSEHolidayDatesForTest() []string {
+	return []string{
+		"2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+		"2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
+		"2028-01-17", "2028-02-21", "2028-04-14", "2028-05-29", "2028-06-19", "2028-07-04", "2028-09-04", "2028-11-23", "2028-12-25",
+	}
+}
+
+func ExampleDatabaseMarketCalendar_IsTradingDate() {
+	fmt.Println("Use IsTradingDate for YYYY-MM-DD civil dates; IsTradingDay interprets a time.Time as an instant.")
+	// Output: Use IsTradingDate for YYYY-MM-DD civil dates; IsTradingDay interprets a time.Time as an instant.
 }
 
 func openUnmigratedCalendarDatabase(t *testing.T) *gorm.DB {
