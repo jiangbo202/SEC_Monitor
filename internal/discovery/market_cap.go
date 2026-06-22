@@ -50,12 +50,6 @@ func ComputeSmallCapQualification(closeMicros, shares int64) (marketCapUSD int64
 	return marketCapUSD, qualified, nil
 }
 
-// IsQualifiedSmallCapUSD qualifies an already-rounded display value. New
-// qualification code must use ComputeSmallCapQualification instead.
-func IsQualifiedSmallCapUSD(marketCapUSD int64) bool {
-	return marketCapUSD >= MinimumSmallCapUSD && marketCapUSD <= MaximumSmallCapUSD
-}
-
 // ValidateMarketCapPrice returns the number of NYSE trading days strictly
 // after the price date through the New York civil date containing asOf.
 func ValidateMarketCapPrice(ctx context.Context, calendar MarketCalendar, price PriceRecord, asOf time.Time) (int, error) {

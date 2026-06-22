@@ -31,17 +31,6 @@ func TestComputeMarketCap(t *testing.T) {
 	}
 }
 
-func TestQualifiedSmallCapBoundaries(t *testing.T) {
-	for _, test := range []struct {
-		cap  int64
-		want bool
-	}{{29_999_999, false}, {30_000_000, true}, {1_000_000_000, true}, {1_000_000_001, false}} {
-		if got := IsQualifiedSmallCapUSD(test.cap); got != test.want {
-			t.Fatalf("IsQualifiedSmallCapUSD(%d)=%t, want %t", test.cap, got, test.want)
-		}
-	}
-}
-
 func TestComputeSmallCapQualificationUsesUnroundedProduct(t *testing.T) {
 	tests := []struct {
 		name                   string

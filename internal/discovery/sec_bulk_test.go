@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"os"
@@ -211,24 +213,67 @@ func TestSECBulkSource(t *testing.T) {
 	}
 }
 
-func TestSECBulkSourceSharesFailsClosedWithoutAcceptanceMetadata(t *testing.T) {
-	cf := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1,"end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"0000001234-26-000001"}]}}}}}`})
-	sub := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":[],"accessionNumber":[],"filingDate":[]}}}`})
-	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		body := cf
-		if strings.Contains(r.URL.Path, "sub") {
-			body = sub
-		}
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header), Request: r}, nil
-	})}
-	base := SECBulkSource{Downloader: &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1 << 20}, CompanyFactsURL: "https://x.test/facts", Limits: ZIPParseLimits{MaxEntries: 10, MaxEntryBytes: 1 << 20, MaxTotalBytes: 1 << 20}}
+func TestSECBulkSourceSharesRequiresBothArchives(t *testing.T) {
+	base := SECBulkSource{Downloader: &Downloader{}, CompanyFactsURL: "https://x.test/facts"}
 	if _, _, err := base.LoadLatestShares(context.Background(), map[string]struct{}{"0000001234": {}}); err == nil || !strings.Contains(err.Error(), "submissions URL") {
 		t.Fatalf("missing submissions URL error = %v", err)
 	}
-	base.SubmissionsURL = "https://x.test/sub"
-	if facts, _, err := base.LoadLatestShares(context.Background(), map[string]struct{}{"0000001234": {}}); err == nil || len(facts) != 0 || !strings.Contains(err.Error(), "acceptance metadata") {
-		t.Fatalf("missing acceptance metadata got facts=%#v err=%v", facts, err)
+}
+
+func TestSECBulkSourceSharesDefersMissingAcceptanceToLatestSelection(t *testing.T) {
+	const (
+		oldAccession    = "0000001234-25-000001"
+		latestAccession = "0000001234-26-000001"
+	)
+	companyFacts := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":10,"end":"2025-12-31","filed":"2026-01-02","form":"10-K","accn":"` + oldAccession + `"},{"val":20,"end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"` + latestAccession + `"}]}}}}}`})
+	tests := []struct {
+		name, matchedAccession, acceptance string
+		wantStatus, wantReason             string
+		wantShares                         int64
+	}{
+		{name: "irrelevant historical fact is unmatched", matchedAccession: latestAccession, acceptance: "2026-05-01T12:34:56Z", wantStatus: QualityStatusValid, wantReason: ReasonShareSelected, wantShares: 20},
+		{name: "latest fact is unmatched", matchedAccession: oldAccession, acceptance: "2026-01-02T12:34:56Z", wantStatus: QualityStatusMissing, wantReason: ReasonShareAcceptedAtMissing},
 	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			submissions := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"filings":{"recent":{"form":["10-Q"],"accessionNumber":["` + test.matchedAccession + `"],"filingDate":["2026-05-01"],"acceptanceDateTime":["` + test.acceptance + `"]}}}`})
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				body := companyFacts
+				if strings.Contains(r.URL.Path, "sub") {
+					body = submissions
+				}
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header), Request: r}, nil
+			})}
+			source := SECBulkSource{Downloader: &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1 << 20}, CompanyFactsURL: "https://x.test/facts", SubmissionsURL: "https://x.test/sub", Limits: ZIPParseLimits{MaxEntries: 10, MaxEntryBytes: 1 << 20, MaxTotalBytes: 1 << 20}}
+
+			facts, version, err := source.LoadLatestShares(context.Background(), map[string]struct{}{"0000001234": {}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(facts) != 2 {
+				t.Fatalf("facts = %#v, want two partially enriched facts", facts)
+			}
+			if want := testBulkVersionHash(companyFacts, submissions); version.Source != "sec-companyfacts-submissions" || version.Version != want || version.SHA256 != want {
+				t.Fatalf("version = %#v, want double-archive hash %q", version, want)
+			}
+			selection := SelectShareSnapshot(facts, nil, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+			if selection.QualityStatus != test.wantStatus || selection.ReasonCode != test.wantReason {
+				t.Fatalf("selection = %#v, want status=%q reason=%q", selection, test.wantStatus, test.wantReason)
+			}
+			if test.wantShares > 0 && (selection.Fact == nil || selection.Fact.Shares != test.wantShares) {
+				t.Fatalf("selection fact = %#v, want shares=%d", selection.Fact, test.wantShares)
+			}
+		})
+	}
+}
+
+func testBulkVersionHash(archives ...[]byte) string {
+	combined := sha256.New()
+	for _, archive := range archives {
+		digest := sha256.Sum256(archive)
+		combined.Write([]byte(hex.EncodeToString(digest[:]) + "\n"))
+	}
+	return hex.EncodeToString(combined.Sum(nil))
 }
 
 func makeZIPBytes(t *testing.T, entries map[string]string) []byte {

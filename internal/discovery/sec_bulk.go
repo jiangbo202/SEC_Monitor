@@ -646,7 +646,8 @@ func (s SECBulkSource) Load(ctx context.Context) ([]SecuritySourceRecord, Source
 }
 
 // LoadLatestShares returns company facts enriched with SEC acceptance times.
-// It fails closed when either archive is unavailable or a fact cannot be joined.
+// Facts absent from submissions recent retain a zero acceptance time so the
+// point-in-time selector can fail closed only when such a fact is preferred.
 func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]struct{}) ([]ShareFact, SourceVersion, error) {
 	if err := s.validateDownloader(); err != nil {
 		return nil, SourceVersion{}, err
@@ -687,11 +688,6 @@ func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]
 	facts, err = EnrichShareFactsWithAcceptance(facts, metadata)
 	if err != nil {
 		return nil, SourceVersion{}, err
-	}
-	for _, fact := range facts {
-		if fact.AcceptedAt.IsZero() {
-			return nil, SourceVersion{}, fmt.Errorf("acceptance metadata missing for CIK %s accession %s", fact.CIK, fact.Accession)
-		}
 	}
 	return facts, bulkVersion("sec-companyfacts-submissions", c, submissions), nil
 }
