@@ -23,6 +23,8 @@ var (
 	ErrPriceAdjusted      = errors.New("adjusted price is not accepted")
 	ErrPriceCurrency      = errors.New("price currency is not USD")
 	ErrPriceInvalid       = errors.New("price is invalid")
+	ErrPriceZero          = errors.New("price is zero")
+	ErrPriceNegative      = errors.New("price is negative")
 )
 
 // ComputeMarketCapUSD uses checked integer arithmetic. Any fractional dollar
@@ -62,8 +64,11 @@ func ValidateMarketCapPrice(ctx context.Context, calendar MarketCalendar, price 
 	if asOf.IsZero() || price.TradeDate.IsZero() {
 		return 0, errors.New("price date and as-of time are required")
 	}
-	if price.CloseMicros <= 0 {
-		return 0, ErrPriceInvalid
+	if price.CloseMicros == 0 {
+		return 0, ErrPriceZero
+	}
+	if price.CloseMicros < 0 {
+		return 0, ErrPriceNegative
 	}
 	if price.Adjusted {
 		return 0, ErrPriceAdjusted

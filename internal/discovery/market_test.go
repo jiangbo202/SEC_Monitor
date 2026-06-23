@@ -334,8 +334,8 @@ func TestEvaluateProviderDayEnforcesEveryThreshold(t *testing.T) {
 	}
 	badPrimary := append([]PriceRecord(nil), primary...)
 	badPrimary[0].Source = "not-stooq"
-	if _, err := EvaluateProviderDay(base, badPrimary, time.Now()); err == nil || !strings.Contains(err.Error(), "primary source") {
-		t.Fatalf("malformed frozen evidence error = %v", err)
+	if day2, err := EvaluateProviderDay(base, badPrimary, time.Now()); err != nil || day2.goldSHA256 != day.goldSHA256 {
+		t.Fatalf("daily records must not be joined to historical frozen evidence: day=%+v err=%v", day2, err)
 	}
 	base.Expected = 0
 	if _, err := EvaluateProviderDay(base, primary, time.Now()); err == nil {

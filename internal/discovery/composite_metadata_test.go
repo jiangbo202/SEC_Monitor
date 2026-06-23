@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 )
@@ -23,7 +22,7 @@ func TestCompositeSecurityMetadataSourceStrictlyJoinsAndPreservesEvidence(t *tes
 	}
 }
 
-func TestCompositeSecurityMetadataSourceFailsClosedOnUnmappedOrConflict(t *testing.T) {
+func TestCompositeSecurityMetadataSourceStagesUnmappedAndConflict(t *testing.T) {
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name        string
@@ -34,9 +33,42 @@ func TestCompositeSecurityMetadataSourceFailsClosedOnUnmappedOrConflict(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := CompositeSecurityMetadataSource{Nasdaq: fakeMetadataSource{records: tc.nasdaq, version: testSourceVersion("nasdaq", "n", now)}, SEC: fakeMetadataSource{records: tc.sec, version: testSourceVersion("sec-bulk", "s", now)}}
-			if _, _, err := s.Load(context.Background()); err == nil || !strings.Contains(err.Error(), "ticker") {
-				t.Fatalf("err=%v", err)
+			records, _, err := s.Load(context.Background())
+			if err != nil || len(records) != 1 || records[0].CIK != "" || records[0].MappingStatus != MappingStatusConflict || records[0].EvidenceJSON == "" {
+				t.Fatalf("records=%#v err=%v", records, err)
 			}
 		})
+	}
+}
+
+func TestCompositeSecurityMetadataSourceUsesExactVersionedTickerMapping(t *testing.T) {
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	nasdaq := fakeMetadataSource{records: []SecuritySourceRecord{{Ticker: "BRK.B"}}, version: testSourceVersion("nasdaq", "n", now)}
+	sec := fakeMetadataSource{records: []SecuritySourceRecord{{Ticker: "BRK-B", CIK: "0000001067"}}, version: testSourceVersion("sec-bulk", "s", now)}
+	records, _, err := (CompositeSecurityMetadataSource{Nasdaq: nasdaq, SEC: sec}).Load(context.Background())
+	if err != nil || records[0].CIK != "" || records[0].MappingStatus != MappingStatusConflict {
+		t.Fatalf("records=%#v err=%v", records, err)
+	}
+}
+
+func TestCompositeSecurityMetadataSourceVerifiesDeSPACOnlyWithPostCombinationEvidence(t *testing.T) {
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	completed := now.Add(-48 * time.Hour)
+	observed := now.Add(-24 * time.Hour)
+	secRecord := SecuritySourceRecord{Ticker: "NEW", CIK: "0000004321", CompanyName: "New Company", HasBusinessCombinationItem201: true, BusinessCombinationCompletedAt: &completed}
+	makeSource := func(at *time.Time) CompositeSecurityMetadataSource {
+		return CompositeSecurityMetadataSource{
+			Nasdaq:           fakeMetadataSource{records: []SecuritySourceRecord{{Ticker: "NEW", CompanyName: "New Company", ObservedAt: at}}, version: testSourceVersion("nasdaq", "n", now)},
+			SEC:              fakeMetadataSource{records: []SecuritySourceRecord{secRecord}, version: testSourceVersion("sec-bulk", "s", now)},
+			IdentityVerifier: ObservedIdentityVerificationSource{},
+		}
+	}
+	records, _, err := makeSource(nil).Load(context.Background())
+	if err != nil || records[0].MappingVerifiedAt != nil {
+		t.Fatalf("ordinary observation records=%#v err=%v", records, err)
+	}
+	records, _, err = makeSource(&observed).Load(context.Background())
+	if err != nil || records[0].MappingVerifiedAt == nil || !records[0].MappingVerifiedAt.Equal(observed) {
+		t.Fatalf("verified records=%#v err=%v", records, err)
 	}
 }

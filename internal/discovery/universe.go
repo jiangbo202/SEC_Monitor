@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -31,13 +30,25 @@ const (
 	ReasonPriceNonTrading    = "price_non_trading"
 	ReasonPriceAdjusted      = "price_adjusted"
 	ReasonPriceCurrency      = "price_currency"
+	ReasonPriceZero          = "price_zero"
+	ReasonPriceNegative      = "price_negative"
+	ReasonMarketCapOverflow  = "market_cap_overflow"
 	ReasonProviderInactive   = "provider_inactive"
 	ReasonOutsideMarketCap   = "outside_market_cap"
 	ReasonQualifiedSmallCap  = "qualified_small_cap"
 	ReasonClassificationData = "classification_not_valid"
 )
 
-var coordinatorRunMu sync.Mutex
+var coordinatorRunGate = make(chan struct{}, 1)
+
+func acquireCoordinatorRun(ctx context.Context) (func(), error) {
+	select {
+	case coordinatorRunGate <- struct{}{}:
+		return func() { <-coordinatorRunGate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 type Coordinator struct {
 	DB       *gorm.DB
@@ -59,14 +70,22 @@ type metadataGroup struct {
 }
 
 func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, error) {
-	coordinatorRunMu.Lock()
-	defer coordinatorRunMu.Unlock()
+	release, err := acquireCoordinatorRun(ctx)
+	if err != nil {
+		return UniverseBatch{}, err
+	}
+	defer release()
 	if err := c.validateBase(ctx); err != nil {
 		return UniverseBatch{}, err
 	}
 	now := c.Clock()
 	if c.Metadata == nil || c.Shares == nil || c.Events == nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "security-sources", errors.New("metadata, share, and capital event sources are required"))
+	}
+	if safety, ok := c.Events.(interface{ ProductionSafe() bool }); ok && !safety.ProductionSafe() {
+		if noEvents, testOnly := c.Events.(NoCapitalEventsSource); !testOnly || !noEvents.TestOnly {
+			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "capital-events-unsafe", errors.New("disabled capital event source is not production safe"))
+		}
 	}
 	date, err := nyCivilDate(now)
 	if err != nil {
@@ -132,8 +151,11 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 }
 
 func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, error) {
-	coordinatorRunMu.Lock()
-	defer coordinatorRunMu.Unlock()
+	release, err := acquireCoordinatorRun(ctx)
+	if err != nil {
+		return UniverseBatch{}, err
+	}
+	defer release()
 	if err := c.validateBase(ctx); err != nil {
 		return UniverseBatch{}, err
 	}
@@ -222,6 +244,11 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	if err != nil || existed {
 		return batch, err
 	}
+	// Persist source evidence before applying publication gates so every
+	// rejected value remains auditable by its snapshot ID.
+	if err := c.persistPrices(ctx, records, result.SourceVersion); err != nil {
+		return c.failBatch(ctx, batch, err)
+	}
 	evaluator := c.providerDayEvaluator
 	if evaluator == nil {
 		evaluator = EvaluateProviderDay
@@ -246,9 +273,6 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	}
 	if nextHealth.Status != ProviderStatusActive || !providerWindowDayPasses(providerWindowDay{Date: day.TradeDate.Format(time.DateOnly), CoveragePct: day.coveragePct, Timely: day.timely, ValidationOK: day.validationOK, GoldReady: day.goldReady}) {
 		return c.failBatch(ctx, batch, errors.New("current provider day failed publication gates"))
-	}
-	if err := c.persistPrices(ctx, records, result.SourceVersion); err != nil {
-		return c.failBatch(ctx, batch, err)
 	}
 	snapshots, stageErr := c.buildUniverseSnapshots(ctx, securityBatch.BatchID, batch.BatchID, records, result, now)
 	if stageErr == nil {
@@ -508,9 +532,30 @@ func hashCanonicalContent(value any) (string, error) {
 }
 
 func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, records []SecuritySourceRecord, facts []ShareFact, events []CapitalEvent, now time.Time) (int, int, error) {
-	groups, err := groupMetadata(records)
-	if err != nil {
+	listingRows := make([]ListingIdentitySnapshot, 0, len(records))
+	mapped := make([]SecuritySourceRecord, 0, len(records))
+	for _, record := range records {
+		key := record.SourceKey
+		if key == "" {
+			key = strings.ToUpper(strings.TrimSpace(record.Ticker))
+		}
+		status, reason := EffectiveStatusDataInsufficient, ReasonMappingConflict
+		if validCIK(record.CIK) && record.MappingStatus == MappingStatusCurrent {
+			status, reason = "", ""
+			mapped = append(mapped, record)
+		}
+		listingRows = append(listingRows, ListingIdentitySnapshot{BatchID: batch.BatchID, SourceKey: key, CIK: record.CIK, Ticker: record.Ticker, ProviderTicker: record.ProviderTicker, Exchange: record.Exchange, CompanyName: record.CompanyName, MappingStatus: record.MappingStatus, Included: false, Status: status, ReasonCode: reason, EvidenceJSON: record.EvidenceJSON, CreatedAt: now})
+	}
+	if err := c.DB.WithContext(ctx).CreateInBatches(listingRows, universeChunkSize).Error; err != nil {
 		return 0, 0, err
+	}
+	groups := []metadataGroup{}
+	if len(mapped) > 0 {
+		var err error
+		groups, err = groupMetadata(mapped)
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 	var overrides []ManualSecurityOverride
 	if err := c.DB.WithContext(ctx).Where("active = ?", true).Find(&overrides).Error; err != nil {
@@ -540,15 +585,19 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 				if err := ctx.Err(); err != nil {
 					return err
 				}
-				security := Security{CIK: source.CIK, CompanyName: source.CompanyName, SIC: source.SIC, StateOfIncorporation: source.StateOfIncorporation, LatestAnnualForm: source.LatestAnnualForm}
-				if err := tx.Where("cik = ?", source.CIK).FirstOrCreate(&security).Error; err != nil {
+				security := Security{CIK: source.CIK}
+				if err := tx.Where("cik = ?", source.CIK).Attrs(Security{CatalogStatus: SecurityCatalogStaged}).FirstOrCreate(&security).Error; err != nil {
 					return err
 				}
 				source.SecurityID = security.ID
 				if source.MappingStatus == "" {
 					source.MappingStatus = MappingStatusCurrent
 				}
-				identity := SecurityBatchIdentity{BatchID: batch.BatchID, SecurityID: security.ID, CIK: source.CIK, Ticker: strings.ToUpper(strings.TrimSpace(source.Ticker)), ProviderTicker: strings.ToUpper(strings.TrimSpace(source.Ticker)), Exchange: source.Exchange, MappingStatus: source.MappingStatus, CreatedAt: now}
+				providerTicker := strings.ToUpper(strings.TrimSpace(source.ProviderTicker))
+				if providerTicker == "" {
+					providerTicker = strings.ToUpper(strings.TrimSpace(source.Ticker))
+				}
+				identity := SecurityBatchIdentity{BatchID: batch.BatchID, SecurityID: security.ID, CIK: source.CIK, Ticker: strings.ToUpper(strings.TrimSpace(source.Ticker)), ProviderTicker: providerTicker, Exchange: source.Exchange, MappingStatus: source.MappingStatus, CompanyName: source.CompanyName, SIC: source.SIC, StateOfIncorporation: source.StateOfIncorporation, LatestAnnualForm: source.LatestAnnualForm, CreatedAt: now}
 				if err := tx.Create(&identity).Error; err != nil {
 					return err
 				}
@@ -556,6 +605,9 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 				evidence, _ := json.Marshal(classification.Evidence)
 				row := ClassificationSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Included: classification.Included, Status: classification.Status, Confidence: classification.Confidence, ReasonCode: classification.ReasonCode, RuleVersion: ClassificationRuleVersion, EvidenceJSON: string(evidence), CreatedAt: now}
 				if err := tx.Create(&row).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&ListingIdentitySnapshot{}).Where("batch_id = ? AND cik = ?", batch.BatchID, source.CIK).Updates(map[string]any{"included": classification.Included, "status": classification.Status, "reason_code": classification.ReasonCode}).Error; err != nil {
 					return err
 				}
 				selection := SelectShareSnapshot(factsByCIK[source.CIK], eventsByCIK[source.CIK], now)
@@ -644,7 +696,7 @@ func groupMetadata(records []SecuritySourceRecord) ([]metadataGroup, error) {
 }
 
 func validateSecurityStage(db *gorm.DB, batchID string, classifications, selections int) error {
-	var c, s, i int64
+	var c, s, i, l int64
 	if err := db.Model(&ClassificationSnapshot{}).Where("batch_id = ?", batchID).Count(&c).Error; err != nil {
 		return err
 	}
@@ -654,7 +706,10 @@ func validateSecurityStage(db *gorm.DB, batchID string, classifications, selecti
 	if err := db.Model(&SecurityBatchIdentity{}).Where("batch_id = ?", batchID).Count(&i).Error; err != nil {
 		return err
 	}
-	if int(c) != classifications || int(s) != selections || c == 0 || c != s || c != i {
+	if err := db.Model(&ListingIdentitySnapshot{}).Where("batch_id = ?", batchID).Count(&l).Error; err != nil {
+		return err
+	}
+	if int(c) != classifications || int(s) != selections || l == 0 || c != s || c != i || c > l {
 		return errors.New("security stage count validation failed")
 	}
 	return nil
@@ -663,6 +718,11 @@ func validateSecurityStage(db *gorm.DB, batchID string, classifications, selecti
 func (c *Coordinator) publish(ctx context.Context, batch UniverseBatch, count int) (UniverseBatch, error) {
 	now := c.Clock()
 	err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if batch.Kind == BatchKindSecurity {
+			if err := publishSecurityListings(tx, batch, now); err != nil {
+				return err
+			}
+		}
 		result := tx.Model(&UniverseBatch{}).Where("batch_id = ? AND status = ?", batch.BatchID, BatchStatusDraft).Updates(map[string]any{"status": BatchStatusPublished, "record_count": count, "completed_at": now})
 		if result.Error != nil {
 			return result.Error
@@ -679,15 +739,71 @@ func (c *Coordinator) publish(ctx context.Context, batch UniverseBatch, count in
 	return currentBatchByID(ctx, c.DB, batch.BatchID)
 }
 
+func publishSecurityListings(tx *gorm.DB, batch UniverseBatch, publishedAt time.Time) error {
+	var identities []SecurityBatchIdentity
+	if err := tx.Where("batch_id = ?", batch.BatchID).Order("security_id, ticker").Find(&identities).Error; err != nil {
+		return err
+	}
+	validFrom, err := time.Parse(time.DateOnly, batch.EffectiveDate)
+	if err != nil {
+		return err
+	}
+	securityByCIK := make(map[string]SecurityBatchIdentity, len(identities))
+	for _, identity := range identities {
+		securityByCIK[identity.CIK] = identity
+		updates := map[string]any{"company_name": identity.CompanyName, "sic": identity.SIC, "state_of_incorporation": identity.StateOfIncorporation, "latest_annual_form": identity.LatestAnnualForm, "catalog_status": SecurityCatalogPublished, "published_at": gorm.Expr("COALESCE(published_at, ?)", publishedAt)}
+		result := tx.Model(&Security{}).Where("id = ? AND cik = ? AND catalog_status IN ?", identity.SecurityID, identity.CIK, []string{SecurityCatalogStaged, SecurityCatalogPublished}).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("security %s catalog activation failed", identity.CIK)
+		}
+	}
+	var staged []ListingIdentitySnapshot
+	if err := tx.Where("batch_id = ? AND mapping_status = ? AND cik <> ''", batch.BatchID, MappingStatusCurrent).Order("cik, ticker").Find(&staged).Error; err != nil {
+		return err
+	}
+	tickersBySecurity := map[uint][]string{}
+	for _, row := range staged {
+		if identity, ok := securityByCIK[row.CIK]; ok {
+			tickersBySecurity[identity.SecurityID] = append(tickersBySecurity[identity.SecurityID], row.Ticker)
+		}
+	}
+	for securityID, tickers := range tickersBySecurity {
+		if err := tx.Model(&Listing{}).Where("security_id = ? AND valid_to IS NULL AND ticker NOT IN ?", securityID, tickers).Update("valid_to", validFrom).Error; err != nil {
+			return err
+		}
+	}
+	for _, row := range staged {
+		identity, ok := securityByCIK[row.CIK]
+		if !ok {
+			return fmt.Errorf("staged listing %s has no security identity", row.Ticker)
+		}
+		providerTicker := row.ProviderTicker
+		if providerTicker == "" {
+			providerTicker = row.Ticker
+		}
+		listing := Listing{SecurityID: identity.SecurityID, Ticker: row.Ticker, ProviderTicker: providerTicker, Exchange: row.Exchange, ValidFrom: validFrom, Source: batch.UniverseSourceVersion, MappingStatus: row.MappingStatus}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "security_id"}, {Name: "ticker"}, {Name: "valid_from"}}, DoUpdates: clause.AssignmentColumns([]string{"provider_ticker", "exchange", "valid_to", "source", "mapping_status"})}).Create(&listing).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *Coordinator) failBatch(ctx context.Context, batch UniverseBatch, cause error) (UniverseBatch, error) {
 	if batch.BatchID != "" {
 		now := c.Clock()
 		backgroundDB := c.DB.WithContext(context.WithoutCancel(ctx))
-		for _, model := range []any{&UniverseSnapshot{}, &BatchShareSelection{}, &ClassificationSnapshot{}, &SecurityBatchIdentity{}} {
-			_ = cleanupBatchRows(backgroundDB, model, batch.BatchID)
+		if err := backgroundDB.Model(&UniverseBatch{}).Where("batch_id = ? AND status = ?", batch.BatchID, BatchStatusDraft).Updates(map[string]any{"status": BatchStatusFailed, "completed_at": now, "error_message": cause.Error()}).Error; err != nil {
+			cause = errors.Join(cause, fmt.Errorf("mark batch failed: %w", err))
 		}
-		_ = backgroundDB.Model(&UniverseBatch{}).Where("batch_id = ? AND status = ?", batch.BatchID, BatchStatusDraft).Updates(map[string]any{"status": BatchStatusFailed, "completed_at": now, "error_message": cause.Error()}).Error
-		batch, _ = currentBatchByID(context.WithoutCancel(ctx), c.DB, batch.BatchID)
+		if loaded, err := currentBatchByID(context.WithoutCancel(ctx), c.DB, batch.BatchID); err != nil {
+			cause = errors.Join(cause, fmt.Errorf("reload failed batch: %w", err))
+		} else {
+			batch = loaded
+		}
 	}
 	return batch, cause
 }
@@ -730,7 +846,7 @@ func currentPublishedBatch(ctx context.Context, db *gorm.DB, kind string) (Unive
 
 func (c *Coordinator) currentIncludedListings(ctx context.Context, batchID string) ([]Listing, error) {
 	var identities []SecurityBatchIdentity
-	err := c.DB.WithContext(ctx).Table("security_batch_identities i").Select("i.*").Joins("JOIN classification_snapshots c ON c.security_id = i.security_id AND c.batch_id = i.batch_id").Where("i.batch_id = ? AND c.included = ? AND c.status = ? AND i.mapping_status = ?", batchID, true, EffectiveStatusIncluded, MappingStatusCurrent).Order("i.ticker").Find(&identities).Error
+	err := c.DB.WithContext(ctx).Table("security_batch_identities i").Select("i.*").Joins("JOIN classification_snapshots c ON c.security_id = i.security_id AND c.batch_id = i.batch_id").Joins("JOIN securities s ON s.id = i.security_id AND s.catalog_status = ?", SecurityCatalogPublished).Where("i.batch_id = ? AND c.included = ? AND c.status = ? AND i.mapping_status = ?", batchID, true, EffectiveStatusIncluded, MappingStatusCurrent).Order("i.ticker").Find(&identities).Error
 	rows := make([]Listing, len(identities))
 	for i, identity := range identities {
 		rows[i] = Listing{SecurityID: identity.SecurityID, Ticker: identity.Ticker, ProviderTicker: identity.ProviderTicker, Exchange: identity.Exchange, MappingStatus: identity.MappingStatus}
@@ -888,7 +1004,7 @@ func (c *Coordinator) buildUniverseSnapshots(ctx context.Context, securityBatchI
 		capUSD, qualified, err := ComputeSmallCapQualification(price.CloseMicros, share.Shares)
 		if err != nil {
 			snapshot.QualityStatus = QualityStatusConflict
-			snapshot.ReasonCode = ReasonPriceConflict
+			snapshot.ReasonCode = ReasonMarketCapOverflow
 			output = append(output, snapshot)
 			continue
 		}
@@ -926,6 +1042,10 @@ func reasonForPriceError(err error) string {
 		return ReasonPriceAdjusted
 	case errors.Is(err, ErrPriceCurrency):
 		return ReasonPriceCurrency
+	case errors.Is(err, ErrPriceZero):
+		return ReasonPriceZero
+	case errors.Is(err, ErrPriceNegative):
+		return ReasonPriceNegative
 	default:
 		return ReasonPriceMissing
 	}

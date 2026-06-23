@@ -84,23 +84,23 @@ func ListUniverse(ctx context.Context, db *gorm.DB, filter UniverseQuery) (Unive
 	} else if err != nil {
 		return result, err
 	}
-	query := db.WithContext(ctx).Model(&UniverseSnapshot{}).Where("batch_id = ?", batch.BatchID)
+	query := db.WithContext(ctx).Model(&UniverseSnapshot{}).Joins("JOIN securities ON securities.id = universe_snapshots.security_id AND securities.catalog_status = ?", SecurityCatalogPublished).Where("universe_snapshots.batch_id = ?", batch.BatchID)
 	if ticker := strings.ToUpper(strings.TrimSpace(filter.Ticker)); ticker != "" {
-		query = query.Where("ticker = ?", ticker)
+		query = query.Where("universe_snapshots.ticker = ?", ticker)
 	}
 	if status := strings.TrimSpace(filter.Status); status != "" {
-		query = query.Where("status = ?", status)
+		query = query.Where("universe_snapshots.status = ?", status)
 	}
 	if reason := strings.TrimSpace(filter.ReasonCode); reason != "" {
-		query = query.Where("reason_code = ?", reason)
+		query = query.Where("universe_snapshots.reason_code = ?", reason)
 	}
 	if quality := strings.TrimSpace(filter.QualityStatus); quality != "" {
-		query = query.Where("quality_status = ?", quality)
+		query = query.Where("universe_snapshots.quality_status = ?", quality)
 	}
 	if err = query.Count(&result.Total).Error; err != nil {
 		return result, err
 	}
-	if err = query.Order("market_cap_usd DESC").Order("ticker ASC").Order("id ASC").Offset((page - 1) * size).Limit(size).Find(&result.Items).Error; err != nil {
+	if err = query.Order("universe_snapshots.market_cap_usd DESC").Order("universe_snapshots.ticker ASC").Order("universe_snapshots.id ASC").Offset((page - 1) * size).Limit(size).Find(&result.Items).Error; err != nil {
 		return result, err
 	}
 	return result, nil

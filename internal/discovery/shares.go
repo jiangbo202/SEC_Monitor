@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,7 +33,96 @@ type CapitalEventSource interface {
 	Load(context.Context, map[string]struct{}, time.Time) ([]CapitalEvent, SourceVersion, error)
 }
 
-type NoCapitalEventsSource struct{ Version SourceVersion }
+// SECSubmissionsCapitalEventSource derives conservative point-in-time capital
+// events from SEC submissions metadata. Metadata should be backed by the SEC
+// submissions archive in production (SECBulkSource satisfies this contract).
+type SECSubmissionsCapitalEventSource struct{ Metadata SecurityMetadataSource }
+
+func (s SECSubmissionsCapitalEventSource) ProductionSafe() bool { return s.Metadata != nil }
+
+func (s SECSubmissionsCapitalEventSource) Load(ctx context.Context, allowed map[string]struct{}, asOf time.Time) ([]CapitalEvent, SourceVersion, error) {
+	if s.Metadata == nil {
+		return nil, SourceVersion{}, fmt.Errorf("SEC submissions metadata source is required")
+	}
+	records, upstream, err := s.Metadata.Load(ctx)
+	if err != nil {
+		return nil, SourceVersion{}, fmt.Errorf("load SEC submissions capital events: %w", err)
+	}
+	events := make([]CapitalEvent, 0)
+	for _, record := range records {
+		if _, ok := allowed[record.CIK]; !ok {
+			continue
+		}
+		for _, filing := range record.FilingMetadata {
+			if err := ctx.Err(); err != nil {
+				return nil, SourceVersion{}, err
+			}
+			if filing.CIK != record.CIK || (!filing.AcceptedAt.IsZero() && filing.AcceptedAt.After(asOf)) {
+				continue
+			}
+			kind, changes, relevant := capitalEventForFiling(filing)
+			if !relevant {
+				continue
+			}
+			effective := filing.FiledAt
+			if effective.IsZero() {
+				effective = filing.ReportAt
+			}
+			if effective.IsZero() {
+				effective = filing.AcceptedAt
+			}
+			if effective.IsZero() {
+				effective = asOf
+			}
+			events = append(events, CapitalEvent{CIK: record.CIK, Kind: kind, Accession: filing.Accession, EffectiveAt: effective, AcceptedAt: filing.AcceptedAt, ChangesShares: changes})
+		}
+	}
+	sort.Slice(events, func(i, j int) bool { return canonicalLess(events[i], events[j]) })
+	digest, err := hashCanonicalContent(struct {
+		Upstream SourceVersion
+		Events   []CapitalEvent
+	}{upstream, events})
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	version := upstream.Version
+	if version == "" {
+		version = digest
+	}
+	return events, SourceVersion{Source: "capital-events:sec-submissions", Version: version, SHA256: digest, EffectiveAt: upstream.EffectiveAt}, nil
+}
+
+func capitalEventForFiling(filing FilingMetadata) (string, bool, bool) {
+	form := strings.ToUpper(strings.TrimSpace(filing.Form))
+	items := strings.FieldsFunc(filing.Items, func(r rune) bool { return r == ',' || r == ';' || r == ' ' })
+	if form == "8-K" || form == "8-K/A" {
+		for _, item := range items {
+			switch item {
+			case "3.02":
+				return "financing", true, true
+			case "5.03":
+				return "capital_structure", true, true
+			}
+		}
+		if strings.TrimSpace(filing.Items) == "" {
+			return "capital_structure_unknown", true, true
+		}
+		return "", false, false
+	}
+	for _, prefix := range []string{"S-1", "S-3", "424B5", "PIPE"} {
+		if strings.HasPrefix(form, prefix) {
+			return "financing", true, true
+		}
+	}
+	return "", false, false
+}
+
+type NoCapitalEventsSource struct {
+	Version  SourceVersion
+	TestOnly bool
+}
+
+func (NoCapitalEventsSource) ProductionSafe() bool { return false }
 
 func (s NoCapitalEventsSource) Load(_ context.Context, _ map[string]struct{}, _ time.Time) ([]CapitalEvent, SourceVersion, error) {
 	return nil, s.Version, nil

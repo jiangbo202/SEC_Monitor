@@ -51,8 +51,8 @@ func TestParseSECTickerExchange(t *testing.T) {
 		t.Fatalf("records = %#v", recs)
 	}
 	bad := `{"fields":["cik","name","ticker","exchange"],"data":[[1,"a","X","N"],[2,"b","X","N"]]}`
-	if _, err := ParseSECTickerExchange(strings.NewReader(bad)); err == nil || !strings.Contains(err.Error(), "duplicate ticker") {
-		t.Fatalf("error = %v", err)
+	if rows, err := ParseSECTickerExchange(strings.NewReader(bad)); err != nil || len(rows) != 2 {
+		t.Fatalf("rows=%#v error=%v", rows, err)
 	}
 }
 

@@ -27,6 +27,8 @@ func withSQLiteForeignKeys(dsn string) string {
 
 func Migrate(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
+		hadSecurityTable := tx.Migrator().HasTable(&Security{})
+		hadSecurityCatalogStatus := tx.Migrator().HasColumn(&Security{}, "CatalogStatus")
 		hadCalendarYearTable := tx.Migrator().HasTable(&MarketCalendarYear{})
 		hadHolidayCount := tx.Migrator().HasColumn(&MarketCalendarYear{}, "ExpectedHolidayCount")
 		hadHolidayHash := tx.Migrator().HasColumn(&MarketCalendarYear{}, "HolidayDatesSHA256")
@@ -43,6 +45,7 @@ func Migrate(db *gorm.DB) error {
 			&CurrentBatchPointer{},
 			&Listing{},
 			&SecurityBatchIdentity{},
+			&ListingIdentitySnapshot{},
 			&ClassificationSnapshot{},
 			&ProviderRun{},
 			&ProviderHealth{},
@@ -53,6 +56,7 @@ func Migrate(db *gorm.DB) error {
 			&BatchShareSelection{},
 			&UniverseSnapshot{},
 			&ManualSecurityOverride{},
+			&IdentityVerificationOverride{},
 		); err != nil {
 			return err
 		}
@@ -67,6 +71,11 @@ func Migrate(db *gorm.DB) error {
 				"last_trade_date": "", "window_json": "", "gold_evidence_ready": false, "gold_sha256": "",
 			}).Error; err != nil {
 				return fmt.Errorf("invalidate legacy provider health: %w", err)
+			}
+		}
+		if hadSecurityTable && !hadSecurityCatalogStatus {
+			if err := tx.Model(&Security{}).Where("1 = 1").Updates(map[string]any{"catalog_status": SecurityCatalogPublished, "published_at": gorm.Expr("COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")}).Error; err != nil {
+				return fmt.Errorf("publish legacy security catalog: %w", err)
 			}
 		}
 		return SeedDefaultNYSEMarketCalendar(tx.Statement.Context, tx)

@@ -134,33 +134,30 @@ func TestPriceTimelinessUsesNextTradingDay(t *testing.T) {
 }
 
 func TestIndependentGoldMustBeFrozenAuditedAndComplete(t *testing.T) {
-	primary := make([]PriceRecord, 0, MinimumIndependentGoldRows)
 	var csv strings.Builder
-	csv.WriteString("symbol,trade_date,expected_close,source_url,observed_at,reviewer,source_provider,source_tier,fallback_reason,case_type\n")
+	csv.WriteString("symbol,trade_date,primary_close,expected_close,primary_provider,source_url,observed_at,reviewer,source_provider,source_tier,fallback_reason,case_type\n")
 	cases := []string{"split", "ticker_change", "multi_class", "delisted"}
 	for i := 0; i < MinimumIndependentGoldRows; i++ {
 		symbol := fmt.Sprintf("S%03d", i)
-		primary = append(primary, PriceRecord{Symbol: symbol, TradeDate: civilDate(t, "2026-06-18"), CloseMicros: 1_000_000, Source: "stooq"})
-		fmt.Fprintf(&csv, "%s,2026-06-18,1.000000,https://exchange.example.test/%s,2026-06-20T12:00:00Z,reviewer-%d,exchange,exchange,,%s\n", symbol, symbol, i, cases[i%len(cases)])
+		fmt.Fprintf(&csv, "%s,2026-06-18,1.000000,1.000000,stooq,https://exchange.example.test/%s,2026-06-20T12:00:00Z,reviewer-%d,exchange,exchange,,%s\n", symbol, symbol, i, cases[i%len(cases)])
 	}
-	gold, err := validateIndependentGoldCSV(strings.NewReader(csv.String()), primary, "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC))
+	gold, err := validateIndependentGoldCSV(strings.NewReader(csv.String()), "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC))
 	if err != nil || !gold.ready || gold.rows != MinimumIndependentGoldRows || gold.errorPct != 0 {
 		t.Fatalf("gold = %+v, err = %v", gold, err)
 	}
-	if _, err := validateIndependentGoldCSV(strings.NewReader(strings.Replace(csv.String(), ",exchange,", ",stooq,", 1)), primary, "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)); err == nil {
+	if _, err := validateIndependentGoldCSV(strings.NewReader(strings.Replace(csv.String(), ",exchange,exchange,", ",stooq,exchange,", 1)), "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)); err == nil {
 		t.Fatal("primary provider reused as independent gold")
 	}
 	missingFallbackReason := strings.Replace(csv.String(), ",exchange,,split", ",other,,split", 1)
-	if _, err := validateIndependentGoldCSV(strings.NewReader(missingFallbackReason), primary, "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)); err == nil || !strings.Contains(err.Error(), "fallback reason") {
+	if _, err := validateIndependentGoldCSV(strings.NewReader(missingFallbackReason), "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)); err == nil || !strings.Contains(err.Error(), "fallback reason") {
 		t.Fatalf("other source without fallback reason error = %v", err)
 	}
-	wrongPrimary := append([]PriceRecord(nil), primary...)
-	wrongPrimary[0].Source = "same-source-with-a-false-label"
-	if _, err := validateIndependentGoldCSV(strings.NewReader(csv.String()), wrongPrimary, "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)); err == nil {
-		t.Fatal("primary record source was not bound to provider")
+	wrongPrimary := strings.Replace(csv.String(), ",stooq,https://", ",other-primary,https://", 1)
+	if _, err := validateIndependentGoldCSV(strings.NewReader(wrongPrimary), "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)); err == nil {
+		t.Fatal("frozen primary provider was not bound to provider result")
 	}
 	short := strings.Join(strings.Split(csv.String(), "\n")[:100], "\n") + "\n"
-	if _, err := validateIndependentGoldCSV(strings.NewReader(short), primary, "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)); err == nil {
+	if _, err := validateIndependentGoldCSV(strings.NewReader(short), "stooq", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)); err == nil {
 		t.Fatal("99-row gold accepted")
 	}
 }

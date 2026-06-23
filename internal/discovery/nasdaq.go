@@ -16,8 +16,10 @@ import (
 
 type SecuritySourceRecord struct {
 	SecurityID                     uint
+	SourceKey                      string
 	CIK                            string
 	Ticker                         string
+	ProviderTicker                 string
 	CompanyName                    string
 	Exchange                       string
 	SecurityName                   string
@@ -33,10 +35,13 @@ type SecuritySourceRecord struct {
 	BlankCheckIssuer               bool
 	MappingStatus                  string
 	MappingVerifiedAt              *time.Time
+	ObservedAt                     *time.Time
+	EvidenceJSON                   string
 }
 
 type FilingMetadata struct {
 	CIK, Accession, Form          string
+	Items                         string
 	FiledAt, ReportAt, AcceptedAt time.Time
 }
 

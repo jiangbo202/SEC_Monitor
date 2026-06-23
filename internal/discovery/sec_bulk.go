@@ -101,13 +101,14 @@ func ParseSECTickerExchange(r io.Reader) ([]SecuritySourceRecord, error) {
 			return nil, fmt.Errorf("row %d empty exchange", row+1)
 		}
 		rec := SecuritySourceRecord{CIK: fmt.Sprintf("%010d", n), Ticker: ticker, CompanyName: name, SecurityName: name, Exchange: exchange}
-		if old, ok := seen[ticker]; ok {
+		identityKey := rec.CIK + "\x00" + ticker
+		if old, ok := seen[identityKey]; ok {
 			if !reflect.DeepEqual(old, rec) {
-				return nil, fmt.Errorf("row %d conflicting duplicate ticker %q", row+1, ticker)
+				return nil, fmt.Errorf("row %d conflicting duplicate ticker/CIK %q/%s", row+1, ticker, rec.CIK)
 			}
 			continue
 		}
-		seen[ticker] = rec
+		seen[identityKey] = rec
 	}
 	out := make([]SecuritySourceRecord, 0, len(seen))
 	for _, x := range seen {
@@ -251,6 +252,9 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 					return nil, fmt.Errorf("submission CIK %s empty accession number", cik)
 				}
 				metadata := FilingMetadata{CIK: cik, Accession: accession, Form: form, FiledAt: d}
+				if s.Filings.Recent.present["items"] {
+					metadata.Items = strings.TrimSpace(s.Filings.Recent.Items[j])
+				}
 				if s.Filings.Recent.present["reportDate"] && s.Filings.Recent.ReportDate[j] != "" {
 					metadata.ReportAt, err = time.Parse("2006-01-02", s.Filings.Recent.ReportDate[j])
 					if err != nil {
@@ -352,7 +356,7 @@ func sameCivilDate(a, b time.Time) bool {
 }
 
 func sameFilingMetadata(a, b FilingMetadata) bool {
-	return a.CIK == b.CIK && a.Accession == b.Accession && a.Form == b.Form &&
+	return a.CIK == b.CIK && a.Accession == b.Accession && a.Form == b.Form && a.Items == b.Items &&
 		a.FiledAt.Equal(b.FiledAt) && a.ReportAt.Equal(b.ReportAt) && a.AcceptedAt.Equal(b.AcceptedAt)
 }
 

@@ -37,20 +37,27 @@ const (
 )
 
 const (
+	SecurityCatalogStaged    = "staged"
+	SecurityCatalogPublished = "published"
+)
+
+const (
 	ConfidenceHigh   = "high"
 	ConfidenceMedium = "medium"
 	ConfidenceLow    = "low"
 )
 
 type Security struct {
-	ID                   uint      `json:"id"`
-	CIK                  string    `json:"cik" gorm:"size:10;uniqueIndex"`
-	CompanyName          string    `json:"company_name" gorm:"size:255"`
-	SIC                  int       `json:"sic" gorm:"index"`
-	StateOfIncorporation string    `json:"state_of_incorporation" gorm:"size:8"`
-	LatestAnnualForm     string    `json:"latest_annual_form" gorm:"size:16"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	ID                   uint       `json:"id"`
+	CIK                  string     `json:"cik" gorm:"size:10;uniqueIndex"`
+	CompanyName          string     `json:"company_name" gorm:"size:255"`
+	SIC                  int        `json:"sic" gorm:"index"`
+	StateOfIncorporation string     `json:"state_of_incorporation" gorm:"size:8"`
+	LatestAnnualForm     string     `json:"latest_annual_form" gorm:"size:16"`
+	CatalogStatus        string     `json:"catalog_status" gorm:"size:16;index;default:staged"`
+	PublishedAt          *time.Time `json:"published_at"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
 type Listing struct {
@@ -83,15 +90,19 @@ type ClassificationSnapshot struct {
 // SecurityBatchIdentity freezes the market identity used by one published
 // security batch. Market runs must never reconstruct it from mutable listings.
 type SecurityBatchIdentity struct {
-	ID             uint      `json:"id"`
-	BatchID        string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_security_batch_identity,priority:1;index"`
-	SecurityID     uint      `json:"security_id" gorm:"uniqueIndex:idx_security_batch_identity,priority:2;index"`
-	CIK            string    `json:"cik" gorm:"size:10"`
-	Ticker         string    `json:"ticker" gorm:"size:32;index"`
-	ProviderTicker string    `json:"provider_ticker" gorm:"size:64"`
-	Exchange       string    `json:"exchange" gorm:"size:32"`
-	MappingStatus  string    `json:"mapping_status" gorm:"size:16"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                   uint      `json:"id"`
+	BatchID              string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_security_batch_identity,priority:1;index"`
+	SecurityID           uint      `json:"security_id" gorm:"uniqueIndex:idx_security_batch_identity,priority:2;index"`
+	CIK                  string    `json:"cik" gorm:"size:10"`
+	Ticker               string    `json:"ticker" gorm:"size:32;index"`
+	ProviderTicker       string    `json:"provider_ticker" gorm:"size:64"`
+	Exchange             string    `json:"exchange" gorm:"size:32"`
+	MappingStatus        string    `json:"mapping_status" gorm:"size:16"`
+	CompanyName          string    `json:"company_name" gorm:"size:255"`
+	SIC                  int       `json:"sic"`
+	StateOfIncorporation string    `json:"state_of_incorporation" gorm:"size:8"`
+	LatestAnnualForm     string    `json:"latest_annual_form" gorm:"size:16"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 type ProviderRun struct {
@@ -180,25 +191,45 @@ type ShareSnapshot struct {
 }
 
 type UniverseBatch struct {
-	BatchID               string                   `json:"batch_id" gorm:"size:64;primaryKey"`
-	Kind                  string                   `json:"kind" gorm:"size:32;index"`
-	Status                string                   `json:"status" gorm:"size:16;index"`
-	EffectiveDate         string                   `json:"effective_date" gorm:"size:10;index"`
-	SourceVersionsJSON    string                   `json:"source_versions_json" gorm:"type:text"`
-	ContentSHA256         string                   `json:"content_sha256" gorm:"size:64"`
-	RecordCount           int                      `json:"record_count"`
-	UniverseSourceVersion string                   `json:"universe_source_version" gorm:"size:128"`
-	PriceSourceVersion    string                   `json:"price_source_version" gorm:"size:128"`
-	ShareSourceVersion    string                   `json:"share_source_version" gorm:"size:128"`
-	StartedAt             time.Time                `json:"started_at"`
-	CompletedAt           *time.Time               `json:"completed_at"`
-	ErrorMessage          string                   `json:"error_message" gorm:"type:text"`
-	Classifications       []ClassificationSnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
-	Identities            []SecurityBatchIdentity  `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
-	ProviderRuns          []ProviderRun            `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
-	Snapshots             []UniverseSnapshot       `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
-	ShareSelections       []BatchShareSelection    `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
-	CurrentPointers       []CurrentBatchPointer    `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	BatchID               string                    `json:"batch_id" gorm:"size:64;primaryKey"`
+	Kind                  string                    `json:"kind" gorm:"size:32;index"`
+	Status                string                    `json:"status" gorm:"size:16;index"`
+	EffectiveDate         string                    `json:"effective_date" gorm:"size:10;index"`
+	SourceVersionsJSON    string                    `json:"source_versions_json" gorm:"type:text"`
+	ContentSHA256         string                    `json:"content_sha256" gorm:"size:64"`
+	RecordCount           int                       `json:"record_count"`
+	UniverseSourceVersion string                    `json:"universe_source_version" gorm:"size:128"`
+	PriceSourceVersion    string                    `json:"price_source_version" gorm:"size:128"`
+	ShareSourceVersion    string                    `json:"share_source_version" gorm:"size:128"`
+	StartedAt             time.Time                 `json:"started_at"`
+	CompletedAt           *time.Time                `json:"completed_at"`
+	ErrorMessage          string                    `json:"error_message" gorm:"type:text"`
+	Classifications       []ClassificationSnapshot  `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	Identities            []SecurityBatchIdentity   `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	ListingIdentities     []ListingIdentitySnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	ProviderRuns          []ProviderRun             `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	Snapshots             []UniverseSnapshot        `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	ShareSelections       []BatchShareSelection     `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	CurrentPointers       []CurrentBatchPointer     `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
+// ListingIdentitySnapshot stages every exchange listing, including identities
+// that cannot safely be attached to a Security row without inventing a CIK.
+type ListingIdentitySnapshot struct {
+	ID             uint      `json:"id"`
+	BatchID        string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_listing_identity_batch_key,priority:1;index"`
+	SourceKey      string    `json:"source_key" gorm:"size:128;uniqueIndex:idx_listing_identity_batch_key,priority:2"`
+	CIK            string    `json:"cik" gorm:"size:10"`
+	Ticker         string    `json:"ticker" gorm:"size:32;index"`
+	ProviderTicker string    `json:"provider_ticker" gorm:"size:64"`
+	Exchange       string    `json:"exchange" gorm:"size:32"`
+	CompanyName    string    `json:"company_name" gorm:"size:255"`
+	MappingStatus  string    `json:"mapping_status" gorm:"size:16"`
+	Included       bool      `json:"included"`
+	Status         string    `json:"status" gorm:"size:32"`
+	ReasonCode     string    `json:"reason_code" gorm:"size:64"`
+	EvidenceJSON   string    `json:"evidence_json" gorm:"type:text"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type CurrentBatchPointer struct {
@@ -248,6 +279,18 @@ type ManualSecurityOverride struct {
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	Security        Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
+type IdentityVerificationOverride struct {
+	ID         uint      `json:"id"`
+	CIK        string    `json:"cik" gorm:"size:10;uniqueIndex:idx_identity_override"`
+	Ticker     string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_identity_override"`
+	VerifiedAt time.Time `json:"verified_at"`
+	SourceURL  string    `json:"source_url" gorm:"size:2048"`
+	Operator   string    `json:"operator" gorm:"size:128"`
+	Active     bool      `json:"active" gorm:"index"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type Evidence struct {

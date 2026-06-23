@@ -8,12 +8,16 @@ import (
 
 func TestUniverseQueryReadsOnlyCurrentPublishedBatch(t *testing.T) {
 	db := openMigratedTestDatabase(t)
-	security := Security{CIK: "0000004321", CompanyName: "Query Co"}
+	security := Security{CIK: "0000004321", CompanyName: "Query Co", CatalogStatus: SecurityCatalogPublished}
 	if err := db.Create(&security).Error; err != nil {
 		t.Fatal(err)
 	}
-	security2 := Security{CIK: "0000004322", CompanyName: "Query Co 2"}
+	security2 := Security{CIK: "0000004322", CompanyName: "Query Co 2", CatalogStatus: SecurityCatalogPublished}
 	if err := db.Create(&security2).Error; err != nil {
+		t.Fatal(err)
+	}
+	staged := Security{CIK: "0000004323", CompanyName: "Staged", CatalogStatus: SecurityCatalogStaged}
+	if err := db.Create(&staged).Error; err != nil {
 		t.Fatal(err)
 	}
 	old := UniverseBatch{BatchID: "old", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Hour)}
@@ -31,6 +35,7 @@ func TestUniverseQueryReadsOnlyCurrentPublishedBatch(t *testing.T) {
 		{BatchID: old.BatchID, SecurityID: security.ID, Ticker: "OLD", MarketCapUSD: 900, Status: EffectiveStatusPrescreen, ReasonCode: ReasonQualifiedSmallCap},
 		{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "AAA", MarketCapUSD: 100, Status: EffectiveStatusDataInsufficient, ReasonCode: ReasonPriceMissing},
 		{BatchID: current.BatchID, SecurityID: security2.ID, Ticker: "BBB", MarketCapUSD: 200, Status: EffectiveStatusPrescreen, ReasonCode: ReasonQualifiedSmallCap},
+		{BatchID: current.BatchID, SecurityID: staged.ID, Ticker: "STAGED", MarketCapUSD: 999, Status: EffectiveStatusPrescreen, ReasonCode: ReasonQualifiedSmallCap},
 		{BatchID: draft.BatchID, SecurityID: security.ID, Ticker: "DRAFT", MarketCapUSD: 999, Status: EffectiveStatusPrescreen},
 	}
 	if err := db.Create(&rows).Error; err != nil {

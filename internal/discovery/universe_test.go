@@ -57,7 +57,7 @@ func (f fakeShareSource) LoadLatestShares(context.Context, map[string]struct{}) 
 }
 
 func noEvents(now time.Time) NoCapitalEventsSource {
-	return NoCapitalEventsSource{Version: testSourceVersion("capital-events", "none", now)}
+	return NoCapitalEventsSource{Version: testSourceVersion("test:capital-events", "none", now), TestOnly: true}
 }
 
 func TestCoordinatorPublishesPrescreenWithExactEvidence(t *testing.T) {
@@ -254,7 +254,7 @@ func TestCoordinatorChunkFailureRetainsDiagnosticsAndOldPointer(t *testing.T) {
 	if err := db.Model(&ClassificationSnapshot{}).Where("batch_id = ?", batch.BatchID).Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
+	if count == 0 {
 		t.Fatalf("diagnostic rows=%d", count)
 	}
 	var pointer CurrentBatchPointer
@@ -263,6 +263,121 @@ func TestCoordinatorChunkFailureRetainsDiagnosticsAndOldPointer(t *testing.T) {
 	}
 	if pointer.BatchID != old.BatchID {
 		t.Fatalf("pointer changed to %s", pointer.BatchID)
+	}
+}
+
+func TestCoordinatorPublishesUnmappedListingAsConflictWithoutFakeCIK(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)
+	record := SecuritySourceRecord{SourceKey: "MISS", Ticker: "MISS", CompanyName: "Missing Mapping", Exchange: "Nasdaq", MappingStatus: MappingStatusConflict, EvidenceJSON: `{"candidate_ciks":[]}`}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "unmapped", now)}, Shares: fakeShareSource{version: testSourceVersion("shares", "unmapped", now)}, Events: noEvents(now), Clock: func() time.Time { return now }}
+	batch, err := c.SyncSecurityUniverse(context.Background())
+	if err != nil || batch.Status != BatchStatusPublished {
+		t.Fatalf("batch=%#v err=%v", batch, err)
+	}
+	var row ListingIdentitySnapshot
+	if err := db.First(&row, "batch_id = ?", batch.BatchID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.CIK != "" || row.Included || row.ReasonCode != ReasonMappingConflict {
+		t.Fatalf("row=%#v", row)
+	}
+	var securities int64
+	if err := db.Model(&Security{}).Count(&securities).Error; err != nil || securities != 0 {
+		t.Fatalf("securities=%d err=%v", securities, err)
+	}
+}
+
+func TestCoordinatorSecurityCatalogActivationIsAtomicAndRetryable(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)
+	old := UniverseBatch{BatchID: strings.Repeat("e", 64), Kind: BatchKindSecurity, Status: BatchStatusPublished}
+	if err := db.Create(&old).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindSecurity, BatchID: old.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := SecuritySourceRecord{CIK: "0000002468", Ticker: "NEW", CompanyName: "New Co", SecurityName: "New Co Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-Q"}, MappingStatus: MappingStatusCurrent}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "draft", now)}, Shares: fakeShareSource{version: testSourceVersion("shares", "draft", now)}, Events: noEvents(now), Clock: func() time.Time { return now }, AfterStageChunk: func(kind string, _ int) error {
+		if kind == BatchKindSecurity {
+			return errors.New("stop draft")
+		}
+		return nil
+	}}
+	failed, err := c.SyncSecurityUniverse(context.Background())
+	if err == nil || failed.Status != BatchStatusFailed {
+		t.Fatalf("failed=%#v err=%v", failed, err)
+	}
+	var published, staged int64
+	if err := db.Model(&Security{}).Where("catalog_status = ?", SecurityCatalogPublished).Count(&published).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&Security{}).Where("catalog_status = ?", SecurityCatalogStaged).Count(&staged).Error; err != nil {
+		t.Fatal(err)
+	}
+	if published != 0 || staged != 1 {
+		t.Fatalf("published=%d staged=%d", published, staged)
+	}
+	var shell Security
+	if err := db.First(&shell, "cik = ?", record.CIK).Error; err != nil {
+		t.Fatal(err)
+	}
+	if shell.CompanyName != "" || shell.SIC != 0 || shell.PublishedAt != nil {
+		t.Fatalf("draft shell leaked catalog fields: %#v", shell)
+	}
+	var listings int64
+	if err := db.Model(&Listing{}).Count(&listings).Error; err != nil || listings != 0 {
+		t.Fatalf("listings=%d err=%v", listings, err)
+	}
+	var pointer CurrentBatchPointer
+	if err := db.First(&pointer, "kind = ?", BatchKindSecurity).Error; err != nil || pointer.BatchID != old.BatchID {
+		t.Fatalf("pointer=%#v err=%v", pointer, err)
+	}
+
+	c.Metadata = fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "retry", now)}
+	c.Shares = fakeShareSource{version: testSourceVersion("shares", "retry", now)}
+	c.AfterStageChunk = nil
+	succeeded, err := c.SyncSecurityUniverse(context.Background())
+	if err != nil || succeeded.Status != BatchStatusPublished {
+		t.Fatalf("succeeded=%#v err=%v", succeeded, err)
+	}
+	var security Security
+	if err := db.First(&security, "cik = ? AND catalog_status = ?", record.CIK, SecurityCatalogPublished).Error; err != nil {
+		t.Fatal(err)
+	}
+	if security.CompanyName != record.CompanyName || security.PublishedAt == nil || !security.PublishedAt.Equal(now) {
+		t.Fatalf("security=%#v", security)
+	}
+	if err := db.Model(&Listing{}).Where("security_id = ? AND valid_to IS NULL", security.ID).Count(&listings).Error; err != nil || listings != 1 {
+		t.Fatalf("listings=%d err=%v", listings, err)
+	}
+}
+
+func TestCoordinatorFailedDraftDoesNotMutatePublishedSecurity(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)
+	record := SecuritySourceRecord{CIK: "0000001357", Ticker: "OLD", CompanyName: "Original Co", SecurityName: "Original Co Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-Q"}, MappingStatus: MappingStatusCurrent}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "published", now)}, Shares: fakeShareSource{version: testSourceVersion("shares", "published", now)}, Events: noEvents(now), Clock: func() time.Time { return now }}
+	if _, err := c.SyncSecurityUniverse(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	record.CompanyName, record.SIC, record.Ticker = "Unpublished Change", 9999, "NEW"
+	c.Metadata = fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "failed-change", now)}
+	c.AfterStageChunk = func(string, int) error { return errors.New("stop draft") }
+	if _, err := c.SyncSecurityUniverse(context.Background()); err == nil {
+		t.Fatal("failed draft published")
+	}
+	var security Security
+	if err := db.First(&security, "cik = ? AND catalog_status = ?", record.CIK, SecurityCatalogPublished).Error; err != nil {
+		t.Fatal(err)
+	}
+	if security.CompanyName != "Original Co" || security.SIC != 3571 {
+		t.Fatalf("published security mutated: %#v", security)
+	}
+	var active Listing
+	if err := db.First(&active, "security_id = ? AND valid_to IS NULL", security.ID).Error; err != nil || active.Ticker != "OLD" {
+		t.Fatalf("active=%#v err=%v", active, err)
 	}
 }
 
@@ -294,7 +409,7 @@ func TestCoordinatorFailedTickerChangeCannotAlterPublishedIdentity(t *testing.T)
 	if err := db.Model(&SecurityBatchIdentity{}).Where("batch_id = ?", failed.BatchID).Count(&identities).Error; err != nil {
 		t.Fatal(err)
 	}
-	if identities != 0 {
+	if identities == 0 {
 		t.Fatalf("failed identities=%d", identities)
 	}
 }
@@ -337,7 +452,7 @@ func TestCoordinatorBlocksBadCurrentProviderDayAndPersistsHealth(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	ny, _ := time.LoadLocation("America/New_York")
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, ny)
-	security := Security{CIK: "0000009999"}
+	security := Security{CIK: "0000009999", CatalogStatus: SecurityCatalogPublished}
 	if err := db.Create(&security).Error; err != nil {
 		t.Fatal(err)
 	}

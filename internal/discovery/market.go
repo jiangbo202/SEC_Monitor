@@ -707,10 +707,12 @@ func equalCSVHeader(got, want []string) bool {
 }
 
 func LoadFrozenMarketGold(primary []PriceRecord, primaryProvider string, now time.Time) (GoldValidationResult, error) {
-	return validateIndependentGoldCSV(bytes.NewReader(frozenMarketGoldCSV), primary, primaryProvider, now)
+	// primary is retained for source compatibility. Frozen audit evidence is
+	// intentionally self-contained and must not be joined to today's records.
+	return validateIndependentGoldCSV(bytes.NewReader(frozenMarketGoldCSV), primaryProvider, now)
 }
 
-func validateIndependentGoldCSV(input io.Reader, primary []PriceRecord, primaryProvider string, now time.Time) (GoldValidationResult, error) {
+func validateIndependentGoldCSV(input io.Reader, primaryProvider string, now time.Time) (GoldValidationResult, error) {
 	payload, err := readBoundedPriceInput(input)
 	if err != nil {
 		return GoldValidationResult{}, err
@@ -718,14 +720,10 @@ func validateIndependentGoldCSV(input io.Reader, primary []PriceRecord, primaryP
 	if strings.TrimSpace(primaryProvider) == "" || now.IsZero() {
 		return GoldValidationResult{}, errors.New("primary provider and validation clock are required")
 	}
-	primaryByKey := make(map[string]PriceRecord, len(primary))
-	for _, record := range primary {
-		primaryByKey[record.Symbol+"\x00"+record.TradeDate.Format(time.DateOnly)] = record
-	}
 	reader := csv.NewReader(bytes.NewReader(payload))
-	reader.FieldsPerRecord = 10
+	reader.FieldsPerRecord = 12
 	header, err := reader.Read()
-	if err != nil || !equalCSVHeader(header, []string{"symbol", "trade_date", "expected_close", "source_url", "observed_at", "reviewer", "source_provider", "source_tier", "fallback_reason", "case_type"}) {
+	if err != nil || !equalCSVHeader(header, []string{"symbol", "trade_date", "primary_close", "expected_close", "primary_provider", "source_url", "observed_at", "reviewer", "source_provider", "source_tier", "fallback_reason", "case_type"}) {
 		return GoldValidationResult{}, errors.New("independent gold CSV header is invalid")
 	}
 	newYork, err := time.LoadLocation("America/New_York")
@@ -751,28 +749,32 @@ func validateIndependentGoldCSV(input io.Reader, primary []PriceRecord, primaryP
 		}
 		symbol := strings.ToUpper(row[0])
 		tradeDate, dateErr := parseCivilDate(row[1], newYork)
-		expectedClose, priceErr := parsePriceMicros(row[2])
-		sourceURL, urlErr := url.Parse(row[3])
-		observedAt, observedErr := time.Parse(time.RFC3339, row[4])
-		if symbol == "" || dateErr != nil || priceErr != nil || urlErr != nil || sourceURL.Scheme != "https" || sourceURL.Host == "" || sourceURL.User != nil || observedErr != nil || observedAt.After(now) {
+		primaryClose, primaryPriceErr := parsePriceMicros(row[2])
+		expectedClose, priceErr := parsePriceMicros(row[3])
+		sourceURL, urlErr := url.Parse(row[5])
+		observedAt, observedErr := time.Parse(time.RFC3339, row[6])
+		if symbol == "" || dateErr != nil || primaryPriceErr != nil || priceErr != nil || urlErr != nil || sourceURL.Scheme != "https" || sourceURL.Host == "" || sourceURL.User != nil || observedErr != nil || observedAt.After(now) {
 			return GoldValidationResult{}, fmt.Errorf("independent gold line %d has invalid evidence", line)
 		}
-		if row[5] == "" || row[6] == "" || strings.EqualFold(row[6], primaryProvider) {
+		if !strings.EqualFold(row[4], primaryProvider) {
+			return GoldValidationResult{}, fmt.Errorf("independent gold line %d primary provider does not match provider result", line)
+		}
+		if row[7] == "" || row[8] == "" || strings.EqualFold(row[8], primaryProvider) {
 			return GoldValidationResult{}, fmt.Errorf("independent gold line %d lacks an independent provider or reviewer", line)
 		}
-		switch row[7] {
+		switch row[9] {
 		case "exchange", "issuer_ir":
-			if row[8] != "" {
+			if row[10] != "" {
 				return GoldValidationResult{}, fmt.Errorf("independent gold line %d has an unexpected fallback reason", line)
 			}
 		case "other":
-			if row[8] == "" {
+			if row[10] == "" {
 				return GoldValidationResult{}, fmt.Errorf("independent gold line %d requires a fallback reason", line)
 			}
 		default:
 			return GoldValidationResult{}, fmt.Errorf("independent gold line %d has invalid source tier", line)
 		}
-		switch row[9] {
+		switch row[11] {
 		case "split", "ticker_change", "multi_class", "delisted":
 		default:
 			return GoldValidationResult{}, fmt.Errorf("independent gold line %d has invalid case type", line)
@@ -782,14 +784,7 @@ func validateIndependentGoldCSV(input io.Reader, primary []PriceRecord, primaryP
 			return GoldValidationResult{}, fmt.Errorf("independent gold line %d is duplicated", line)
 		}
 		seen[key] = struct{}{}
-		primaryRecord, exists := primaryByKey[key]
-		if !exists || primaryRecord.CloseMicros <= 0 {
-			return GoldValidationResult{}, fmt.Errorf("independent gold line %d has no matching primary price", line)
-		}
-		if !strings.EqualFold(strings.TrimSpace(primaryRecord.Source), strings.TrimSpace(primaryProvider)) {
-			return GoldValidationResult{}, fmt.Errorf("independent gold line %d primary source does not match provider", line)
-		}
-		difference := primaryRecord.CloseMicros - expectedClose
+		difference := primaryClose - expectedClose
 		if difference < 0 {
 			difference = -difference
 		}
@@ -798,8 +793,8 @@ func validateIndependentGoldCSV(input io.Reader, primary []PriceRecord, primaryP
 			maximumError = errorPct
 		}
 		symbols[symbol] = struct{}{}
-		reviewers[row[5]] = struct{}{}
-		caseTypes[row[9]] = struct{}{}
+		reviewers[row[7]] = struct{}{}
+		caseTypes[row[11]] = struct{}{}
 		rows++
 	}
 	if rows < MinimumIndependentGoldRows {

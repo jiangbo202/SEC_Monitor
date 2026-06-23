@@ -109,6 +109,29 @@ func TestMigrateInvalidatesLegacyProviderActivation(t *testing.T) {
 	}
 }
 
+func TestMigratePublishesLegacySecurityCatalog(t *testing.T) {
+	db, err := OpenDatabase(config.DatabaseConfig{Type: "sqlite", DSN: "file:legacy-security-catalog?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE securities (id integer primary key autoincrement, cik text unique, company_name text, sic integer, state_of_incorporation text, latest_annual_form text, created_at datetime, updated_at datetime)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO securities (cik, company_name, created_at, updated_at) VALUES ('0000000001', 'Legacy', '2026-06-01', '2026-06-02')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var security Security
+	if err := db.First(&security, "cik = ?", "0000000001").Error; err != nil {
+		t.Fatal(err)
+	}
+	if security.CatalogStatus != SecurityCatalogPublished || security.PublishedAt == nil {
+		t.Fatalf("security=%#v", security)
+	}
+}
+
 func TestMigrateBackfillsLegacyCalendarManifest(t *testing.T) {
 	db := openLegacyCalendarDatabase(t, false)
 	if err := db.Create(&MarketHoliday{

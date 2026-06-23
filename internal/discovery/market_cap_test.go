@@ -132,3 +132,19 @@ func TestValidateMarketCapPricePropagatesMissingCalendarYear(t *testing.T) {
 		t.Fatalf("error = %v, want ErrCalendarYearMissing", err)
 	}
 }
+
+func TestReasonForPriceErrorIsDiagnostic(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{ErrPriceZero, ReasonPriceZero}, {ErrPriceNegative, ReasonPriceNegative},
+		{ErrPriceAdjusted, ReasonPriceAdjusted}, {ErrPriceCurrency, ReasonPriceCurrency},
+		{ErrPriceFuture, ReasonPriceFuture}, {ErrPriceNotTradingDay, ReasonPriceNonTrading},
+		{ErrPriceStale, ReasonPriceStale},
+	} {
+		if got := reasonForPriceError(tc.err); got != tc.want {
+			t.Fatalf("%v: got %s want %s", tc.err, got, tc.want)
+		}
+	}
+}
