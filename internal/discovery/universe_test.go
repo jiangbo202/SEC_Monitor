@@ -28,6 +28,16 @@ type fakeShareSource struct {
 	err     error
 }
 
+type fakeCapitalEventSource struct {
+	events  []CapitalEvent
+	version SourceVersion
+	err     error
+}
+
+func (f fakeCapitalEventSource) Load(context.Context, map[string]struct{}, time.Time) ([]CapitalEvent, SourceVersion, error) {
+	return f.events, f.version, f.err
+}
+
 type fakePriceProvider struct {
 	name    string
 	records []PriceRecord
@@ -46,6 +56,10 @@ func (f fakeShareSource) LoadLatestShares(context.Context, map[string]struct{}) 
 	return f.facts, f.version, f.err
 }
 
+func noEvents(now time.Time) NoCapitalEventsSource {
+	return NoCapitalEventsSource{Version: testSourceVersion("capital-events", "none", now)}
+}
+
 func TestCoordinatorPublishesPrescreenWithExactEvidence(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	ny, _ := time.LoadLocation("America/New_York")
@@ -53,15 +67,15 @@ func TestCoordinatorPublishesPrescreenWithExactEvidence(t *testing.T) {
 	record := SecuritySourceRecord{CIK: "0000005678", Ticker: "CAP", CompanyName: "Cap Co", SecurityName: "Cap Co Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-Q"}, MappingStatus: MappingStatusCurrent}
 	fact := ShareFact{CIK: record.CIK, Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "0000005678-26-000001", Instant: now.AddDate(0, 0, -1), FiledAt: now.Add(-time.Hour), AcceptedAt: now.Add(-time.Hour), Shares: 10_000_000, SourceURL: "https://www.sec.gov/fact"}
 	calendar := &stubMarketCalendar{}
-	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "v1", now)}, Shares: fakeShareSource{facts: []ShareFact{fact}, version: testSourceVersion("shares", "v1", now)}, Clock: func() time.Time { return now }}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "v1", now)}, Shares: fakeShareSource{facts: []ShareFact{fact}, version: testSourceVersion("shares", "v1", now)}, Events: noEvents(now), Clock: func() time.Time { return now }}
 	securityBatch, err := c.SyncSecurityUniverse(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	gold := sha256.Sum256(frozenMarketGoldCSV)
 	window := make([]providerWindowDay, 0, ProviderActivationTradingDays)
-	day := time.Date(2026, 5, 20, 0, 0, 0, 0, ny)
-	for len(window) < ProviderActivationTradingDays {
+	day := time.Date(2026, 5, 26, 0, 0, 0, 0, ny)
+	for !day.After(time.Date(2026, 6, 22, 0, 0, 0, 0, ny)) {
 		if day.Weekday() != time.Saturday && day.Weekday() != time.Sunday {
 			window = append(window, providerWindowDay{Date: day.Format(time.DateOnly), CoveragePct: 100, Timely: true, ValidationOK: true, GoldReady: true})
 		}
@@ -82,6 +96,9 @@ func TestCoordinatorPublishesPrescreenWithExactEvidence(t *testing.T) {
 	provider := &fakePriceProvider{name: "fake", records: append([]PriceRecord{price}, goldPrices...), result: ProviderResult{Provider: "fake", Status: ProviderStatusActive, SourceVersion: "pv1", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 3, Expected: 1, CoveragePct: 100, Timely: true}}
 	c.Prices = provider
 	c.Calendar = calendar
+	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
+		return ProviderDayResult{TradeDate: result.EffectiveDate, coveragePct: 100, timely: true, validationOK: true, goldReady: true, goldSHA256: health.GoldSHA256}, nil
+	}
 	batch, err := c.SyncMarketPrices(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +129,7 @@ func TestCoordinatorPublishesSecurityUniverseIdempotently(t *testing.T) {
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, ny)
 	record := SecuritySourceRecord{CIK: "0000001234", Ticker: "ACME", CompanyName: "Acme", SecurityName: "Acme Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-K", "10-Q"}, MappingStatus: MappingStatusCurrent}
 	fact := ShareFact{CIK: record.CIK, Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "0000001234-26-000001", Instant: now.AddDate(0, 0, -1), FiledAt: now.Add(-time.Hour), AcceptedAt: now.Add(-time.Hour), Shares: 10_000_000, SourceURL: "https://www.sec.gov/fact"}
-	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "v1", now)}, Shares: fakeShareSource{facts: []ShareFact{fact}, version: testSourceVersion("shares", "v1", now)}, Clock: func() time.Time { return now }}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "v1", now)}, Shares: fakeShareSource{facts: []ShareFact{fact}, version: testSourceVersion("shares", "v1", now)}, Events: noEvents(now), Clock: func() time.Time { return now }}
 
 	first, err := c.SyncSecurityUniverse(context.Background())
 	if err != nil {
@@ -156,7 +173,7 @@ func TestCoordinatorRejectsInvalidSourceVersionAndPreservesPointer(t *testing.T)
 	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindSecurity, BatchID: old.BatchID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	c := Coordinator{DB: db, Metadata: fakeMetadataSource{version: SourceVersion{Source: "metadata", Version: "v1"}}, Shares: fakeShareSource{}, Clock: time.Now}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{version: SourceVersion{Source: "metadata", Version: "v1"}}, Shares: fakeShareSource{}, Events: noEvents(time.Now()), Clock: time.Now}
 	if _, err := c.SyncSecurityUniverse(context.Background()); err == nil {
 		t.Fatal("expected invalid version error")
 	}
@@ -193,7 +210,7 @@ func TestCoordinatorInactiveProviderDoesNotLoadOrReplacePrescreen(t *testing.T) 
 	provider := &fakePriceProvider{name: "inactive"}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }}
 	batch, err := c.SyncMarketPrices(context.Background())
-	if err == nil || batch.Status != BatchStatusPartial {
+	if err == nil || batch.Status != BatchStatusFailed {
 		t.Fatalf("batch=%#v err=%v", batch, err)
 	}
 	if provider.called != 0 {
@@ -223,21 +240,21 @@ func TestCoordinatorChunkFailureRetainsDiagnosticsAndOldPointer(t *testing.T) {
 	for i := range records {
 		records[i] = SecuritySourceRecord{CIK: fmt.Sprintf("%010d", i+1), Ticker: fmt.Sprintf("T%04d", i), CompanyName: "Chunk Co", SecurityName: "Chunk Co Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-Q"}, MappingStatus: MappingStatusCurrent}
 	}
-	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: records, version: testSourceVersion("metadata", "chunks", now)}, Shares: fakeShareSource{version: testSourceVersion("shares", "chunks", now)}, Clock: func() time.Time { return now }, AfterStageChunk: func(kind string, chunk int) error {
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: records, version: testSourceVersion("metadata", "chunks", now)}, Shares: fakeShareSource{version: testSourceVersion("shares", "chunks", now)}, Events: noEvents(now), Clock: func() time.Time { return now }, AfterStageChunk: func(kind string, chunk int) error {
 		if kind == BatchKindSecurity && chunk == 0 {
 			return errors.New("injected chunk failure")
 		}
 		return nil
 	}}
 	batch, err := c.SyncSecurityUniverse(context.Background())
-	if err == nil || batch.Status != BatchStatusPartial {
+	if err == nil || batch.Status != BatchStatusFailed {
 		t.Fatalf("batch=%#v err=%v", batch, err)
 	}
 	var count int64
 	if err := db.Model(&ClassificationSnapshot{}).Where("batch_id = ?", batch.BatchID).Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
-	if count != 1000 {
+	if count != 0 {
 		t.Fatalf("diagnostic rows=%d", count)
 	}
 	var pointer CurrentBatchPointer
@@ -246,5 +263,181 @@ func TestCoordinatorChunkFailureRetainsDiagnosticsAndOldPointer(t *testing.T) {
 	}
 	if pointer.BatchID != old.BatchID {
 		t.Fatalf("pointer changed to %s", pointer.BatchID)
+	}
+}
+
+func TestCoordinatorFailedTickerChangeCannotAlterPublishedIdentity(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ny, _ := time.LoadLocation("America/New_York")
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, ny)
+	record := SecuritySourceRecord{CIK: "0000007777", Ticker: "A", CompanyName: "Atomic", SecurityName: "Atomic Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-Q"}, MappingStatus: MappingStatusCurrent}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "a", now)}, Shares: fakeShareSource{version: testSourceVersion("shares", "a", now)}, Events: noEvents(now), Clock: func() time.Time { return now }}
+	published, err := c.SyncSecurityUniverse(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Ticker = "B"
+	c.Metadata = fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "b", now)}
+	c.AfterStageChunk = func(string, int) error { return errors.New("stop draft") }
+	failed, err := c.SyncSecurityUniverse(context.Background())
+	if err == nil || failed.Status != BatchStatusFailed {
+		t.Fatalf("failed=%#v err=%v", failed, err)
+	}
+	listings, err := c.currentIncludedListings(context.Background(), published.BatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listings) != 1 || listings[0].Ticker != "A" {
+		t.Fatalf("published listings=%#v", listings)
+	}
+	var identities int64
+	if err := db.Model(&SecurityBatchIdentity{}).Where("batch_id = ?", failed.BatchID).Count(&identities).Error; err != nil {
+		t.Fatal(err)
+	}
+	if identities != 0 {
+		t.Fatalf("failed identities=%d", identities)
+	}
+}
+
+func TestCoordinatorCapitalEventsInvalidateSelectedShareAndVersionBatch(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ny, _ := time.LoadLocation("America/New_York")
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, ny)
+	record := SecuritySourceRecord{CIK: "0000008888", Ticker: "EVT", CompanyName: "Events", SecurityName: "Events Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-Q"}, MappingStatus: MappingStatusCurrent}
+	fact := ShareFact{CIK: record.CIK, Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "fact", Instant: now.AddDate(0, 0, -10), FiledAt: now.AddDate(0, 0, -9), AcceptedAt: now.AddDate(0, 0, -9), Shares: 1_000_000, SourceURL: "https://www.sec.gov/fact"}
+	event := CapitalEvent{CIK: record.CIK, Kind: "financing", Accession: "event", EffectiveAt: now.AddDate(0, 0, -1), AcceptedAt: now.Add(-time.Hour), ChangesShares: true}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "e", now)}, Shares: fakeShareSource{facts: []ShareFact{fact}, version: testSourceVersion("shares", "e", now)}, Events: fakeCapitalEventSource{events: []CapitalEvent{event}, version: testSourceVersion("capital-events", "e", now)}, Clock: func() time.Time { return now }}
+	batch, err := c.SyncSecurityUniverse(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selection BatchShareSelection
+	if err := db.First(&selection, "batch_id = ?", batch.BatchID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if selection.ReasonCode != ReasonShareCapitalEvent || selection.ShareSnapshotID == nil {
+		t.Fatalf("selection=%#v", selection)
+	}
+	if !strings.Contains(batch.SourceVersionsJSON, "capital-events") {
+		t.Fatalf("versions=%s", batch.SourceVersionsJSON)
+	}
+}
+
+func TestCoordinatorRecordsEarlyDependencyFailure(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	c := Coordinator{DB: db, Clock: func() time.Time { return now }}
+	batch, err := c.SyncMarketPrices(context.Background())
+	if err == nil || batch.Status != BatchStatusFailed || batch.ErrorMessage == "" {
+		t.Fatalf("batch=%#v err=%v", batch, err)
+	}
+}
+
+func TestCoordinatorBlocksBadCurrentProviderDayAndPersistsHealth(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ny, _ := time.LoadLocation("America/New_York")
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, ny)
+	security := Security{CIK: "0000009999"}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := UniverseBatch{BatchID: strings.Repeat("a", 64), Kind: BatchKindSecurity, Status: BatchStatusPublished, EffectiveDate: "2026-06-23", SourceVersionsJSON: "[]", ContentSHA256: strings.Repeat("b", 64)}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindSecurity, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&SecurityBatchIdentity{BatchID: batch.BatchID, SecurityID: security.ID, CIK: security.CIK, Ticker: "BAD", ProviderTicker: "BAD", Exchange: "Nasdaq", MappingStatus: MappingStatusCurrent}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&ClassificationSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Included: true, Status: EffectiveStatusIncluded}).Error; err != nil {
+		t.Fatal(err)
+	}
+	window := make([]providerWindowDay, 0, ProviderActivationTradingDays)
+	for day := time.Date(2026, 5, 26, 0, 0, 0, 0, ny); !day.After(time.Date(2026, 6, 22, 0, 0, 0, 0, ny)); day = day.AddDate(0, 0, 1) {
+		if day.Weekday() != time.Saturday && day.Weekday() != time.Sunday {
+			window = append(window, providerWindowDay{Date: day.Format(time.DateOnly), CoveragePct: 100, Timely: true, ValidationOK: true, GoldReady: true})
+		}
+	}
+	if len(window) != ProviderActivationTradingDays {
+		t.Fatalf("window=%d", len(window))
+	}
+	encoded, _ := json.Marshal(window)
+	gold := strings.Repeat("c", 64)
+	if err := db.Create(&ProviderHealth{Provider: "bad", Status: ProviderStatusActive, QualifiedTradingDays: len(window), LastTradeDate: "2026-06-22", WindowJSON: string(encoded), GoldEvidenceReady: true, GoldSHA256: gold}).Error; err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakePriceProvider{name: "bad", records: []PriceRecord{{Symbol: "BAD", Source: "bad", TradeDate: now, CloseMicros: 1_000_000, Currency: "USD"}}, result: ProviderResult{Provider: "bad", SourceVersion: "p1", SHA256: strings.Repeat("d", 64), EffectiveDate: now, Records: 1, Expected: 1, CoveragePct: 50, Timely: false}}
+	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }}
+	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
+		return ProviderDayResult{TradeDate: result.EffectiveDate, coveragePct: 50, validationOK: false, goldSHA256: gold}, nil
+	}
+	failed, err := c.SyncMarketPrices(context.Background())
+	if err == nil || failed.Status != BatchStatusFailed {
+		t.Fatalf("batch=%#v err=%v", failed, err)
+	}
+	var health ProviderHealth
+	if err := db.First(&health, "provider = ?", "bad").Error; err != nil {
+		t.Fatal(err)
+	}
+	if health.FailureStreak != 1 || health.LastTradeDate != "2026-06-23" {
+		t.Fatalf("health=%#v", health)
+	}
+	var run ProviderRun
+	if err := db.First(&run, "batch_id = ?", failed.BatchID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.GoldSHA256 != gold || run.SourceVersion != "p1" {
+		t.Fatalf("run=%#v", run)
+	}
+}
+
+func TestSecurityInputNormalizationIsPermutationInvariantAndRejectsConflicts(t *testing.T) {
+	now := time.Date(2026, 6, 23, 0, 0, 0, 0, time.UTC)
+	a := SecuritySourceRecord{CIK: "0000000001", Ticker: "A", CompanyName: "A"}
+	b := SecuritySourceRecord{CIK: "0000000002", Ticker: "B", CompanyName: "B"}
+	one, err := normalizeMetadataRecords([]SecuritySourceRecord{a, b, a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := normalizeMetadataRecords([]SecuritySourceRecord{b, a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h1, err := hashSecurityInputs(one, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := hashSecurityInputs(two, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil)
+	if err != nil || h1 != h2 {
+		t.Fatalf("hashes=%s/%s err=%v", h1, h2, err)
+	}
+	conflict := a
+	conflict.CompanyName = "changed"
+	if _, err := normalizeMetadataRecords([]SecuritySourceRecord{a, conflict}); err == nil {
+		t.Fatal("expected duplicate conflict")
+	}
+}
+
+func TestPersistPricesChecksEntireDuplicateGroupDeterministically(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ny, _ := time.LoadLocation("America/New_York")
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, ny)
+	records := []PriceRecord{
+		{Symbol: "DUP", Source: "p", TradeDate: now, CloseMicros: 2_000_000, Currency: "USD"},
+		{Symbol: "DUP", Source: "p", TradeDate: now, CloseMicros: 1_000_000, Currency: "USD"},
+		{Symbol: "DUP", Source: "p", TradeDate: now, CloseMicros: 2_000_000, Currency: "USD"},
+	}
+	c := Coordinator{DB: db, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }}
+	if err := c.persistPrices(context.Background(), records, "v1"); err != nil {
+		t.Fatal(err)
+	}
+	var rows []PriceSnapshot
+	if err := db.Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].QualityStatus != QualityStatusConflict || rows[0].CloseMicros != 1_000_000 {
+		t.Fatalf("rows=%#v", rows)
 	}
 }

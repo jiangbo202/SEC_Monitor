@@ -42,6 +42,7 @@ func Migrate(db *gorm.DB) error {
 			&UniverseBatch{},
 			&CurrentBatchPointer{},
 			&Listing{},
+			&SecurityBatchIdentity{},
 			&ClassificationSnapshot{},
 			&ProviderRun{},
 			&ProviderHealth{},

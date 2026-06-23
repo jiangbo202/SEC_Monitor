@@ -299,6 +299,21 @@ func TestProviderStateTransitions(t *testing.T) {
 	if err != nil || state.FailureStreak != 1 {
 		t.Fatalf("failure state = %+v, err=%v", state, err)
 	}
+	secondFailure, _ := nextTradingDate(context.Background(), calendar, first)
+	day.TradeDate = secondFailure
+	state, err = AdvanceProviderHealth(context.Background(), calendar, state, day)
+	if err != nil || state.FailureStreak != 2 {
+		t.Fatalf("second failure state = %+v, err=%v", state, err)
+	}
+	thirdFailure, _ := nextTradingDate(context.Background(), calendar, secondFailure)
+	day.TradeDate = thirdFailure
+	state, err = AdvanceProviderHealth(context.Background(), calendar, state, day)
+	if err != nil || state.Status != ProviderStatusDegraded || state.FailureStreak != 3 {
+		t.Fatalf("degraded state = %+v, err=%v", state, err)
+	}
+	// Continue the reset assertion from a fresh active state.
+	state = activatedProviderHealth(t, calendar)
+	first, _ = nextTradingDate(context.Background(), calendar, civilDate(t, state.LastTradeDate))
 	second, _ := nextTradingDate(context.Background(), calendar, first)
 	day = ProviderDayResult{TradeDate: second, coveragePct: 100, timely: true, validationOK: true, goldReady: true, goldSHA256: testGoldSHA}
 	state, err = AdvanceProviderHealth(context.Background(), calendar, state, day)

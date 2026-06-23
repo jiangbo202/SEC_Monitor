@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,16 @@ type CapitalEvent struct {
 	CIK, Kind, Accession    string
 	EffectiveAt, AcceptedAt time.Time
 	ChangesShares           bool
+}
+
+type CapitalEventSource interface {
+	Load(context.Context, map[string]struct{}, time.Time) ([]CapitalEvent, SourceVersion, error)
+}
+
+type NoCapitalEventsSource struct{ Version SourceVersion }
+
+func (s NoCapitalEventsSource) Load(_ context.Context, _ map[string]struct{}, _ time.Time) ([]CapitalEvent, SourceVersion, error) {
+	return nil, s.Version, nil
 }
 
 type ShareSelection struct {

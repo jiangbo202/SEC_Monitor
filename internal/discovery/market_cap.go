@@ -20,6 +20,9 @@ var (
 	ErrPriceStale         = errors.New("price is older than three trading days")
 	ErrPriceNotTradingDay = errors.New("price date is not a trading day")
 	ErrPriceFuture        = errors.New("price date is in the future")
+	ErrPriceAdjusted      = errors.New("adjusted price is not accepted")
+	ErrPriceCurrency      = errors.New("price currency is not USD")
+	ErrPriceInvalid       = errors.New("price is invalid")
 )
 
 // ComputeMarketCapUSD uses checked integer arithmetic. Any fractional dollar
@@ -60,13 +63,13 @@ func ValidateMarketCapPrice(ctx context.Context, calendar MarketCalendar, price 
 		return 0, errors.New("price date and as-of time are required")
 	}
 	if price.CloseMicros <= 0 {
-		return 0, errors.New("close price must be positive")
+		return 0, ErrPriceInvalid
 	}
 	if price.Adjusted {
-		return 0, errors.New("adjusted price is not accepted")
+		return 0, ErrPriceAdjusted
 	}
 	if strings.TrimSpace(price.Currency) != "USD" {
-		return 0, fmt.Errorf("price currency %q is not USD", price.Currency)
+		return 0, fmt.Errorf("%w: %q", ErrPriceCurrency, price.Currency)
 	}
 	newYork, err := time.LoadLocation("America/New_York")
 	if err != nil {

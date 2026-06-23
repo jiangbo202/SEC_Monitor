@@ -80,6 +80,20 @@ type ClassificationSnapshot struct {
 	Security     Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
+// SecurityBatchIdentity freezes the market identity used by one published
+// security batch. Market runs must never reconstruct it from mutable listings.
+type SecurityBatchIdentity struct {
+	ID             uint      `json:"id"`
+	BatchID        string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_security_batch_identity,priority:1;index"`
+	SecurityID     uint      `json:"security_id" gorm:"uniqueIndex:idx_security_batch_identity,priority:2;index"`
+	CIK            string    `json:"cik" gorm:"size:10"`
+	Ticker         string    `json:"ticker" gorm:"size:32;index"`
+	ProviderTicker string    `json:"provider_ticker" gorm:"size:64"`
+	Exchange       string    `json:"exchange" gorm:"size:32"`
+	MappingStatus  string    `json:"mapping_status" gorm:"size:16"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 type ProviderRun struct {
 	ID                 uint      `json:"id"`
 	BatchID            string    `json:"batch_id" gorm:"size:64;index:idx_provider_runs_batch"`
@@ -180,6 +194,7 @@ type UniverseBatch struct {
 	CompletedAt           *time.Time               `json:"completed_at"`
 	ErrorMessage          string                   `json:"error_message" gorm:"type:text"`
 	Classifications       []ClassificationSnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	Identities            []SecurityBatchIdentity  `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ProviderRuns          []ProviderRun            `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	Snapshots             []UniverseSnapshot       `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ShareSelections       []BatchShareSelection    `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`

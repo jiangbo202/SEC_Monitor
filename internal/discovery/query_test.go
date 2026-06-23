@@ -56,3 +56,32 @@ func TestUniverseQueryWithoutPointerIsEmpty(t *testing.T) {
 		t.Fatalf("page=%#v err=%v", page, err)
 	}
 }
+
+func TestBatchAndProviderQueriesPaginateFilterAndOrder(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	batches := []UniverseBatch{
+		{BatchID: "older", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: now.Add(-time.Hour)},
+		{BatchID: "newer", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: now},
+		{BatchID: "failed", Kind: BatchKindPrescreen, Status: BatchStatusFailed, StartedAt: now.Add(time.Hour)},
+	}
+	if err := db.Create(&batches).Error; err != nil {
+		t.Fatal(err)
+	}
+	page, err := ListBatches(context.Background(), db, BatchQuery{Page: 1, PageSize: 1, Kind: BatchKindSecurity, Status: BatchStatusPublished})
+	if err != nil || page.Total != 2 || len(page.Items) != 1 || page.Items[0].BatchID != "newer" {
+		t.Fatalf("page=%#v err=%v", page, err)
+	}
+	runs := []ProviderRun{
+		{BatchID: "older", Provider: "p", Status: ProviderStatusActive, CreatedAt: now.Add(-time.Hour)},
+		{BatchID: "newer", Provider: "p", Status: ProviderStatusDegraded, CreatedAt: now},
+		{BatchID: "failed", Provider: "other", Status: ProviderStatusDegraded, CreatedAt: now.Add(time.Hour)},
+	}
+	if err := db.Create(&runs).Error; err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := ListProviderDiagnostics(context.Background(), db, ProviderRunQuery{Page: 1, PageSize: 1, Provider: "p"})
+	if err != nil || diagnostics.Total != 2 || len(diagnostics.Items) != 1 || diagnostics.Items[0].BatchID != "newer" {
+		t.Fatalf("diagnostics=%#v err=%v", diagnostics, err)
+	}
+}
