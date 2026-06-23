@@ -71,6 +71,11 @@ type PriceProvider interface {
 	Load(ctx context.Context, expected []Listing) ([]PriceRecord, ProviderResult, error)
 }
 
+type NamedPriceProvider interface {
+	PriceProvider
+	ProviderName() string
+}
+
 type PriceValidationOptions struct {
 	Provider      string
 	SourceVersion string
@@ -824,6 +829,8 @@ type DownloadedPriceProvider struct {
 	prior       *CacheMetadata
 	initialized bool
 }
+
+func (provider *DownloadedPriceProvider) ProviderName() string { return provider.options.Provider }
 
 var priceProviderLifecycleLocks Downloader
 

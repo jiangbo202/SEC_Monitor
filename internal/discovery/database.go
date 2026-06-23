@@ -40,6 +40,7 @@ func Migrate(db *gorm.DB) error {
 		if err := tx.AutoMigrate(
 			&Security{},
 			&UniverseBatch{},
+			&CurrentBatchPointer{},
 			&Listing{},
 			&ClassificationSnapshot{},
 			&ProviderRun{},
@@ -48,6 +49,7 @@ func Migrate(db *gorm.DB) error {
 			&MarketCalendarYear{},
 			&PriceSnapshot{},
 			&ShareSnapshot{},
+			&BatchShareSelection{},
 			&UniverseSnapshot{},
 			&ManualSecurityOverride{},
 		); err != nil {

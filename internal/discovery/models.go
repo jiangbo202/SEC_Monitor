@@ -167,7 +167,12 @@ type ShareSnapshot struct {
 
 type UniverseBatch struct {
 	BatchID               string                   `json:"batch_id" gorm:"size:64;primaryKey"`
+	Kind                  string                   `json:"kind" gorm:"size:32;index"`
 	Status                string                   `json:"status" gorm:"size:16;index"`
+	EffectiveDate         string                   `json:"effective_date" gorm:"size:10;index"`
+	SourceVersionsJSON    string                   `json:"source_versions_json" gorm:"type:text"`
+	ContentSHA256         string                   `json:"content_sha256" gorm:"size:64"`
+	RecordCount           int                      `json:"record_count"`
 	UniverseSourceVersion string                   `json:"universe_source_version" gorm:"size:128"`
 	PriceSourceVersion    string                   `json:"price_source_version" gorm:"size:128"`
 	ShareSourceVersion    string                   `json:"share_source_version" gorm:"size:128"`
@@ -177,6 +182,26 @@ type UniverseBatch struct {
 	Classifications       []ClassificationSnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ProviderRuns          []ProviderRun            `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	Snapshots             []UniverseSnapshot       `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	ShareSelections       []BatchShareSelection    `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	CurrentPointers       []CurrentBatchPointer    `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
+type CurrentBatchPointer struct {
+	Kind      string    `json:"kind" gorm:"size:32;primaryKey;autoIncrement:false"`
+	BatchID   string    `json:"batch_id" gorm:"size:64;uniqueIndex"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type BatchShareSelection struct {
+	ID              uint           `json:"id"`
+	BatchID         string         `json:"batch_id" gorm:"size:64;uniqueIndex:idx_batch_share_security,priority:1;index"`
+	SecurityID      uint           `json:"security_id" gorm:"uniqueIndex:idx_batch_share_security,priority:2;index"`
+	ShareSnapshotID *uint          `json:"share_snapshot_id"`
+	QualityStatus   string         `json:"quality_status" gorm:"size:16"`
+	ReasonCode      string         `json:"reason_code" gorm:"size:64"`
+	CreatedAt       time.Time      `json:"created_at"`
+	Security        Security       `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	ShareEvidence   *ShareSnapshot `json:"-" gorm:"foreignKey:ShareSnapshotID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
 type UniverseSnapshot struct {

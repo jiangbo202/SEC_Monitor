@@ -162,7 +162,7 @@ func classifySecurityAutomatic(record SecuritySourceRecord) Classification {
 			verified = record.MappingVerifiedAt.Format(time.RFC3339)
 		}
 		transitionEvidence = append(transitionEvidence,
-			Evidence{Field: "business_combination_completed_at", Value: completed, Source: ClassificationRuleVersion},
+			Evidence{Field: "latest_item_2_01_filed_at_lower_bound", Value: completed, Source: ClassificationRuleVersion},
 			Evidence{Field: "mapping_verified_at", Value: verified, Source: ClassificationRuleVersion},
 		)
 		if record.BusinessCombinationCompletedAt == nil || record.MappingVerifiedAt == nil || record.MappingVerifiedAt.Before(*record.BusinessCombinationCompletedAt) {

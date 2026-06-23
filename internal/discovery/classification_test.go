@@ -290,11 +290,11 @@ func TestClassifySecurityDeSPACRequiresPostCompletionMappingVerification(t *test
 		included   bool
 		wantFields []string
 	}{
-		{"missing completion", nil, &after, false, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at"}},
-		{"missing verification", &completed, nil, false, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at", "mapping_verified_at"}},
-		{"verification before completion", &completed, &before, false, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at", "mapping_verified_at"}},
-		{"verification equal completion", &completed, &equal, true, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at", "mapping_verified_at", "mapping_status"}},
-		{"verification after completion", &completed, &after, true, []string{"blank_check_issuer", "business_combination_item_2_01", "business_combination_completed_at", "mapping_verified_at", "mapping_status"}},
+		{"missing completion", nil, &after, false, []string{"blank_check_issuer", "business_combination_item_2_01", "latest_item_2_01_filed_at_lower_bound"}},
+		{"missing verification", &completed, nil, false, []string{"blank_check_issuer", "business_combination_item_2_01", "latest_item_2_01_filed_at_lower_bound", "mapping_verified_at"}},
+		{"verification before completion", &completed, &before, false, []string{"blank_check_issuer", "business_combination_item_2_01", "latest_item_2_01_filed_at_lower_bound", "mapping_verified_at"}},
+		{"verification equal completion", &completed, &equal, true, []string{"blank_check_issuer", "business_combination_item_2_01", "latest_item_2_01_filed_at_lower_bound", "mapping_verified_at", "mapping_status"}},
+		{"verification after completion", &completed, &after, true, []string{"blank_check_issuer", "business_combination_item_2_01", "latest_item_2_01_filed_at_lower_bound", "mapping_verified_at", "mapping_status"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
