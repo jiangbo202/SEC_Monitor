@@ -56,6 +56,14 @@ type IPORadarSettings struct {
 	Keywords        []string
 }
 
+type CandidateNotificationSettings struct {
+	Enabled     bool
+	NotifyA     bool
+	NotifyB     bool
+	SendTime    string
+	MaxPerGrade int
+}
+
 func NewConfigService(db *gorm.DB, audit *AuditService) *ConfigService {
 	return &ConfigService{db: db, audit: audit}
 }
@@ -83,6 +91,11 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "ipo.notify_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
 		{Key: "ipo.notify_form_types", Value: "", ValueType: "string", Category: "ipo"},
 		{Key: "ipo.keywords", Value: "", ValueType: "string", Category: "ipo"},
+		{Key: "candidate_notification.enabled", Value: "false", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_a", Value: "false", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.send_time", Value: "09:30", ValueType: "string", Category: "candidate_notification"},
+		{Key: "candidate_notification.max_per_grade", Value: "5", ValueType: "int", Category: "candidate_notification"},
 	}, "system")
 }
 
@@ -307,6 +320,46 @@ func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings,
 		NotifyEnabled:   notify,
 		NotifyFormTypes: splitConfigList(notifyFormTypesRaw),
 		Keywords:        splitConfigList(keywordsRaw),
+	}, nil
+}
+
+func (s *ConfigService) CandidateNotificationSettings(ctx context.Context) (CandidateNotificationSettings, error) {
+	enabledRaw, _, err := s.GetValue(ctx, "candidate_notification.enabled")
+	if err != nil {
+		return CandidateNotificationSettings{}, err
+	}
+	notifyARaw, _, err := s.GetValue(ctx, "candidate_notification.notify_a")
+	if err != nil {
+		return CandidateNotificationSettings{}, err
+	}
+	notifyBRaw, _, err := s.GetValue(ctx, "candidate_notification.notify_b")
+	if err != nil {
+		return CandidateNotificationSettings{}, err
+	}
+	sendTime, _, err := s.GetValue(ctx, "candidate_notification.send_time")
+	if err != nil {
+		return CandidateNotificationSettings{}, err
+	}
+	maxRaw, _, err := s.GetValue(ctx, "candidate_notification.max_per_grade")
+	if err != nil {
+		return CandidateNotificationSettings{}, err
+	}
+	enabled, _ := strconv.ParseBool(enabledRaw)
+	notifyA, _ := strconv.ParseBool(notifyARaw)
+	notifyB, _ := strconv.ParseBool(notifyBRaw)
+	maxPerGrade, _ := strconv.Atoi(maxRaw)
+	if maxPerGrade <= 0 {
+		maxPerGrade = 5
+	}
+	if maxPerGrade > 20 {
+		maxPerGrade = 20
+	}
+	return CandidateNotificationSettings{
+		Enabled:     enabled,
+		NotifyA:     notifyA,
+		NotifyB:     notifyB,
+		SendTime:    valueOrDefault(sendTime, "09:30"),
+		MaxPerGrade: maxPerGrade,
 	}, nil
 }
 

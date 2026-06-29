@@ -58,6 +58,33 @@
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
+            <span>{{ t('pages.configs.candidateNotification') }}</span>
+            <el-tag effect="plain">{{ candidateNotificationSummary }}</el-tag>
+          </div>
+        </template>
+        <el-form :model="candidateNotificationForm" label-width="150px">
+          <el-form-item :label="t('pages.configs.candidateNotificationEnabled')">
+            <el-switch v-model="candidateNotificationForm.enabled" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.candidateNotifyA')">
+            <el-switch v-model="candidateNotificationForm.notify_a" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.candidateNotifyB')">
+            <el-switch v-model="candidateNotificationForm.notify_b" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.candidateSendTime')">
+            <el-time-picker v-model="candidateNotificationForm.send_time" format="HH:mm" value-format="HH:mm" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.candidateMaxPerGrade')">
+            <el-input-number v-model="candidateNotificationForm.max_per_grade" :min="1" :max="20" />
+          </el-form-item>
+        </el-form>
+        <el-alert :title="t('pages.configs.candidateNotificationHint')" type="info" :closable="false" show-icon />
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
             <span>{{ t('pages.configs.ipoRadar') }}</span>
           </div>
         </template>
@@ -203,6 +230,13 @@ const notificationForm = reactive({
   quiet_hours_start: '22:00',
   quiet_hours_end: '08:00'
 })
+const candidateNotificationForm = reactive({
+  enabled: false,
+  notify_a: false,
+  notify_b: false,
+  send_time: '09:30',
+  max_per_grade: 5
+})
 const ipoForm = reactive({
   enabled: true,
   form_types: 'S-1,S-1/A,F-1,F-1/A,S-1MEF',
@@ -246,6 +280,19 @@ const retentionPolicySummary = computed(() => {
   return t('pages.configs.summaryRetention', { days: systemForm.data_retention_days, storage })
 })
 
+const candidateNotificationSummary = computed(() => {
+  if (!candidateNotificationForm.enabled) return t('status.disabled')
+  const grades = [
+    candidateNotificationForm.notify_a ? 'A' : '',
+    candidateNotificationForm.notify_b ? 'B' : ''
+  ].filter(Boolean).join('/')
+  return t('pages.configs.candidateNotificationSummary', {
+    grades: grades || '-',
+    time: candidateNotificationForm.send_time,
+    count: candidateNotificationForm.max_per_grade
+  })
+})
+
 const systemRiskHints = computed(() => {
   const hints: Array<{ title: string, description: string, type: 'warning' | 'info' }> = []
   if (systemForm.data_retention_days < 14) {
@@ -287,6 +334,11 @@ async function load() {
     notificationForm.quiet_hours_enabled = configValue(configs, 'notification.quiet_hours_enabled', 'false') === 'true'
     notificationForm.quiet_hours_start = configValue(configs, 'notification.quiet_hours_start', '22:00')
     notificationForm.quiet_hours_end = configValue(configs, 'notification.quiet_hours_end', '08:00')
+    candidateNotificationForm.enabled = configValue(configs, 'candidate_notification.enabled', 'false') === 'true'
+    candidateNotificationForm.notify_a = configValue(configs, 'candidate_notification.notify_a', 'false') === 'true'
+    candidateNotificationForm.notify_b = configValue(configs, 'candidate_notification.notify_b', 'false') === 'true'
+    candidateNotificationForm.send_time = configValue(configs, 'candidate_notification.send_time', '09:30')
+    candidateNotificationForm.max_per_grade = Number(configValue(configs, 'candidate_notification.max_per_grade', '5'))
     ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
     ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,S-1MEF')
     ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))
@@ -316,6 +368,11 @@ async function save() {
       { key: 'notification.quiet_hours_enabled', value: String(notificationForm.quiet_hours_enabled), value_type: 'bool', category: 'notification', encrypted: false },
       { key: 'notification.quiet_hours_start', value: notificationForm.quiet_hours_start, value_type: 'string', category: 'notification', encrypted: false },
       { key: 'notification.quiet_hours_end', value: notificationForm.quiet_hours_end, value_type: 'string', category: 'notification', encrypted: false },
+      { key: 'candidate_notification.enabled', value: String(candidateNotificationForm.enabled), value_type: 'bool', category: 'candidate_notification', encrypted: false },
+      { key: 'candidate_notification.notify_a', value: String(candidateNotificationForm.notify_a), value_type: 'bool', category: 'candidate_notification', encrypted: false },
+      { key: 'candidate_notification.notify_b', value: String(candidateNotificationForm.notify_b), value_type: 'bool', category: 'candidate_notification', encrypted: false },
+      { key: 'candidate_notification.send_time', value: candidateNotificationForm.send_time, value_type: 'string', category: 'candidate_notification', encrypted: false },
+      { key: 'candidate_notification.max_per_grade', value: String(candidateNotificationForm.max_per_grade), value_type: 'int', category: 'candidate_notification', encrypted: false },
       { key: 'ipo.enabled', value: String(ipoForm.enabled), value_type: 'bool', category: 'ipo', encrypted: false },
       { key: 'ipo.form_types', value: ipoForm.form_types, value_type: 'string', category: 'ipo', encrypted: false },
       { key: 'ipo.lookback_days', value: String(ipoForm.lookback_days), value_type: 'int', category: 'ipo', encrypted: false },

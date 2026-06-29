@@ -469,6 +469,25 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 				t.Fatalf("form types = %+v", settings.FormTypes)
 			}
 		}},
+		{name: "ensure candidate notification defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults: %v", err)
+			}
+			settings, err := svc.CandidateNotificationSettings(context.Background())
+			if err != nil {
+				t.Fatalf("CandidateNotificationSettings: %v", err)
+			}
+			if settings.Enabled || settings.NotifyA || settings.NotifyB || settings.SendTime != "09:30" || settings.MaxPerGrade != 5 {
+				t.Fatalf("settings = %+v", settings)
+			}
+			configs, err := svc.List(context.Background(), "candidate_notification", false)
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(configs) != 5 {
+				t.Fatalf("candidate notification defaults = %d, want 5", len(configs))
+			}
+		}},
 	}
 
 	for _, tt := range tests {
