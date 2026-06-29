@@ -27,6 +27,7 @@ type DatabaseConfig struct {
 type DiscoveryConfig struct {
 	Database             DatabaseConfig
 	CacheDir             string
+	UserAgent            string
 	NasdaqListedURL      string
 	NasdaqOtherListedURL string
 	SECTickerExchangeURL string
@@ -64,6 +65,7 @@ func Load() Config {
 				DSN:  valueOrDefault("SMALL_CAP_DATABASE_DSN", filepath.Join(filepath.Dir(database.DSN), "small_cap.db")),
 			},
 			CacheDir:             valueOrDefault("SMALL_CAP_CACHE_DIR", ".cache/discovery"),
+			UserAgent:            valueOrDefault("SEC_USER_AGENT", "sec-monitor/0.1 contact@example.com"),
 			NasdaqListedURL:      valueOrDefault("SMALL_CAP_NASDAQ_LISTED_URL", "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"),
 			NasdaqOtherListedURL: valueOrDefault("SMALL_CAP_NASDAQ_OTHER_LISTED_URL", "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"),
 			SECTickerExchangeURL: valueOrDefault("SMALL_CAP_SEC_TICKER_EXCHANGE_URL", "https://www.sec.gov/files/company_tickers_exchange.json"),

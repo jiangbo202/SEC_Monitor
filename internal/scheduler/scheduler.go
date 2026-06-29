@@ -13,6 +13,7 @@ import (
 const (
 	candidateNotificationSyncTaskName = "candidate_notification_sync"
 	ipoRadarSyncTaskName              = "ipo_radar_sync"
+	smallCapDiscoverySyncTaskName     = "small_cap_discovery_sync"
 	secFilingSyncTaskName             = "sec_filing_sync"
 )
 
@@ -22,6 +23,7 @@ type Scheduler struct {
 	filings                *service.FilingService
 	ipo                    *service.IPORadarService
 	candidateNotifications *service.CandidateNotificationService
+	discoverySync          *service.DiscoverySyncService
 	mu                     sync.Mutex
 	running                bool
 }
@@ -29,12 +31,15 @@ type Scheduler struct {
 func New(tasks *service.TaskConfigService, filings *service.FilingService, services ...any) *Scheduler {
 	var ipoService *service.IPORadarService
 	var candidateNotifications *service.CandidateNotificationService
+	var discoverySync *service.DiscoverySyncService
 	for _, svc := range services {
 		switch typed := svc.(type) {
 		case *service.IPORadarService:
 			ipoService = typed
 		case *service.CandidateNotificationService:
 			candidateNotifications = typed
+		case *service.DiscoverySyncService:
+			discoverySync = typed
 		}
 	}
 	return &Scheduler{
@@ -43,6 +48,7 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 		filings:                filings,
 		ipo:                    ipoService,
 		candidateNotifications: candidateNotifications,
+		discoverySync:          discoverySync,
 	}
 }
 
@@ -123,6 +129,8 @@ func (s *Scheduler) canRunTask(taskName string) bool {
 		return s.ipo != nil
 	case candidateNotificationSyncTaskName:
 		return s.candidateNotifications != nil
+	case smallCapDiscoverySyncTaskName:
+		return s.discoverySync != nil
 	default:
 		return false
 	}
@@ -138,6 +146,9 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 		return err
 	case candidateNotificationSyncTaskName:
 		_, err := s.candidateNotifications.Send(ctx, service.CandidateNotificationSendInput{Confirm: true})
+		return err
+	case smallCapDiscoverySyncTaskName:
+		_, err := s.discoverySync.Run(ctx)
 		return err
 	default:
 		return nil

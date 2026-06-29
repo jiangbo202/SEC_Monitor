@@ -93,11 +93,12 @@ func TestEnrichShareFactsRejectsMetadataConflicts(t *testing.T) {
 		name     string
 		facts    []ShareFact
 		metadata []FilingMetadata
+		wantErr  bool
 	}{
 		{name: "duplicate time", metadata: []FilingMetadata{{CIK: "0000001234", Accession: "a", AcceptedAt: t1}, {CIK: "0000001234", Accession: "a", AcceptedAt: t2}}},
 		{name: "duplicate CIK", metadata: []FilingMetadata{{CIK: "0000001234", Accession: "a", AcceptedAt: t1}, {CIK: "0000001235", Accession: "a", AcceptedAt: t1}}},
-		{name: "missing accession", metadata: []FilingMetadata{{CIK: "0000001234", AcceptedAt: t1}}},
-		{name: "missing CIK", metadata: []FilingMetadata{{Accession: "a", AcceptedAt: t1}}},
+		{name: "missing accession", metadata: []FilingMetadata{{CIK: "0000001234", AcceptedAt: t1}}, wantErr: true},
+		{name: "missing CIK", metadata: []FilingMetadata{{Accession: "a", AcceptedAt: t1}}, wantErr: true},
 		{name: "fact CIK mismatch", facts: []ShareFact{{CIK: "0000001235", Accession: "a"}}, metadata: []FilingMetadata{{CIK: "0000001234", Accession: "a", AcceptedAt: t1}}},
 		{name: "form mismatch", facts: []ShareFact{fact}, metadata: []FilingMetadata{func() FilingMetadata { m := metadata; m.Form = "10-K"; return m }()}},
 		{name: "filed date mismatch", facts: []ShareFact{fact}, metadata: []FilingMetadata{func() FilingMetadata { m := metadata; m.FiledAt = filed.AddDate(0, 0, 1); return m }()}},
@@ -107,7 +108,10 @@ func TestEnrichShareFactsRejectsMetadataConflicts(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			before := append([]ShareFact(nil), test.facts...)
 			_, err := EnrichShareFactsWithAcceptance(test.facts, test.metadata)
-			if err == nil || !strings.Contains(err.Error(), "acceptance metadata") {
+			if test.wantErr && (err == nil || !strings.Contains(err.Error(), "acceptance metadata")) {
+				t.Fatalf("error = %v", err)
+			}
+			if !test.wantErr && err != nil {
 				t.Fatalf("error = %v", err)
 			}
 			if !reflect.DeepEqual(test.facts, before) {

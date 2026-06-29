@@ -126,8 +126,8 @@ func TestLoadTableDrivenEnvOverrides(t *testing.T) {
 			}
 		}},
 		{name: "sec user agent", key: "SEC_USER_AGENT", value: "agent", assert: func(t *testing.T, cfg Config) {
-			if cfg.SEC.UserAgent != "agent" {
-				t.Fatalf("user agent = %q", cfg.SEC.UserAgent)
+			if cfg.SEC.UserAgent != "agent" || cfg.Discovery.UserAgent != "agent" {
+				t.Fatalf("user agents = sec:%q discovery:%q", cfg.SEC.UserAgent, cfg.Discovery.UserAgent)
 			}
 		}},
 		{name: "retention days", key: "DATA_RETENTION_DAYS", value: "45", assert: func(t *testing.T, cfg Config) {

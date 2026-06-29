@@ -378,7 +378,13 @@ async function runWorkflow() {
     health.value = res.data.data.health
     summary.value = res.data.data.summary
     await load()
-    ElMessage.success(res.data.data.status === 'ready' ? '候选工作流已刷新当前批次状态' : '暂无当前候选批次')
+    if (res.data.data.status === 'published') {
+      ElMessage.success('小盘候选真实同步已完成')
+    } else if (res.data.data.status === 'market_failed') {
+      ElMessage.warning('证券与 SEC 数据已同步，行情候选阶段失败，请检查行情源配置')
+    } else {
+      ElMessage.info(`小盘候选同步状态：${res.data.data.status}`)
+    }
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '刷新候选工作流失败')
   } finally {

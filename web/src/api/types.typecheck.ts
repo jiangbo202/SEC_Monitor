@@ -106,7 +106,7 @@ export const candidateHealthTypecheck: CandidateHealth = {
 }
 
 export const discoveryWorkflowTypecheck: DiscoveryWorkflowResult = {
-  status: 'ready',
+  status: 'published',
   batch_id: 'batch',
   summary: candidateSummaryTypecheck,
   health: candidateHealthTypecheck,

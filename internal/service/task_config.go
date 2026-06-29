@@ -30,6 +30,7 @@ func (s *TaskConfigService) EnsureDefault(ctx context.Context) error {
 	tasks := []model.TaskConfig{
 		{TaskName: "candidate_notification_sync", CronExpr: "30 9 * * *", Enabled: false, Running: false},
 		{TaskName: "ipo_radar_sync", CronExpr: "*/30 * * * *", Enabled: true, Running: false},
+		{TaskName: "small_cap_discovery_sync", CronExpr: "0 8 * * 1-5", Enabled: false, Running: false},
 		{TaskName: "sec_filing_sync", CronExpr: "*/5 * * * *", Enabled: true, Running: false},
 	}
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&tasks).Error

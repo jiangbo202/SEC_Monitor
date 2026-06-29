@@ -25,6 +25,16 @@ import (
 
 type fakeSECClient struct{}
 
+type fakeDiscoveryRunner struct{}
+
+func (fakeDiscoveryRunner) SyncSecurityUniverse(context.Context) (discovery.UniverseBatch, error) {
+	return discovery.UniverseBatch{BatchID: "ops-security", Kind: discovery.BatchKindSecurity, Status: discovery.BatchStatusPublished}, nil
+}
+
+func (fakeDiscoveryRunner) SyncMarketPrices(context.Context) (discovery.UniverseBatch, error) {
+	return discovery.UniverseBatch{BatchID: "ops-current", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished}, nil
+}
+
 func (f fakeSECClient) LookupCIK(ctx context.Context, ticker string) (string, string, error) {
 	return "0000320193", "Apple Inc.", nil
 }
@@ -159,7 +169,7 @@ func TestAppHandlerGetsDiscoveryCandidateDetail(t *testing.T) {
 	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "DAPI", Grade: discovery.CandidateGradeA, EligibleA: true, TotalScore: 87}).Error; err != nil {
 		t.Fatal(err)
 	}
-	h := &AppHandler{DiscoveryDB: discoveryDB}
+	h := &AppHandler{DiscoveryDB: discoveryDB, DiscoverySync: service.NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithRunner(fakeDiscoveryRunner{})}
 	r := gin.New()
 	r.GET("/discovery/candidates/:ticker/detail", h.GetDiscoveryCandidateDetail)
 
@@ -233,7 +243,7 @@ func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
 	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "OPS", Grade: discovery.CandidateGradeA, EligibleA: true, TotalScore: 92, MarketCapUSD: 220_000_000}).Error; err != nil {
 		t.Fatal(err)
 	}
-	h := &AppHandler{DiscoveryDB: discoveryDB}
+	h := &AppHandler{DiscoveryDB: discoveryDB, DiscoverySync: service.NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithRunner(fakeDiscoveryRunner{})}
 	r := gin.New()
 	r.GET("/discovery/candidates/health", h.GetDiscoveryCandidateHealth)
 	r.POST("/discovery/candidates/refresh", h.RefreshDiscoveryCandidates)
@@ -245,7 +255,7 @@ func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
 		want   string
 	}{
 		{method: http.MethodGet, path: "/discovery/candidates/health", want: `"total_candidates":1`},
-		{method: http.MethodPost, path: "/discovery/candidates/refresh", want: `"status":"ready"`},
+		{method: http.MethodPost, path: "/discovery/candidates/refresh", want: `"status":"published"`},
 		{method: http.MethodGet, path: "/discovery/candidates/report?date=2026-06-30", want: `"ticker":"OPS"`},
 	} {
 		rec := httptest.NewRecorder()

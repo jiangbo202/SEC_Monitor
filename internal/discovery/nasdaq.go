@@ -87,7 +87,7 @@ func ParseNasdaqOther(r io.Reader) ([]SecuritySourceRecord, string, error) {
 		if fields[1] == "" {
 			return SecuritySourceRecord{}, fmt.Errorf("line %d: empty security name", line)
 		}
-		exchanges := map[string]string{"N": "NYSE", "A": "NYSE American", "P": "NYSE Arca", "Z": "Cboe BZX", "V": "IEX"}
+		exchanges := map[string]string{"N": "NYSE", "A": "NYSE American", "P": "NYSE Arca", "Z": "Cboe BZX", "V": "IEX", "M": "NYSE Texas"}
 		exchange, ok := exchanges[fields[2]]
 		if !ok {
 			return SecuritySourceRecord{}, fmt.Errorf("line %d: unknown exchange code %q", line, fields[2])

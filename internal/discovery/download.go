@@ -45,9 +45,10 @@ type DownloadResult struct {
 // Downloader is stateful. Use it through a pointer and do not copy it after
 // the first call to Download.
 type Downloader struct {
-	Client   *http.Client
-	CacheDir string
-	MaxBytes int64
+	Client    *http.Client
+	CacheDir  string
+	MaxBytes  int64
+	UserAgent string
 
 	locksMu sync.Mutex
 	locks   map[string]*cachePathLock
@@ -87,6 +88,9 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	if req.URL.Scheme != "http" && req.URL.Scheme != "https" || req.URL.Host == "" {
 		return DownloadResult{}, fmt.Errorf("invalid download URL")
 	}
+	if d.UserAgent != "" {
+		req.Header.Set("User-Agent", d.UserAgent)
+	}
 	if prior != nil {
 		if prior.ETag != "" {
 			req.Header.Set("If-None-Match", prior.ETag)
@@ -104,6 +108,9 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
+		}
+		if cached, ok := d.cachedDownloadResult(cachePath, sourceURL, cacheKey); ok {
+			return cached, nil
 		}
 		return DownloadResult{}, newDownloadRequestError(req.URL.Hostname(), err)
 	}
@@ -144,6 +151,9 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	hash := sha256.New()
 	written, exceeded, err := copyWithHardLimit(io.MultiWriter(temp, hash), resp.Body, d.MaxBytes)
 	if err != nil {
+		if cached, ok := d.cachedDownloadResult(cachePath, sourceURL, cacheKey); ok {
+			return cached, nil
+		}
 		return DownloadResult{}, fmt.Errorf("stream download from host %q: %w", req.URL.Host, err)
 	}
 	if exceeded {
@@ -179,6 +189,31 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 		ContentType:  resp.Header.Get("Content-Type"),
 		Size:         written,
 	}, nil
+}
+
+func (d *Downloader) cachedDownloadResult(cachePath, sourceURL, cacheKey string) (DownloadResult, bool) {
+	f, err := os.Open(cachePath)
+	if err != nil {
+		return DownloadResult{}, false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		return DownloadResult{}, false
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return DownloadResult{}, false
+	}
+	return DownloadResult{
+		Path:        cachePath,
+		SourceURL:   sourceURL,
+		CacheKey:    cacheKey,
+		FinalURL:    sourceURL,
+		SHA256:      hex.EncodeToString(hash.Sum(nil)),
+		Size:        info.Size(),
+		NotModified: true,
+	}, true
 }
 
 func (d *Downloader) lockCachePath(ctx context.Context, cachePath string) (func(), error) {

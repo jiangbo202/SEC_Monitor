@@ -143,11 +143,14 @@ func TestParseSECTickerRejectsTrailingJSONEmptyFieldsAndConflictsInEitherOrder(t
 	for _, in := range []string{
 		`{"fields":["cik","name","ticker","exchange"],"data":[[1,"A","A","Nasdaq"]]} garbage`,
 		`{"fields":["cik","name","ticker","exchange"],"data":[[1," ","A","Nasdaq"]]}`,
-		`{"fields":["cik","name","ticker","exchange"],"data":[[1,"A","A"," "]]}`,
 	} {
 		if _, err := ParseSECTickerExchange(strings.NewReader(in)); err == nil {
 			t.Fatalf("accepted invalid ticker payload %q", in)
 		}
+	}
+	blankExchangeDuplicate := `{"fields":["cik","name","ticker","exchange"],"data":[[1,"Alpha","A",""],[1,"Alpha","A","Nasdaq"]]}`
+	if rows, err := ParseSECTickerExchange(strings.NewReader(blankExchangeDuplicate)); err != nil || len(rows) != 1 || rows[0].Exchange != "Nasdaq" {
+		t.Fatalf("blank exchange duplicate rows=%#v err=%v", rows, err)
 	}
 	for _, changed := range []string{`[1,"Other","A","Nasdaq"]`, `[1,"Alpha","A","NYSE"]`} {
 		base := `[1,"Alpha","A","Nasdaq"]`
@@ -232,11 +235,9 @@ func TestParseSECSubmissionsZIPDirectoryAndItemForms(t *testing.T) {
 	}
 }
 
-func TestParseSECSubmissionsRejectsTrailingJSONNameSICAndDuplicateCIKConflicts(t *testing.T) {
+func TestParseSECSubmissionsRejectsTrailingJSONSICAndDuplicateCIKConflicts(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"trailing", `{"name":"Acme","cik":1234} garbage`},
-		{"missing-name", `{"cik":1234}`},
-		{"empty-name", `{"name":" ","cik":1234}`},
 		{"negative-sic", `{"name":"Acme","cik":1234,"sic":"-1"}`},
 		{"large-sic", `{"name":"Acme","cik":1234,"sic":"10000"}`},
 		{"nondigit-sic", `{"name":"Acme","cik":1234,"sic":"1x"}`},

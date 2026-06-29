@@ -48,13 +48,14 @@ func New(deps Dependencies) *gin.Engine {
 	}
 	notificationBatches := service.NewNotificationBatchService(deps.DB, notifier, configs)
 	candidateNotifications := service.NewCandidateNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs)
+	discoverySync := service.NewDiscoverySyncService(deps.DiscoveryDB, deps.Config.Discovery)
 	filings := service.NewFilingService(deps.DB, secClient, notifier, configs)
 	currentFilingsClient, ok := secClient.(sec.CurrentFilingsClient)
 	if !ok {
 		currentFilingsClient = sec.NewHTTPClient(deps.Config.SEC.BaseURL, deps.Config.SEC.UserAgent, time.Duration(deps.Config.SEC.TimeoutMS)*time.Millisecond)
 	}
 	ipoRadar := service.NewIPORadarService(deps.DB, currentFilingsClient, notifier, configs)
-	sched := scheduler.New(tasks, filings, ipoRadar)
+	sched := scheduler.New(tasks, filings, ipoRadar, candidateNotifications, discoverySync)
 	_ = sched.Start(context.Background())
 	app := &handler.AppHandler{
 		Runtime:               deps.Config,
@@ -70,6 +71,7 @@ func New(deps Dependencies) *gin.Engine {
 		Notification:          service.NewNotificationService(deps.DB),
 		NotificationBatch:     notificationBatches,
 		CandidateNotification: candidateNotifications,
+		DiscoverySync:         discoverySync,
 		Scheduler:             sched,
 	}
 

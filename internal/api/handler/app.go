@@ -36,6 +36,7 @@ type AppHandler struct {
 	Notification          *service.NotificationService
 	NotificationBatch     *service.NotificationBatchService
 	CandidateNotification *service.CandidateNotificationService
+	DiscoverySync         *service.DiscoverySyncService
 	Scheduler             SchedulerController
 }
 
@@ -95,7 +96,7 @@ func (h *AppHandler) GetDiscoveryCandidateHealth(c *gin.Context) {
 }
 
 func (h *AppHandler) RefreshDiscoveryCandidates(c *gin.Context) {
-	result, err := service.NewDiscoveryWorkflowService(h.DiscoveryDB).Refresh(c.Request.Context())
+	result, err := h.discoverySyncService().Run(c.Request.Context())
 	if err != nil {
 		Error(c, err)
 		return
@@ -158,6 +159,13 @@ func (h *AppHandler) candidateNotificationService() *service.CandidateNotificati
 		return h.CandidateNotification
 	}
 	return service.NewCandidateNotificationService(h.DB, h.DiscoveryDB, nil, h.Configs)
+}
+
+func (h *AppHandler) discoverySyncService() *service.DiscoverySyncService {
+	if h.DiscoverySync != nil {
+		return h.DiscoverySync
+	}
+	return service.NewDiscoverySyncService(h.DiscoveryDB, h.Runtime.Discovery)
 }
 
 func (h *AppHandler) LookupTicker(c *gin.Context) {

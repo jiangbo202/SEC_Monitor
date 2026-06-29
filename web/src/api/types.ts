@@ -267,8 +267,10 @@ export interface CandidateHealth {
 }
 
 export interface DiscoveryWorkflowResult {
-  status: 'ready' | 'no_current_batch' | string
+  status: 'published' | 'market_failed' | string
   batch_id: string
+  security_batch_id?: string
+  market_batch_id?: string
   summary: CandidateSummary
   health: CandidateHealth
 }

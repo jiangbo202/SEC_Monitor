@@ -12,7 +12,9 @@
 - 默认关闭的定时任务 `candidate_notification_sync`，默认 cron 为 `30 9 * * *`，启用后按配置推送候选摘要。
 - 候选详情 API 与前端抽屉：展示评分拆解、财务证据、Form 4 内幕交易、融资/稀释风险、数据质量、原始证据字段和赛道解释。
 - 当前批次健康检查：识别候选中缺财务、缺内幕、缺市值和活跃风险事件。
-- 手动“刷新候选工作流”接口：当前实现为本地状态编排与健康/摘要刷新，不主动发起外部 SEC/行情/Reddit 网络抓取。
+- 手动“刷新候选工作流”接口：执行真实数据同步，先同步 Nasdaq/SEC 证券基础、财务、Form 4 和资本事件，再在已配置公开行情源时生成市值预筛选与 A/B 候选。
+- 一次性 CLI 入口 `go run ./cmd/discovery-sync`：用于本地、cron 或运维脚本直接触发真实 discovery 同步，不依赖前端页面。
+- 默认关闭的定时任务 `small_cap_discovery_sync`，默认 cron 为 `0 8 * * 1-5`，启用后按真实数据源执行小盘候选同步。
 - 候选日报接口与前端弹窗：按日期或最新批次返回 A/B 摘要、健康状态和通知文案。
 - 社交热度已完成离线数据模型、默认关闭配置和手动 upsert/query helper；未实现 Reddit 网络采集。
 
@@ -24,7 +26,7 @@
 | `GET` | `/api/discovery/candidates/summary` | 候选 A/B 摘要预览 |
 | `GET` | `/api/discovery/candidates/:ticker/detail` | 候选证据链详情 |
 | `GET` | `/api/discovery/candidates/health` | 当前候选数据健康 |
-| `POST` | `/api/discovery/candidates/refresh` | 手动刷新本地候选工作流状态 |
+| `POST` | `/api/discovery/candidates/refresh` | 手动执行真实小盘候选同步 |
 | `GET` | `/api/discovery/candidates/report?date=YYYY-MM-DD` | 候选日报 |
 | `GET` | `/api/discovery/candidates/notification-preview` | Telegram 通知 dry-run |
 | `POST` | `/api/discovery/candidates/notification-send` | 确认发送或强制重发 Telegram 候选摘要 |
@@ -34,7 +36,18 @@
 - 自动交易、买卖建议、收益承诺。
 - Reddit 未授权抓取或绕过官方 API。
 - 付费行情/付费一致预期。
-- 点击刷新时进行全市场外部数据抓取；全量 discovery 协调器和数据源运行仍按独立任务治理。
+- 造数、demo seed、模拟候选。没有真实行情源时只同步 SEC/Nasdaq 基础数据，并返回 `market_failed`，不生成假的候选。
+
+真实执行前置条件：
+
+- SEC/Nasdaq 基础同步使用公开免费数据源：`SMALL_CAP_SEC_TICKER_EXCHANGE_URL`、`SMALL_CAP_SEC_SUBMISSIONS_URL`、`SMALL_CAP_SEC_COMPANY_FACTS_URL`、`SMALL_CAP_NASDAQ_LISTED_URL`、`SMALL_CAP_NASDAQ_OTHER_LISTED_URL`。
+- SEC 下载请求必须带描述性 `SEC_USER_AGENT`，建议包含项目名和联系方式；该配置同时用于常规 SEC filing client 与小盘 discovery 下载器。
+- SEC/Nasdaq/行情下载写入 `.cache/discovery`；当公开源出现瞬时下载失败或流式 EOF 且本地已有同 cache key 文件时，本次运行允许回退使用缓存文件，并在结果中保留来源版本 hash。
+- SEC `companyfacts.zip` 全市场解析采用流式逐文件处理；生产解码总量上限为 64GB，单 entry 上限为 512MB。该上限用于防 zip bomb，不代表一次性内存占用。
+- 候选生成依赖日线价格源计算市值预筛选，必须配置 `SMALL_CAP_STOOQ_URLS` 指向可下载的 Stooq 格式 CSV 或 ZIP。公开站点如果返回浏览器验证、404、限流或非 CSV 内容，系统必须失败并保留错误，不允许降级为模拟价格。
+- `POST /api/discovery/candidates/refresh` 与 `go run ./cmd/discovery-sync` 的返回状态：
+  - `published`：证券基础同步和行情候选生成均完成，当前候选批次已发布。
+  - `market_failed`：证券基础同步完成，但行情候选阶段失败；常见原因是未配置 `SMALL_CAP_STOOQ_URLS`、价格源不可达或价格源未通过质量校验。
 
 ## 1. 产品目标
 

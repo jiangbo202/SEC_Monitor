@@ -67,6 +67,37 @@ func TestDownloaderSuccessfulDownload(t *testing.T) {
 	}
 }
 
+func TestDownloaderSetsUserAgent(t *testing.T) {
+	client := clientForHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != "sec-monitor-test contact@example.com" {
+			t.Fatalf("User-Agent = %q", got)
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	d := Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1024, UserAgent: "sec-monitor-test contact@example.com"}
+	if _, err := d.Download(context.Background(), "https://example.test/source", "ua-test", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDownloaderFallsBackToCachedFileOnRequestFailure(t *testing.T) {
+	cacheDir := t.TempDir()
+	cachePath := filepath.Join(cacheDir, "cached-source")
+	if err := os.WriteFile(cachePath, []byte("cached payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("temporary network failure")
+	})}
+	result, err := (&Downloader{Client: client, CacheDir: cacheDir, MaxBytes: 1024}).Download(context.Background(), "https://example.test/source", "cached-source", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.NotModified || result.Path != cachePath || result.Size != int64(len("cached payload")) {
+		t.Fatalf("cached result = %#v", result)
+	}
+}
+
 func TestDownloaderReturnsRedirectFinalURL(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {

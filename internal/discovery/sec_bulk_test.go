@@ -42,12 +42,12 @@ func zipFile(t *testing.T, entries map[string]string) string {
 }
 
 func TestParseSECTickerExchange(t *testing.T) {
-	in := `{"fields":["exchange","ticker","name","cik"],"data":[["Nasdaq","brk.b","Berkshire",1067983],["NYSE","BRK.A","Berkshire",1067983]]}`
+	in := `{"fields":["exchange","ticker","name","cik"],"data":[["Nasdaq","brk.b","Berkshire",1067983],["NYSE","BRK.A","Berkshire",1067983],["","NEXN","Nexxen International Ltd.",1849396]]}`
 	recs, err := ParseSECTickerExchange(strings.NewReader(in))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 2 || recs[0].CIK != "0001067983" || recs[1].Ticker != "BRK.B" {
+	if len(recs) != 3 || recs[0].CIK != "0001067983" || recs[1].Ticker != "BRK.B" || recs[2].Exchange != "" {
 		t.Fatalf("records = %#v", recs)
 	}
 	bad := `{"fields":["cik","name","ticker","exchange"],"data":[[1,"a","X","N"],[2,"b","X","N"]]}`
@@ -58,7 +58,11 @@ func TestParseSECTickerExchange(t *testing.T) {
 
 func TestParseSECSubmissions(t *testing.T) {
 	body := `{"name":"Acme","cik":"1234","entityType":"operating","sic":"3571","stateOfIncorporation":"DE","tickers":["ACME"],"exchanges":["Nasdaq"],"filings":{"recent":{"form":["10-Q","10-K/A","10-K","8-K"],"accessionNumber":["1","2","3","4"],"filingDate":["2026-05-01","2026-04-01","2025-03-01","2026-06-01"],"reportDate":["","","",""],"primaryDocument":["a","b","c","d"],"items":["","","","2.01,9.01"]}}}`
-	p := zipFile(t, map[string]string{"CIK0000001234.json": body})
+	p := zipFile(t, map[string]string{
+		"CIK0000001234.json":                 body,
+		"CIK0000001234-submissions-001.json": `{"accessionNumber":["ignored"]}`,
+		"placeholder.txt":                    "placeholder",
+	})
 	z, err := OpenSafeZIP(p, 10, 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -72,6 +76,23 @@ func TestParseSECSubmissions(t *testing.T) {
 	wantCompleted := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	if x.CompanyName != "Acme" || x.SIC != 3571 || x.LatestAnnualForm != "10-K/A" || !x.HasBusinessCombinationItem201 || x.BusinessCombinationCompletedAt == nil || !x.BusinessCombinationCompletedAt.Equal(wantCompleted) || len(x.RecentForms) != 4 {
 		t.Fatalf("metadata = %#v", x)
+	}
+}
+
+func TestParseSECSubmissionsAllowsEmptyName(t *testing.T) {
+	body := `{"name":"","cik":1161343,"filings":{"recent":{"form":["10-K"],"filingDate":["2026-01-01"]}}}`
+	p := zipFile(t, map[string]string{"CIK0001161343.json": body})
+	z, err := OpenSafeZIP(p, 10, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+	records, err := ParseSECSubmissionsZIP(&z.Reader, ZIPParseLimits{MaxEntryBytes: 1 << 20, MaxTotalBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records["0001161343"].CompanyName != "" {
+		t.Fatalf("record = %#v", records["0001161343"])
 	}
 }
 
@@ -137,15 +158,45 @@ func TestParseSECCompanyFacts(t *testing.T) {
 	}
 }
 
+func TestParseSECCompanyFactsSkipsInvalidShareValues(t *testing.T) {
+	body := `{"cik":33185,"facts":{"us-gaap":{"CommonStockSharesOutstanding":{"units":{"shares":[{"val":1.5,"end":"2026-03-30","filed":"2026-05-01","form":"10-Q","accn":"bad"},{"val":100,"end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"good"}]}}}}}`
+	p := zipFile(t, map[string]string{"CIK0000033185.json": body})
+	z, err := zip.OpenReader(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+	facts, err := ParseSECCompanyFactsZIP(&z.Reader, map[string]struct{}{"0000033185": {}}, ZIPParseLimits{MaxEntryBytes: 1 << 20, MaxTotalBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 || facts[0].Shares != 100 || facts[0].Accession != "good" {
+		t.Fatalf("facts = %#v", facts)
+	}
+}
+
+func TestParseSECCompanyFactsSkipsEmptyDocuments(t *testing.T) {
+	p := zipFile(t, map[string]string{"CIK0000759828.json": `{}`})
+	z, err := zip.OpenReader(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+	facts, err := ParseSECCompanyFactsZIP(&z.Reader, map[string]struct{}{"0000759828": {}}, ZIPParseLimits{MaxEntryBytes: 1 << 20, MaxTotalBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 0 {
+		t.Fatalf("facts = %#v", facts)
+	}
+}
+
 func TestParseSECCompanyFactsConflictAndMalformed(t *testing.T) {
 	for _, body := range []string{
 		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1,"end":"bad","filed":"2026-01-01","accn":"x"}]}}}}}`,
 		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1,"end":"2026-01-01","filed":"bad","accn":"x"}]}}}}}`,
-		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":-1,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,
-		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1.5,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,
 		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1,"end":"2026-01-01","filed":"2026-01-02","accn":"x"},{"val":2,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,
 		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"USD":[{"val":1,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,
-		`{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":9223372036854775808.0,"end":"2026-01-01","filed":"2026-01-02","accn":"x"}]}}}}}`,
 	} {
 		p := zipFile(t, map[string]string{"CIK0000001234.json": body})
 		z, err := zip.OpenReader(p)

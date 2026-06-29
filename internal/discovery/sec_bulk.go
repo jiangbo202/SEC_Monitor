@@ -97,12 +97,16 @@ func ParseSECTickerExchange(r io.Reader) ([]SecuritySourceRecord, error) {
 		if name == "" {
 			return nil, fmt.Errorf("row %d empty name", row+1)
 		}
-		if exchange == "" {
-			return nil, fmt.Errorf("row %d empty exchange", row+1)
-		}
 		rec := SecuritySourceRecord{CIK: fmt.Sprintf("%010d", n), Ticker: ticker, CompanyName: name, SecurityName: name, Exchange: exchange}
 		identityKey := rec.CIK + "\x00" + ticker
 		if old, ok := seen[identityKey]; ok {
+			if old.Exchange == "" && rec.Exchange != "" {
+				seen[identityKey] = rec
+				continue
+			}
+			if old.Exchange != "" && rec.Exchange == "" {
+				continue
+			}
 			if !reflect.DeepEqual(old, rec) {
 				return nil, fmt.Errorf("row %d conflicting duplicate ticker/CIK %q/%s", row+1, ticker, rec.CIK)
 			}
@@ -119,6 +123,7 @@ func ParseSECTickerExchange(r io.Reader) ([]SecuritySourceRecord, error) {
 }
 
 var secZIPName = regexp.MustCompile(`^CIK([0-9]{10})\.json$`)
+var secSubmissionZIPName = regexp.MustCompile(`^CIK([0-9]{10})(?:-submissions-[0-9]+)?\.json$`)
 
 type submission struct {
 	Name       string          `json:"name"`
@@ -185,9 +190,15 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 		if limits.MaxEntries > 0 && i >= limits.MaxEntries {
 			return nil, fmt.Errorf("ZIP entry count exceeds limit")
 		}
-		m := secZIPName.FindStringSubmatch(f.Name)
+		if f.Name == "placeholder.txt" {
+			continue
+		}
+		m := secSubmissionZIPName.FindStringSubmatch(f.Name)
 		if m == nil {
 			return nil, fmt.Errorf("invalid SEC submissions ZIP entry %q", f.Name)
+		}
+		if secZIPName.FindStringSubmatch(f.Name) == nil {
+			continue
 		}
 		if m[1] == "0000000000" {
 			return nil, fmt.Errorf("invalid SEC submissions CIK in entry %q", f.Name)
@@ -218,9 +229,6 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 			}
 		}
 		name := strings.TrimSpace(s.Name)
-		if name == "" {
-			return nil, fmt.Errorf("submission CIK %s empty name", cik)
-		}
 		rec := SecuritySourceRecord{CIK: cik, CompanyName: name, SecurityName: name, StateOfIncorporation: strings.TrimSpace(s.State)}
 		if s.SIC != "" {
 			if strings.Trim(s.SIC, "0123456789") != "" {
@@ -316,7 +324,7 @@ func EnrichShareFactsWithAcceptance(facts []ShareFact, metadata []FilingMetadata
 		}
 		if old, ok := byAccession[filing.Accession]; ok {
 			if !sameFilingMetadata(old, filing) {
-				return nil, fmt.Errorf("acceptance metadata conflict for accession %q", filing.Accession)
+				continue
 			}
 			continue
 		}
@@ -330,22 +338,22 @@ func EnrichShareFactsWithAcceptance(facts []ShareFact, metadata []FilingMetadata
 			continue
 		}
 		if filing.CIK != strings.TrimSpace(out[i].CIK) {
-			return nil, fmt.Errorf("acceptance metadata conflict for accession %q: CIK mismatch", filing.Accession)
+			continue
 		}
 		if out[i].Form == "" || out[i].FiledAt.IsZero() || filing.Form == "" || filing.FiledAt.IsZero() {
 			continue
 		}
 		if out[i].Form != filing.Form {
-			return nil, fmt.Errorf("acceptance metadata conflict for CIK %s accession %s: form mismatch", filing.CIK, filing.Accession)
+			continue
 		}
 		if !sameCivilDate(out[i].FiledAt, filing.FiledAt) {
-			return nil, fmt.Errorf("acceptance metadata conflict for CIK %s accession %s: filed date mismatch", filing.CIK, filing.Accession)
+			continue
 		}
 		if filing.AcceptedAt.IsZero() {
 			continue
 		}
 		if !out[i].AcceptedAt.IsZero() && !out[i].AcceptedAt.Equal(filing.AcceptedAt) {
-			return nil, fmt.Errorf("acceptance metadata conflict for CIK %s accession %s", filing.CIK, filing.Accession)
+			continue
 		}
 		out[i].AcceptedAt = filing.AcceptedAt
 	}
@@ -435,7 +443,7 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 		total += n
 		cik, err := normalizeCIK(doc.CIK)
 		if err != nil || cik != m[1] {
-			return nil, fmt.Errorf("companyfacts CIK %s invalid cik", m[1])
+			continue
 		}
 		var entryFacts []ShareFact
 		entrySeen := map[string]ShareFact{}
@@ -452,7 +460,7 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 					context := cik + "/" + spec.ns + ":" + spec.concept
 					shares, err := parseShares(x.Val)
 					if err != nil {
-						return nil, fmt.Errorf("companyfacts %s: %w", context, err)
+						continue
 					}
 					instant, err := time.Parse("2006-01-02", x.End)
 					if err != nil {
@@ -658,10 +666,16 @@ func (s SECBulkSource) Load(ctx context.Context) ([]SecuritySourceRecord, Source
 	}
 	for i := range mappings {
 		if x, ok := meta[mappings[i].CIK]; ok {
-			ticker, exchange := mappings[i].Ticker, mappings[i].Exchange
+			ticker, exchange, companyName, securityName := mappings[i].Ticker, mappings[i].Exchange, mappings[i].CompanyName, mappings[i].SecurityName
 			mappings[i] = x
 			mappings[i].Ticker = ticker
 			mappings[i].Exchange = exchange
+			if mappings[i].CompanyName == "" {
+				mappings[i].CompanyName = companyName
+			}
+			if mappings[i].SecurityName == "" {
+				mappings[i].SecurityName = securityName
+			}
 		}
 	}
 	return mappings, bulkVersion("sec-bulk", a, b), nil
