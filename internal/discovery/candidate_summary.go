@@ -1,0 +1,162 @@
+package discovery
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"gorm.io/gorm"
+)
+
+const defaultCandidateSummaryLimit = 5
+const maxCandidateSummaryLimit = 20
+
+type CandidateSummary struct {
+	BatchID string                   `json:"batch_id"`
+	TotalA  int                      `json:"total_a"`
+	TotalB  int                      `json:"total_b"`
+	ItemsA  []CandidateScoreSnapshot `json:"items_a"`
+	ItemsB  []CandidateScoreSnapshot `json:"items_b"`
+	Message string                   `json:"message"`
+}
+
+func BuildCandidateSummary(ctx context.Context, db *gorm.DB, limitPerGrade int) (CandidateSummary, error) {
+	result := CandidateSummary{ItemsA: []CandidateScoreSnapshot{}, ItemsB: []CandidateScoreSnapshot{}}
+	if db == nil {
+		return result, errors.New("database is required")
+	}
+	if ctx == nil {
+		return result, errors.New("context is required")
+	}
+	limit := normalizeCandidateSummaryLimit(limitPerGrade)
+	batch, ok, err := currentPublishedPrescreenBatch(ctx, db)
+	if err != nil {
+		return result, err
+	}
+	if !ok {
+		result.Message = "暂无小盘候选批次。"
+		return result, nil
+	}
+	result.BatchID = batch.BatchID
+	if result.TotalA, result.ItemsA, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeA, "eligible_a", limit); err != nil {
+		return result, err
+	}
+	if result.TotalB, result.ItemsB, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeB, "eligible_b", limit); err != nil {
+		return result, err
+	}
+	result.Message = renderCandidateSummaryMessage(result)
+	return result, nil
+}
+
+func normalizeCandidateSummaryLimit(limit int) int {
+	if limit <= 0 {
+		return defaultCandidateSummaryLimit
+	}
+	if limit > maxCandidateSummaryLimit {
+		return maxCandidateSummaryLimit
+	}
+	return limit
+}
+
+func currentPublishedPrescreenBatch(ctx context.Context, db *gorm.DB) (UniverseBatch, bool, error) {
+	var pointer CurrentBatchPointer
+	err := db.WithContext(ctx).First(&pointer, "kind = ?", BatchKindPrescreen).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return UniverseBatch{}, false, nil
+	}
+	if err != nil {
+		return UniverseBatch{}, false, err
+	}
+	var batch UniverseBatch
+	err = db.WithContext(ctx).First(&batch, "batch_id = ? AND kind = ? AND status = ?", pointer.BatchID, BatchKindPrescreen, BatchStatusPublished).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return UniverseBatch{}, false, nil
+	}
+	if err != nil {
+		return UniverseBatch{}, false, err
+	}
+	return batch, true, nil
+}
+
+func listCandidateSummaryItems(ctx context.Context, db *gorm.DB, batchID, grade, eligibilityColumn string, limit int) (int, []CandidateScoreSnapshot, error) {
+	items := []CandidateScoreSnapshot{}
+	query := db.WithContext(ctx).Model(&CandidateScoreSnapshot{}).Where("batch_id = ? AND grade = ? AND "+eligibilityColumn+" = ?", batchID, grade, true)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return 0, items, err
+	}
+	err := query.Order("total_score DESC").Order("market_cap_usd ASC").Order("ticker ASC").Limit(limit).Find(&items).Error
+	return int(total), items, err
+}
+
+func renderCandidateSummaryMessage(summary CandidateSummary) string {
+	lines := []string{
+		"小盘股研究候选摘要（仅研究与通知，不构成投资建议）",
+		fmt.Sprintf("批次：%s", summary.BatchID),
+		fmt.Sprintf("A级候选 %d 只，B级候选 %d 只。", summary.TotalA, summary.TotalB),
+	}
+	if summary.TotalA == 0 && summary.TotalB == 0 {
+		lines = append(lines, "今日暂无 A/B 候选。")
+		return strings.Join(lines, "\n")
+	}
+	if len(summary.ItemsA) > 0 {
+		lines = append(lines, "", "A级候选：")
+		for _, item := range summary.ItemsA {
+			lines = append(lines, formatCandidateSummaryLine(item))
+		}
+	}
+	if len(summary.ItemsB) > 0 {
+		lines = append(lines, "", "B级候选：")
+		for _, item := range summary.ItemsB {
+			lines = append(lines, formatCandidateSummaryLine(item))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatCandidateSummaryLine(item CandidateScoreSnapshot) string {
+	flags := []string{}
+	if item.RecentQualifiedInsider {
+		flags = append(flags, "Form 4增持")
+	}
+	if item.ActiveBlocksA || item.ActiveBlocksB {
+		flags = append(flags, "存在融资/稀释风险")
+	}
+	if len(flags) == 0 {
+		flags = append(flags, "无关键风险标记")
+	}
+	return fmt.Sprintf("- %s｜%d分｜市值%s｜收入增长%s｜现金%s｜%s",
+		item.Ticker,
+		item.TotalScore,
+		formatMarketCapUSD(item.MarketCapUSD),
+		formatPercent(item.RevenueGrowthPct),
+		formatMonths(item.CashRunwayMonths),
+		strings.Join(flags, "，"),
+	)
+}
+
+func formatMarketCapUSD(value int64) string {
+	switch {
+	case value >= 1_000_000_000:
+		return fmt.Sprintf("$%.1fB", float64(value)/1_000_000_000)
+	case value > 0:
+		return fmt.Sprintf("$%.0fM", float64(value)/1_000_000)
+	default:
+		return "未知"
+	}
+}
+
+func formatPercent(value float64) string {
+	if value == 0 {
+		return "未知"
+	}
+	return fmt.Sprintf("%.1f%%", value)
+}
+
+func formatMonths(value float64) string {
+	if value == 0 {
+		return "未知"
+	}
+	return fmt.Sprintf("%.1f个月", value)
+}

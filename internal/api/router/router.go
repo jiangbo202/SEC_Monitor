@@ -76,6 +76,7 @@ func New(deps Dependencies) *gin.Engine {
 	api := r.Group("/api")
 	{
 		api.GET("/sec/tickers/:ticker", app.LookupTicker)
+		api.GET("/discovery/candidates/summary", app.PreviewDiscoveryCandidateSummary)
 		api.GET("/discovery/candidates", app.ListDiscoveryCandidates)
 
 		api.GET("/watch-targets", app.ListWatchTargets)

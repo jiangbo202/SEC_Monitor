@@ -125,6 +125,45 @@ func TestAppHandlerListsDiscoveryCandidates(t *testing.T) {
 	}
 }
 
+func TestAppHandlerPreviewsDiscoveryCandidateSummary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main db: %v", err)
+	}
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	security := discovery.Security{CIK: "0000005678", CompanyName: "Preview Co", CatalogStatus: discovery.SecurityCatalogPublished}
+	if err := discoveryDB.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := discovery.UniverseBatch{BatchID: "current", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished, StartedAt: time.Now()}
+	if err := discoveryDB.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CurrentBatchPointer{Kind: discovery.BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "PRVW", Grade: discovery.CandidateGradeA, EligibleA: true, TotalScore: 91, MarketCapUSD: 210_000_000, RevenueGrowthPct: 62, CashRunwayMonths: 16, RecentQualifiedInsider: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &AppHandler{DB: db, DiscoveryDB: discoveryDB}
+	r := gin.New()
+	r.GET("/discovery/candidates/summary", h.PreviewDiscoveryCandidateSummary)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/discovery/candidates/summary?limit=1", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"batch_id":"current"`) || !strings.Contains(rec.Body.String(), `"ticker":"PRVW"`) || !strings.Contains(rec.Body.String(), "仅研究与通知") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,6 +100,65 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	all, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{Page: 1, PageSize: 1})
 	if err != nil || all.Total != 2 || len(all.Items) != 1 || all.Items[0].Ticker != "AAA" {
 		t.Fatalf("all=%#v err=%v", all, err)
+	}
+}
+
+func TestBuildCandidateSummaryUsesCurrentPublishedBatchAndLimitsByGrade(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	securities := []Security{
+		{CIK: "0000005001", CompanyName: "Alpha", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000005002", CompanyName: "Beta", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000005003", CompanyName: "Gamma", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000005004", CompanyName: "Old", CatalogStatus: SecurityCatalogPublished},
+	}
+	if err := db.Create(&securities).Error; err != nil {
+		t.Fatal(err)
+	}
+	old := UniverseBatch{BatchID: "old", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Hour)}
+	current := UniverseBatch{BatchID: "current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now()}
+	if err := db.Create(&[]UniverseBatch{old, current}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: current.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	rows := []CandidateScoreSnapshot{
+		{BatchID: old.BatchID, SecurityID: securities[3].ID, Ticker: "OLD", Grade: CandidateGradeA, EligibleA: true, TotalScore: 99},
+		{BatchID: current.BatchID, SecurityID: securities[0].ID, Ticker: "ALPH", Grade: CandidateGradeA, EligibleA: true, EligibleB: true, TotalScore: 88, MarketCapUSD: 240_000_000, RevenueGrowthPct: 55.4, CashRunwayMonths: 18.2, RecentQualifiedInsider: true},
+		{BatchID: current.BatchID, SecurityID: securities[1].ID, Ticker: "BETA", Grade: CandidateGradeA, EligibleA: true, EligibleB: true, TotalScore: 82, MarketCapUSD: 320_000_000, RevenueGrowthPct: 41.1, CashRunwayMonths: 13.0},
+		{BatchID: current.BatchID, SecurityID: securities[2].ID, Ticker: "GAMM", Grade: CandidateGradeB, EligibleB: true, TotalScore: 71, MarketCapUSD: 780_000_000, RevenueGrowthPct: 25.0, CashRunwayMonths: 8.5, ActiveBlocksA: true},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := BuildCandidateSummary(context.Background(), db, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.BatchID != "current" || summary.TotalA != 2 || summary.TotalB != 1 {
+		t.Fatalf("summary counts = %#v", summary)
+	}
+	if len(summary.ItemsA) != 1 || summary.ItemsA[0].Ticker != "ALPH" {
+		t.Fatalf("items A = %#v", summary.ItemsA)
+	}
+	if len(summary.ItemsB) != 1 || summary.ItemsB[0].Ticker != "GAMM" {
+		t.Fatalf("items B = %#v", summary.ItemsB)
+	}
+	if !strings.Contains(summary.Message, "研究候选") || !strings.Contains(summary.Message, "A级候选 2 只") || !strings.Contains(summary.Message, "ALPH") || !strings.Contains(summary.Message, "GAMM") || strings.Contains(summary.Message, "OLD") {
+		t.Fatalf("message = %s", summary.Message)
+	}
+}
+
+func TestBuildCandidateSummaryWithoutCurrentBatchIsEmpty(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+
+	summary, err := BuildCandidateSummary(context.Background(), db, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalA != 0 || summary.TotalB != 0 || len(summary.ItemsA) != 0 || len(summary.ItemsB) != 0 || !strings.Contains(summary.Message, "暂无小盘候选批次") {
+		t.Fatalf("summary = %#v", summary)
 	}
 }
 

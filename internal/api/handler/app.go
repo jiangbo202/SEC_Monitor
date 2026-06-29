@@ -75,6 +75,24 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) PreviewDiscoveryCandidateSummary(c *gin.Context) {
+	limit := 0
+	if value := strings.TrimSpace(c.Query("limit")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			Error(c, service.ErrValidation)
+			return
+		}
+		limit = parsed
+	}
+	result, err := discovery.BuildCandidateSummary(c.Request.Context(), h.DiscoveryDB, limit)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) LookupTicker(c *gin.Context) {
 	ticker := strings.ToUpper(strings.TrimSpace(c.Param("ticker")))
 	if ticker == "" {
