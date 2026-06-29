@@ -5,7 +5,10 @@
         <h1>小盘股候选</h1>
         <p>基于公开 SEC 文件、财务指标、内幕交易和融资风险生成的研究候选列表。</p>
       </div>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <el-space>
+        <el-button :loading="summaryLoading" @click="previewSummary">预览通知摘要</el-button>
+        <el-button :loading="loading" @click="load">刷新</el-button>
+      </el-space>
     </div>
 
     <el-card shadow="never" class="filter-card">
@@ -84,6 +87,77 @@
         @current-change="onPageChange"
       />
     </div>
+
+    <el-dialog v-model="summaryVisible" title="小盘候选通知摘要预览" width="760px">
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        title="仅研究与通知，不构成投资建议；当前功能不会自动发送 Telegram。"
+        class="summary-alert"
+      />
+      <div v-if="summary" class="summary-dialog">
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item label="批次">{{ summary.batch_id || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="A级候选">{{ summary.total_a }}</el-descriptions-item>
+          <el-descriptions-item label="B级候选">{{ summary.total_b }}</el-descriptions-item>
+        </el-descriptions>
+        <el-input
+          :model-value="summary.message"
+          type="textarea"
+          :autosize="{ minRows: 8, maxRows: 16 }"
+          readonly
+          class="summary-message"
+        />
+        <el-tabs>
+          <el-tab-pane :label="`A级候选 (${summary.items_a.length})`">
+            <el-table :data="summary.items_a" border size="small" empty-text="暂无A级候选">
+              <el-table-column prop="ticker" label="Ticker" width="100" />
+              <el-table-column prop="total_score" label="总分" width="80" align="right" />
+              <el-table-column prop="market_cap_usd" label="市值" width="120" align="right">
+                <template #default="{ row }">{{ formatUSD(row.market_cap_usd) }}</template>
+              </el-table-column>
+              <el-table-column prop="revenue_growth_pct" label="收入增长" width="110" align="right">
+                <template #default="{ row }">{{ formatPct(row.revenue_growth_pct) }}</template>
+              </el-table-column>
+              <el-table-column prop="cash_runway_months" label="现金 runway" width="120" align="right">
+                <template #default="{ row }">{{ formatMonths(row.cash_runway_months) }}</template>
+              </el-table-column>
+              <el-table-column label="信号" min-width="160">
+                <template #default="{ row }">
+                  <el-tag v-if="row.recent_qualified_insider" type="success" effect="plain">内部人买入</el-tag>
+                  <el-tag v-else type="info" effect="plain">无内部人买入</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+          <el-tab-pane :label="`B级候选 (${summary.items_b.length})`">
+            <el-table :data="summary.items_b" border size="small" empty-text="暂无B级候选">
+              <el-table-column prop="ticker" label="Ticker" width="100" />
+              <el-table-column prop="total_score" label="总分" width="80" align="right" />
+              <el-table-column prop="market_cap_usd" label="市值" width="120" align="right">
+                <template #default="{ row }">{{ formatUSD(row.market_cap_usd) }}</template>
+              </el-table-column>
+              <el-table-column prop="revenue_growth_pct" label="收入增长" width="110" align="right">
+                <template #default="{ row }">{{ formatPct(row.revenue_growth_pct) }}</template>
+              </el-table-column>
+              <el-table-column prop="cash_runway_months" label="现金 runway" width="120" align="right">
+                <template #default="{ row }">{{ formatMonths(row.cash_runway_months) }}</template>
+              </el-table-column>
+              <el-table-column label="风险" min-width="160">
+                <template #default="{ row }">
+                  <el-tag v-if="row.active_blocks_a || row.active_blocks_b" type="danger" effect="plain">有阻断风险</el-tag>
+                  <el-tag v-else type="info" effect="plain">无阻断风险</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
+      <template #footer>
+        <el-button @click="summaryVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -91,10 +165,13 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, CandidateScore, PageResult } from '@/api/types'
+import type { ApiResponse, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
 
 const rows = ref<CandidateScore[]>([])
 const loading = ref(false)
+const summaryLoading = ref(false)
+const summaryVisible = ref(false)
+const summary = ref<CandidateSummary | null>(null)
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
@@ -119,6 +196,19 @@ async function load() {
     ElMessage.error(err?.response?.data?.message || '加载候选失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function previewSummary() {
+  summaryLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<CandidateSummary>>('/discovery/candidates/summary', { params: { limit: 5 } })
+    summary.value = res.data.data
+    summaryVisible.value = true
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '加载候选摘要失败')
+  } finally {
+    summaryLoading.value = false
   }
 }
 
@@ -168,3 +258,20 @@ function formatMonths(value: number) {
 
 onMounted(load)
 </script>
+
+<style scoped>
+.summary-alert {
+  margin-bottom: 12px;
+}
+
+.summary-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.summary-message :deep(textarea) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  line-height: 1.5;
+}
+</style>

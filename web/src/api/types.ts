@@ -157,6 +157,15 @@ export interface CandidateScore {
   created_at: string
 }
 
+export interface CandidateSummary {
+  batch_id: string
+  total_a: number
+  total_b: number
+  items_a: CandidateScore[]
+  items_b: CandidateScore[]
+  message: string
+}
+
 export interface SystemConfig {
   id: number
   config_key: string
