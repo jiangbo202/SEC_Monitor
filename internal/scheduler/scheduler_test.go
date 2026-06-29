@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/service"
@@ -57,6 +58,36 @@ func testDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+func testDiscoveryDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(db); err != nil {
+		t.Fatalf("migrate discovery db: %v", err)
+	}
+	return db
+}
+
+func seedCandidate(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	security := discovery.Security{CIK: "0000007001", CompanyName: "Candidate", CatalogStatus: discovery.SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatalf("seed security: %v", err)
+	}
+	batch := discovery.UniverseBatch{BatchID: "sched-current", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished, StartedAt: time.Now()}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatalf("seed batch: %v", err)
+	}
+	if err := db.Create(&discovery.CurrentBatchPointer{Kind: discovery.BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatalf("seed pointer: %v", err)
+	}
+	if err := db.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "AUTO", Grade: discovery.CandidateGradeA, EligibleA: true, TotalScore: 91}).Error; err != nil {
+		t.Fatalf("seed score: %v", err)
+	}
+}
+
 func TestSchedulerTableDriven(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -90,6 +121,13 @@ func TestSchedulerTableDriven(t *testing.T) {
 			seed: []model.TaskConfig{{TaskName: "ipo_radar_sync", CronExpr: "*/30 * * * *", Enabled: true}},
 			run: func(ctx context.Context, sched *Scheduler) error {
 				return sched.RunTask(ctx, "ipo_radar_sync")
+			},
+		},
+		{
+			name: "run candidate notification task",
+			seed: []model.TaskConfig{{TaskName: "candidate_notification_sync", CronExpr: "30 9 * * *", Enabled: true}},
+			run: func(ctx context.Context, sched *Scheduler) error {
+				return sched.RunTask(ctx, "candidate_notification_sync")
 			},
 		},
 		{
@@ -128,7 +166,19 @@ func TestSchedulerTableDriven(t *testing.T) {
 			tasks := service.NewTaskConfigService(db, audit)
 			filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs)
 			ipoRadar := service.NewIPORadarService(db, fakeSECClient{}, fakeNotifier{}, configs)
-			err := tt.run(context.Background(), New(tasks, filings, ipoRadar))
+			discoveryDB := testDiscoveryDB(t)
+			seedCandidate(t, discoveryDB)
+			if err := configs.UpsertMany(context.Background(), []service.ConfigInput{
+				{Key: "candidate_notification.enabled", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+				{Key: "candidate_notification.notify_a", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+				{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+				{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
+				{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
+			}, "test"); err != nil {
+				t.Fatalf("candidate configs: %v", err)
+			}
+			candidateNotifications := service.NewCandidateNotificationService(db, discoveryDB, fakeNotifier{}, configs)
+			err := tt.run(context.Background(), New(tasks, filings, ipoRadar, candidateNotifications))
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected error")
 			}
@@ -161,6 +211,15 @@ func TestSchedulerTableDriven(t *testing.T) {
 				}
 				if run.Trigger != "ipo_scheduler" || run.NewFilings != 1 || run.Status != "success" {
 					t.Fatalf("sync run = %+v, want ipo_scheduler success with one new filing", run)
+				}
+			}
+			if tt.name == "run candidate notification task" {
+				var batch model.NotificationBatch
+				if err := db.Where("source = ?", "candidate").First(&batch).Error; err != nil {
+					t.Fatalf("load candidate batch: %v", err)
+				}
+				if batch.Status != "sent" || batch.SentCount != 1 {
+					t.Fatalf("candidate batch = %+v", batch)
 				}
 			}
 		})

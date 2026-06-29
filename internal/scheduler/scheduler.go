@@ -11,29 +11,38 @@ import (
 )
 
 const (
-	ipoRadarSyncTaskName  = "ipo_radar_sync"
-	secFilingSyncTaskName = "sec_filing_sync"
+	candidateNotificationSyncTaskName = "candidate_notification_sync"
+	ipoRadarSyncTaskName              = "ipo_radar_sync"
+	secFilingSyncTaskName             = "sec_filing_sync"
 )
 
 type Scheduler struct {
-	cron    *cron.Cron
-	tasks   *service.TaskConfigService
-	filings *service.FilingService
-	ipo     *service.IPORadarService
-	mu      sync.Mutex
-	running bool
+	cron                   *cron.Cron
+	tasks                  *service.TaskConfigService
+	filings                *service.FilingService
+	ipo                    *service.IPORadarService
+	candidateNotifications *service.CandidateNotificationService
+	mu                     sync.Mutex
+	running                bool
 }
 
-func New(tasks *service.TaskConfigService, filings *service.FilingService, ipo ...*service.IPORadarService) *Scheduler {
+func New(tasks *service.TaskConfigService, filings *service.FilingService, services ...any) *Scheduler {
 	var ipoService *service.IPORadarService
-	if len(ipo) > 0 {
-		ipoService = ipo[0]
+	var candidateNotifications *service.CandidateNotificationService
+	for _, svc := range services {
+		switch typed := svc.(type) {
+		case *service.IPORadarService:
+			ipoService = typed
+		case *service.CandidateNotificationService:
+			candidateNotifications = typed
+		}
 	}
 	return &Scheduler{
-		cron:    cron.New(),
-		tasks:   tasks,
-		filings: filings,
-		ipo:     ipoService,
+		cron:                   cron.New(),
+		tasks:                  tasks,
+		filings:                filings,
+		ipo:                    ipoService,
+		candidateNotifications: candidateNotifications,
 	}
 }
 
@@ -112,6 +121,8 @@ func (s *Scheduler) canRunTask(taskName string) bool {
 		return s.filings != nil
 	case ipoRadarSyncTaskName:
 		return s.ipo != nil
+	case candidateNotificationSyncTaskName:
+		return s.candidateNotifications != nil
 	default:
 		return false
 	}
@@ -124,6 +135,9 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 		return err
 	case ipoRadarSyncTaskName:
 		_, err := s.ipo.RefreshWithTrigger(ctx, "ipo_scheduler")
+		return err
+	case candidateNotificationSyncTaskName:
+		_, err := s.candidateNotifications.Send(ctx, service.CandidateNotificationSendInput{Confirm: true})
 		return err
 	default:
 		return nil

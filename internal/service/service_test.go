@@ -469,6 +469,19 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 				t.Fatalf("form types = %+v", settings.FormTypes)
 			}
 		}},
+		{name: "ensure candidate notification task default exists disabled", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			tasks := NewTaskConfigService(db, NewAuditService(db))
+			if err := tasks.EnsureDefault(context.Background()); err != nil {
+				t.Fatalf("EnsureDefault: %v", err)
+			}
+			var task model.TaskConfig
+			if err := db.Where("task_name = ?", "candidate_notification_sync").First(&task).Error; err != nil {
+				t.Fatalf("load candidate task: %v", err)
+			}
+			if task.Enabled || task.CronExpr != "30 9 * * *" {
+				t.Fatalf("task = %+v", task)
+			}
+		}},
 		{name: "ensure candidate notification defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
 			if err := svc.EnsureDefaults(context.Background()); err != nil {
 				t.Fatalf("EnsureDefaults: %v", err)
