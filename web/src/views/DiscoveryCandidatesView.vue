@@ -75,6 +75,11 @@
         </template>
       </el-table-column>
       <el-table-column prop="reason_code" label="原因" min-width="140" />
+      <el-table-column label="操作" width="110" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" :loading="detailLoadingTicker === row.ticker" @click="openDetail(row)">详情</el-button>
+        </template>
+      </el-table-column>
     </el-table>
 
     <div class="pagination-row">
@@ -174,6 +179,81 @@
         <el-button @click="summaryVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <el-drawer v-model="detailVisible" title="候选证据链" size="720px">
+      <div v-if="candidateDetail" class="candidate-detail">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="Ticker">{{ candidateDetail.score.ticker }}</el-descriptions-item>
+          <el-descriptions-item label="公司">{{ candidateDetail.security.company_name }}</el-descriptions-item>
+          <el-descriptions-item label="等级">{{ gradeLabel(candidateDetail.score.grade) }}</el-descriptions-item>
+          <el-descriptions-item label="总分">{{ candidateDetail.score.total_score }}</el-descriptions-item>
+          <el-descriptions-item label="市值">{{ formatUSD(candidateDetail.score.market_cap_usd) }}</el-descriptions-item>
+          <el-descriptions-item label="SIC">{{ candidateDetail.security.sic || '-' }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-card shadow="never">
+          <template #header>评分拆解</template>
+          <el-descriptions :column="3" border size="small">
+            <el-descriptions-item label="收入增长">{{ candidateDetail.score.revenue_growth_score }}</el-descriptions-item>
+            <el-descriptions-item label="现金储备">{{ candidateDetail.score.cash_runway_score }}</el-descriptions-item>
+            <el-descriptions-item label="内幕增持">{{ candidateDetail.score.insider_score }}</el-descriptions-item>
+            <el-descriptions-item label="毛利率">{{ candidateDetail.score.gross_margin_score }}</el-descriptions-item>
+            <el-descriptions-item label="稀释风险">{{ candidateDetail.score.dilution_risk_score }}</el-descriptions-item>
+            <el-descriptions-item label="赛道空间">{{ candidateDetail.score.sector_score }}</el-descriptions-item>
+          </el-descriptions>
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>数据质量</template>
+          <el-space wrap>
+            <el-tag v-for="(value, key) in candidateDetail.data_quality" :key="key" :type="value === 'valid' ? 'success' : 'warning'" effect="plain">
+              {{ key }}: {{ value }}
+            </el-tag>
+          </el-space>
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>财务证据</template>
+          <el-descriptions v-if="candidateDetail.financial" :column="2" border size="small">
+            <el-descriptions-item label="季度收入 YoY">{{ formatPct(candidateDetail.financial.quarterly_revenue_yoy_pct) }}</el-descriptions-item>
+            <el-descriptions-item label="年度收入 YoY">{{ formatPct(candidateDetail.financial.annual_revenue_yoy_pct) }}</el-descriptions-item>
+            <el-descriptions-item label="现金 Runway">{{ formatMonths(candidateDetail.financial.cash_runway_months) }}</el-descriptions-item>
+            <el-descriptions-item label="质量标记">{{ candidateDetail.financial.quality_flags_json || '-' }}</el-descriptions-item>
+          </el-descriptions>
+          <el-empty v-else description="暂无财务证据" />
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>内幕交易</template>
+          <el-table :data="candidateDetail.insiders" size="small" border empty-text="暂无内幕交易">
+            <el-table-column prop="transaction_date" label="日期" width="120"><template #default="{ row }">{{ formatDate(row.transaction_date) }}</template></el-table-column>
+            <el-table-column prop="owner_name" label="人员" min-width="120" />
+            <el-table-column prop="role" label="角色" width="90" />
+            <el-table-column prop="transaction_code" label="代码" width="70" />
+            <el-table-column prop="qualified" label="合格" width="70"><template #default="{ row }"><el-tag :type="row.qualified ? 'success' : 'info'" effect="plain">{{ row.qualified ? '是' : '否' }}</el-tag></template></el-table-column>
+          </el-table>
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>融资/稀释风险</template>
+          <el-table :data="candidateDetail.capital_risks" size="small" border empty-text="暂无融资风险">
+            <el-table-column prop="kind" label="类型" width="140" />
+            <el-table-column prop="severity" label="严重度" width="90" />
+            <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
+            <el-table-column label="阻断" width="120"><template #default="{ row }">A: {{ row.blocks_a ? '是' : '否' }} / B: {{ row.blocks_b ? '是' : '否' }}</template></el-table-column>
+          </el-table>
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>原始证据字段</template>
+          <el-table :data="candidateDetail.evidence" size="small" border>
+            <el-table-column prop="field" label="字段" width="170" />
+            <el-table-column prop="value" label="值" width="140" />
+            <el-table-column prop="source" label="来源" min-width="180" />
+          </el-table>
+        </el-card>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -181,10 +261,13 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, CandidateNotificationPreview, CandidateNotificationSendInput, CandidateNotificationSendResult, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
+import type { ApiResponse, CandidateDetail, CandidateNotificationPreview, CandidateNotificationSendInput, CandidateNotificationSendResult, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
 
 const rows = ref<CandidateScore[]>([])
 const loading = ref(false)
+const detailVisible = ref(false)
+const detailLoadingTicker = ref('')
+const candidateDetail = ref<CandidateDetail | null>(null)
 const summaryLoading = ref(false)
 const sendingNotification = ref(false)
 const summaryVisible = ref(false)
@@ -216,6 +299,19 @@ async function load() {
     ElMessage.error(err?.response?.data?.message || '加载候选失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function openDetail(row: CandidateScore) {
+  detailLoadingTicker.value = row.ticker
+  try {
+    const res = await apiClient.get<ApiResponse<CandidateDetail>>(`/discovery/candidates/${row.ticker}/detail`)
+    candidateDetail.value = res.data.data
+    detailVisible.value = true
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '加载候选详情失败')
+  } finally {
+    detailLoadingTicker.value = ''
   }
 }
 
@@ -302,6 +398,12 @@ function formatMonths(value: number) {
   return Number.isFinite(value) && value > 0 ? `${value.toFixed(1)} 月` : '-'
 }
 
+function formatDate(value?: string | null) {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString()
+}
+
 onMounted(load)
 </script>
 
@@ -323,5 +425,11 @@ onMounted(load)
 
 .force-resend-checkbox {
   margin-right: auto;
+}
+
+.candidate-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 </style>

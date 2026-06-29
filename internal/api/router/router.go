@@ -81,6 +81,7 @@ func New(deps Dependencies) *gin.Engine {
 		api.GET("/discovery/candidates/notification-preview", app.PreviewDiscoveryCandidateNotification)
 		api.POST("/discovery/candidates/notification-send", app.SendDiscoveryCandidateNotification)
 		api.GET("/discovery/candidates/summary", app.PreviewDiscoveryCandidateSummary)
+		api.GET("/discovery/candidates/:ticker/detail", app.GetDiscoveryCandidateDetail)
 		api.GET("/discovery/candidates", app.ListDiscoveryCandidates)
 
 		api.GET("/watch-targets", app.ListWatchTargets)

@@ -1,4 +1,4 @@
-import type { CandidateNotificationPreview, CandidateNotificationSendInput, CandidateNotificationSendResult, CandidateScore, CandidateSummary } from './types'
+import type { CandidateDetail, CandidateNotificationPreview, CandidateNotificationSendInput, CandidateNotificationSendResult, CandidateScore, CandidateSummary } from './types'
 
 // Compile-time contract guard for discovery candidate summary API payloads.
 const candidate: CandidateScore = {
@@ -71,4 +71,14 @@ export const candidateNotificationSendResultTypecheck: CandidateNotificationSend
 export const candidateNotificationSendInputTypecheck: CandidateNotificationSendInput = {
   confirm: true,
   force: false,
+}
+
+export const candidateDetailTypecheck: CandidateDetail = {
+  batch_id: 'batch',
+  security: { id: 1, cik: '0001', company_name: 'Acme', sic: 1000, catalog_status: 'published' },
+  score: candidate,
+  insiders: [],
+  capital_risks: [],
+  data_quality: { financial: 'valid' },
+  evidence: [{ field: 'total_score', value: '88', source: 'candidate_score_snapshots' }],
 }

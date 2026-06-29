@@ -157,6 +157,61 @@ export interface CandidateScore {
   created_at: string
 }
 
+export interface DiscoverySecurity {
+  id: number
+  cik: string
+  company_name: string
+  sic: number
+  catalog_status: string
+}
+
+export interface DiscoveryFinancialMetric {
+  quarterly_revenue_yoy_pct: number
+  annual_revenue_yoy_pct: number
+  cash_runway_months: number
+  revenue_growth_available: boolean
+  runway_available: boolean
+  quality_flags_json: string
+}
+
+export interface DiscoveryInsiderTransaction {
+  owner_name: string
+  officer_title: string
+  role: string
+  transaction_date: string
+  transaction_code: string
+  qualified: boolean
+  value_micros: number
+  source_url: string
+}
+
+export interface DiscoveryCapitalRisk {
+  kind: string
+  severity: string
+  active: boolean
+  blocks_a: boolean
+  blocks_b: boolean
+  reason: string
+  effective_at: string
+}
+
+export interface DiscoveryEvidence {
+  field: string
+  value: string
+  source: string
+}
+
+export interface CandidateDetail {
+  batch_id: string
+  security: DiscoverySecurity
+  score: CandidateScore
+  financial?: DiscoveryFinancialMetric
+  insiders: DiscoveryInsiderTransaction[]
+  capital_risks: DiscoveryCapitalRisk[]
+  data_quality: Record<string, string>
+  evidence: DiscoveryEvidence[]
+}
+
 export interface CandidateSummary {
   batch_id: string
   total_a: number

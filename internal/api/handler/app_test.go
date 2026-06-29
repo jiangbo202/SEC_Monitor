@@ -136,6 +136,41 @@ func TestAppHandlerListsDiscoveryCandidates(t *testing.T) {
 	}
 }
 
+func TestAppHandlerGetsDiscoveryCandidateDetail(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	security := discovery.Security{CIK: "0000002468", CompanyName: "Detail API Co", CatalogStatus: discovery.SecurityCatalogPublished}
+	if err := discoveryDB.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := discovery.UniverseBatch{BatchID: "current", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished, StartedAt: time.Now()}
+	if err := discoveryDB.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CurrentBatchPointer{Kind: discovery.BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "DAPI", Grade: discovery.CandidateGradeA, EligibleA: true, TotalScore: 87}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &AppHandler{DiscoveryDB: discoveryDB}
+	r := gin.New()
+	r.GET("/discovery/candidates/:ticker/detail", h.GetDiscoveryCandidateDetail)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/discovery/candidates/DAPI/detail", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ticker":"DAPI"`) || !strings.Contains(rec.Body.String(), `"company_name":"Detail API Co"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAppHandlerPreviewsDiscoveryCandidateSummary(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
