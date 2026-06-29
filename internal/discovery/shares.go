@@ -99,7 +99,7 @@ func capitalEventForFiling(filing FilingMetadata) (string, bool, bool) {
 		for _, item := range items {
 			switch item {
 			case "3.02":
-				return "financing", true, true
+				return CapitalEventConfirmedFinancing, true, true
 			case "5.03":
 				return "capital_structure", true, true
 			}
@@ -111,7 +111,7 @@ func capitalEventForFiling(filing FilingMetadata) (string, bool, bool) {
 	}
 	for _, prefix := range []string{"S-1", "S-3", "F-1", "F-3", "424B", "PIPE"} {
 		if strings.HasPrefix(form, prefix) {
-			return "potential_financing", true, true
+			return CapitalEventRegisteredFinancing, true, true
 		}
 	}
 	if form == "EFFECT" || strings.HasPrefix(form, "POS AM") {

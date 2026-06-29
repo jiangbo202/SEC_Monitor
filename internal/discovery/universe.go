@@ -816,6 +816,11 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 			return classifications, selections, err
 		}
 	}
+	if len(eventsByCIK) > 0 {
+		if err := c.persistCapitalRiskSnapshots(ctx, batch.BatchID, securityIDByCIK, eventsByCIK, now); err != nil {
+			return classifications, selections, err
+		}
+	}
 	return classifications, selections, nil
 }
 
@@ -927,6 +932,38 @@ func (c *Coordinator) persistInsiderSnapshots(ctx context.Context, securityIDByC
 		}
 		if c.AfterStageChunk != nil {
 			if err := c.AfterStageChunk("insider-transactions", start/universeChunkSize); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Coordinator) persistCapitalRiskSnapshots(ctx context.Context, batchID string, securityIDByCIK map[string]uint, eventsByCIK map[string][]CapitalEvent, now time.Time) error {
+	rows := make([]CapitalRiskSnapshot, 0)
+	for cik, events := range eventsByCIK {
+		securityID, ok := securityIDByCIK[cik]
+		if !ok {
+			continue
+		}
+		for _, risk := range AssessCapitalRisks(events, now) {
+			rows = append(rows, CapitalRiskToSnapshot(batchID, securityID, risk, now))
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return canonicalLess(rows[i], rows[j]) })
+	for start := 0; start < len(rows); start += universeChunkSize {
+		end := start + universeChunkSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunk := rows[start:end]
+		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Create(&chunk).Error
+		}); err != nil {
+			return err
+		}
+		if c.AfterStageChunk != nil {
+			if err := c.AfterStageChunk("capital-risks", start/universeChunkSize); err != nil {
 				return err
 			}
 		}

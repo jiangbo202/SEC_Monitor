@@ -259,6 +259,25 @@ type InsiderTransactionSnapshot struct {
 	Security                     Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
+type CapitalRiskSnapshot struct {
+	ID            uint      `json:"id"`
+	BatchID       string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_capital_risk_identity,priority:1;index"`
+	SecurityID    uint      `json:"security_id" gorm:"uniqueIndex:idx_capital_risk_identity,priority:2;index"`
+	Kind          string    `json:"kind" gorm:"size:64;uniqueIndex:idx_capital_risk_identity,priority:3;index"`
+	Accession     string    `json:"accession" gorm:"size:32;uniqueIndex:idx_capital_risk_identity,priority:4;index"`
+	EffectiveAt   time.Time `json:"effective_at" gorm:"uniqueIndex:idx_capital_risk_identity,priority:5;index"`
+	AcceptedAt    time.Time `json:"accepted_at" gorm:"index"`
+	ActiveUntil   time.Time `json:"active_until" gorm:"index"`
+	Active        bool      `json:"active" gorm:"index"`
+	BlocksA       bool      `json:"blocks_a" gorm:"index"`
+	BlocksB       bool      `json:"blocks_b" gorm:"index"`
+	Severity      string    `json:"severity" gorm:"size:16;index"`
+	ChangesShares bool      `json:"changes_shares"`
+	Reason        string    `json:"reason" gorm:"type:text"`
+	CreatedAt     time.Time `json:"created_at"`
+	Security      Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
 type UniverseBatch struct {
 	BatchID               string                    `json:"batch_id" gorm:"size:64;primaryKey"`
 	Kind                  string                    `json:"kind" gorm:"size:32;index"`
@@ -277,6 +296,7 @@ type UniverseBatch struct {
 	Identities            []SecurityBatchIdentity   `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ListingIdentities     []ListingIdentitySnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	FinancialMetrics      []FinancialMetricSnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	CapitalRisks          []CapitalRiskSnapshot     `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ProviderRuns          []ProviderRun             `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	Snapshots             []UniverseSnapshot        `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ShareSelections       []BatchShareSelection     `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
