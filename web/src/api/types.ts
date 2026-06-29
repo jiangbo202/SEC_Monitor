@@ -131,6 +131,32 @@ export interface IPORadarRefreshResult {
   notified: number
 }
 
+export interface CandidateScore {
+  id: number
+  batch_id: string
+  security_id: number
+  ticker: string
+  market_cap_usd: number
+  grade: 'A' | 'B' | 'excluded' | string
+  eligible_a: boolean
+  eligible_b: boolean
+  total_score: number
+  revenue_growth_score: number
+  cash_runway_score: number
+  insider_score: number
+  gross_margin_score: number
+  dilution_risk_score: number
+  sector_score: number
+  revenue_growth_pct: number
+  cash_runway_months: number
+  recent_qualified_insider: boolean
+  active_blocks_a: boolean
+  active_blocks_b: boolean
+  reason_code: string
+  scoring_version: string
+  created_at: string
+}
+
 export interface SystemConfig {
   id: number
   config_key: string
