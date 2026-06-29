@@ -63,6 +63,8 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 		{name: "market_holidays", model: &MarketHoliday{}},
 		{name: "price_snapshots", model: &PriceSnapshot{}},
 		{name: "share_snapshots", model: &ShareSnapshot{}},
+		{name: "financial_fact_snapshots", model: &FinancialFactSnapshot{}},
+		{name: "financial_metric_snapshots", model: &FinancialMetricSnapshot{}},
 		{name: "universe_batches", model: &UniverseBatch{}},
 		{name: "universe_snapshots", model: &UniverseSnapshot{}},
 		{name: "manual_security_overrides", model: &ManualSecurityOverride{}},

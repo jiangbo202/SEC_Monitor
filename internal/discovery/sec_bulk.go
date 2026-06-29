@@ -491,8 +491,8 @@ func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits 
 }
 
 type companyFactsFact struct {
-	Val                    json.Number `json:"val"`
-	End, Filed, Form, Accn string
+	Val                           json.Number `json:"val"`
+	Start, End, Filed, Form, Accn string
 }
 
 type companyFactsConcept struct {
@@ -710,6 +710,32 @@ func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]
 	}
 	return facts, bulkVersion("sec-companyfacts-submissions", c, submissions), nil
 }
+
+func (s SECBulkSource) LoadFinancialFacts(ctx context.Context, allowed map[string]struct{}) ([]FinancialFact, SourceVersion, error) {
+	if err := s.validateDownloader(); err != nil {
+		return nil, SourceVersion{}, err
+	}
+	if s.CompanyFactsURL == "" {
+		return nil, SourceVersion{}, fmt.Errorf("SEC companyfacts URL is required")
+	}
+	c, err := s.Downloader.Download(ctx, s.CompanyFactsURL, "companyfacts.zip", nil)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	z, err := OpenSafeZIP(c.Path, limitEntries(s.Limits), s.Limits.MaxTotalBytes)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	facts, err := ParseSECFinancialFactsZIP(&z.Reader, allowed, s.Limits)
+	z.Close()
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	version := bulkVersion("sec-financialfacts", c)
+	version.Version = version.Version + "+" + FinancialParserVersion
+	return facts, version, nil
+}
+
 func limitEntries(l ZIPParseLimits) int {
 	if l.MaxEntries > 0 {
 		return l.MaxEntries

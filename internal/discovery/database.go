@@ -53,6 +53,8 @@ func Migrate(db *gorm.DB) error {
 			&MarketCalendarYear{},
 			&PriceSnapshot{},
 			&ShareSnapshot{},
+			&FinancialFactSnapshot{},
+			&FinancialMetricSnapshot{},
 			&BatchShareSelection{},
 			&UniverseSnapshot{},
 			&ManualSecurityOverride{},

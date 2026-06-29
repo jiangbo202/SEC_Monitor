@@ -179,7 +179,7 @@ func TestParseSECCompanyFactsAggregateLimit(t *testing.T) {
 func TestSECBulkSource(t *testing.T) {
 	tickers := `{"fields":["cik","name","ticker","exchange"],"data":[[1234,"Acme","ACME","Nasdaq"]]}`
 	sub := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"name":"Acme","cik":1234,"sic":"3571","stateOfIncorporation":"DE","filings":{"recent":{"form":["10-Q"],"accessionNumber":["0000001234-26-000001"],"filingDate":["2026-05-01"],"acceptanceDateTime":["2026-05-01T12:34:56Z"]}}}`})
-	cf := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":40000000,"end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"0000001234-26-000001"}]}}}}}`})
+	cf := makeZIPBytes(t, map[string]string{"CIK0000001234.json": `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":40000000,"end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"0000001234-26-000001"}]}}},"us-gaap":{"RevenueFromContractWithCustomerExcludingAssessedTax":{"units":{"USD":[{"val":15000000,"start":"2026-01-01","end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"0000001234-26-000001"}]}}}}}`})
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var b []byte
 		switch {
@@ -210,6 +210,13 @@ func TestSECBulkSource(t *testing.T) {
 	selection := SelectShareSnapshot(facts, nil, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
 	if selection.QualityStatus != QualityStatusValid {
 		t.Fatalf("integrated source selection = %#v, want valid", selection)
+	}
+	financials, financialVersion, err := s.LoadFinancialFacts(context.Background(), map[string]struct{}{"0000001234": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(financials) != 1 || financials[0].Metric != FinancialMetricRevenue || financialVersion.Source != "sec-financialfacts" {
+		t.Fatalf("financials/version=%#v %#v", financials, financialVersion)
 	}
 }
 
