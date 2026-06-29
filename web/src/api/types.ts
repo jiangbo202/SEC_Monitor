@@ -181,6 +181,11 @@ export interface CandidateNotificationPreview {
   summary: CandidateSummary
 }
 
+export interface CandidateNotificationSendInput {
+  confirm: boolean
+  force: boolean
+}
+
 export interface CandidateNotificationSendResult {
   preview: CandidateNotificationPreview
   batch: NotificationBatch

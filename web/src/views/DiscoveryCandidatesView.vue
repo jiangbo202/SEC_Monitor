@@ -160,6 +160,9 @@
         </el-tabs>
       </div>
       <template #footer>
+        <el-checkbox v-model="forceCandidateNotification" class="force-resend-checkbox">
+          强制重发（会重复推送）
+        </el-checkbox>
         <el-button
           type="primary"
           :loading="sendingNotification"
@@ -178,7 +181,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, CandidateNotificationPreview, CandidateNotificationSendResult, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
+import type { ApiResponse, CandidateNotificationPreview, CandidateNotificationSendInput, CandidateNotificationSendResult, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
 
 const rows = ref<CandidateScore[]>([])
 const loading = ref(false)
@@ -188,6 +191,7 @@ const summaryVisible = ref(false)
 const summary = ref<CandidateSummary | null>(null)
 const notificationPreview = ref<CandidateNotificationPreview | null>(null)
 const notificationPreviewStatus = ref('仅 dry-run 预检，不会自动发送 Telegram。')
+const forceCandidateNotification = ref(false)
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
@@ -234,13 +238,18 @@ async function previewSummary() {
 
 async function sendNotification() {
   if (!notificationPreview.value || !notificationPreview.value.enabled || notificationPreview.value.suppressed_reason) return
-  await ElMessageBox.confirm('确认发送当前小盘候选摘要到 Telegram？发送后会记录通知批次。', '确认发送', { type: 'warning' })
+  const warning = forceCandidateNotification.value
+    ? '确认强制重发当前小盘候选摘要到 Telegram？这会绕过当天同批次防重复保护。'
+    : '确认发送当前小盘候选摘要到 Telegram？发送后会记录通知批次。'
+  await ElMessageBox.confirm(warning, forceCandidateNotification.value ? '确认强制重发' : '确认发送', { type: 'warning' })
   sendingNotification.value = true
   try {
-    const res = await apiClient.post<ApiResponse<CandidateNotificationSendResult>>('/discovery/candidates/notification-send', { confirm: true })
+    const payload: CandidateNotificationSendInput = { confirm: true, force: forceCandidateNotification.value }
+    const res = await apiClient.post<ApiResponse<CandidateNotificationSendResult>>('/discovery/candidates/notification-send', payload)
     ElMessage.success(`候选通知已发送，批次 #${res.data.data.batch.id}`)
     notificationPreview.value = res.data.data.preview
     summary.value = res.data.data.preview.summary
+    forceCandidateNotification.value = false
     summaryVisible.value = false
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '发送候选通知失败')
@@ -310,5 +319,9 @@ onMounted(load)
 .summary-message :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
   line-height: 1.5;
+}
+
+.force-resend-checkbox {
+  margin-right: auto;
 }
 </style>

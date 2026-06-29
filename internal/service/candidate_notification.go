@@ -29,6 +29,7 @@ type CandidateNotificationPreview struct {
 
 type CandidateNotificationSendInput struct {
 	Confirm bool `json:"confirm"`
+	Force   bool `json:"force"`
 }
 
 type CandidateNotificationSendResult struct {
@@ -87,10 +88,12 @@ func (s *CandidateNotificationService) Send(ctx context.Context, input Candidate
 	if preview.SuppressedReason != "" {
 		return CandidateNotificationSendResult{}, fmt.Errorf("%w: %s", ErrValidation, preview.SuppressedReason)
 	}
-	if sent, err := s.sentCandidateBatchToday(ctx, preview.Summary.BatchID, time.Now().UTC()); err != nil {
-		return CandidateNotificationSendResult{}, err
-	} else if sent {
-		return CandidateNotificationSendResult{}, fmt.Errorf("%w: candidate_notification_duplicate", ErrValidation)
+	if !input.Force {
+		if sent, err := s.sentCandidateBatchToday(ctx, preview.Summary.BatchID, time.Now().UTC()); err != nil {
+			return CandidateNotificationSendResult{}, err
+		} else if sent {
+			return CandidateNotificationSendResult{}, fmt.Errorf("%w: candidate_notification_duplicate", ErrValidation)
+		}
 	}
 	candidates := notificationCandidatesFromCandidateSummary(preview.Summary)
 	if len(candidates) == 0 {

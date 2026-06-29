@@ -1,4 +1,4 @@
-import type { CandidateNotificationPreview, CandidateNotificationSendResult, CandidateScore, CandidateSummary } from './types'
+import type { CandidateNotificationPreview, CandidateNotificationSendInput, CandidateNotificationSendResult, CandidateScore, CandidateSummary } from './types'
 
 // Compile-time contract guard for discovery candidate summary API payloads.
 const candidate: CandidateScore = {
@@ -66,4 +66,9 @@ export const candidateNotificationSendResultTypecheck: CandidateNotificationSend
     retry_count: 0,
     created_at: '2026-06-30T00:00:00Z',
   },
+}
+
+export const candidateNotificationSendInputTypecheck: CandidateNotificationSendInput = {
+  confirm: true,
+  force: false,
 }
