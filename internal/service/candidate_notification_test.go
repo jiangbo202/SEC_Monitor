@@ -121,6 +121,43 @@ func TestCandidateNotificationSendCreatesBatchAndCallsNotifier(t *testing.T) {
 	}
 }
 
+func TestCandidateNotificationSendBlocksDuplicateBatchToday(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "candidate_notification.enabled", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_a", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+		{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
+		{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
+	}, "test"); err != nil {
+		t.Fatalf("UpsertMany: %v", err)
+	}
+	seedCandidateScores(t, discoveryDB)
+	now := time.Now().UTC()
+	batch := model.NotificationBatch{Source: "candidate", Trigger: "manual", Channel: "telegram", Status: "sent", ItemCount: 1, SentCount: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatalf("seed batch: %v", err)
+	}
+	if err := db.Create(&model.NotificationBatchItem{BatchID: batch.ID, EntityKind: "candidate", FilingID: "current:AAA:1", Ticker: "AAA", Status: "sent", Reason: "eligible", EventAt: now}).Error; err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	notifier := &fakeNotifier{}
+
+	_, err := NewCandidateNotificationService(db, discoveryDB, notifier, configs).Send(context.Background(), CandidateNotificationSendInput{Confirm: true})
+	if !errors.Is(err, ErrValidation) || !strings.Contains(err.Error(), "candidate_notification_duplicate") {
+		t.Fatalf("Send error = %v, want duplicate validation", err)
+	}
+	if notifier.calls != 0 {
+		t.Fatalf("notifier calls = %d, want 0", notifier.calls)
+	}
+}
+
 func testDiscoveryDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})

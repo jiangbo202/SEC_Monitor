@@ -87,6 +87,11 @@ func (s *CandidateNotificationService) Send(ctx context.Context, input Candidate
 	if preview.SuppressedReason != "" {
 		return CandidateNotificationSendResult{}, fmt.Errorf("%w: %s", ErrValidation, preview.SuppressedReason)
 	}
+	if sent, err := s.sentCandidateBatchToday(ctx, preview.Summary.BatchID, time.Now().UTC()); err != nil {
+		return CandidateNotificationSendResult{}, err
+	} else if sent {
+		return CandidateNotificationSendResult{}, fmt.Errorf("%w: candidate_notification_duplicate", ErrValidation)
+	}
 	candidates := notificationCandidatesFromCandidateSummary(preview.Summary)
 	if len(candidates) == 0 {
 		return CandidateNotificationSendResult{}, fmt.Errorf("%w: no candidate notification items", ErrValidation)
@@ -98,6 +103,23 @@ func (s *CandidateNotificationService) Send(ctx context.Context, input Candidate
 		return CandidateNotificationSendResult{}, err
 	}
 	return CandidateNotificationSendResult{Preview: preview, Batch: batch}, nil
+}
+
+func (s *CandidateNotificationService) sentCandidateBatchToday(ctx context.Context, batchID string, now time.Time) (bool, error) {
+	if batchID == "" {
+		return false, nil
+	}
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	var count int64
+	err := s.db.WithContext(ctx).
+		Model(&model.NotificationBatchItem{}).
+		Joins("JOIN notification_batches ON notification_batches.id = notification_batch_items.batch_id").
+		Where("notification_batches.source = ? AND notification_batches.status = ?", "candidate", "sent").
+		Where("notification_batches.created_at >= ? AND notification_batches.created_at < ?", start, end).
+		Where("notification_batch_items.filing_id LIKE ?", batchID+":%").
+		Count(&count).Error
+	return count > 0, err
 }
 
 func notificationCandidatesFromCandidateSummary(summary discovery.CandidateSummary) []NotificationCandidate {
