@@ -131,7 +131,19 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
 	}
-	contentSHA, err := hashSecurityInputs(records, facts, events)
+	var overrides []ManualSecurityOverride
+	if err := c.DB.WithContext(ctx).Where("active = ?", true).Order("security_id, id").Find(&overrides).Error; err != nil {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "manual-overrides", err)
+	}
+	overrideVersion, err := sourceVersionForOverrides(overrides, now)
+	if err != nil {
+		return UniverseBatch{}, err
+	}
+	versions, err = normalizeSourceVersions(date, metadataVersion, shareVersion, eventVersion, overrideVersion)
+	if err != nil {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
+	}
+	contentSHA, err := hashSecurityInputs(records, facts, events, overrides)
 	if err != nil {
 		return UniverseBatch{}, err
 	}
@@ -140,7 +152,7 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 		return batch, err
 	}
 
-	classifications, selections, stageErr := c.stageSecurity(ctx, batch, records, facts, events, now)
+	classifications, selections, stageErr := c.stageSecurity(ctx, batch, records, facts, events, overrides, now)
 	if stageErr == nil {
 		stageErr = validateSecurityStage(c.DB.WithContext(ctx), batch.BatchID, classifications, selections)
 	}
@@ -432,18 +444,42 @@ func (c *Coordinator) createDraft(ctx context.Context, kind, date string, versio
 	return existing, true, fmt.Errorf("batch %s already exists with status %s", id, existing.Status)
 }
 
-func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, events []CapitalEvent) (string, error) {
+func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, events []CapitalEvent, overrides []ManualSecurityOverride) (string, error) {
 	recordCopy := append([]SecuritySourceRecord(nil), records...)
 	sort.Slice(recordCopy, func(i, j int) bool { return canonicalLess(recordCopy[i], recordCopy[j]) })
 	factCopy := append([]ShareFact(nil), facts...)
 	sort.Slice(factCopy, func(i, j int) bool { return canonicalLess(factCopy[i], factCopy[j]) })
 	eventCopy := append([]CapitalEvent(nil), events...)
 	sort.Slice(eventCopy, func(i, j int) bool { return canonicalLess(eventCopy[i], eventCopy[j]) })
+	overrideCopy := canonicalManualOverrides(overrides)
 	return hashCanonicalContent(struct {
-		Records []SecuritySourceRecord `json:"records"`
-		Facts   []ShareFact            `json:"facts"`
-		Events  []CapitalEvent         `json:"events"`
-	}{recordCopy, factCopy, eventCopy})
+		Records   []SecuritySourceRecord    `json:"records"`
+		Facts     []ShareFact               `json:"facts"`
+		Events    []CapitalEvent            `json:"events"`
+		Overrides []canonicalManualOverride `json:"overrides"`
+	}{recordCopy, factCopy, eventCopy, overrideCopy})
+}
+
+func sourceVersionForOverrides(rows []ManualSecurityOverride, at time.Time) (SourceVersion, error) {
+	digest, err := hashCanonicalContent(canonicalManualOverrides(rows))
+	if err != nil {
+		return SourceVersion{}, err
+	}
+	return SourceVersion{Source: "classification:manual-overrides", Version: digest, SHA256: digest, EffectiveAt: at}, nil
+}
+
+type canonicalManualOverride struct {
+	SecurityID                                   uint `json:"security_id"`
+	EffectiveStatus, Reason, SourceURL, Operator string
+}
+
+func canonicalManualOverrides(rows []ManualSecurityOverride) []canonicalManualOverride {
+	result := make([]canonicalManualOverride, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, canonicalManualOverride{row.SecurityID, strings.TrimSpace(row.EffectiveStatus), strings.TrimSpace(row.Reason), strings.TrimSpace(row.SourceURL), strings.TrimSpace(row.Operator)})
+	}
+	sort.Slice(result, func(i, j int) bool { return canonicalLess(result[i], result[j]) })
+	return result
 }
 
 func canonicalLess(a, b any) bool {
@@ -531,7 +567,7 @@ func hashCanonicalContent(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, records []SecuritySourceRecord, facts []ShareFact, events []CapitalEvent, now time.Time) (int, int, error) {
+func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, records []SecuritySourceRecord, facts []ShareFact, events []CapitalEvent, overrides []ManualSecurityOverride, now time.Time) (int, int, error) {
 	listingRows := make([]ListingIdentitySnapshot, 0, len(records))
 	mapped := make([]SecuritySourceRecord, 0, len(records))
 	for _, record := range records {
@@ -546,8 +582,26 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 		}
 		listingRows = append(listingRows, ListingIdentitySnapshot{BatchID: batch.BatchID, SourceKey: key, CIK: record.CIK, Ticker: record.Ticker, ProviderTicker: record.ProviderTicker, Exchange: record.Exchange, CompanyName: record.CompanyName, MappingStatus: record.MappingStatus, Included: false, Status: status, ReasonCode: reason, EvidenceJSON: record.EvidenceJSON, CreatedAt: now})
 	}
-	if err := c.DB.WithContext(ctx).CreateInBatches(listingRows, universeChunkSize).Error; err != nil {
-		return 0, 0, err
+	for start := 0; start < len(listingRows); start += universeChunkSize {
+		end := start + universeChunkSize
+		if end > len(listingRows) {
+			end = len(listingRows)
+		}
+		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			for i := start; i < end; i++ {
+				if err := tx.Create(&listingRows[i]).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return 0, 0, err
+		}
+		if c.AfterStageChunk != nil {
+			if err := c.AfterStageChunk("security-listings", start/universeChunkSize); err != nil {
+				return 0, 0, err
+			}
+		}
 	}
 	groups := []metadataGroup{}
 	if len(mapped) > 0 {
@@ -556,10 +610,6 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 		if err != nil {
 			return 0, 0, err
 		}
-	}
-	var overrides []ManualSecurityOverride
-	if err := c.DB.WithContext(ctx).Where("active = ?", true).Find(&overrides).Error; err != nil {
-		return 0, 0, err
 	}
 	factsByCIK := make(map[string][]ShareFact)
 	for _, fact := range facts {
@@ -570,6 +620,11 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 		eventsByCIK[event.CIK] = append(eventsByCIK[event.CIK], event)
 	}
 	classifications, selections := 0, 0
+	type listingClassification struct {
+		included       bool
+		status, reason string
+	}
+	classificationByCIK := make(map[string]listingClassification, len(groups))
 	// Each group can write up to five rows (security, identity,
 	// classification, share evidence, selection). Keep transactions below the
 	// hard 1,000-row budget even for an all-new fixture.
@@ -586,7 +641,7 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 					return err
 				}
 				security := Security{CIK: source.CIK}
-				if err := tx.Where("cik = ?", source.CIK).Attrs(Security{CatalogStatus: SecurityCatalogStaged}).FirstOrCreate(&security).Error; err != nil {
+				if err := tx.Where("cik = ?", source.CIK).Attrs(Security{CatalogStatus: SecurityCatalogStaged, CreatedBatchID: batch.BatchID}).FirstOrCreate(&security).Error; err != nil {
 					return err
 				}
 				source.SecurityID = security.ID
@@ -602,12 +657,10 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 					return err
 				}
 				classification := ClassifySecurity(source, overrides)
+				classificationByCIK[source.CIK] = listingClassification{classification.Included, classification.Status, classification.ReasonCode}
 				evidence, _ := json.Marshal(classification.Evidence)
 				row := ClassificationSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Included: classification.Included, Status: classification.Status, Confidence: classification.Confidence, ReasonCode: classification.ReasonCode, RuleVersion: ClassificationRuleVersion, EvidenceJSON: string(evidence), CreatedAt: now}
 				if err := tx.Create(&row).Error; err != nil {
-					return err
-				}
-				if err := tx.Model(&ListingIdentitySnapshot{}).Where("batch_id = ? AND cik = ?", batch.BatchID, source.CIK).Updates(map[string]any{"included": classification.Included, "status": classification.Status, "reason_code": classification.ReasonCode}).Error; err != nil {
 					return err
 				}
 				selection := SelectShareSnapshot(factsByCIK[source.CIK], eventsByCIK[source.CIK], now)
@@ -641,6 +694,26 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 			if err := c.AfterStageChunk(BatchKindSecurity, start/groupsPerTransaction); err != nil {
 				return classifications, selections, err
 			}
+		}
+	}
+	for start := 0; start < len(listingRows); start += universeChunkSize {
+		end := start + universeChunkSize
+		if end > len(listingRows) {
+			end = len(listingRows)
+		}
+		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			for _, row := range listingRows[start:end] {
+				classification, ok := classificationByCIK[row.CIK]
+				if !ok {
+					continue
+				}
+				if err := tx.Model(&ListingIdentitySnapshot{}).Where("batch_id = ? AND source_key = ?", batch.BatchID, row.SourceKey).Updates(map[string]any{"included": classification.included, "status": classification.status, "reason_code": classification.reason}).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return classifications, selections, err
 		}
 	}
 	return classifications, selections, nil
@@ -718,11 +791,6 @@ func validateSecurityStage(db *gorm.DB, batchID string, classifications, selecti
 func (c *Coordinator) publish(ctx context.Context, batch UniverseBatch, count int) (UniverseBatch, error) {
 	now := c.Clock()
 	err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if batch.Kind == BatchKindSecurity {
-			if err := publishSecurityListings(tx, batch, now); err != nil {
-				return err
-			}
-		}
 		result := tx.Model(&UniverseBatch{}).Where("batch_id = ? AND status = ?", batch.BatchID, BatchStatusDraft).Updates(map[string]any{"status": BatchStatusPublished, "record_count": count, "completed_at": now})
 		if result.Error != nil {
 			return result.Error
@@ -737,59 +805,6 @@ func (c *Coordinator) publish(ctx context.Context, batch UniverseBatch, count in
 		return c.failBatch(ctx, batch, err)
 	}
 	return currentBatchByID(ctx, c.DB, batch.BatchID)
-}
-
-func publishSecurityListings(tx *gorm.DB, batch UniverseBatch, publishedAt time.Time) error {
-	var identities []SecurityBatchIdentity
-	if err := tx.Where("batch_id = ?", batch.BatchID).Order("security_id, ticker").Find(&identities).Error; err != nil {
-		return err
-	}
-	validFrom, err := time.Parse(time.DateOnly, batch.EffectiveDate)
-	if err != nil {
-		return err
-	}
-	securityByCIK := make(map[string]SecurityBatchIdentity, len(identities))
-	for _, identity := range identities {
-		securityByCIK[identity.CIK] = identity
-		updates := map[string]any{"company_name": identity.CompanyName, "sic": identity.SIC, "state_of_incorporation": identity.StateOfIncorporation, "latest_annual_form": identity.LatestAnnualForm, "catalog_status": SecurityCatalogPublished, "published_at": gorm.Expr("COALESCE(published_at, ?)", publishedAt)}
-		result := tx.Model(&Security{}).Where("id = ? AND cik = ? AND catalog_status IN ?", identity.SecurityID, identity.CIK, []string{SecurityCatalogStaged, SecurityCatalogPublished}).Updates(updates)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return fmt.Errorf("security %s catalog activation failed", identity.CIK)
-		}
-	}
-	var staged []ListingIdentitySnapshot
-	if err := tx.Where("batch_id = ? AND mapping_status = ? AND cik <> ''", batch.BatchID, MappingStatusCurrent).Order("cik, ticker").Find(&staged).Error; err != nil {
-		return err
-	}
-	tickersBySecurity := map[uint][]string{}
-	for _, row := range staged {
-		if identity, ok := securityByCIK[row.CIK]; ok {
-			tickersBySecurity[identity.SecurityID] = append(tickersBySecurity[identity.SecurityID], row.Ticker)
-		}
-	}
-	for securityID, tickers := range tickersBySecurity {
-		if err := tx.Model(&Listing{}).Where("security_id = ? AND valid_to IS NULL AND ticker NOT IN ?", securityID, tickers).Update("valid_to", validFrom).Error; err != nil {
-			return err
-		}
-	}
-	for _, row := range staged {
-		identity, ok := securityByCIK[row.CIK]
-		if !ok {
-			return fmt.Errorf("staged listing %s has no security identity", row.Ticker)
-		}
-		providerTicker := row.ProviderTicker
-		if providerTicker == "" {
-			providerTicker = row.Ticker
-		}
-		listing := Listing{SecurityID: identity.SecurityID, Ticker: row.Ticker, ProviderTicker: providerTicker, Exchange: row.Exchange, ValidFrom: validFrom, Source: batch.UniverseSourceVersion, MappingStatus: row.MappingStatus}
-		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "security_id"}, {Name: "ticker"}, {Name: "valid_from"}}, DoUpdates: clause.AssignmentColumns([]string{"provider_ticker", "exchange", "valid_to", "source", "mapping_status"})}).Create(&listing).Error; err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (c *Coordinator) failBatch(ctx context.Context, batch UniverseBatch, cause error) (UniverseBatch, error) {
@@ -846,7 +861,7 @@ func currentPublishedBatch(ctx context.Context, db *gorm.DB, kind string) (Unive
 
 func (c *Coordinator) currentIncludedListings(ctx context.Context, batchID string) ([]Listing, error) {
 	var identities []SecurityBatchIdentity
-	err := c.DB.WithContext(ctx).Table("security_batch_identities i").Select("i.*").Joins("JOIN classification_snapshots c ON c.security_id = i.security_id AND c.batch_id = i.batch_id").Joins("JOIN securities s ON s.id = i.security_id AND s.catalog_status = ?", SecurityCatalogPublished).Where("i.batch_id = ? AND c.included = ? AND c.status = ? AND i.mapping_status = ?", batchID, true, EffectiveStatusIncluded, MappingStatusCurrent).Order("i.ticker").Find(&identities).Error
+	err := c.DB.WithContext(ctx).Table("security_batch_identities i").Select("i.*").Joins("JOIN classification_snapshots c ON c.security_id = i.security_id AND c.batch_id = i.batch_id").Where("i.batch_id = ? AND c.included = ? AND c.status = ? AND i.mapping_status = ?", batchID, true, EffectiveStatusIncluded, MappingStatusCurrent).Order("i.ticker").Find(&identities).Error
 	rows := make([]Listing, len(identities))
 	for i, identity := range identities {
 		rows[i] = Listing{SecurityID: identity.SecurityID, Ticker: identity.Ticker, ProviderTicker: identity.ProviderTicker, Exchange: identity.Exchange, MappingStatus: identity.MappingStatus}

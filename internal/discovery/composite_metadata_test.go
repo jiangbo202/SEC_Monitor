@@ -51,6 +51,26 @@ func TestCompositeSecurityMetadataSourceUsesExactVersionedTickerMapping(t *testi
 	}
 }
 
+func TestCompositeSecurityMetadataSourceUsesOfficialProviderTicker(t *testing.T) {
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	nasdaq := fakeMetadataSource{records: []SecuritySourceRecord{{Ticker: "BRK.B", ProviderTicker: "BRK-B"}}, version: testSourceVersion("nasdaq", "n", now)}
+	sec := fakeMetadataSource{records: []SecuritySourceRecord{{Ticker: "BRK-B", CIK: "0000001067"}}, version: testSourceVersion("sec-bulk", "s", now)}
+	records, _, err := (CompositeSecurityMetadataSource{Nasdaq: nasdaq, SEC: sec}).Load(context.Background())
+	if err != nil || len(records) != 1 || records[0].CIK != "0000001067" || records[0].Ticker != "BRK.B" || records[0].ProviderTicker != "BRK-B" {
+		t.Fatalf("records=%#v err=%v", records, err)
+	}
+}
+
+func TestCompositeSecurityMetadataSourceRejectsConflictingExactKeys(t *testing.T) {
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	nasdaq := fakeMetadataSource{records: []SecuritySourceRecord{{Ticker: "X.A", ProviderTicker: "X-A"}}, version: testSourceVersion("nasdaq", "n", now)}
+	sec := fakeMetadataSource{records: []SecuritySourceRecord{{Ticker: "X.A", CIK: "0000000001"}, {Ticker: "X-A", CIK: "0000000002"}}, version: testSourceVersion("sec-bulk", "s", now)}
+	records, _, err := (CompositeSecurityMetadataSource{Nasdaq: nasdaq, SEC: sec}).Load(context.Background())
+	if err != nil || len(records) != 1 || records[0].MappingStatus != MappingStatusConflict || records[0].CIK != "" {
+		t.Fatalf("records=%#v err=%v", records, err)
+	}
+}
+
 func TestCompositeSecurityMetadataSourceVerifiesDeSPACOnlyWithPostCombinationEvidence(t *testing.T) {
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
 	completed := now.Add(-48 * time.Hour)

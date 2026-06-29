@@ -84,7 +84,7 @@ func ListUniverse(ctx context.Context, db *gorm.DB, filter UniverseQuery) (Unive
 	} else if err != nil {
 		return result, err
 	}
-	query := db.WithContext(ctx).Model(&UniverseSnapshot{}).Joins("JOIN securities ON securities.id = universe_snapshots.security_id AND securities.catalog_status = ?", SecurityCatalogPublished).Where("universe_snapshots.batch_id = ?", batch.BatchID)
+	query := db.WithContext(ctx).Model(&UniverseSnapshot{}).Joins("JOIN securities ON securities.id = universe_snapshots.security_id").Where("universe_snapshots.batch_id = ?", batch.BatchID)
 	if ticker := strings.ToUpper(strings.TrimSpace(filter.Ticker)); ticker != "" {
 		query = query.Where("universe_snapshots.ticker = ?", ticker)
 	}

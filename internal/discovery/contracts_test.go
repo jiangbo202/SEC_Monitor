@@ -61,8 +61,8 @@ func TestParseNasdaqOtherPreservesTickerPunctuation(t *testing.T) {
 }
 
 func TestNasdaqDirectorySourceRejectsCrossFeedTickerConflict(t *testing.T) {
-	listed := "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\nA|Alpha|Q|N|N|100|N|N\nFile Creation Time: one\n"
-	other := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\nA|Alpha|N|A|N|100|N|A\nFile Creation Time: two\n"
+	listed := "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\nA|Alpha|Q|N|N|100|N|N\nFile Creation Time: 0621202618:00\n"
+	other := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\nA|Alpha|N|A|N|100|N|A\nFile Creation Time: 0621202619:00\n"
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body := listed
 		if strings.Contains(r.URL.Path, "other") {

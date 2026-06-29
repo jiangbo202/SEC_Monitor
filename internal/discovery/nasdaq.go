@@ -99,7 +99,7 @@ func ParseNasdaqOther(r io.Reader) ([]SecuritySourceRecord, string, error) {
 		if err != nil {
 			return SecuritySourceRecord{}, fmt.Errorf("line %d: Test Issue: %w", line, err)
 		}
-		return SecuritySourceRecord{Ticker: strings.ToUpper(fields[0]), SecurityName: fields[1], CompanyName: fields[1], Exchange: exchange, TestIssue: test, ETF: etf}, nil
+		return SecuritySourceRecord{Ticker: strings.ToUpper(fields[0]), ProviderTicker: strings.ToUpper(fields[7]), SecurityName: fields[1], CompanyName: fields[1], Exchange: exchange, TestIssue: test, ETF: etf}, nil
 	})
 }
 
@@ -230,6 +230,22 @@ func (s NasdaqDirectorySource) Load(ctx context.Context) ([]SecuritySourceRecord
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
+	listedAt, err := parseNasdaqFooterTime(va)
+	if err != nil {
+		return nil, SourceVersion{}, fmt.Errorf("listed footer: %w", err)
+	}
+	otherAt, err := parseNasdaqFooterTime(vb)
+	if err != nil {
+		return nil, SourceVersion{}, fmt.Errorf("other footer: %w", err)
+	}
+	for i := range ra {
+		observed := listedAt
+		ra[i].ObservedAt = &observed
+	}
+	for i := range rb {
+		observed := otherAt
+		rb[i].ObservedAt = &observed
+	}
 	records, err := mergeNasdaqRecords(ra, rb)
 	if err != nil {
 		return nil, SourceVersion{}, err
@@ -241,7 +257,20 @@ func (s NasdaqDirectorySource) Load(ctx context.Context) ([]SecuritySourceRecord
 		return records[i].Ticker < records[j].Ticker
 	})
 	h := sha256.Sum256([]byte(a.SHA256 + "\n" + b.SHA256))
-	return records, SourceVersion{Source: "nasdaq-directory", Version: va + "+" + vb, SHA256: hex.EncodeToString(h[:])}, nil
+	effective := listedAt
+	if otherAt.After(effective) {
+		effective = otherAt
+	}
+	return records, SourceVersion{Source: "nasdaq-directory", Version: va + "+" + vb, SHA256: hex.EncodeToString(h[:]), EffectiveAt: effective}, nil
+}
+
+func parseNasdaqFooterTime(value string) (time.Time, error) {
+	for _, layout := range []string{"0102200615:04", "01022006"} {
+		if parsed, err := time.ParseInLocation(layout, value, time.FixedZone("America/New_York", -5*60*60)); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid File Creation Time %q", value)
 }
 
 func mergeNasdaqRecords(feeds ...[]SecuritySourceRecord) ([]SecuritySourceRecord, error) {

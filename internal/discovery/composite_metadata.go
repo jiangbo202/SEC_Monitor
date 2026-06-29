@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"gorm.io/gorm"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
+)
+
+const (
+	TickerMappingRuleVersion        = "nasdaq-provider-ticker-exact-v1"
+	ObservedIdentityVerifierVersion = "observed-identity-v2"
 )
 
 // CompositeSecurityMetadataSource joins the current exchange directory to
@@ -23,19 +27,28 @@ type IdentityVerificationSource interface {
 	Verify(context.Context, SecuritySourceRecord, SecuritySourceRecord) (*time.Time, string, error)
 }
 
+type versionedIdentityVerificationSource interface {
+	SourceVersion(context.Context) (SourceVersion, error)
+}
+
 // ObservedIdentityVerificationSource verifies only timestamped exchange
 // observations made after SEC's conservative Item 2.01 filed-date bound.
 type ObservedIdentityVerificationSource struct{}
+
+func (ObservedIdentityVerificationSource) SourceVersion(context.Context) (SourceVersion, error) {
+	digest, _ := hashCanonicalContent(ObservedIdentityVerifierVersion)
+	return SourceVersion{Source: "identity-verifier:observed", Version: ObservedIdentityVerifierVersion, SHA256: digest}, nil
+}
 
 func (ObservedIdentityVerificationSource) Verify(_ context.Context, market, sec SecuritySourceRecord) (*time.Time, string, error) {
 	if market.ObservedAt == nil || sec.BusinessCombinationCompletedAt == nil || market.ObservedAt.Before(*sec.BusinessCombinationCompletedAt) {
 		return nil, "", nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(market.Ticker), strings.TrimSpace(sec.Ticker)) {
+	if !exactMarketSECTicker(market, sec.Ticker) {
 		return nil, "", nil
 	}
-	marketName, secName := strings.TrimSpace(market.CompanyName), strings.TrimSpace(sec.CompanyName)
-	if marketName == "" || secName == "" || !strings.EqualFold(marketName, secName) {
+	marketName, secName := conservativeCompanyName(market.CompanyName), conservativeCompanyName(sec.CompanyName)
+	if marketName == "" || secName == "" || marketName != secName {
 		return nil, "", nil
 	}
 	verified := *market.ObservedAt
@@ -45,6 +58,21 @@ func (ObservedIdentityVerificationSource) Verify(_ context.Context, market, sec 
 // ManualIdentityVerificationSource is the persistent production escape hatch
 // for de-SPAC identities whose exchange history lacks a trustworthy timestamp.
 type ManualIdentityVerificationSource struct{ DB *gorm.DB }
+
+func (s ManualIdentityVerificationSource) SourceVersion(ctx context.Context) (SourceVersion, error) {
+	if s.DB == nil {
+		return SourceVersion{}, fmt.Errorf("identity override database is required")
+	}
+	var rows []IdentityVerificationOverride
+	if err := s.DB.WithContext(ctx).Where("active = ?", true).Order("cik, ticker, verified_at, id").Find(&rows).Error; err != nil {
+		return SourceVersion{}, err
+	}
+	digest, err := hashCanonicalContent(rows)
+	if err != nil {
+		return SourceVersion{}, err
+	}
+	return SourceVersion{Source: "identity-verifier:manual", Version: digest, SHA256: digest}, nil
+}
 
 func (s ManualIdentityVerificationSource) Verify(ctx context.Context, _ SecuritySourceRecord, sec SecuritySourceRecord) (*time.Time, string, error) {
 	if s.DB == nil {
@@ -83,16 +111,7 @@ func (s CompositeSecurityMetadataSource) Load(ctx context.Context) ([]SecuritySo
 			return nil, SourceVersion{}, fmt.Errorf("SEC metadata contains invalid ticker/CIK identity")
 		}
 		row.Ticker = ticker
-		duplicate := false
-		for _, prior := range secByTicker[ticker] {
-			if reflect.DeepEqual(prior, row) {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
-			secByTicker[ticker] = append(secByTicker[ticker], row)
-		}
+		secByTicker[ticker] = append(secByTicker[ticker], row)
 	}
 	result := make([]SecuritySourceRecord, 0, len(directory))
 	seen := make(map[string]struct{}, len(directory))
@@ -102,7 +121,20 @@ func (s CompositeSecurityMetadataSource) Load(ctx context.Context) ([]SecuritySo
 			return nil, SourceVersion{}, fmt.Errorf("ticker %s is duplicated in Nasdaq directory", ticker)
 		}
 		seen[ticker] = struct{}{}
-		candidates := secByTicker[ticker]
+		providerTicker := strings.ToUpper(strings.TrimSpace(market.ProviderTicker))
+		candidateByCIK := map[string]SecuritySourceRecord{}
+		for _, key := range []string{ticker, providerTicker} {
+			if key == "" {
+				continue
+			}
+			for _, candidate := range secByTicker[key] {
+				candidateByCIK[candidate.CIK] = candidate
+			}
+		}
+		candidates := make([]SecuritySourceRecord, 0, len(candidateByCIK))
+		for _, candidate := range candidateByCIK {
+			candidates = append(candidates, candidate)
+		}
 		if len(candidates) != 1 {
 			candidateCIKs := make([]string, 0, len(candidates))
 			for _, candidate := range candidates {
@@ -121,7 +153,10 @@ func (s CompositeSecurityMetadataSource) Load(ctx context.Context) ([]SecuritySo
 		identity := candidates[0]
 		identity.SourceKey = ticker
 		identity.Ticker = ticker
-		identity.ProviderTicker = candidates[0].Ticker
+		identity.ProviderTicker = providerTicker
+		if identity.ProviderTicker == "" {
+			identity.ProviderTicker = ticker
+		}
 		identity.Exchange = market.Exchange
 		identity.SecurityName = market.SecurityName
 		identity.TestIssue = market.TestIssue
@@ -145,7 +180,17 @@ func (s CompositeSecurityMetadataSource) Load(ctx context.Context) ([]SecuritySo
 		result = append(result, identity)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Ticker < result[j].Ticker })
-	digest, err := hashCanonicalContent(struct{ Nasdaq, SEC SourceVersion }{nv, sv})
+	verifierVersion := SourceVersion{Source: "identity-verifier:none", Version: "none"}
+	if versioned, ok := s.IdentityVerifier.(versionedIdentityVerificationSource); ok {
+		verifierVersion, err = versioned.SourceVersion(ctx)
+		if err != nil {
+			return nil, SourceVersion{}, err
+		}
+	}
+	digest, err := hashCanonicalContent(struct {
+		Nasdaq, SEC, Verifier SourceVersion
+		MappingRule           string
+	}{nv, sv, verifierVersion, TickerMappingRuleVersion})
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
@@ -153,9 +198,27 @@ func (s CompositeSecurityMetadataSource) Load(ctx context.Context) ([]SecuritySo
 	if effective.IsZero() || (!sv.EffectiveAt.IsZero() && sv.EffectiveAt.After(effective)) {
 		effective = sv.EffectiveAt
 	}
-	versionText := nv.Version + "+" + sv.Version
+	versionText := nv.Version + "+" + sv.Version + "+" + TickerMappingRuleVersion + "+" + verifierVersion.Version
 	if versionText == "+" {
 		versionText = digest
 	}
 	return result, SourceVersion{Source: "metadata:composite", Version: versionText, SHA256: digest, EffectiveAt: effective}, nil
+}
+
+func exactMarketSECTicker(market SecuritySourceRecord, secTicker string) bool {
+	secTicker = strings.ToUpper(strings.TrimSpace(secTicker))
+	return secTicker != "" && (strings.ToUpper(strings.TrimSpace(market.Ticker)) == secTicker || strings.ToUpper(strings.TrimSpace(market.ProviderTicker)) == secTicker)
+}
+
+func conservativeCompanyName(value string) string {
+	parts := strings.Fields(strings.NewReplacer(".", " ", ",", " ").Replace(strings.ToUpper(strings.TrimSpace(value))))
+	for len(parts) > 0 {
+		switch parts[len(parts)-1] {
+		case "INC", "INCORPORATED", "CORP", "CORPORATION", "LTD", "LIMITED", "LLC":
+			parts = parts[:len(parts)-1]
+		default:
+			return strings.Join(parts, " ")
+		}
+	}
+	return ""
 }

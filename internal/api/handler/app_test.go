@@ -49,7 +49,7 @@ func (f fakeSECClient) ListCurrentFilings(ctx context.Context, query sec.Current
 		CIK:             "0000000001",
 		CompanyName:     "Acme Space Inc.",
 		FilingType:      "S-1",
-		FilingDate:      time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC),
+		FilingDate:      time.Now().UTC(),
 		FilingURL:       "https://sec.gov/acme/s1",
 		Title:           "S-1 - Acme Space Inc.",
 	}}, nil

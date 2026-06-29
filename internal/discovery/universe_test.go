@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type fakeMetadataSource struct {
@@ -164,6 +166,61 @@ func TestCoordinatorPublishesSecurityUniverseIdempotently(t *testing.T) {
 	}
 }
 
+func TestCoordinatorManualOverrideChangesBatchIdentity(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)
+	record := SecuritySourceRecord{CIK: "0000006543", Ticker: "OVR", CompanyName: "Override Co", SecurityName: "Override Co Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-Q"}, MappingStatus: MappingStatusCurrent}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "same", now)}, Shares: fakeShareSource{version: testSourceVersion("shares", "same", now)}, Events: noEvents(now), Clock: func() time.Time { return now }}
+	first, err := c.SyncSecurityUniverse(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shell Security
+	if err := db.First(&shell, "cik = ?", record.CIK).Error; err != nil {
+		t.Fatal(err)
+	}
+	mustCreate(t, db, &ManualSecurityOverride{SecurityID: shell.ID, EffectiveStatus: EffectiveStatusExcluded, Reason: "review", SourceURL: "https://example.test/review", Operator: "tester", Active: true})
+	second, err := c.SyncSecurityUniverse(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.BatchID == second.BatchID {
+		t.Fatalf("override did not version batch: %s", first.BatchID)
+	}
+}
+
+func TestCoordinatorSecurityPublishTransactionHasConstantWritesAtEightThousandRows(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)
+	batch := UniverseBatch{BatchID: strings.Repeat("8", 64), Kind: BatchKindSecurity, Status: BatchStatusDraft, EffectiveDate: "2026-06-23", StartedAt: now}
+	mustCreate(t, db, &batch)
+	rows := make([]ListingIdentitySnapshot, 8000)
+	for i := range rows {
+		rows[i] = ListingIdentitySnapshot{BatchID: batch.BatchID, SourceKey: fmt.Sprintf("K%04d", i), Ticker: fmt.Sprintf("T%04d", i)}
+	}
+	if err := db.CreateInBatches(rows, 500).Error; err != nil {
+		t.Fatal(err)
+	}
+	writes := 0
+	name := "test:count-publish-writes"
+	if err := db.Callback().Create().Before("gorm:create").Register(name, func(*gorm.DB) { writes++ }); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Update().Before("gorm:update").Register(name, func(*gorm.DB) { writes++ }); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Callback().Create().Remove(name)
+	defer db.Callback().Update().Remove(name)
+	c := Coordinator{DB: db, Clock: func() time.Time { return now }}
+	published, err := c.publish(context.Background(), batch, len(rows))
+	if err != nil || published.Status != BatchStatusPublished {
+		t.Fatalf("published=%+v err=%v", published, err)
+	}
+	if writes != 2 {
+		t.Fatalf("publish writes=%d want=2", writes)
+	}
+}
+
 func TestCoordinatorRejectsInvalidSourceVersionAndPreservesPointer(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	old := UniverseBatch{BatchID: strings.Repeat("a", 64), Kind: BatchKindSecurity, Status: BatchStatusPublished}
@@ -266,6 +323,39 @@ func TestCoordinatorChunkFailureRetainsDiagnosticsAndOldPointer(t *testing.T) {
 	}
 }
 
+func TestCoordinatorListingSecondChunkFailureRetainsFirstChunk(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)
+	old := UniverseBatch{BatchID: strings.Repeat("9", 64), Kind: BatchKindSecurity, Status: BatchStatusPublished}
+	mustCreate(t, db, &old)
+	mustCreate(t, db, &CurrentBatchPointer{Kind: BatchKindSecurity, BatchID: old.BatchID})
+	records := make([]SecuritySourceRecord, 1001)
+	for i := range records {
+		records[i] = SecuritySourceRecord{SourceKey: fmt.Sprintf("K%04d", i), Ticker: fmt.Sprintf("T%04d", i), MappingStatus: MappingStatusConflict}
+	}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: records, version: testSourceVersion("metadata", "listing-chunks", now)}, Shares: fakeShareSource{version: testSourceVersion("shares", "listing-chunks", now)}, Events: noEvents(now), Clock: func() time.Time { return now }, AfterStageChunk: func(kind string, chunk int) error {
+		if kind == "security-listings" && chunk == 1 {
+			return errors.New("stop second listing chunk")
+		}
+		return nil
+	}}
+	batch, err := c.SyncSecurityUniverse(context.Background())
+	if err == nil || batch.Status != BatchStatusFailed {
+		t.Fatalf("batch=%+v err=%v", batch, err)
+	}
+	var rows int64
+	if err := db.Model(&ListingIdentitySnapshot{}).Where("batch_id = ?", batch.BatchID).Count(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1001 {
+		t.Fatalf("listing diagnostics=%d want=1001", rows)
+	}
+	var pointer CurrentBatchPointer
+	if err := db.First(&pointer, "kind = ?", BatchKindSecurity).Error; err != nil || pointer.BatchID != old.BatchID {
+		t.Fatalf("pointer=%+v err=%v", pointer, err)
+	}
+}
+
 func TestCoordinatorPublishesUnmappedListingAsConflictWithoutFakeCIK(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	now := time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)
@@ -309,15 +399,12 @@ func TestCoordinatorSecurityCatalogActivationIsAtomicAndRetryable(t *testing.T) 
 	if err == nil || failed.Status != BatchStatusFailed {
 		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
-	var published, staged int64
-	if err := db.Model(&Security{}).Where("catalog_status = ?", SecurityCatalogPublished).Count(&published).Error; err != nil {
-		t.Fatal(err)
-	}
+	var staged int64
 	if err := db.Model(&Security{}).Where("catalog_status = ?", SecurityCatalogStaged).Count(&staged).Error; err != nil {
 		t.Fatal(err)
 	}
-	if published != 0 || staged != 1 {
-		t.Fatalf("published=%d staged=%d", published, staged)
+	if staged != 1 {
+		t.Fatalf("staged=%d", staged)
 	}
 	var shell Security
 	if err := db.First(&shell, "cik = ?", record.CIK).Error; err != nil {
@@ -343,13 +430,17 @@ func TestCoordinatorSecurityCatalogActivationIsAtomicAndRetryable(t *testing.T) 
 		t.Fatalf("succeeded=%#v err=%v", succeeded, err)
 	}
 	var security Security
-	if err := db.First(&security, "cik = ? AND catalog_status = ?", record.CIK, SecurityCatalogPublished).Error; err != nil {
+	if err := db.First(&security, "cik = ?", record.CIK).Error; err != nil {
 		t.Fatal(err)
 	}
-	if security.CompanyName != record.CompanyName || security.PublishedAt == nil || !security.PublishedAt.Equal(now) {
+	if security.CreatedBatchID != failed.BatchID || security.CompanyName != "" || security.PublishedAt != nil {
 		t.Fatalf("security=%#v", security)
 	}
-	if err := db.Model(&Listing{}).Where("security_id = ? AND valid_to IS NULL", security.ID).Count(&listings).Error; err != nil || listings != 1 {
+	var identity SecurityBatchIdentity
+	if err := db.First(&identity, "batch_id = ? AND security_id = ?", succeeded.BatchID, security.ID).Error; err != nil || identity.CompanyName != record.CompanyName {
+		t.Fatalf("identity=%#v err=%v", identity, err)
+	}
+	if err := db.Model(&Listing{}).Count(&listings).Error; err != nil || listings != 0 {
 		t.Fatalf("listings=%d err=%v", listings, err)
 	}
 }
@@ -369,14 +460,15 @@ func TestCoordinatorFailedDraftDoesNotMutatePublishedSecurity(t *testing.T) {
 		t.Fatal("failed draft published")
 	}
 	var security Security
-	if err := db.First(&security, "cik = ? AND catalog_status = ?", record.CIK, SecurityCatalogPublished).Error; err != nil {
+	if err := db.First(&security, "cik = ?", record.CIK).Error; err != nil {
 		t.Fatal(err)
 	}
-	if security.CompanyName != "Original Co" || security.SIC != 3571 {
-		t.Fatalf("published security mutated: %#v", security)
+	var active SecurityBatchIdentity
+	var pointer CurrentBatchPointer
+	if err := db.First(&pointer, "kind = ?", BatchKindSecurity).Error; err != nil {
+		t.Fatal(err)
 	}
-	var active Listing
-	if err := db.First(&active, "security_id = ? AND valid_to IS NULL", security.ID).Error; err != nil || active.Ticker != "OLD" {
+	if err := db.First(&active, "batch_id = ? AND security_id = ?", pointer.BatchID, security.ID).Error; err != nil || active.Ticker != "OLD" || active.CompanyName != "Original Co" {
 		t.Fatalf("active=%#v err=%v", active, err)
 	}
 }
@@ -393,7 +485,12 @@ func TestCoordinatorFailedTickerChangeCannotAlterPublishedIdentity(t *testing.T)
 	}
 	record.Ticker = "B"
 	c.Metadata = fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "b", now)}
-	c.AfterStageChunk = func(string, int) error { return errors.New("stop draft") }
+	c.AfterStageChunk = func(kind string, _ int) error {
+		if kind == BatchKindSecurity {
+			return errors.New("stop draft")
+		}
+		return nil
+	}
 	failed, err := c.SyncSecurityUniverse(context.Background())
 	if err == nil || failed.Status != BatchStatusFailed {
 		t.Fatalf("failed=%#v err=%v", failed, err)
@@ -520,11 +617,11 @@ func TestSecurityInputNormalizationIsPermutationInvariantAndRejectsConflicts(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	h1, err := hashSecurityInputs(one, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil)
+	h1, err := hashSecurityInputs(one, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2, err := hashSecurityInputs(two, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil)
+	h2, err := hashSecurityInputs(two, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil)
 	if err != nil || h1 != h2 {
 		t.Fatalf("hashes=%s/%s err=%v", h1, h2, err)
 	}

@@ -56,6 +56,7 @@ type Security struct {
 	LatestAnnualForm     string     `json:"latest_annual_form" gorm:"size:16"`
 	CatalogStatus        string     `json:"catalog_status" gorm:"size:16;index;default:staged"`
 	PublishedAt          *time.Time `json:"published_at"`
+	CreatedBatchID       string     `json:"created_batch_id" gorm:"size:64;index"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 }

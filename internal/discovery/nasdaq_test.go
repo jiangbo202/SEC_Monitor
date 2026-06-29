@@ -69,8 +69,8 @@ func TestParseNasdaqErrors(t *testing.T) {
 }
 
 func TestNasdaqDirectorySource(t *testing.T) {
-	listed := "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\nA|Alpha|Q|N|N|100|N|N\nFile Creation Time: one|||||||\n"
-	other := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\nB|Beta|N|B|N|100|N|B\nFile Creation Time: two|||||||\n"
+	listed := "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\nA|Alpha|Q|N|N|100|N|N\nFile Creation Time: 0621202618:00|||||||\n"
+	other := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\nB|Beta|N|B|N|100|N|B\nFile Creation Time: 0621202619:00|||||||\n"
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body := listed
 		if strings.Contains(r.URL.Path, "other") {
@@ -83,7 +83,7 @@ func TestNasdaqDirectorySource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 2 || version.Source != "nasdaq-directory" || version.SHA256 == "" || version.Version != "one+two" {
+	if len(recs) != 2 || version.Source != "nasdaq-directory" || version.SHA256 == "" || version.Version != "0621202618:00+0621202619:00" || version.EffectiveAt.IsZero() {
 		t.Fatalf("records/version = %#v %#v", recs, version)
 	}
 }

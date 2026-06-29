@@ -22,11 +22,13 @@ const (
 )
 
 const maxShareFactAgeDays = 150
+const CapitalRiskPolicyVersion = "sec-capital-risk-blocker-v2"
 
 type CapitalEvent struct {
 	CIK, Kind, Accession    string
 	EffectiveAt, AcceptedAt time.Time
 	ChangesShares           bool
+	Reason                  string
 }
 
 type CapitalEventSource interface {
@@ -74,21 +76,19 @@ func (s SECSubmissionsCapitalEventSource) Load(ctx context.Context, allowed map[
 			if effective.IsZero() {
 				effective = asOf
 			}
-			events = append(events, CapitalEvent{CIK: record.CIK, Kind: kind, Accession: filing.Accession, EffectiveAt: effective, AcceptedAt: filing.AcceptedAt, ChangesShares: changes})
+			events = append(events, CapitalEvent{CIK: record.CIK, Kind: kind, Accession: filing.Accession, EffectiveAt: effective, AcceptedAt: filing.AcceptedAt, ChangesShares: changes, Reason: "potential share-count change; filing is a conservative risk signal, not confirmation of issuance"})
 		}
 	}
 	sort.Slice(events, func(i, j int) bool { return canonicalLess(events[i], events[j]) })
 	digest, err := hashCanonicalContent(struct {
 		Upstream SourceVersion
 		Events   []CapitalEvent
-	}{upstream, events})
+		Policy   string
+	}{upstream, events, CapitalRiskPolicyVersion})
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
-	version := upstream.Version
-	if version == "" {
-		version = digest
-	}
+	version := upstream.Version + "+" + CapitalRiskPolicyVersion
 	return events, SourceVersion{Source: "capital-events:sec-submissions", Version: version, SHA256: digest, EffectiveAt: upstream.EffectiveAt}, nil
 }
 
@@ -109,10 +109,13 @@ func capitalEventForFiling(filing FilingMetadata) (string, bool, bool) {
 		}
 		return "", false, false
 	}
-	for _, prefix := range []string{"S-1", "S-3", "424B5", "PIPE"} {
+	for _, prefix := range []string{"S-1", "S-3", "F-1", "F-3", "424B", "PIPE"} {
 		if strings.HasPrefix(form, prefix) {
-			return "financing", true, true
+			return "potential_financing", true, true
 		}
+	}
+	if form == "EFFECT" || strings.HasPrefix(form, "POS AM") {
+		return "potential_registration_effective", true, true
 	}
 	return "", false, false
 }

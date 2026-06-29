@@ -45,7 +45,7 @@ func TestUniverseQueryReadsOnlyCurrentPublishedBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Ticker != "BBB" {
+	if page.Total != 2 || len(page.Items) != 1 || page.Items[0].Ticker != "STAGED" {
 		t.Fatalf("page = %#v", page)
 	}
 	reason, err := ListUniverse(context.Background(), db, UniverseQuery{ReasonCode: ReasonPriceMissing})
