@@ -23,19 +23,20 @@ import (
 )
 
 type AppHandler struct {
-	Runtime           config.Config
-	DB                *gorm.DB
-	DiscoveryDB       *gorm.DB
-	Targets           *service.WatchTargetService
-	Configs           *service.ConfigService
-	Tasks             *service.TaskConfigService
-	Filings           *service.FilingService
-	IPO               *service.IPORadarService
-	SEC               sec.Client
-	Audit             *service.AuditService
-	Notification      *service.NotificationService
-	NotificationBatch *service.NotificationBatchService
-	Scheduler         SchedulerController
+	Runtime               config.Config
+	DB                    *gorm.DB
+	DiscoveryDB           *gorm.DB
+	Targets               *service.WatchTargetService
+	Configs               *service.ConfigService
+	Tasks                 *service.TaskConfigService
+	Filings               *service.FilingService
+	IPO                   *service.IPORadarService
+	SEC                   sec.Client
+	Audit                 *service.AuditService
+	Notification          *service.NotificationService
+	NotificationBatch     *service.NotificationBatchService
+	CandidateNotification *service.CandidateNotificationService
+	Scheduler             SchedulerController
 }
 
 type SchedulerController interface {
@@ -94,12 +95,33 @@ func (h *AppHandler) PreviewDiscoveryCandidateSummary(c *gin.Context) {
 }
 
 func (h *AppHandler) PreviewDiscoveryCandidateNotification(c *gin.Context) {
-	result, err := service.NewCandidateNotificationService(h.DiscoveryDB, h.Configs).Preview(c.Request.Context())
+	result, err := h.candidateNotificationService().Preview(c.Request.Context())
 	if err != nil {
 		Error(c, err)
 		return
 	}
 	OK(c, result)
+}
+
+func (h *AppHandler) SendDiscoveryCandidateNotification(c *gin.Context) {
+	var input service.CandidateNotificationSendInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := h.candidateNotificationService().Send(c.Request.Context(), input)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) candidateNotificationService() *service.CandidateNotificationService {
+	if h.CandidateNotification != nil {
+		return h.CandidateNotification
+	}
+	return service.NewCandidateNotificationService(h.DB, h.DiscoveryDB, nil, h.Configs)
 }
 
 func (h *AppHandler) LookupTicker(c *gin.Context) {

@@ -28,10 +28,11 @@ type NotificationCandidate struct {
 }
 
 type NotificationBatchInput struct {
-	SyncRunID  uint
-	Source     string
-	Trigger    string
-	Candidates []NotificationCandidate
+	SyncRunID   uint
+	Source      string
+	Trigger     string
+	Candidates  []NotificationCandidate
+	SummaryText string
 }
 
 type NotificationBatchFilter struct {
@@ -117,7 +118,11 @@ func (s *NotificationBatchService) Deliver(ctx context.Context, input Notificati
 		return s.finishSuppressed(ctx, batch, eligible, "notification_disabled")
 	}
 
-	message := telegram.Message{Text: renderNotificationBatchSummary(input.Source, eligible)}
+	summaryText := strings.TrimSpace(input.SummaryText)
+	if summaryText == "" {
+		summaryText = renderNotificationBatchSummary(input.Source, eligible)
+	}
+	message := telegram.Message{Text: truncateTelegramMessage(summaryText, 4000)}
 	if err := sendWithRetry(ctx, s.notifier, message, 3); err != nil {
 		batch.Status = "failed"
 		batch.FailedCount = len(eligible)

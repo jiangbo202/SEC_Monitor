@@ -160,6 +160,14 @@
         </el-tabs>
       </div>
       <template #footer>
+        <el-button
+          type="primary"
+          :loading="sendingNotification"
+          :disabled="!notificationPreview || !notificationPreview.enabled || !!notificationPreview.suppressed_reason"
+          @click="sendNotification"
+        >
+          确认发送 Telegram
+        </el-button>
         <el-button @click="summaryVisible = false">关闭</el-button>
       </template>
     </el-dialog>
@@ -168,13 +176,14 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, CandidateNotificationPreview, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
+import type { ApiResponse, CandidateNotificationPreview, CandidateNotificationSendResult, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
 
 const rows = ref<CandidateScore[]>([])
 const loading = ref(false)
 const summaryLoading = ref(false)
+const sendingNotification = ref(false)
 const summaryVisible = ref(false)
 const summary = ref<CandidateSummary | null>(null)
 const notificationPreview = ref<CandidateNotificationPreview | null>(null)
@@ -220,6 +229,23 @@ async function previewSummary() {
     ElMessage.error(err?.response?.data?.message || '预检候选通知失败')
   } finally {
     summaryLoading.value = false
+  }
+}
+
+async function sendNotification() {
+  if (!notificationPreview.value || !notificationPreview.value.enabled || notificationPreview.value.suppressed_reason) return
+  await ElMessageBox.confirm('确认发送当前小盘候选摘要到 Telegram？发送后会记录通知批次。', '确认发送', { type: 'warning' })
+  sendingNotification.value = true
+  try {
+    const res = await apiClient.post<ApiResponse<CandidateNotificationSendResult>>('/discovery/candidates/notification-send', { confirm: true })
+    ElMessage.success(`候选通知已发送，批次 #${res.data.data.batch.id}`)
+    notificationPreview.value = res.data.data.preview
+    summary.value = res.data.data.preview.summary
+    summaryVisible.value = false
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '发送候选通知失败')
+  } finally {
+    sendingNotification.value = false
   }
 }
 

@@ -181,6 +181,11 @@ export interface CandidateNotificationPreview {
   summary: CandidateSummary
 }
 
+export interface CandidateNotificationSendResult {
+  preview: CandidateNotificationPreview
+  batch: NotificationBatch
+}
+
 export interface SystemConfig {
   id: number
   config_key: string

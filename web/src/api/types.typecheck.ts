@@ -1,4 +1,4 @@
-import type { CandidateNotificationPreview, CandidateScore, CandidateSummary } from './types'
+import type { CandidateNotificationPreview, CandidateNotificationSendResult, CandidateScore, CandidateSummary } from './types'
 
 // Compile-time contract guard for discovery candidate summary API payloads.
 const candidate: CandidateScore = {
@@ -47,4 +47,23 @@ export const candidateNotificationPreviewTypecheck: CandidateNotificationPreview
     max_per_grade: 5,
   },
   summary: candidateSummaryTypecheck,
+}
+
+export const candidateNotificationSendResultTypecheck: CandidateNotificationSendResult = {
+  preview: candidateNotificationPreviewTypecheck,
+  batch: {
+    id: 1,
+    sync_run_id: 0,
+    source: 'candidate',
+    trigger: 'manual',
+    channel: 'telegram',
+    target: 'chat',
+    status: 'sent',
+    item_count: 1,
+    sent_count: 1,
+    suppressed_count: 0,
+    failed_count: 0,
+    retry_count: 0,
+    created_at: '2026-06-30T00:00:00Z',
+  },
 }

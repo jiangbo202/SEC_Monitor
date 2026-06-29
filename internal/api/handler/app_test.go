@@ -62,6 +62,17 @@ func (f fakeNotifier) Send(ctx context.Context, message telegram.Message) error 
 	return nil
 }
 
+type captureNotifier struct {
+	calls    int
+	messages []telegram.Message
+}
+
+func (f *captureNotifier) Send(ctx context.Context, message telegram.Message) error {
+	f.calls++
+	f.messages = append(f.messages, message)
+	return nil
+}
+
 type fakeScheduler struct {
 	reloadCalls int
 	runCalls    int
@@ -215,6 +226,68 @@ func TestAppHandlerPreviewsDiscoveryCandidateNotification(t *testing.T) {
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":true`) || !strings.Contains(rec.Body.String(), `"ticker":"NTFY"`) || strings.Contains(rec.Body.String(), `"items_b":[{`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAppHandlerSendsDiscoveryCandidateNotification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationBatch{}, &model.NotificationBatchItem{}); err != nil {
+		t.Fatalf("migrate main db: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []service.ConfigInput{
+		{Key: "candidate_notification.enabled", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_a", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+		{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
+		{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
+	}, "test"); err != nil {
+		t.Fatalf("UpsertMany: %v", err)
+	}
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	security := discovery.Security{CIK: "0000007890", CompanyName: "Send Co", CatalogStatus: discovery.SecurityCatalogPublished}
+	if err := discoveryDB.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := discovery.UniverseBatch{BatchID: "current", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished, StartedAt: time.Now()}
+	if err := discoveryDB.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CurrentBatchPointer{Kind: discovery.BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "SEND", Grade: discovery.CandidateGradeA, EligibleA: true, TotalScore: 93, MarketCapUSD: 200_000_000}).Error; err != nil {
+		t.Fatal(err)
+	}
+	notifier := &captureNotifier{}
+	h := &AppHandler{DB: db, DiscoveryDB: discoveryDB, Configs: configs, CandidateNotification: service.NewCandidateNotificationService(db, discoveryDB, notifier, configs)}
+	r := gin.New()
+	r.POST("/discovery/candidates/notification-send", h.SendDiscoveryCandidateNotification)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/discovery/candidates/notification-send", strings.NewReader(`{"confirm":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"source":"candidate"`) || !strings.Contains(rec.Body.String(), `"status":"sent"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if notifier.calls != 1 || len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0].Text, "SEND") {
+		t.Fatalf("notifier calls=%d messages=%+v", notifier.calls, notifier.messages)
 	}
 }
 

@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"sec_monitor/internal/discovery"
+	"sec_monitor/internal/model"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -29,7 +31,7 @@ func TestCandidateNotificationPreviewUsesSettingsWithoutSending(t *testing.T) {
 	}
 	seedCandidateScores(t, discoveryDB)
 
-	result, err := NewCandidateNotificationService(discoveryDB, configs).Preview(context.Background())
+	result, err := NewCandidateNotificationService(db, discoveryDB, nil, configs).Preview(context.Background())
 	if err != nil {
 		t.Fatalf("Preview: %v", err)
 	}
@@ -53,7 +55,7 @@ func TestCandidateNotificationPreviewSuppressesWhenDisabled(t *testing.T) {
 	}
 	seedCandidateScores(t, discoveryDB)
 
-	result, err := NewCandidateNotificationService(discoveryDB, configs).Preview(context.Background())
+	result, err := NewCandidateNotificationService(db, discoveryDB, nil, configs).Preview(context.Background())
 	if err != nil {
 		t.Fatalf("Preview: %v", err)
 	}
@@ -62,6 +64,60 @@ func TestCandidateNotificationPreviewSuppressesWhenDisabled(t *testing.T) {
 	}
 	if len(result.Summary.ItemsA) != 0 || len(result.Summary.ItemsB) != 0 {
 		t.Fatalf("summary should be empty when disabled: %#v", result.Summary)
+	}
+}
+
+func TestCandidateNotificationSendRequiresConfirmation(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+
+	_, err := NewCandidateNotificationService(db, discoveryDB, &fakeNotifier{}, configs).Send(context.Background(), CandidateNotificationSendInput{})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("Send error = %v, want validation", err)
+	}
+}
+
+func TestCandidateNotificationSendCreatesBatchAndCallsNotifier(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "candidate_notification.enabled", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_a", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.max_per_grade", Value: "1", ValueType: "int", Category: "candidate_notification"},
+		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+		{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
+		{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
+	}, "test"); err != nil {
+		t.Fatalf("UpsertMany: %v", err)
+	}
+	seedCandidateScores(t, discoveryDB)
+	notifier := &fakeNotifier{}
+
+	result, err := NewCandidateNotificationService(db, discoveryDB, notifier, configs).Send(context.Background(), CandidateNotificationSendInput{Confirm: true})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if result.Batch.Status != "sent" || result.Batch.Source != "candidate" || result.Batch.SentCount != 1 || result.Batch.ItemCount != 1 {
+		t.Fatalf("batch = %+v", result.Batch)
+	}
+	if notifier.calls != 1 || len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0].Text, "AAA") || !strings.Contains(notifier.messages[0].Text, "小盘股研究候选摘要") {
+		t.Fatalf("notifier calls=%d messages=%+v", notifier.calls, notifier.messages)
+	}
+	var item model.NotificationBatchItem
+	if err := db.Where("batch_id = ?", result.Batch.ID).First(&item).Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	if item.EntityKind != "candidate" || item.Ticker != "AAA" || item.FilingID == "" {
+		t.Fatalf("item = %+v", item)
 	}
 }
 

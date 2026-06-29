@@ -47,6 +47,7 @@ func New(deps Dependencies) *gin.Engine {
 		notifier = telegramNotifier{configs: configs}
 	}
 	notificationBatches := service.NewNotificationBatchService(deps.DB, notifier, configs)
+	candidateNotifications := service.NewCandidateNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs)
 	filings := service.NewFilingService(deps.DB, secClient, notifier, configs)
 	currentFilingsClient, ok := secClient.(sec.CurrentFilingsClient)
 	if !ok {
@@ -56,19 +57,20 @@ func New(deps Dependencies) *gin.Engine {
 	sched := scheduler.New(tasks, filings, ipoRadar)
 	_ = sched.Start(context.Background())
 	app := &handler.AppHandler{
-		Runtime:           deps.Config,
-		DB:                deps.DB,
-		DiscoveryDB:       deps.DiscoveryDB,
-		Targets:           service.NewWatchTargetService(deps.DB, audit),
-		Configs:           configs,
-		Tasks:             tasks,
-		Filings:           filings,
-		IPO:               ipoRadar,
-		SEC:               secClient,
-		Audit:             audit,
-		Notification:      service.NewNotificationService(deps.DB),
-		NotificationBatch: notificationBatches,
-		Scheduler:         sched,
+		Runtime:               deps.Config,
+		DB:                    deps.DB,
+		DiscoveryDB:           deps.DiscoveryDB,
+		Targets:               service.NewWatchTargetService(deps.DB, audit),
+		Configs:               configs,
+		Tasks:                 tasks,
+		Filings:               filings,
+		IPO:                   ipoRadar,
+		SEC:                   secClient,
+		Audit:                 audit,
+		Notification:          service.NewNotificationService(deps.DB),
+		NotificationBatch:     notificationBatches,
+		CandidateNotification: candidateNotifications,
+		Scheduler:             sched,
 	}
 
 	r.GET("/healthz", handler.Health)
@@ -77,6 +79,7 @@ func New(deps Dependencies) *gin.Engine {
 	{
 		api.GET("/sec/tickers/:ticker", app.LookupTicker)
 		api.GET("/discovery/candidates/notification-preview", app.PreviewDiscoveryCandidateNotification)
+		api.POST("/discovery/candidates/notification-send", app.SendDiscoveryCandidateNotification)
 		api.GET("/discovery/candidates/summary", app.PreviewDiscoveryCandidateSummary)
 		api.GET("/discovery/candidates", app.ListDiscoveryCandidates)
 
