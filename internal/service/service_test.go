@@ -95,6 +95,7 @@ func TestIPORadarBackfillsHistorical424B4Offering(t *testing.T) {
 		t.Fatalf("defaults: %v", err)
 	}
 	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "ipo.lookback_days", Value: "30", ValueType: "int", Category: "ipo"},
 		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
 		{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
 		{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
@@ -136,6 +137,7 @@ func TestIPORadarNew424B4SendsSeparateOfferingNotification(t *testing.T) {
 		t.Fatalf("defaults: %v", err)
 	}
 	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "ipo.lookback_days", Value: "30", ValueType: "int", Category: "ipo"},
 		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
 		{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
 		{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
