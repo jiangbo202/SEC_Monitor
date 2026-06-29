@@ -278,6 +278,33 @@ type CapitalRiskSnapshot struct {
 	Security      Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
+type CandidateScoreSnapshot struct {
+	ID                     uint      `json:"id"`
+	BatchID                string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_candidate_score_batch_security,priority:1;index"`
+	SecurityID             uint      `json:"security_id" gorm:"uniqueIndex:idx_candidate_score_batch_security,priority:2;index"`
+	Ticker                 string    `json:"ticker" gorm:"size:32;index"`
+	MarketCapUSD           int64     `json:"market_cap_usd" gorm:"index"`
+	Grade                  string    `json:"grade" gorm:"size:16;index"`
+	EligibleA              bool      `json:"eligible_a" gorm:"index"`
+	EligibleB              bool      `json:"eligible_b" gorm:"index"`
+	TotalScore             int       `json:"total_score" gorm:"index"`
+	RevenueGrowthScore     int       `json:"revenue_growth_score"`
+	CashRunwayScore        int       `json:"cash_runway_score"`
+	InsiderScore           int       `json:"insider_score"`
+	GrossMarginScore       int       `json:"gross_margin_score"`
+	DilutionRiskScore      int       `json:"dilution_risk_score"`
+	SectorScore            int       `json:"sector_score"`
+	RevenueGrowthPct       float64   `json:"revenue_growth_pct"`
+	CashRunwayMonths       float64   `json:"cash_runway_months"`
+	RecentQualifiedInsider bool      `json:"recent_qualified_insider"`
+	ActiveBlocksA          bool      `json:"active_blocks_a" gorm:"index"`
+	ActiveBlocksB          bool      `json:"active_blocks_b" gorm:"index"`
+	ReasonCode             string    `json:"reason_code" gorm:"size:64"`
+	ScoringVersion         string    `json:"scoring_version" gorm:"size:64"`
+	CreatedAt              time.Time `json:"created_at"`
+	Security               Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
 type UniverseBatch struct {
 	BatchID               string                    `json:"batch_id" gorm:"size:64;primaryKey"`
 	Kind                  string                    `json:"kind" gorm:"size:32;index"`
@@ -297,6 +324,7 @@ type UniverseBatch struct {
 	ListingIdentities     []ListingIdentitySnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	FinancialMetrics      []FinancialMetricSnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	CapitalRisks          []CapitalRiskSnapshot     `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	CandidateScores       []CandidateScoreSnapshot  `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ProviderRuns          []ProviderRun             `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	Snapshots             []UniverseSnapshot        `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ShareSelections       []BatchShareSelection     `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
