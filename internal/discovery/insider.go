@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -43,6 +44,10 @@ type InsiderTransaction struct {
 	Qualified                         bool
 	ExclusionReason                   string
 	FounderConfirmationSuggested      bool
+}
+
+type InsiderTransactionSource interface {
+	LoadInsiderTransactions(context.Context, map[string]struct{}, time.Time) ([]InsiderTransaction, SourceVersion, error)
 }
 
 func ParseForm4OwnershipXML(r io.Reader, accession, sourceURL string) ([]InsiderTransaction, error) {

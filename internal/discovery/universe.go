@@ -55,6 +55,7 @@ type Coordinator struct {
 	Metadata   SecurityMetadataSource
 	Shares     ShareFactSource
 	Financials FinancialFactSource
+	Insiders   InsiderTransactionSource
 	Events     CapitalEventSource
 	Prices     PriceProvider
 	Calendar   MarketCalendar
@@ -124,6 +125,14 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "financials", fmt.Errorf("load financial facts: %w", err))
 		}
 	}
+	var insiderTransactions []InsiderTransaction
+	var insiderVersion SourceVersion
+	if c.Insiders != nil {
+		insiderTransactions, insiderVersion, err = c.Insiders.LoadInsiderTransactions(ctx, allowed, now)
+		if err != nil {
+			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insiders", fmt.Errorf("load insider transactions: %w", err))
+		}
+	}
 	events, eventVersion, err := c.Events.Load(ctx, allowed, now)
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "capital-events", fmt.Errorf("load capital events: %w", err))
@@ -136,6 +145,10 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "financial-normalization", err)
 	}
+	insiderTransactions, err = normalizeInsiderTransactions(insiderTransactions)
+	if err != nil {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insider-normalization", err)
+	}
 	events, err = normalizeCapitalEvents(events)
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "event-normalization", err)
@@ -143,6 +156,9 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	sourceVersions := []SourceVersion{metadataVersion, shareVersion, eventVersion}
 	if c.Financials != nil {
 		sourceVersions = append(sourceVersions, financialVersion)
+	}
+	if c.Insiders != nil {
+		sourceVersions = append(sourceVersions, insiderVersion)
 	}
 	versions, err := normalizeSourceVersions(date, sourceVersions...)
 	if err != nil {
@@ -161,7 +177,7 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
 	}
-	contentSHA, err := hashSecurityInputs(records, facts, financialFacts, events, overrides)
+	contentSHA, err := hashSecurityInputs(records, facts, financialFacts, insiderTransactions, events, overrides)
 	if err != nil {
 		return UniverseBatch{}, err
 	}
@@ -170,7 +186,7 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 		return batch, err
 	}
 
-	classifications, selections, stageErr := c.stageSecurity(ctx, batch, records, facts, financialFacts, events, overrides, now)
+	classifications, selections, stageErr := c.stageSecurity(ctx, batch, records, facts, financialFacts, insiderTransactions, events, overrides, now)
 	if stageErr == nil {
 		stageErr = validateSecurityStage(c.DB.WithContext(ctx), batch.BatchID, classifications, selections)
 	}
@@ -462,13 +478,15 @@ func (c *Coordinator) createDraft(ctx context.Context, kind, date string, versio
 	return existing, true, fmt.Errorf("batch %s already exists with status %s", id, existing.Status)
 }
 
-func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, financials []FinancialFact, events []CapitalEvent, overrides []ManualSecurityOverride) (string, error) {
+func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, financials []FinancialFact, insiders []InsiderTransaction, events []CapitalEvent, overrides []ManualSecurityOverride) (string, error) {
 	recordCopy := append([]SecuritySourceRecord(nil), records...)
 	sort.Slice(recordCopy, func(i, j int) bool { return canonicalLess(recordCopy[i], recordCopy[j]) })
 	factCopy := append([]ShareFact(nil), facts...)
 	sort.Slice(factCopy, func(i, j int) bool { return canonicalLess(factCopy[i], factCopy[j]) })
 	financialCopy := append([]FinancialFact(nil), financials...)
 	sort.Slice(financialCopy, func(i, j int) bool { return canonicalLess(financialCopy[i], financialCopy[j]) })
+	insiderCopy := append([]InsiderTransaction(nil), insiders...)
+	sort.Slice(insiderCopy, func(i, j int) bool { return canonicalLess(insiderCopy[i], insiderCopy[j]) })
 	eventCopy := append([]CapitalEvent(nil), events...)
 	sort.Slice(eventCopy, func(i, j int) bool { return canonicalLess(eventCopy[i], eventCopy[j]) })
 	overrideCopy := canonicalManualOverrides(overrides)
@@ -476,9 +494,10 @@ func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, finan
 		Records    []SecuritySourceRecord    `json:"records"`
 		Facts      []ShareFact               `json:"facts"`
 		Financials []FinancialFact           `json:"financials"`
+		Insiders   []InsiderTransaction      `json:"insiders"`
 		Events     []CapitalEvent            `json:"events"`
 		Overrides  []canonicalManualOverride `json:"overrides"`
-	}{recordCopy, factCopy, financialCopy, eventCopy, overrideCopy})
+	}{recordCopy, factCopy, financialCopy, insiderCopy, eventCopy, overrideCopy})
 }
 
 func sourceVersionForOverrides(rows []ManualSecurityOverride, at time.Time) (SourceVersion, error) {
@@ -570,6 +589,26 @@ func normalizeFinancialFacts(input []FinancialFact) ([]FinancialFact, error) {
 	return result, nil
 }
 
+func normalizeInsiderTransactions(input []InsiderTransaction) ([]InsiderTransaction, error) {
+	seen := map[string]InsiderTransaction{}
+	for _, row := range input {
+		key := strings.Join([]string{row.CIK, row.Accession, row.OwnerName, row.TransactionDate.UTC().Format(time.RFC3339Nano), row.TransactionCode, row.AcquiredDisposedCode, fmt.Sprintf("%f", row.Shares), fmt.Sprintf("%f", row.PricePerShareUSD), fmt.Sprintf("%t", row.Derivative)}, "\x00")
+		if prior, ok := seen[key]; ok {
+			if !reflect.DeepEqual(prior, row) {
+				return nil, fmt.Errorf("insider transaction identity has conflicting duplicates: %s", row.Accession)
+			}
+			continue
+		}
+		seen[key] = row
+	}
+	result := make([]InsiderTransaction, 0, len(seen))
+	for _, row := range seen {
+		result = append(result, row)
+	}
+	sort.Slice(result, func(i, j int) bool { return canonicalLess(result[i], result[j]) })
+	return result, nil
+}
+
 func normalizeCapitalEvents(input []CapitalEvent) ([]CapitalEvent, error) {
 	seen := map[string]CapitalEvent{}
 	for _, row := range input {
@@ -608,7 +647,7 @@ func hashCanonicalContent(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, records []SecuritySourceRecord, facts []ShareFact, financialFacts []FinancialFact, events []CapitalEvent, overrides []ManualSecurityOverride, now time.Time) (int, int, error) {
+func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, records []SecuritySourceRecord, facts []ShareFact, financialFacts []FinancialFact, insiderTransactions []InsiderTransaction, events []CapitalEvent, overrides []ManualSecurityOverride, now time.Time) (int, int, error) {
 	listingRows := make([]ListingIdentitySnapshot, 0, len(records))
 	mapped := make([]SecuritySourceRecord, 0, len(records))
 	for _, record := range records {
@@ -659,6 +698,10 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 	financialsByCIK := make(map[string][]FinancialFact)
 	for _, fact := range financialFacts {
 		financialsByCIK[fact.CIK] = append(financialsByCIK[fact.CIK], fact)
+	}
+	insidersByCIK := make(map[string][]InsiderTransaction)
+	for _, tx := range insiderTransactions {
+		insidersByCIK[tx.CIK] = append(insidersByCIK[tx.CIK], tx)
 	}
 	eventsByCIK := make(map[string][]CapitalEvent)
 	for _, event := range events {
@@ -768,6 +811,11 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 			return classifications, selections, err
 		}
 	}
+	if len(insidersByCIK) > 0 {
+		if err := c.persistInsiderSnapshots(ctx, securityIDByCIK, insidersByCIK, now); err != nil {
+			return classifications, selections, err
+		}
+	}
 	return classifications, selections, nil
 }
 
@@ -852,6 +900,38 @@ func financialMetricSnapshot(batchID string, securityID uint, summary FinancialS
 		FCFBurnMonthlyUSD: summary.FCFBurnMonthlyUSD, CashRunwayMonths: summary.CashRunwayMonths,
 		QualityFlagsJSON: flags, CreatedAt: now,
 	}
+}
+
+func (c *Coordinator) persistInsiderSnapshots(ctx context.Context, securityIDByCIK map[string]uint, insidersByCIK map[string][]InsiderTransaction, now time.Time) error {
+	rows := make([]InsiderTransactionSnapshot, 0)
+	for cik, transactions := range insidersByCIK {
+		securityID, ok := securityIDByCIK[cik]
+		if !ok {
+			continue
+		}
+		for _, tx := range transactions {
+			rows = append(rows, InsiderTransactionToSnapshot(securityID, tx, now))
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return canonicalLess(rows[i], rows[j]) })
+	for start := 0; start < len(rows); start += universeChunkSize {
+		end := start + universeChunkSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunk := rows[start:end]
+		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
+		}); err != nil {
+			return err
+		}
+		if c.AfterStageChunk != nil {
+			if err := c.AfterStageChunk("insider-transactions", start/universeChunkSize); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func groupMetadata(records []SecuritySourceRecord) ([]metadataGroup, error) {

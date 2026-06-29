@@ -36,6 +36,12 @@ type fakeFinancialSource struct {
 	err     error
 }
 
+type fakeInsiderSource struct {
+	transactions []InsiderTransaction
+	version      SourceVersion
+	err          error
+}
+
 type fakeCapitalEventSource struct {
 	events  []CapitalEvent
 	version SourceVersion
@@ -66,6 +72,10 @@ func (f fakeShareSource) LoadLatestShares(context.Context, map[string]struct{}) 
 
 func (f fakeFinancialSource) LoadFinancialFacts(context.Context, map[string]struct{}) ([]FinancialFact, SourceVersion, error) {
 	return f.facts, f.version, f.err
+}
+
+func (f fakeInsiderSource) LoadInsiderTransactions(context.Context, map[string]struct{}, time.Time) ([]InsiderTransaction, SourceVersion, error) {
+	return f.transactions, f.version, f.err
 }
 
 func noEvents(now time.Time) NoCapitalEventsSource {
@@ -226,6 +236,30 @@ func TestCoordinatorStagesFinancialMetricSnapshots(t *testing.T) {
 	}
 	if !strings.Contains(batch.SourceVersionsJSON, `"source":"financials"`) {
 		t.Fatalf("batch source versions missing financials: %s", batch.SourceVersionsJSON)
+	}
+}
+
+func TestCoordinatorStagesInsiderTransactionSnapshots(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	record := SecuritySourceRecord{CIK: "0000004322", Ticker: "BUY", CompanyName: "Buyer Co", SecurityName: "Buyer Co Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-K", "10-Q", "4"}, MappingStatus: MappingStatusCurrent}
+	share := ShareFact{CIK: record.CIK, Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "0000004322-26-000001", Instant: now.AddDate(0, 0, -1), FiledAt: now.Add(-time.Hour), AcceptedAt: now.Add(-time.Hour), Shares: 10_000_000, SourceURL: "https://www.sec.gov/share"}
+	buy := InsiderTransaction{CIK: record.CIK, Ticker: record.Ticker, Accession: "0000004322-26-000004", SourceURL: "https://www.sec.gov/form4.xml", OwnerName: "Jane Buyer", OfficerTitle: "Chief Executive Officer", Role: InsiderRoleCEO, TransactionDate: now.AddDate(0, 0, -2), TransactionCode: "P", AcquiredDisposedCode: "A", Shares: 10_000, PricePerShareUSD: 2.5, ValueUSD: 25_000, SharesOwnedAfter: 50_000, SharesOwnedBefore: 40_000, Qualified: true}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "insider", now)}, Shares: fakeShareSource{facts: []ShareFact{share}, version: testSourceVersion("shares", "insider", now)}, Insiders: fakeInsiderSource{transactions: []InsiderTransaction{buy}, version: testSourceVersion("insiders", "v1", now)}, Events: noEvents(now), Clock: func() time.Time { return now }}
+
+	batch, err := c.SyncSecurityUniverse(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row InsiderTransactionSnapshot
+	if err := db.First(&row, "accession = ?", buy.Accession).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !row.Qualified || row.Role != InsiderRoleCEO || row.ValueMicros != 25_000_000_000 || row.SharesOwnedBeforeMicros != 40_000_000_000 {
+		t.Fatalf("insider snapshot = %#v", row)
+	}
+	if !strings.Contains(batch.SourceVersionsJSON, `"source":"insiders"`) {
+		t.Fatalf("batch source versions missing insiders: %s", batch.SourceVersionsJSON)
 	}
 }
 
@@ -680,11 +714,11 @@ func TestSecurityInputNormalizationIsPermutationInvariantAndRejectsConflicts(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	h1, err := hashSecurityInputs(one, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil)
+	h1, err := hashSecurityInputs(one, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2, err := hashSecurityInputs(two, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil)
+	h2, err := hashSecurityInputs(two, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil, nil)
 	if err != nil || h1 != h2 {
 		t.Fatalf("hashes=%s/%s err=%v", h1, h2, err)
 	}
