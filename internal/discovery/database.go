@@ -55,6 +55,7 @@ func Migrate(db *gorm.DB) error {
 			&ShareSnapshot{},
 			&FinancialFactSnapshot{},
 			&FinancialMetricSnapshot{},
+			&InsiderTransactionSnapshot{},
 			&BatchShareSelection{},
 			&UniverseSnapshot{},
 			&ManualSecurityOverride{},

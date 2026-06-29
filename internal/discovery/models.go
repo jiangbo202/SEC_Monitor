@@ -234,6 +234,31 @@ type FinancialMetricSnapshot struct {
 	Security                   Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
+type InsiderTransactionSnapshot struct {
+	ID                           uint      `json:"id"`
+	SecurityID                   uint      `json:"security_id" gorm:"uniqueIndex:idx_insider_tx_identity,priority:1;index"`
+	Accession                    string    `json:"accession" gorm:"size:32;uniqueIndex:idx_insider_tx_identity,priority:2;index"`
+	OwnerName                    string    `json:"owner_name" gorm:"size:255"`
+	OfficerTitle                 string    `json:"officer_title" gorm:"size:255"`
+	Role                         string    `json:"role" gorm:"size:32;index"`
+	Derivative                   bool      `json:"derivative"`
+	TransactionDate              time.Time `json:"transaction_date" gorm:"uniqueIndex:idx_insider_tx_identity,priority:3;index"`
+	TransactionCode              string    `json:"transaction_code" gorm:"size:8;uniqueIndex:idx_insider_tx_identity,priority:4;index"`
+	AcquiredDisposedCode         string    `json:"acquired_disposed_code" gorm:"size:8"`
+	SharesMicros                 int64     `json:"shares_micros"`
+	PriceMicros                  int64     `json:"price_micros"`
+	ValueMicros                  int64     `json:"value_micros"`
+	SharesOwnedAfterMicros       int64     `json:"shares_owned_after_micros"`
+	SharesOwnedBeforeMicros      int64     `json:"shares_owned_before_micros"`
+	Qualified                    bool      `json:"qualified" gorm:"index"`
+	ExclusionReason              string    `json:"exclusion_reason" gorm:"size:64;index"`
+	FounderConfirmationSuggested bool      `json:"founder_confirmation_suggested"`
+	ParserVersion                string    `json:"parser_version" gorm:"size:64"`
+	SourceURL                    string    `json:"source_url" gorm:"size:2048"`
+	CreatedAt                    time.Time `json:"created_at"`
+	Security                     Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
 type UniverseBatch struct {
 	BatchID               string                    `json:"batch_id" gorm:"size:64;primaryKey"`
 	Kind                  string                    `json:"kind" gorm:"size:32;index"`
