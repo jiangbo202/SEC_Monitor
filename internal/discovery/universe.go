@@ -325,6 +325,9 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 		stageErr = c.persistUniverseSnapshots(ctx, snapshots)
 	}
 	if stageErr == nil {
+		stageErr = c.persistCandidateScoreSnapshots(ctx, securityBatch.BatchID, batch.BatchID, snapshots, now)
+	}
+	if stageErr == nil {
 		stageErr = validateMarketStage(c.DB.WithContext(ctx), batch.BatchID, len(snapshots))
 	}
 	if stageErr != nil {
@@ -1329,6 +1332,79 @@ func (c *Coordinator) persistUniverseSnapshots(ctx context.Context, rows []Unive
 		}
 		if c.AfterStageChunk != nil {
 			if err := c.AfterStageChunk(BatchKindPrescreen, start/universeChunkSize); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Coordinator) persistCandidateScoreSnapshots(ctx context.Context, securityBatchID, marketBatchID string, universeRows []UniverseSnapshot, now time.Time) error {
+	securityIDs := make([]uint, 0, len(universeRows))
+	seenSecurity := map[uint]struct{}{}
+	for _, row := range universeRows {
+		if row.SecurityID == 0 {
+			continue
+		}
+		if _, ok := seenSecurity[row.SecurityID]; ok {
+			continue
+		}
+		seenSecurity[row.SecurityID] = struct{}{}
+		securityIDs = append(securityIDs, row.SecurityID)
+	}
+	if len(securityIDs) == 0 {
+		return nil
+	}
+	var metrics []FinancialMetricSnapshot
+	if err := c.DB.WithContext(ctx).Where("batch_id = ? AND security_id IN ?", securityBatchID, securityIDs).Find(&metrics).Error; err != nil {
+		return err
+	}
+	metricBySecurity := map[uint]FinancialMetricSnapshot{}
+	for _, metric := range metrics {
+		metricBySecurity[metric.SecurityID] = metric
+	}
+	var insiders []InsiderTransactionSnapshot
+	if err := c.DB.WithContext(ctx).Where("security_id IN ?", securityIDs).Find(&insiders).Error; err != nil {
+		return err
+	}
+	insidersBySecurity := map[uint][]InsiderTransactionSnapshot{}
+	for _, insider := range insiders {
+		insidersBySecurity[insider.SecurityID] = append(insidersBySecurity[insider.SecurityID], insider)
+	}
+	var risks []CapitalRiskSnapshot
+	if err := c.DB.WithContext(ctx).Where("batch_id = ? AND security_id IN ?", securityBatchID, securityIDs).Find(&risks).Error; err != nil {
+		return err
+	}
+	risksBySecurity := map[uint][]CapitalRiskSnapshot{}
+	for _, risk := range risks {
+		risksBySecurity[risk.SecurityID] = append(risksBySecurity[risk.SecurityID], risk)
+	}
+	rows := make([]CandidateScoreSnapshot, 0, len(universeRows))
+	for _, snapshot := range universeRows {
+		if snapshot.SecurityID == 0 || snapshot.QualityStatus != QualityStatusValid || snapshot.MarketCapUSD <= 0 {
+			continue
+		}
+		score := ScoreDiscoveryCandidate(DiscoveryScoreInput{
+			SecurityID: snapshot.SecurityID, Ticker: snapshot.Ticker, MarketCapUSD: snapshot.MarketCapUSD,
+			Financial: metricBySecurity[snapshot.SecurityID], Insiders: insidersBySecurity[snapshot.SecurityID],
+			Risks: risksBySecurity[snapshot.SecurityID], AsOf: now,
+		})
+		rows = append(rows, CandidateScoreToSnapshot(marketBatchID, score, now))
+	}
+	sort.Slice(rows, func(i, j int) bool { return canonicalLess(rows[i], rows[j]) })
+	for start := 0; start < len(rows); start += universeChunkSize {
+		end := start + universeChunkSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunk := rows[start:end]
+		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Create(&chunk).Error
+		}); err != nil {
+			return err
+		}
+		if c.AfterStageChunk != nil {
+			if err := c.AfterStageChunk("candidate-scores", start/universeChunkSize); err != nil {
 				return err
 			}
 		}

@@ -88,8 +88,33 @@ func TestCoordinatorPublishesPrescreenWithExactEvidence(t *testing.T) {
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, ny)
 	record := SecuritySourceRecord{CIK: "0000005678", Ticker: "CAP", CompanyName: "Cap Co", SecurityName: "Cap Co Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-Q"}, MappingStatus: MappingStatusCurrent}
 	fact := ShareFact{CIK: record.CIK, Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "0000005678-26-000001", Instant: now.AddDate(0, 0, -1), FiledAt: now.Add(-time.Hour), AcceptedAt: now.Add(-time.Hour), Shares: 10_000_000, SourceURL: "https://www.sec.gov/fact"}
+	financials := []FinancialFact{
+		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-03-31", 10_000_000),
+		financialDuration(FinancialMetricRevenue, "2026-01-01", "2026-03-31", 15_000_000),
+		financialInstant(FinancialMetricCash, "2026-03-31", 30_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2025-04-01", "2025-06-30", -3_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2025-07-01", "2025-09-30", -3_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2025-10-01", "2025-12-31", -3_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2026-01-01", "2026-03-31", -3_000_000),
+	}
+	for i := range financials {
+		financials[i].CIK = record.CIK
+		financials[i].FiledAt = now.Add(-time.Hour)
+		financials[i].AcceptedAt = now.Add(-time.Hour)
+		financials[i].Concept = "us-gaap:" + financials[i].Metric
+		financials[i].SourceURL = "https://www.sec.gov/financial"
+	}
+	insider := InsiderTransaction{CIK: record.CIK, Ticker: record.Ticker, Accession: "0000005678-26-000004", SourceURL: "https://www.sec.gov/form4.xml", OwnerName: "Jane Buyer", OfficerTitle: "Chief Executive Officer", Role: InsiderRoleCEO, TransactionDate: now.AddDate(0, 0, -2), TransactionCode: "P", AcquiredDisposedCode: "A", Shares: 10_000, PricePerShareUSD: 2.5, ValueUSD: 25_000, Qualified: true}
 	calendar := &stubMarketCalendar{}
-	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "v1", now)}, Shares: fakeShareSource{facts: []ShareFact{fact}, version: testSourceVersion("shares", "v1", now)}, Events: noEvents(now), Clock: func() time.Time { return now }}
+	c := Coordinator{
+		DB:         db,
+		Metadata:   fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "v1", now)},
+		Shares:     fakeShareSource{facts: []ShareFact{fact}, version: testSourceVersion("shares", "v1", now)},
+		Financials: fakeFinancialSource{facts: financials, version: testSourceVersion("financials", "v1", now)},
+		Insiders:   fakeInsiderSource{transactions: []InsiderTransaction{insider}, version: testSourceVersion("insiders", "v1", now)},
+		Events:     noEvents(now),
+		Clock:      func() time.Time { return now },
+	}
 	securityBatch, err := c.SyncSecurityUniverse(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +159,13 @@ func TestCoordinatorPublishesPrescreenWithExactEvidence(t *testing.T) {
 	}
 	if !snapshot.Included || snapshot.MarketCapUSD != 50_000_000 || snapshot.PriceSnapshotID == nil || snapshot.ShareSnapshotID == nil {
 		t.Fatalf("snapshot=%#v", snapshot)
+	}
+	var score CandidateScoreSnapshot
+	if err := db.First(&score, "batch_id = ? AND security_id = ?", batch.BatchID, snapshot.SecurityID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if score.Grade != CandidateGradeA || !score.EligibleA || score.TotalScore != 80 || score.RevenueGrowthScore != 30 || score.CashRunwayScore != 20 || score.InsiderScore != 20 || score.DilutionRiskScore != 10 {
+		t.Fatalf("score=%#v", score)
 	}
 	if securityBatch.BatchID == batch.BatchID {
 		t.Fatal("security and prescreen batches must differ")
