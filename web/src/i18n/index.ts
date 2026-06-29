@@ -489,7 +489,10 @@ const messages = {
         suppressedCount: '已抑制',
         reason: '处理原因',
         summary: '抑制摘要',
-        sources: { filing: '标的公告', ipo: 'IPO监控', ipoOffering: 'IPO定价' },
+        entityKind: '对象类型',
+        candidateGrade: '{grade}级候选',
+        sources: { filing: '标的公告', ipo: 'IPO监控', ipoOffering: 'IPO定价', candidate: '小盘候选' },
+        entityKinds: { filing: 'SEC公告', ipoFiling: 'IPO文件', candidate: '候选标的' },
         statuses: { sent: '已发送', suppressed: '已抑制', failed: '发送失败' },
         reasons: {
           eligible: '符合规则',
@@ -991,7 +994,10 @@ const messages = {
         suppressedCount: 'Suppressed',
         reason: 'Reason',
         summary: 'Suppression Summary',
-        sources: { filing: 'Watch Filings', ipo: 'IPO Monitor', ipoOffering: 'IPO Pricing' },
+        entityKind: 'Entity',
+        candidateGrade: 'Grade {grade}',
+        sources: { filing: 'Watch Filings', ipo: 'IPO Monitor', ipoOffering: 'IPO Pricing', candidate: 'Small-cap Candidates' },
+        entityKinds: { filing: 'SEC Filing', ipoFiling: 'IPO Filing', candidate: 'Candidate' },
         statuses: { sent: 'Sent', suppressed: 'Suppressed', failed: 'Failed' },
         reasons: {
           eligible: 'Eligible',

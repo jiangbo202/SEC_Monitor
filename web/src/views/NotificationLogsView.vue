@@ -13,6 +13,7 @@
               <el-option :label="t('pages.notificationLogs.sources.filing')" value="filing" />
               <el-option :label="t('pages.notificationLogs.sources.ipo')" value="ipo" />
               <el-option :label="t('pages.notificationLogs.sources.ipoOffering')" value="ipo_offering" />
+              <el-option :label="t('pages.notificationLogs.sources.candidate')" value="candidate" />
             </el-select>
           </el-form-item>
           <el-form-item :label="t('common.status')">
@@ -30,16 +31,22 @@
             <template #default="{ row }">
               <el-table :data="batchItems[row.id] || []" border class="sync-detail-table">
                 <el-table-column prop="event_at" :label="t('common.time')" width="170"><template #default="{ row: item }">{{ formatDateTime(item.event_at) }}</template></el-table-column>
+                <el-table-column prop="entity_kind" :label="t('pages.notificationLogs.entityKind')" width="110"><template #default="{ row: item }"><el-tag type="info" effect="plain">{{ entityKindLabel(item.entity_kind) }}</el-tag></template></el-table-column>
                 <el-table-column prop="ticker" label="Ticker" width="90"><template #default="{ row: item }">{{ item.ticker || '-' }}</template></el-table-column>
                 <el-table-column prop="company_name" :label="t('common.companyName')" min-width="180" show-overflow-tooltip />
-                <el-table-column prop="filing_type" :label="t('common.type')" width="100" />
+                <el-table-column prop="filing_type" :label="t('common.type')" width="100"><template #default="{ row: item }">{{ notificationItemTypeLabel(item) }}</template></el-table-column>
                 <el-table-column prop="reason" :label="t('pages.notificationLogs.reason')" width="150"><template #default="{ row: item }"><el-tag :type="reasonType(item.reason)" effect="plain">{{ reasonLabel(item.reason) }}</el-tag></template></el-table-column>
-                <el-table-column prop="title" :label="t('common.title')" min-width="240"><template #default="{ row: item }"><el-link :href="item.filing_url" target="_blank" type="primary">{{ item.title || item.filing_type }}</el-link></template></el-table-column>
+                <el-table-column prop="title" :label="t('common.title')" min-width="240">
+                  <template #default="{ row: item }">
+                    <el-link v-if="item.filing_url" :href="item.filing_url" target="_blank" type="primary">{{ item.title || item.filing_type }}</el-link>
+                    <span v-else>{{ item.title || item.filing_type }}</span>
+                  </template>
+                </el-table-column>
               </el-table>
             </template>
           </el-table-column>
           <el-table-column prop="created_at" :label="t('common.time')" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
-          <el-table-column prop="source" :label="t('pages.notificationLogs.source')" width="110"><template #default="{ row }">{{ sourceLabel(row.source) }}</template></el-table-column>
+          <el-table-column prop="source" :label="t('pages.notificationLogs.source')" width="120"><template #default="{ row }"><el-tag :type="sourceTagType(row.source)" effect="plain">{{ sourceLabel(row.source) }}</el-tag></template></el-table-column>
           <el-table-column prop="trigger" :label="t('common.source')" width="120" />
           <el-table-column prop="item_count" :label="t('pages.notificationLogs.totalCount')" width="85" align="right" />
           <el-table-column prop="sent_count" :label="t('pages.notificationLogs.sentCount')" width="85" align="right" />
@@ -113,14 +120,31 @@ async function loadBatchItems(row: NotificationBatch) {
 function loadActive() { return activeTab.value === 'batches' ? loadBatches() : loadLegacy() }
 function queryBatches() { batchesPage.value = 1; return loadBatches() }
 function sourceLabel(value: string) {
+  if (value === 'candidate') return t('pages.notificationLogs.sources.candidate')
   if (value === 'ipo') return t('pages.notificationLogs.sources.ipo')
   if (value === 'ipo_offering') return t('pages.notificationLogs.sources.ipoOffering')
   return t('pages.notificationLogs.sources.filing')
+}
+function sourceTagType(value: string) {
+  if (value === 'candidate') return 'success'
+  if (value === 'ipo' || value === 'ipo_offering') return 'warning'
+  return 'info'
 }
 function batchStatusLabel(value: string) { return t(`pages.notificationLogs.statuses.${value}`) }
 function batchStatusType(value: string) { return value === 'sent' ? 'success' : value === 'failed' ? 'danger' : 'warning' }
 function reasonLabel(value: string) { return t(`pages.notificationLogs.reasons.${value}`) }
 function reasonType(value: string) { return value === 'eligible' ? 'success' : value === 'delivery_failed' ? 'danger' : 'warning' }
+function entityKindLabel(value: string) {
+  if (value === 'candidate') return t('pages.notificationLogs.entityKinds.candidate')
+  if (value === 'ipo_filing') return t('pages.notificationLogs.entityKinds.ipoFiling')
+  return t('pages.notificationLogs.entityKinds.filing')
+}
+function notificationItemTypeLabel(item: NotificationBatchItem) {
+  if (item.entity_kind === 'candidate' && (item.filing_type === 'A' || item.filing_type === 'B')) {
+    return t('pages.notificationLogs.candidateGrade', { grade: item.filing_type })
+  }
+  return item.filing_type || '-'
+}
 function formatDateTime(value?: string | null) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString() }
 
 onMounted(loadBatches)
