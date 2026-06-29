@@ -6,7 +6,7 @@
         <p>基于公开 SEC 文件、财务指标、内幕交易和融资风险生成的研究候选列表。</p>
       </div>
       <el-space>
-        <el-button :loading="summaryLoading" @click="previewSummary">预览通知摘要</el-button>
+        <el-button :loading="summaryLoading" @click="previewSummary">预检通知摘要</el-button>
         <el-button :loading="loading" @click="load">刷新</el-button>
       </el-space>
     </div>
@@ -88,12 +88,12 @@
       />
     </div>
 
-    <el-dialog v-model="summaryVisible" title="小盘候选通知摘要预览" width="760px">
+    <el-dialog v-model="summaryVisible" title="小盘候选通知 dry-run 预检" width="760px">
       <el-alert
-        type="warning"
+        :type="notificationPreview?.enabled ? 'success' : 'warning'"
         :closable="false"
         show-icon
-        title="仅研究与通知，不构成投资建议；当前功能不会自动发送 Telegram。"
+        :title="notificationPreviewStatus"
         class="summary-alert"
       />
       <div v-if="summary" class="summary-dialog">
@@ -101,6 +101,11 @@
           <el-descriptions-item label="批次">{{ summary.batch_id || '-' }}</el-descriptions-item>
           <el-descriptions-item label="A级候选">{{ summary.total_a }}</el-descriptions-item>
           <el-descriptions-item label="B级候选">{{ summary.total_b }}</el-descriptions-item>
+          <el-descriptions-item v-if="notificationPreview" label="通知等级">
+            A: {{ notificationPreview.settings.notify_a ? '开' : '关' }} / B: {{ notificationPreview.settings.notify_b ? '开' : '关' }}
+          </el-descriptions-item>
+          <el-descriptions-item v-if="notificationPreview" label="发送时间">{{ notificationPreview.settings.send_time }}</el-descriptions-item>
+          <el-descriptions-item v-if="notificationPreview" label="每级最多">{{ notificationPreview.settings.max_per_grade }}</el-descriptions-item>
         </el-descriptions>
         <el-input
           :model-value="summary.message"
@@ -165,13 +170,15 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
+import type { ApiResponse, CandidateNotificationPreview, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
 
 const rows = ref<CandidateScore[]>([])
 const loading = ref(false)
 const summaryLoading = ref(false)
 const summaryVisible = ref(false)
 const summary = ref<CandidateSummary | null>(null)
+const notificationPreview = ref<CandidateNotificationPreview | null>(null)
+const notificationPreviewStatus = ref('仅 dry-run 预检，不会自动发送 Telegram。')
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
@@ -202,11 +209,15 @@ async function load() {
 async function previewSummary() {
   summaryLoading.value = true
   try {
-    const res = await apiClient.get<ApiResponse<CandidateSummary>>('/discovery/candidates/summary', { params: { limit: 5 } })
-    summary.value = res.data.data
+    const res = await apiClient.get<ApiResponse<CandidateNotificationPreview>>('/discovery/candidates/notification-preview')
+    notificationPreview.value = res.data.data
+    summary.value = res.data.data.summary
+    notificationPreviewStatus.value = res.data.data.suppressed_reason
+      ? `通知被抑制：${res.data.data.suppressed_reason}；本次不会发送 Telegram。`
+      : '配置已启用；本次仅 dry-run 预检，不会发送 Telegram。'
     summaryVisible.value = true
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.message || '加载候选摘要失败')
+    ElMessage.error(err?.response?.data?.message || '预检候选通知失败')
   } finally {
     summaryLoading.value = false
   }

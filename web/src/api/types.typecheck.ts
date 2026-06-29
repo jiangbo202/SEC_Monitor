@@ -1,4 +1,4 @@
-import type { CandidateScore, CandidateSummary } from './types'
+import type { CandidateNotificationPreview, CandidateScore, CandidateSummary } from './types'
 
 // Compile-time contract guard for discovery candidate summary API payloads.
 const candidate: CandidateScore = {
@@ -34,4 +34,17 @@ export const candidateSummaryTypecheck: CandidateSummary = {
   items_a: [candidate],
   items_b: [],
   message: '小盘股研究候选摘要',
+}
+
+export const candidateNotificationPreviewTypecheck: CandidateNotificationPreview = {
+  enabled: true,
+  suppressed_reason: '',
+  settings: {
+    enabled: true,
+    notify_a: true,
+    notify_b: false,
+    send_time: '09:30',
+    max_per_grade: 5,
+  },
+  summary: candidateSummaryTypecheck,
 }

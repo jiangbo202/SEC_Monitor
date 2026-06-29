@@ -93,6 +93,15 @@ func (h *AppHandler) PreviewDiscoveryCandidateSummary(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) PreviewDiscoveryCandidateNotification(c *gin.Context) {
+	result, err := service.NewCandidateNotificationService(h.DiscoveryDB, h.Configs).Preview(c.Request.Context())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) LookupTicker(c *gin.Context) {
 	ticker := strings.ToUpper(strings.TrimSpace(c.Param("ticker")))
 	if ticker == "" {

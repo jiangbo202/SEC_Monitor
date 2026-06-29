@@ -166,6 +166,21 @@ export interface CandidateSummary {
   message: string
 }
 
+export interface CandidateNotificationSettings {
+  enabled: boolean
+  notify_a: boolean
+  notify_b: boolean
+  send_time: string
+  max_per_grade: number
+}
+
+export interface CandidateNotificationPreview {
+  enabled: boolean
+  suppressed_reason: string
+  settings: CandidateNotificationSettings
+  summary: CandidateSummary
+}
+
 export interface SystemConfig {
   id: number
   config_key: string

@@ -21,7 +21,17 @@ type CandidateSummary struct {
 	Message string                   `json:"message"`
 }
 
+type CandidateSummaryOptions struct {
+	LimitPerGrade int
+	IncludeA      bool
+	IncludeB      bool
+}
+
 func BuildCandidateSummary(ctx context.Context, db *gorm.DB, limitPerGrade int) (CandidateSummary, error) {
+	return BuildCandidateSummaryWithOptions(ctx, db, CandidateSummaryOptions{LimitPerGrade: limitPerGrade, IncludeA: true, IncludeB: true})
+}
+
+func BuildCandidateSummaryWithOptions(ctx context.Context, db *gorm.DB, options CandidateSummaryOptions) (CandidateSummary, error) {
 	result := CandidateSummary{ItemsA: []CandidateScoreSnapshot{}, ItemsB: []CandidateScoreSnapshot{}}
 	if db == nil {
 		return result, errors.New("database is required")
@@ -29,7 +39,7 @@ func BuildCandidateSummary(ctx context.Context, db *gorm.DB, limitPerGrade int) 
 	if ctx == nil {
 		return result, errors.New("context is required")
 	}
-	limit := normalizeCandidateSummaryLimit(limitPerGrade)
+	limit := normalizeCandidateSummaryLimit(options.LimitPerGrade)
 	batch, ok, err := currentPublishedPrescreenBatch(ctx, db)
 	if err != nil {
 		return result, err
@@ -39,11 +49,15 @@ func BuildCandidateSummary(ctx context.Context, db *gorm.DB, limitPerGrade int) 
 		return result, nil
 	}
 	result.BatchID = batch.BatchID
-	if result.TotalA, result.ItemsA, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeA, "eligible_a", limit); err != nil {
-		return result, err
+	if options.IncludeA {
+		if result.TotalA, result.ItemsA, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeA, "eligible_a", limit); err != nil {
+			return result, err
+		}
 	}
-	if result.TotalB, result.ItemsB, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeB, "eligible_b", limit); err != nil {
-		return result, err
+	if options.IncludeB {
+		if result.TotalB, result.ItemsB, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeB, "eligible_b", limit); err != nil {
+			return result, err
+		}
 	}
 	result.Message = renderCandidateSummaryMessage(result)
 	return result, nil
