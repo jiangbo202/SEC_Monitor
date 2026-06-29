@@ -1,6 +1,9 @@
 package discovery
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -133,5 +136,61 @@ func TestInsiderTransactionSnapshotUsesMicros(t *testing.T) {
 	row := InsiderTransactionToSnapshot(7, tx, date)
 	if row.SecurityID != 7 || row.SharesMicros != 12_500_000 || row.PriceMicros != 2_250_000 || row.ValueMicros != 28_125_000 || row.SharesOwnedBeforeMicros != 87_500_000 || row.ParserVersion != InsiderParserVersion {
 		t.Fatalf("snapshot = %#v", row)
+	}
+}
+
+func TestSECForm4InsiderSourceDownloadsRecentAllowedOwnershipXML(t *testing.T) {
+	asOf := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
+	xmlBody := `<ownershipDocument>
+  <documentType>4</documentType>
+  <issuer><issuerCik>0000001234</issuerCik><issuerTradingSymbol>ACME</issuerTradingSymbol></issuer>
+  <reportingOwner>
+    <reportingOwnerId><rptOwnerName>Jane Buyer</rptOwnerName></reportingOwnerId>
+    <reportingOwnerRelationship><isOfficer>1</isOfficer><officerTitle>CEO</officerTitle></reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-06-18</value></transactionDate>
+      <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>100</value></transactionShares>
+        <transactionPricePerShare><value>3</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>`
+	requested := []string{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requested = append(requested, r.URL.String())
+		if !strings.Contains(r.URL.String(), "/Archives/edgar/data/1234/000000123426000004/form4.xml") {
+			t.Fatalf("unexpected URL %s", r.URL.String())
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(xmlBody)), Header: make(http.Header), Request: r}, nil
+	})}
+	source := SECForm4InsiderSource{
+		Metadata: fakeMetadataSource{records: []SecuritySourceRecord{{CIK: "0000001234", FilingMetadata: []FilingMetadata{
+			{CIK: "0000001234", Accession: "0000001234-26-000004", Form: "4", FiledAt: asOf.AddDate(0, 0, -10), PrimaryDocument: "form4.xml"},
+			{CIK: "0000001234", Accession: "0000001234-26-000003", Form: "4", FiledAt: asOf.AddDate(0, 0, -181), PrimaryDocument: "old.xml"},
+			{CIK: "0000001234", Accession: "0000001234-26-000002", Form: "8-K", FiledAt: asOf.AddDate(0, 0, -2), PrimaryDocument: "8k.xml"},
+			{CIK: "0000009999", Accession: "0000009999-26-000001", Form: "4", FiledAt: asOf.AddDate(0, 0, -2), PrimaryDocument: "other.xml"},
+		}}}, version: testSourceVersion("metadata", "form4", asOf)},
+		Downloader:   &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1 << 20},
+		BaseURL:      "https://www.sec.gov/Archives/edgar/data",
+		LookbackDays: 180,
+	}
+
+	transactions, version, err := source.LoadInsiderTransactions(context.Background(), map[string]struct{}{"0000001234": {}}, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requested) != 1 {
+		t.Fatalf("download count = %d, want 1", len(requested))
+	}
+	if len(transactions) != 1 || !transactions[0].Qualified || transactions[0].ValueUSD != 300 {
+		t.Fatalf("transactions = %#v", transactions)
+	}
+	if version.Source != "insiders:sec-form4" || !strings.Contains(version.Version, InsiderParserVersion) || version.SHA256 == "" {
+		t.Fatalf("version = %#v", version)
 	}
 }

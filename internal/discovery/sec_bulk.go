@@ -255,6 +255,9 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 				if s.Filings.Recent.present["items"] {
 					metadata.Items = strings.TrimSpace(s.Filings.Recent.Items[j])
 				}
+				if s.Filings.Recent.present["primaryDocument"] {
+					metadata.PrimaryDocument = strings.TrimSpace(s.Filings.Recent.PrimaryDocument[j])
+				}
 				if s.Filings.Recent.present["reportDate"] && s.Filings.Recent.ReportDate[j] != "" {
 					metadata.ReportAt, err = time.Parse("2006-01-02", s.Filings.Recent.ReportDate[j])
 					if err != nil {

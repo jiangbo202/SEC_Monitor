@@ -41,6 +41,7 @@ type SecuritySourceRecord struct {
 
 type FilingMetadata struct {
 	CIK, Accession, Form          string
+	PrimaryDocument               string
 	Items                         string
 	FiledAt, ReportAt, AcceptedAt time.Time
 }

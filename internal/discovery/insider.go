@@ -2,11 +2,15 @@ package discovery
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"math"
 	"math/big"
+	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -50,6 +54,85 @@ type InsiderTransactionSource interface {
 	LoadInsiderTransactions(context.Context, map[string]struct{}, time.Time) ([]InsiderTransaction, SourceVersion, error)
 }
 
+type SECForm4InsiderSource struct {
+	Metadata     SecurityMetadataSource
+	Downloader   *Downloader
+	BaseURL      string
+	LookbackDays int
+}
+
+func (s SECForm4InsiderSource) LoadInsiderTransactions(ctx context.Context, allowed map[string]struct{}, asOf time.Time) ([]InsiderTransaction, SourceVersion, error) {
+	if s.Metadata == nil || s.Downloader == nil {
+		return nil, SourceVersion{}, fmt.Errorf("SEC Form 4 metadata source and downloader are required")
+	}
+	records, metadataVersion, err := s.Metadata.Load(ctx)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	lookback := s.LookbackDays
+	if lookback <= 0 {
+		lookback = 180
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = "https://www.sec.gov/Archives/edgar/data"
+	}
+	cutoff := asOf.AddDate(0, 0, -lookback)
+	type downloadedDoc struct {
+		Filing FilingMetadata
+		Result DownloadResult
+	}
+	downloads := []downloadedDoc{}
+	transactions := []InsiderTransaction{}
+	for _, record := range records {
+		if _, ok := allowed[record.CIK]; !ok {
+			continue
+		}
+		for _, filing := range record.FilingMetadata {
+			if _, ok := allowed[filing.CIK]; !ok {
+				continue
+			}
+			if !eligibleForm4Filing(filing, cutoff, asOf) {
+				continue
+			}
+			sourceURL, cacheKey, err := form4DocumentLocation(baseURL, filing)
+			if err != nil {
+				return nil, SourceVersion{}, err
+			}
+			download, err := s.Downloader.Download(ctx, sourceURL, cacheKey, nil)
+			if err != nil {
+				return nil, SourceVersion{}, err
+			}
+			file, err := os.Open(download.Path)
+			if err != nil {
+				return nil, SourceVersion{}, err
+			}
+			parsed, parseErr := ParseForm4OwnershipXML(file, filing.Accession, sourceURL)
+			closeErr := file.Close()
+			if parseErr != nil {
+				return nil, SourceVersion{}, parseErr
+			}
+			if closeErr != nil {
+				return nil, SourceVersion{}, closeErr
+			}
+			transactions = append(transactions, parsed...)
+			downloads = append(downloads, downloadedDoc{Filing: filing, Result: download})
+		}
+	}
+	sort.Slice(transactions, func(i, j int) bool { return canonicalLess(transactions[i], transactions[j]) })
+	versionHash := sha256.New()
+	versionHash.Write([]byte(metadataVersion.SHA256 + "\n" + InsiderParserVersion + "\n"))
+	for _, doc := range downloads {
+		versionHash.Write([]byte(doc.Filing.Accession + "\n" + doc.Result.SHA256 + "\n"))
+	}
+	digest := hex.EncodeToString(versionHash.Sum(nil))
+	version := metadataVersion.Version + "+" + InsiderParserVersion
+	if version == "+"+InsiderParserVersion {
+		version = digest + "+" + InsiderParserVersion
+	}
+	return transactions, SourceVersion{Source: "insiders:sec-form4", Version: version, SHA256: digest, EffectiveAt: metadataVersion.EffectiveAt}, nil
+}
+
 func ParseForm4OwnershipXML(r io.Reader, accession, sourceURL string) ([]InsiderTransaction, error) {
 	var doc ownershipDocument
 	decoder := xml.NewDecoder(io.LimitReader(r, 10<<20))
@@ -87,6 +170,63 @@ func ParseForm4OwnershipXML(r io.Reader, accession, sourceURL string) ([]Insider
 		out = append(out, qualifyInsiderTransaction(tx))
 	}
 	return out, nil
+}
+
+func eligibleForm4Filing(filing FilingMetadata, cutoff, asOf time.Time) bool {
+	form := strings.ToUpper(strings.TrimSpace(filing.Form))
+	if form != "4" && form != "4/A" {
+		return false
+	}
+	if strings.TrimSpace(filing.PrimaryDocument) == "" || strings.TrimSpace(filing.Accession) == "" || !validCIK(filing.CIK) {
+		return false
+	}
+	filed := filing.FiledAt
+	if filed.IsZero() {
+		filed = filing.AcceptedAt
+	}
+	if filed.IsZero() || filed.Before(cutoff) || filed.After(asOf) {
+		return false
+	}
+	return true
+}
+
+func form4DocumentLocation(baseURL string, filing FilingMetadata) (string, string, error) {
+	if !validCIK(filing.CIK) {
+		return "", "", fmt.Errorf("invalid Form 4 CIK")
+	}
+	accession := strings.TrimSpace(filing.Accession)
+	if accession == "" {
+		return "", "", fmt.Errorf("missing Form 4 accession")
+	}
+	primary := strings.TrimSpace(filing.PrimaryDocument)
+	if primary == "" || strings.Contains(primary, "/") || strings.Contains(primary, `\`) || strings.Contains(primary, "..") {
+		return "", "", fmt.Errorf("invalid Form 4 primary document")
+	}
+	noDash := strings.ReplaceAll(accession, "-", "")
+	if noDash == "" || strings.ContainsAny(noDash, `/\`) {
+		return "", "", fmt.Errorf("invalid Form 4 accession")
+	}
+	cikPath := strings.TrimLeft(filing.CIK, "0")
+	sourceURL := strings.TrimRight(baseURL, "/") + "/" + cikPath + "/" + noDash + "/" + primary
+	cacheKey := "form4-" + filing.CIK + "-" + noDash + "-" + sanitizeForm4CachePart(primary)
+	if !safeCacheKey(cacheKey) {
+		return "", "", fmt.Errorf("invalid Form 4 cache key")
+	}
+	return sourceURL, cacheKey, nil
+}
+
+func sanitizeForm4CachePart(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_' || ch == '.' {
+			b.WriteByte(ch)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 type ownershipDocument struct {
