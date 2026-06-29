@@ -30,6 +30,12 @@ type fakeShareSource struct {
 	err     error
 }
 
+type fakeFinancialSource struct {
+	facts   []FinancialFact
+	version SourceVersion
+	err     error
+}
+
 type fakeCapitalEventSource struct {
 	events  []CapitalEvent
 	version SourceVersion
@@ -55,6 +61,10 @@ func (f *fakePriceProvider) Load(context.Context, []Listing) ([]PriceRecord, Pro
 }
 
 func (f fakeShareSource) LoadLatestShares(context.Context, map[string]struct{}) ([]ShareFact, SourceVersion, error) {
+	return f.facts, f.version, f.err
+}
+
+func (f fakeFinancialSource) LoadFinancialFacts(context.Context, map[string]struct{}) ([]FinancialFact, SourceVersion, error) {
 	return f.facts, f.version, f.err
 }
 
@@ -163,6 +173,59 @@ func TestCoordinatorPublishesSecurityUniverseIdempotently(t *testing.T) {
 	c.Metadata = fakeMetadataSource{records: []SecuritySourceRecord{changed}, version: testSourceVersion("metadata", "v1", now)}
 	if _, err := c.SyncSecurityUniverse(context.Background()); err == nil || !strings.Contains(err.Error(), "content conflict") {
 		t.Fatalf("same source versions with changed content error = %v", err)
+	}
+}
+
+func TestCoordinatorStagesFinancialMetricSnapshots(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	record := SecuritySourceRecord{CIK: "0000004321", Ticker: "FIN", CompanyName: "Financial Metrics Co", SecurityName: "Financial Metrics Co Common Stock", Exchange: "Nasdaq", SIC: 3571, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", RecentForms: []string{"10-K", "10-Q"}, MappingStatus: MappingStatusCurrent}
+	share := ShareFact{CIK: record.CIK, Concept: "dei:EntityCommonStockSharesOutstanding", Unit: "shares", Form: "10-Q", Accession: "0000004321-26-000001", Instant: now.AddDate(0, 0, -1), FiledAt: now.Add(-time.Hour), AcceptedAt: now.Add(-time.Hour), Shares: 10_000_000, SourceURL: "https://www.sec.gov/share"}
+	financials := []FinancialFact{
+		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-03-31", 10_000_000),
+		financialDuration(FinancialMetricRevenue, "2026-01-01", "2026-03-31", 15_000_000),
+		financialDuration(FinancialMetricRevenue, "2024-01-01", "2024-12-31", 40_000_000),
+		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-12-31", 55_000_000),
+		financialInstant(FinancialMetricCash, "2026-03-31", 24_000_000),
+		financialInstant(FinancialMetricShortTermInvestments, "2026-03-31", 6_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2025-04-01", "2025-06-30", -3_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2025-07-01", "2025-09-30", -4_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2025-10-01", "2025-12-31", -5_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2026-01-01", "2026-03-31", -6_000_000),
+		financialDuration(FinancialMetricCapitalExpenditure, "2025-04-01", "2025-06-30", 1_000_000),
+		financialDuration(FinancialMetricCapitalExpenditure, "2025-07-01", "2025-09-30", 1_500_000),
+		financialDuration(FinancialMetricCapitalExpenditure, "2025-10-01", "2025-12-31", 1_500_000),
+		financialDuration(FinancialMetricCapitalExpenditure, "2026-01-01", "2026-03-31", 2_000_000),
+	}
+	for i := range financials {
+		financials[i].CIK = record.CIK
+		financials[i].FiledAt = now.Add(-time.Hour)
+		financials[i].AcceptedAt = now.Add(-time.Hour)
+		financials[i].Concept = "us-gaap:" + financials[i].Metric
+		financials[i].SourceURL = "https://www.sec.gov/financial"
+	}
+	c := Coordinator{DB: db, Metadata: fakeMetadataSource{records: []SecuritySourceRecord{record}, version: testSourceVersion("metadata", "financial", now)}, Shares: fakeShareSource{facts: []ShareFact{share}, version: testSourceVersion("shares", "financial", now)}, Financials: fakeFinancialSource{facts: financials, version: testSourceVersion("financials", "v1", now)}, Events: noEvents(now), Clock: func() time.Time { return now }}
+
+	batch, err := c.SyncSecurityUniverse(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metric FinancialMetricSnapshot
+	if err := db.First(&metric, "batch_id = ?", batch.BatchID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !metric.RevenueGrowthAvailable || !metric.RunwayAvailable || metric.LatestQuarterRevenueUSD != 15_000_000 || metric.CashRunwayMonths != 15 {
+		t.Fatalf("metric snapshot = %#v", metric)
+	}
+	var factCount int64
+	if err := db.Model(&FinancialFactSnapshot{}).Where("security_id = ?", metric.SecurityID).Count(&factCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if factCount != int64(len(financials)) {
+		t.Fatalf("financial fact snapshots = %d, want %d", factCount, len(financials))
+	}
+	if !strings.Contains(batch.SourceVersionsJSON, `"source":"financials"`) {
+		t.Fatalf("batch source versions missing financials: %s", batch.SourceVersionsJSON)
 	}
 }
 
@@ -617,11 +680,11 @@ func TestSecurityInputNormalizationIsPermutationInvariantAndRejectsConflicts(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	h1, err := hashSecurityInputs(one, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil)
+	h1, err := hashSecurityInputs(one, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2, err := hashSecurityInputs(two, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil)
+	h2, err := hashSecurityInputs(two, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil)
 	if err != nil || h1 != h2 {
 		t.Fatalf("hashes=%s/%s err=%v", h1, h2, err)
 	}
