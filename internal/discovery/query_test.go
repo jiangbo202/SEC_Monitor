@@ -62,6 +62,46 @@ func TestUniverseQueryWithoutPointerIsEmpty(t *testing.T) {
 	}
 }
 
+func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0000004321", CompanyName: "Candidate Co", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	security2 := Security{CIK: "0000004322", CompanyName: "Candidate Co 2", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security2).Error; err != nil {
+		t.Fatal(err)
+	}
+	old := UniverseBatch{BatchID: "old", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Hour)}
+	current := UniverseBatch{BatchID: "current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now()}
+	if err := db.Create(&[]UniverseBatch{old, current}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: current.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	rows := []CandidateScoreSnapshot{
+		{BatchID: old.BatchID, SecurityID: security.ID, Ticker: "OLD", Grade: CandidateGradeA, TotalScore: 100, MarketCapUSD: 100},
+		{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "AAA", Grade: CandidateGradeA, EligibleA: true, EligibleB: true, TotalScore: 80, MarketCapUSD: 300_000_000},
+		{BatchID: current.BatchID, SecurityID: security2.ID, Ticker: "BBB", Grade: CandidateGradeB, EligibleB: true, TotalScore: 60, MarketCapUSD: 800_000_000},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{Grade: CandidateGradeA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Ticker != "AAA" {
+		t.Fatalf("page=%#v", page)
+	}
+	all, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{Page: 1, PageSize: 1})
+	if err != nil || all.Total != 2 || len(all.Items) != 1 || all.Items[0].Ticker != "AAA" {
+		t.Fatalf("all=%#v err=%v", all, err)
+	}
+}
+
 func TestBatchAndProviderQueriesPaginateFilterAndOrder(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"sec_monitor/internal/config"
+	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/service"
@@ -24,6 +25,7 @@ import (
 type AppHandler struct {
 	Runtime           config.Config
 	DB                *gorm.DB
+	DiscoveryDB       *gorm.DB
 	Targets           *service.WatchTargetService
 	Configs           *service.ConfigService
 	Tasks             *service.TaskConfigService
@@ -40,6 +42,37 @@ type SchedulerController interface {
 	Reload(ctx context.Context) error
 	RunOnce(ctx context.Context) error
 	RunTask(ctx context.Context, taskName string) error
+}
+
+func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
+	page, pageSize := pageParams(c)
+	var eligibleA *bool
+	if value := strings.TrimSpace(c.Query("eligible_a")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			Error(c, service.ErrValidation)
+			return
+		}
+		eligibleA = &parsed
+	}
+	var eligibleB *bool
+	if value := strings.TrimSpace(c.Query("eligible_b")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			Error(c, service.ErrValidation)
+			return
+		}
+		eligibleB = &parsed
+	}
+	result, err := discovery.ListCandidateScores(c.Request.Context(), h.DiscoveryDB, discovery.CandidateScoreQuery{
+		Page: page, PageSize: pageSize, Ticker: c.Query("ticker"), Grade: c.Query("grade"),
+		EligibleA: eligibleA, EligibleB: eligibleB,
+	})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
 }
 
 func (h *AppHandler) LookupTicker(c *gin.Context) {

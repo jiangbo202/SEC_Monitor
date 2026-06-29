@@ -23,6 +23,19 @@ type UniversePage struct {
 	Items          []UniverseSnapshot `json:"items"`
 }
 
+type CandidateScoreQuery struct {
+	Page, PageSize int
+	Ticker, Grade  string
+	EligibleA      *bool
+	EligibleB      *bool
+}
+
+type CandidateScorePage struct {
+	Page, PageSize int                      `json:"page"`
+	Total          int64                    `json:"total"`
+	Items          []CandidateScoreSnapshot `json:"items"`
+}
+
 type BatchQuery struct {
 	Page, PageSize int
 	Kind, Status   string
@@ -104,6 +117,52 @@ func ListUniverse(ctx context.Context, db *gorm.DB, filter UniverseQuery) (Unive
 		return result, err
 	}
 	return result, nil
+}
+
+func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScoreQuery) (CandidateScorePage, error) {
+	page, size, err := normalizePage(filter.Page, filter.PageSize)
+	if err != nil {
+		return CandidateScorePage{}, err
+	}
+	result := CandidateScorePage{Page: page, PageSize: size, Items: []CandidateScoreSnapshot{}}
+	if db == nil {
+		return result, errors.New("database is required")
+	}
+	if ctx == nil {
+		return result, errors.New("context is required")
+	}
+	var pointer CurrentBatchPointer
+	err = db.WithContext(ctx).First(&pointer, "kind = ?", BatchKindPrescreen).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return result, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	var batch UniverseBatch
+	if err = db.WithContext(ctx).First(&batch, "batch_id = ? AND kind = ? AND status = ?", pointer.BatchID, BatchKindPrescreen, BatchStatusPublished).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return result, nil
+	} else if err != nil {
+		return result, err
+	}
+	query := db.WithContext(ctx).Model(&CandidateScoreSnapshot{}).Where("batch_id = ?", batch.BatchID)
+	if ticker := strings.ToUpper(strings.TrimSpace(filter.Ticker)); ticker != "" {
+		query = query.Where("ticker = ?", ticker)
+	}
+	if grade := strings.ToUpper(strings.TrimSpace(filter.Grade)); grade != "" {
+		query = query.Where("grade = ?", grade)
+	}
+	if filter.EligibleA != nil {
+		query = query.Where("eligible_a = ?", *filter.EligibleA)
+	}
+	if filter.EligibleB != nil {
+		query = query.Where("eligible_b = ?", *filter.EligibleB)
+	}
+	if err = query.Count(&result.Total).Error; err != nil {
+		return result, err
+	}
+	err = query.Order("candidate_score_snapshots.grade ASC").Order("candidate_score_snapshots.total_score DESC").Order("candidate_score_snapshots.market_cap_usd ASC").Order("candidate_score_snapshots.ticker ASC").Offset((page - 1) * size).Limit(size).Find(&result.Items).Error
+	return result, err
 }
 
 func ListBatches(ctx context.Context, db *gorm.DB, filter BatchQuery) (BatchPage, error) {

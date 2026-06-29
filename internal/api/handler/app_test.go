@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"sec_monitor/internal/config"
+	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/service"
@@ -85,6 +86,45 @@ func (f *fakeScheduler) RunTask(ctx context.Context, taskName string) error {
 	return f.runErr
 }
 
+func TestAppHandlerListsDiscoveryCandidates(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main db: %v", err)
+	}
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	security := discovery.Security{CIK: "0000001234", CompanyName: "Acme", CatalogStatus: discovery.SecurityCatalogPublished}
+	if err := discoveryDB.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := discovery.UniverseBatch{BatchID: "current", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished, StartedAt: time.Now()}
+	if err := discoveryDB.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CurrentBatchPointer{Kind: discovery.BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "ACME", Grade: discovery.CandidateGradeA, EligibleA: true, EligibleB: true, TotalScore: 80, MarketCapUSD: 240_000_000}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &AppHandler{DB: db, DiscoveryDB: discoveryDB}
+	r := gin.New()
+	r.GET("/discovery/candidates", h.ListDiscoveryCandidates)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/discovery/candidates?grade=A", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ticker":"ACME"`) || !strings.Contains(rec.Body.String(), `"total_score":80`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -119,6 +159,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 			SEC:      config.SECConfig{UserAgent: "sec-monitor-test test@example.com"},
 		},
 		DB:                db,
+		DiscoveryDB:       nil,
 		Targets:           targets,
 		Configs:           configs,
 		Tasks:             tasks,
@@ -133,6 +174,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r := gin.New()
 	r.GET("/healthz", Health)
 	r.GET("/sec/tickers/:ticker", h.LookupTicker)
+	r.GET("/discovery/candidates", h.ListDiscoveryCandidates)
 	r.GET("/targets", h.ListWatchTargets)
 	r.POST("/targets", h.CreateWatchTarget)
 	r.GET("/targets/:id", h.GetWatchTarget)

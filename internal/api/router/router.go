@@ -58,6 +58,7 @@ func New(deps Dependencies) *gin.Engine {
 	app := &handler.AppHandler{
 		Runtime:           deps.Config,
 		DB:                deps.DB,
+		DiscoveryDB:       deps.DiscoveryDB,
 		Targets:           service.NewWatchTargetService(deps.DB, audit),
 		Configs:           configs,
 		Tasks:             tasks,
@@ -75,6 +76,7 @@ func New(deps Dependencies) *gin.Engine {
 	api := r.Group("/api")
 	{
 		api.GET("/sec/tickers/:ticker", app.LookupTicker)
+		api.GET("/discovery/candidates", app.ListDiscoveryCandidates)
 
 		api.GET("/watch-targets", app.ListWatchTargets)
 		api.POST("/watch-targets", app.CreateWatchTarget)
