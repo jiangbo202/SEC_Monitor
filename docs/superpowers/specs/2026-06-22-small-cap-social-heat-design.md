@@ -5,6 +5,21 @@
 依赖：[小盘股候选工作流、页面与通知](./2026-06-22-small-cap-workflow-design.md)
 上位规格：[小盘股发现与研究通知系统](./2026-06-22-small-cap-discovery-design.md)
 
+## 0. 当前实现状态（2026-06-30）
+
+本阶段只实现合规脚手架，不实现 Reddit 网络采集：
+
+- 新增 `SocialHeatSnapshot`，可保存 provider、ticker、提及数、基线数、热度分、情绪分、窗口、来源状态和证据 URL。
+- 新增默认关闭配置：`social_heat.enabled=false`、`social_heat.provider=manual`、`social_heat.lookback_hours=24`、`social_heat.baseline_days=30`。
+- 新增手动 upsert/query helper，供后续官方 Reddit API provider 或人工 CSV 导入复用。
+- 社交热度不参与当前 A/B 基本面等级硬条件，也不会在缺失时降低候选等级；只作为可选研究增强。
+
+未实现且不得隐式开启：
+
+- 未授权网页抓取 Reddit。
+- 自动保存用户身份或个人数据。
+- 将社交热度作为买卖信号或自动交易触发器。
+
 ## 1. 目标
 
 在不影响基本面 A/B 等级的前提下，使用 Reddit 官方 OAuth Data API 识别候选公司的关注度变化。该模块默认关闭、完全可选。

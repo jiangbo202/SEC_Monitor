@@ -4,6 +4,38 @@
 状态：待用户评审（v2 风险修订）
 所属项目：SEC Monitor
 
+## 0. 当前实现状态（2026-06-30）
+
+已在 SEC Monitor 内落地的范围：
+
+- 候选列表、A/B 摘要、通知 dry-run、手动发送、强制重发、通知历史标记。
+- 默认关闭的定时任务 `candidate_notification_sync`，默认 cron 为 `30 9 * * *`，启用后按配置推送候选摘要。
+- 候选详情 API 与前端抽屉：展示评分拆解、财务证据、Form 4 内幕交易、融资/稀释风险、数据质量、原始证据字段和赛道解释。
+- 当前批次健康检查：识别候选中缺财务、缺内幕、缺市值和活跃风险事件。
+- 手动“刷新候选工作流”接口：当前实现为本地状态编排与健康/摘要刷新，不主动发起外部 SEC/行情/Reddit 网络抓取。
+- 候选日报接口与前端弹窗：按日期或最新批次返回 A/B 摘要、健康状态和通知文案。
+- 社交热度已完成离线数据模型、默认关闭配置和手动 upsert/query helper；未实现 Reddit 网络采集。
+
+已实现 API：
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/api/discovery/candidates` | 当前发布批次候选分页查询 |
+| `GET` | `/api/discovery/candidates/summary` | 候选 A/B 摘要预览 |
+| `GET` | `/api/discovery/candidates/:ticker/detail` | 候选证据链详情 |
+| `GET` | `/api/discovery/candidates/health` | 当前候选数据健康 |
+| `POST` | `/api/discovery/candidates/refresh` | 手动刷新本地候选工作流状态 |
+| `GET` | `/api/discovery/candidates/report?date=YYYY-MM-DD` | 候选日报 |
+| `GET` | `/api/discovery/candidates/notification-preview` | Telegram 通知 dry-run |
+| `POST` | `/api/discovery/candidates/notification-send` | 确认发送或强制重发 Telegram 候选摘要 |
+
+仍明确不在本阶段内：
+
+- 自动交易、买卖建议、收益承诺。
+- Reddit 未授权抓取或绕过官方 API。
+- 付费行情/付费一致预期。
+- 点击刷新时进行全市场外部数据抓取；全量 discovery 协调器和数据源运行仍按独立任务治理。
+
 ## 1. 产品目标
 
 在现有 SEC Monitor 中增加“小盘股发现”能力，每天扫描符合范围的美国上市公司，从 SEC 公告、结构化财务数据、内幕交易和可选的 Reddit 热度中寻找基本面正在改善、同时不存在明显融资或持续经营风险的小公司。

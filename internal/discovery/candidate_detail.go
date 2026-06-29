@@ -17,6 +17,7 @@ type CandidateDetail struct {
 	Financial    *FinancialMetricSnapshot     `json:"financial,omitempty"`
 	Insiders     []InsiderTransactionSnapshot `json:"insiders"`
 	CapitalRisks []CapitalRiskSnapshot        `json:"capital_risks"`
+	Sector       SectorExplanation            `json:"sector"`
 	DataQuality  map[string]string            `json:"data_quality"`
 	Evidence     []Evidence                   `json:"evidence"`
 }
@@ -47,6 +48,7 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	if err := db.WithContext(ctx).First(&result.Security, result.Score.SecurityID).Error; err != nil {
 		return result, err
 	}
+	result.Sector = ExplainSectorScore(result.Score, result.Security)
 	var universe UniverseSnapshot
 	if err := db.WithContext(ctx).First(&universe, "batch_id = ? AND security_id = ?", batch.BatchID, result.Score.SecurityID).Error; err == nil {
 		result.Universe = &universe

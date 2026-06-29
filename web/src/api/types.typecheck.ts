@@ -1,4 +1,14 @@
-import type { CandidateDetail, CandidateNotificationPreview, CandidateNotificationSendInput, CandidateNotificationSendResult, CandidateScore, CandidateSummary } from './types'
+import type {
+  CandidateDetail,
+  CandidateHealth,
+  CandidateNotificationPreview,
+  CandidateNotificationSendInput,
+  CandidateNotificationSendResult,
+  CandidateReport,
+  CandidateScore,
+  CandidateSummary,
+  DiscoveryWorkflowResult,
+} from './types'
 
 // Compile-time contract guard for discovery candidate summary API payloads.
 const candidate: CandidateScore = {
@@ -79,6 +89,41 @@ export const candidateDetailTypecheck: CandidateDetail = {
   score: candidate,
   insiders: [],
   capital_risks: [],
+  sector: { sic: 1000, category: '未分类赛道', score: 8, label: '优秀赛道', rationale: '基于 SIC 1000。' },
   data_quality: { financial: 'valid' },
   evidence: [{ field: 'total_score', value: '88', source: 'candidate_score_snapshots' }],
+}
+
+export const candidateHealthTypecheck: CandidateHealth = {
+  batch_id: 'batch',
+  status: 'ok',
+  total_candidates: 1,
+  missing_financials: 0,
+  missing_insiders: 0,
+  missing_market_cap: 0,
+  active_risk_events: 0,
+  issues: [],
+}
+
+export const discoveryWorkflowTypecheck: DiscoveryWorkflowResult = {
+  status: 'ready',
+  batch_id: 'batch',
+  summary: candidateSummaryTypecheck,
+  health: candidateHealthTypecheck,
+}
+
+export const candidateReportTypecheck: CandidateReport = {
+  date: '2026-06-30',
+  batch: {
+    batch_id: 'batch',
+    kind: 'market-prescreen',
+    status: 'published',
+    effective_date: '2026-06-30',
+    record_count: 1,
+    started_at: '2026-06-30T00:00:00Z',
+    error_message: '',
+  },
+  summary: candidateSummaryTypecheck,
+  health: candidateHealthTypecheck,
+  generated_at: '2026-06-30T00:00:00Z',
 }

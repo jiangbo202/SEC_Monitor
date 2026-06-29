@@ -278,6 +278,25 @@ type CapitalRiskSnapshot struct {
 	Security      Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
+type SocialHeatSnapshot struct {
+	ID             uint      `json:"id"`
+	BatchID        string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_social_heat_batch_security_provider,priority:1;index"`
+	SecurityID     uint      `json:"security_id" gorm:"uniqueIndex:idx_social_heat_batch_security_provider,priority:2;index"`
+	Ticker         string    `json:"ticker" gorm:"size:32;index"`
+	Provider       string    `json:"provider" gorm:"size:64;uniqueIndex:idx_social_heat_batch_security_provider,priority:3;index"`
+	MentionCount   int       `json:"mention_count"`
+	BaselineCount  int       `json:"baseline_count"`
+	HeatScore      float64   `json:"heat_score"`
+	SentimentScore float64   `json:"sentiment_score"`
+	SourceStatus   string    `json:"source_status" gorm:"size:32;index"`
+	WindowStart    time.Time `json:"window_start"`
+	WindowEnd      time.Time `json:"window_end"`
+	SourceURL      string    `json:"source_url" gorm:"size:2048"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Security       Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
 type CandidateScoreSnapshot struct {
 	ID                     uint      `json:"id"`
 	BatchID                string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_candidate_score_batch_security,priority:1;index"`

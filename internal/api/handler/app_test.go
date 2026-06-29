@@ -210,6 +210,53 @@ func TestAppHandlerPreviewsDiscoveryCandidateSummary(t *testing.T) {
 	}
 }
 
+func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	security := discovery.Security{CIK: "0000005688", CompanyName: "Ops Co", CatalogStatus: discovery.SecurityCatalogPublished}
+	if err := discoveryDB.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := discovery.UniverseBatch{BatchID: "ops-current", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished, EffectiveDate: "2026-06-30", StartedAt: time.Now()}
+	if err := discoveryDB.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CurrentBatchPointer{Kind: discovery.BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "OPS", Grade: discovery.CandidateGradeA, EligibleA: true, TotalScore: 92, MarketCapUSD: 220_000_000}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &AppHandler{DiscoveryDB: discoveryDB}
+	r := gin.New()
+	r.GET("/discovery/candidates/health", h.GetDiscoveryCandidateHealth)
+	r.POST("/discovery/candidates/refresh", h.RefreshDiscoveryCandidates)
+	r.GET("/discovery/candidates/report", h.GetDiscoveryCandidateReport)
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		want   string
+	}{
+		{method: http.MethodGet, path: "/discovery/candidates/health", want: `"total_candidates":1`},
+		{method: http.MethodPost, path: "/discovery/candidates/refresh", want: `"status":"ready"`},
+		{method: http.MethodGet, path: "/discovery/candidates/report?date=2026-06-30", want: `"ticker":"OPS"`},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("%s %s status=%d body=%s", tc.method, tc.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestAppHandlerPreviewsDiscoveryCandidateNotification(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})

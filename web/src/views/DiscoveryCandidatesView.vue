@@ -6,10 +6,22 @@
         <p>基于公开 SEC 文件、财务指标、内幕交易和融资风险生成的研究候选列表。</p>
       </div>
       <el-space>
+        <el-button :loading="workflowLoading" type="primary" plain @click="runWorkflow">刷新候选工作流</el-button>
+        <el-button :loading="reportLoading" @click="openReport">查看日报</el-button>
         <el-button :loading="summaryLoading" @click="previewSummary">预检通知摘要</el-button>
         <el-button :loading="loading" @click="load">刷新</el-button>
       </el-space>
     </div>
+
+    <el-alert
+      v-if="health"
+      :type="health.status === 'ok' ? 'success' : health.status === 'missing' ? 'warning' : 'error'"
+      :closable="false"
+      show-icon
+      class="health-alert"
+      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜缺财务 ${health.missing_financials}｜缺内幕 ${health.missing_insiders}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
+      :description="health.issues.length ? health.issues.join('；') : '当前候选证据链完整度正常。'"
+    />
 
     <el-card shadow="never" class="filter-card">
       <el-form :inline="true" :model="filters">
@@ -180,6 +192,29 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="reportVisible" title="小盘候选日报" width="820px">
+      <div v-if="report" class="summary-dialog">
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item label="日期">{{ report.date }}</el-descriptions-item>
+          <el-descriptions-item label="批次">{{ report.batch.batch_id || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ report.batch.status || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="A级">{{ report.summary.total_a }}</el-descriptions-item>
+          <el-descriptions-item label="B级">{{ report.summary.total_b }}</el-descriptions-item>
+          <el-descriptions-item label="健康">{{ healthStatusLabel(report.health.status) }}</el-descriptions-item>
+        </el-descriptions>
+        <el-input
+          :model-value="report.summary.message"
+          type="textarea"
+          :autosize="{ minRows: 8, maxRows: 16 }"
+          readonly
+          class="summary-message"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="reportVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <el-drawer v-model="detailVisible" title="候选证据链" size="720px">
       <div v-if="candidateDetail" class="candidate-detail">
         <el-descriptions :column="2" border>
@@ -200,6 +235,17 @@
             <el-descriptions-item label="毛利率">{{ candidateDetail.score.gross_margin_score }}</el-descriptions-item>
             <el-descriptions-item label="稀释风险">{{ candidateDetail.score.dilution_risk_score }}</el-descriptions-item>
             <el-descriptions-item label="赛道空间">{{ candidateDetail.score.sector_score }}</el-descriptions-item>
+          </el-descriptions>
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>赛道解释</template>
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="分类">{{ candidateDetail.sector.category }}</el-descriptions-item>
+            <el-descriptions-item label="标签">{{ candidateDetail.sector.label }}</el-descriptions-item>
+            <el-descriptions-item label="SIC">{{ candidateDetail.sector.sic || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="赛道分">{{ candidateDetail.sector.score }}/10</el-descriptions-item>
+            <el-descriptions-item label="说明" :span="2">{{ candidateDetail.sector.rationale }}</el-descriptions-item>
           </el-descriptions>
         </el-card>
 
@@ -261,13 +307,30 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, CandidateDetail, CandidateNotificationPreview, CandidateNotificationSendInput, CandidateNotificationSendResult, CandidateScore, CandidateSummary, PageResult } from '@/api/types'
+import type {
+  ApiResponse,
+  CandidateDetail,
+  CandidateHealth,
+  CandidateNotificationPreview,
+  CandidateNotificationSendInput,
+  CandidateNotificationSendResult,
+  CandidateReport,
+  CandidateScore,
+  CandidateSummary,
+  DiscoveryWorkflowResult,
+  PageResult,
+} from '@/api/types'
 
 const rows = ref<CandidateScore[]>([])
 const loading = ref(false)
+const workflowLoading = ref(false)
+const reportLoading = ref(false)
 const detailVisible = ref(false)
 const detailLoadingTicker = ref('')
 const candidateDetail = ref<CandidateDetail | null>(null)
+const health = ref<CandidateHealth | null>(null)
+const report = ref<CandidateReport | null>(null)
+const reportVisible = ref(false)
 const summaryLoading = ref(false)
 const sendingNotification = ref(false)
 const summaryVisible = ref(false)
@@ -295,10 +358,44 @@ async function load() {
     const res = await apiClient.get<ApiResponse<PageResult<CandidateScore>>>('/discovery/candidates', { params: requestParams() })
     rows.value = res.data.data.items || []
     total.value = res.data.data.total || 0
+    await loadHealth()
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '加载候选失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadHealth() {
+  const res = await apiClient.get<ApiResponse<CandidateHealth>>('/discovery/candidates/health')
+  health.value = res.data.data
+}
+
+async function runWorkflow() {
+  workflowLoading.value = true
+  try {
+    const res = await apiClient.post<ApiResponse<DiscoveryWorkflowResult>>('/discovery/candidates/refresh')
+    health.value = res.data.data.health
+    summary.value = res.data.data.summary
+    await load()
+    ElMessage.success(res.data.data.status === 'ready' ? '候选工作流已刷新当前批次状态' : '暂无当前候选批次')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '刷新候选工作流失败')
+  } finally {
+    workflowLoading.value = false
+  }
+}
+
+async function openReport() {
+  reportLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<CandidateReport>>('/discovery/candidates/report')
+    report.value = res.data.data
+    reportVisible.value = true
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '加载候选日报失败')
+  } finally {
+    reportLoading.value = false
   }
 }
 
@@ -384,6 +481,13 @@ function gradeTagType(grade: string) {
   return 'info'
 }
 
+function healthStatusLabel(status: string) {
+  if (status === 'ok') return '正常'
+  if (status === 'degraded') return '降级'
+  if (status === 'missing') return '缺少批次'
+  return status || '-'
+}
+
 function formatUSD(value: number) {
   if (!value) return '-'
   if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`
@@ -408,6 +512,10 @@ onMounted(load)
 </script>
 
 <style scoped>
+.health-alert {
+  margin-bottom: 12px;
+}
+
 .summary-alert {
   margin-bottom: 12px;
 }

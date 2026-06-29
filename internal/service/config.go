@@ -64,6 +64,13 @@ type CandidateNotificationSettings struct {
 	MaxPerGrade int
 }
 
+type SocialHeatSettings struct {
+	Enabled       bool
+	Provider      string
+	LookbackHours int
+	BaselineDays  int
+}
+
 func NewConfigService(db *gorm.DB, audit *AuditService) *ConfigService {
 	return &ConfigService{db: db, audit: audit}
 }
@@ -96,6 +103,10 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.send_time", Value: "09:30", ValueType: "string", Category: "candidate_notification"},
 		{Key: "candidate_notification.max_per_grade", Value: "5", ValueType: "int", Category: "candidate_notification"},
+		{Key: "social_heat.enabled", Value: "false", ValueType: "bool", Category: "social_heat"},
+		{Key: "social_heat.provider", Value: "manual", ValueType: "string", Category: "social_heat"},
+		{Key: "social_heat.lookback_hours", Value: "24", ValueType: "int", Category: "social_heat"},
+		{Key: "social_heat.baseline_days", Value: "30", ValueType: "int", Category: "social_heat"},
 	}, "system")
 }
 
@@ -360,6 +371,40 @@ func (s *ConfigService) CandidateNotificationSettings(ctx context.Context) (Cand
 		NotifyB:     notifyB,
 		SendTime:    valueOrDefault(sendTime, "09:30"),
 		MaxPerGrade: maxPerGrade,
+	}, nil
+}
+
+func (s *ConfigService) SocialHeatSettings(ctx context.Context) (SocialHeatSettings, error) {
+	enabledRaw, _, err := s.GetValue(ctx, "social_heat.enabled")
+	if err != nil {
+		return SocialHeatSettings{}, err
+	}
+	provider, _, err := s.GetValue(ctx, "social_heat.provider")
+	if err != nil {
+		return SocialHeatSettings{}, err
+	}
+	lookbackRaw, _, err := s.GetValue(ctx, "social_heat.lookback_hours")
+	if err != nil {
+		return SocialHeatSettings{}, err
+	}
+	baselineRaw, _, err := s.GetValue(ctx, "social_heat.baseline_days")
+	if err != nil {
+		return SocialHeatSettings{}, err
+	}
+	enabled, _ := strconv.ParseBool(enabledRaw)
+	lookback, _ := strconv.Atoi(lookbackRaw)
+	baseline, _ := strconv.Atoi(baselineRaw)
+	if lookback <= 0 {
+		lookback = 24
+	}
+	if baseline <= 0 {
+		baseline = 30
+	}
+	return SocialHeatSettings{
+		Enabled:       enabled,
+		Provider:      valueOrDefault(provider, "manual"),
+		LookbackHours: lookback,
+		BaselineDays:  baseline,
 	}, nil
 }
 

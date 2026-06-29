@@ -85,6 +85,33 @@ func (h *AppHandler) GetDiscoveryCandidateDetail(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) GetDiscoveryCandidateHealth(c *gin.Context) {
+	result, err := discovery.BuildCandidateHealth(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) RefreshDiscoveryCandidates(c *gin.Context) {
+	result, err := service.NewDiscoveryWorkflowService(h.DiscoveryDB).Refresh(c.Request.Context())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetDiscoveryCandidateReport(c *gin.Context) {
+	result, err := discovery.BuildCandidateReport(c.Request.Context(), h.DiscoveryDB, c.Query("date"))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) PreviewDiscoveryCandidateSummary(c *gin.Context) {
 	limit := 0
 	if value := strings.TrimSpace(c.Query("limit")); value != "" {

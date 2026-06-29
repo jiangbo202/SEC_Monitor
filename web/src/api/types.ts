@@ -201,6 +201,14 @@ export interface DiscoveryEvidence {
   source: string
 }
 
+export interface SectorExplanation {
+  sic: number
+  category: string
+  score: number
+  label: string
+  rationale: string
+}
+
 export interface CandidateDetail {
   batch_id: string
   security: DiscoverySecurity
@@ -208,6 +216,7 @@ export interface CandidateDetail {
   financial?: DiscoveryFinancialMetric
   insiders: DiscoveryInsiderTransaction[]
   capital_risks: DiscoveryCapitalRisk[]
+  sector: SectorExplanation
   data_quality: Record<string, string>
   evidence: DiscoveryEvidence[]
 }
@@ -244,6 +253,41 @@ export interface CandidateNotificationSendInput {
 export interface CandidateNotificationSendResult {
   preview: CandidateNotificationPreview
   batch: NotificationBatch
+}
+
+export interface CandidateHealth {
+  batch_id: string
+  status: 'ok' | 'degraded' | 'missing' | string
+  total_candidates: number
+  missing_financials: number
+  missing_insiders: number
+  missing_market_cap: number
+  active_risk_events: number
+  issues: string[]
+}
+
+export interface DiscoveryWorkflowResult {
+  status: 'ready' | 'no_current_batch' | string
+  batch_id: string
+  summary: CandidateSummary
+  health: CandidateHealth
+}
+
+export interface CandidateReport {
+  date: string
+  batch: {
+    batch_id: string
+    kind: string
+    status: string
+    effective_date: string
+    record_count: number
+    started_at: string
+    completed_at?: string | null
+    error_message: string
+  }
+  summary: CandidateSummary
+  health: CandidateHealth
+  generated_at: string
 }
 
 export interface SystemConfig {

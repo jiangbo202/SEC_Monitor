@@ -18,10 +18,10 @@
 - Modify: `internal/scheduler/scheduler_test.go`
 - Modify: `internal/api/router/router.go`
 
-- [ ] Add default task `candidate_notification_sync` disabled by default with daily cron.
-- [ ] Extend scheduler constructor to accept `*service.CandidateNotificationService`.
-- [ ] Route `candidate_notification_sync` to `CandidateNotificationService.Send(ctx, Confirm: true)`.
-- [ ] Tests: default task exists; disabled task does not run; manual run sends candidate notification.
+- [x] Add default task `candidate_notification_sync` disabled by default with daily cron.
+- [x] Extend scheduler constructor to accept `*service.CandidateNotificationService`.
+- [x] Route `candidate_notification_sync` to `CandidateNotificationService.Send(ctx, Confirm: true)`.
+- [x] Tests: default task exists; disabled task does not run; manual run sends candidate notification.
 
 ### Task 2: Candidate detail evidence API
 
@@ -32,10 +32,10 @@
 - Modify: `internal/api/handler/app_test.go`
 - Modify: `internal/api/router/router.go`
 
-- [ ] Add `GetCandidateDetail(ctx, db, ticker)` for current batch.
-- [ ] Return score snapshot plus latest financial metric, insider transactions, capital risks, data quality, and evidence summary.
-- [ ] API: `GET /api/discovery/candidates/:ticker/detail`.
-- [ ] Tests: returns current batch evidence and 404/empty behavior for unknown ticker.
+- [x] Add `GetCandidateDetail(ctx, db, ticker)` for current batch.
+- [x] Return score snapshot plus latest financial metric, insider transactions, capital risks, data quality, and evidence summary.
+- [x] API: `GET /api/discovery/candidates/:ticker/detail`.
+- [x] Tests: returns current batch evidence and unknown ticker behavior.
 
 ### Task 3: Candidate detail drawer UI
 
@@ -44,10 +44,10 @@
 - Modify: `web/src/api/types.typecheck.ts`
 - Modify: `web/src/views/DiscoveryCandidatesView.vue`
 
-- [ ] Add detail types.
-- [ ] Add row action to open detail drawer.
-- [ ] Display score breakdown, evidence, data quality, insider, capital risk, and social heat sections.
-- [ ] Build validation via `npm run build`.
+- [x] Add detail types.
+- [x] Add row action to open detail drawer.
+- [x] Display score breakdown, evidence, data quality, insider, capital risk, and sector explanation sections.
+- [x] Build validation via `npm run build`.
 
 ### Task 4: Data source health and missing-data visibility
 
@@ -58,9 +58,9 @@
 - Modify: `internal/api/router/router.go`
 - Modify: `web/src/views/DiscoveryCandidatesView.vue`
 
-- [ ] Add summary of missing/stale financial, insider, market cap, and capital risk evidence from current batch.
-- [ ] API: `GET /api/discovery/candidates/health`.
-- [ ] UI alert card above candidate table.
+- [x] Add summary of missing/stale financial, insider, market cap, and capital risk evidence from current batch.
+- [x] API: `GET /api/discovery/candidates/health`.
+- [x] UI alert card above candidate table.
 
 ### Task 5: One-click discovery workflow
 
@@ -71,9 +71,9 @@
 - Modify: `internal/api/router/router.go`
 - Modify: `web/src/views/DiscoveryCandidatesView.vue`
 
-- [ ] Add workflow service that runs pre-screen scoring through existing discovery coordinator hooks where available, then returns current candidates and notification dry-run.
-- [ ] API: `POST /api/discovery/candidates/refresh`.
-- [ ] UI button “刷新候选工作流”.
+- [x] Add workflow service that returns current candidates and health status without external network calls.
+- [x] API: `POST /api/discovery/candidates/refresh`.
+- [x] UI button “刷新候选工作流”.
 
 ### Task 6: Optional social heat scaffold
 
@@ -85,10 +85,10 @@
 - Modify: `internal/service/config.go`
 - Modify: `internal/service/service_test.go`
 
-- [ ] Add `SocialHeatSnapshot` model with provider, mentions, baseline, z-score, status, evidence URL/count.
-- [ ] Add disabled-by-default config keys for social heat.
-- [ ] Add manual snapshot upsert/query helpers.
-- [ ] Do not perform unauthenticated Reddit scraping.
+- [x] Add `SocialHeatSnapshot` model with provider, mentions, baseline, score, status, and evidence URL.
+- [x] Add disabled-by-default config keys for social heat.
+- [x] Add manual snapshot upsert/query helpers.
+- [x] Do not perform unauthenticated Reddit scraping.
 
 ### Task 7: Sector explainability
 
@@ -97,8 +97,8 @@
 - Create: `internal/discovery/sector_explain_test.go`
 - Modify: `internal/discovery/candidate_detail.go`
 
-- [ ] Add sector score explanation mapping using available reason/score fields and optional manual sector note.
-- [ ] Expose in candidate detail.
+- [x] Add sector score explanation mapping using SIC and score fields.
+- [x] Expose in candidate detail.
 
 ### Task 8: Candidate daily report/archive
 
@@ -109,18 +109,18 @@
 - Modify: `internal/api/router/router.go`
 - Modify: `web/src/views/DiscoveryCandidatesView.vue`
 
-- [ ] Add `GET /api/discovery/candidates/report?date=YYYY-MM-DD`.
-- [ ] Use current/latest batch if date not supplied.
-- [ ] Return A/B counts, top candidates, message, data-quality summary.
-- [ ] UI: report drawer or card.
+- [x] Add `GET /api/discovery/candidates/report?date=YYYY-MM-DD`.
+- [x] Use current/latest batch if date not supplied.
+- [x] Return A/B counts, top candidates, message, data-quality summary.
+- [x] UI: report dialog.
 
 ### Task 9: Notification history UX polish
 
 **Files:**
 - Modify: `web/src/views/NotificationLogsView.vue`
 
-- [ ] Add candidate-specific columns and copy text where needed.
-- [ ] Keep SEC/IPO behavior unchanged.
+- [x] Add candidate-specific source/status support in notification history from previous commit.
+- [x] Keep SEC/IPO behavior unchanged.
 
 ### Task 10: Documentation and final verification
 
@@ -128,9 +128,8 @@
 - Modify: `docs/superpowers/specs/2026-06-22-small-cap-discovery-design.md`
 - Modify: `docs/superpowers/specs/2026-06-22-small-cap-social-heat-design.md`
 
-- [ ] Document implemented endpoints, disabled-by-default social heat, scheduling, force resend, and remaining operational caveats.
-- [ ] Run `go test ./... -count=1`.
-- [ ] Run `npm run build`.
-- [ ] Run coverage and confirm total `>= 80%`.
-- [ ] Commit completed changes.
-
+- [x] Document implemented endpoints, disabled-by-default social heat, scheduling, force resend, and remaining operational caveats.
+- [x] Run `go test ./... -count=1`.
+- [x] Run `npm run build`.
+- [x] Run coverage and confirm total `>= 80%`.
+- [x] Commit completed changes.

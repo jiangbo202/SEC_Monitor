@@ -1631,15 +1631,15 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(tasks) != 2 {
-				t.Fatalf("tasks = %d, want 2", len(tasks))
+			if len(tasks) != 3 {
+				t.Fatalf("tasks = %d, want 3", len(tasks))
 			}
 			names := map[string]bool{}
 			for _, task := range tasks {
 				names[task.TaskName] = true
 			}
-			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] {
-				t.Fatalf("task names = %+v, want sec and ipo tasks", names)
+			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] || !names["candidate_notification_sync"] {
+				t.Fatalf("task names = %+v, want sec, ipo, and candidate notification tasks", names)
 			}
 		}},
 		{name: "update task", run: func(t *testing.T, svc *TaskConfigService) {
