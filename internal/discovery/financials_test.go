@@ -108,6 +108,25 @@ func TestParseSECFinancialFactsZIPSkipsEmptyCompanyFactsDocuments(t *testing.T) 
 	}
 }
 
+func TestParseSECFinancialFactsZIPUsesFilenameCIKWhenDocumentCIKIsMissing(t *testing.T) {
+	p := zipFile(t, map[string]string{
+		"CIK0001790169.json": `{"entityName":"ZeroStack Corp.","facts":{"us-gaap":{"Revenues":{"units":{"USD":[{"val":15000000,"start":"2026-01-01","end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"0001790169-26-000001"}]}}}}}`,
+	})
+	z, err := zip.OpenReader(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+
+	facts, err := ParseSECFinancialFactsZIP(&z.Reader, map[string]struct{}{"0001790169": {}}, ZIPParseLimits{MaxEntryBytes: 1 << 20, MaxTotalBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 || facts[0].CIK != "0001790169" {
+		t.Fatalf("facts = %#v, want one fact using filename CIK", facts)
+	}
+}
+
 func TestBuildFinancialSummaryComputesRevenueGrowthAndRunway(t *testing.T) {
 	facts := []FinancialFact{
 		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-03-31", 10_000_000),

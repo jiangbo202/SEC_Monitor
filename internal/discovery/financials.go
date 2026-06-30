@@ -129,9 +129,13 @@ func ParseSECFinancialFactsZIP(z *zip.Reader, allowed map[string]struct{}, limit
 		if len(doc.CIK) == 0 && len(doc.Facts) == 0 {
 			continue
 		}
-		cik, err := normalizeCIK(doc.CIK)
-		if err != nil || cik != m[1] {
-			return nil, fmt.Errorf("companyfacts CIK %s invalid cik", m[1])
+		cik := m[1]
+		if len(doc.CIK) != 0 {
+			normalized, err := normalizeCIK(doc.CIK)
+			if err != nil || normalized != m[1] {
+				return nil, fmt.Errorf("companyfacts CIK %s invalid cik", m[1])
+			}
+			cik = normalized
 		}
 		entryFacts := []FinancialFact{}
 		seen := map[string]FinancialFact{}
