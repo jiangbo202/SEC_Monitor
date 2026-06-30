@@ -17,7 +17,10 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 		"SMALL_CAP_SEC_TICKER_EXCHANGE_URL",
 		"SMALL_CAP_SEC_SUBMISSIONS_URL",
 		"SMALL_CAP_SEC_COMPANY_FACTS_URL",
+		"SMALL_CAP_PRICE_PROVIDER",
 		"SMALL_CAP_STOOQ_URLS",
+		"TIINGO_API_TOKEN",
+		"SMALL_CAP_TIINGO_BASE_URL",
 		"SMALL_CAP_TASK_TIMEOUT_MINUTES",
 	} {
 		t.Setenv(key, "")
@@ -51,6 +54,15 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 	if cfg.Discovery.StooqURLs != nil {
 		t.Fatalf("stooq urls = %#v", cfg.Discovery.StooqURLs)
 	}
+	if cfg.Discovery.PriceProvider != "" {
+		t.Fatalf("price provider = %q", cfg.Discovery.PriceProvider)
+	}
+	if cfg.Discovery.TiingoAPIToken != "" {
+		t.Fatalf("tiingo token should be empty")
+	}
+	if cfg.Discovery.TiingoBaseURL != "https://api.tiingo.com" {
+		t.Fatalf("tiingo base url = %q", cfg.Discovery.TiingoBaseURL)
+	}
 	if cfg.Discovery.TaskTimeoutMin != 60 {
 		t.Fatalf("task timeout = %d", cfg.Discovery.TaskTimeoutMin)
 	}
@@ -74,7 +86,10 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	t.Setenv("SMALL_CAP_SEC_TICKER_EXCHANGE_URL", "https://example.test/tickers")
 	t.Setenv("SMALL_CAP_SEC_SUBMISSIONS_URL", "https://example.test/submissions")
 	t.Setenv("SMALL_CAP_SEC_COMPANY_FACTS_URL", "https://example.test/facts")
+	t.Setenv("SMALL_CAP_PRICE_PROVIDER", "tiingo")
 	t.Setenv("SMALL_CAP_STOOQ_URLS", " https://example.test/a , ,https://example.test/b  ")
+	t.Setenv("TIINGO_API_TOKEN", "test-token")
+	t.Setenv("SMALL_CAP_TIINGO_BASE_URL", "https://tiingo.example.test")
 	t.Setenv("SMALL_CAP_TASK_TIMEOUT_MINUTES", "15")
 
 	cfg := Load().Discovery
@@ -91,6 +106,9 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.StooqURLs, []string{"https://example.test/a", "https://example.test/b"}) {
 		t.Fatalf("stooq urls = %#v", cfg.StooqURLs)
+	}
+	if cfg.PriceProvider != "tiingo" || cfg.TiingoAPIToken != "test-token" || cfg.TiingoBaseURL != "https://tiingo.example.test" {
+		t.Fatalf("tiingo config = provider:%q token:%q base:%q", cfg.PriceProvider, cfg.TiingoAPIToken, cfg.TiingoBaseURL)
 	}
 	if cfg.TaskTimeoutMin != 15 {
 		t.Fatalf("task timeout = %d", cfg.TaskTimeoutMin)

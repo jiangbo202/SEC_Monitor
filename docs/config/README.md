@@ -15,6 +15,10 @@ The local control script reads environment variables before starting services.
 | `LOCAL_DATA_BY_DAY` | `0` | Store SQLite DB under `data/YYYY-MM-DD/`; disabled by default to keep one continuous local DB. |
 | `LOCAL_DATE` | current date | Override runtime date, useful for testing retention. |
 | `DB_DSN` | derived | SQLite database path. Defaults to `data/sec_monitor.db` or `data/YYYY-MM-DD/sec_monitor.db` when `LOCAL_DATA_BY_DAY=1`. |
+| `SMALL_CAP_PRICE_PROVIDER` | empty | Small-cap price provider. Use `tiingo` for Tiingo; empty keeps Stooq unless `TIINGO_API_TOKEN` is set. |
+| `TIINGO_API_TOKEN` | empty | Tiingo API token for the real small-cap price source. Keep it in your shell/profile or local process environment; do not commit it. |
+| `SMALL_CAP_TIINGO_BASE_URL` | `https://api.tiingo.com` | Tiingo API base URL. |
+| `SMALL_CAP_STOOQ_URLS` | empty | Comma-separated Stooq CSV/ZIP URLs when using the Stooq provider. |
 
 Backend config also accepts:
 
@@ -26,3 +30,12 @@ Backend config also accepts:
 | `LOG_LEVEL` | `info` |
 | `DATA_RETENTION_DAYS` | `30` |
 | `STORAGE_BY_DAY` | `false` |
+
+Example Tiingo local run:
+
+```bash
+export SEC_USER_AGENT="sec-monitor/0.1 your-email@example.com"
+export SMALL_CAP_PRICE_PROVIDER=tiingo
+export TIINGO_API_TOKEN="your-tiingo-token"
+go run ./cmd/discovery-sync
+```

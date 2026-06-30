@@ -33,7 +33,10 @@ type DiscoveryConfig struct {
 	SECTickerExchangeURL string
 	SECSubmissionsURL    string
 	SECCompanyFactsURL   string
+	PriceProvider        string
 	StooqURLs            []string
+	TiingoAPIToken       string
+	TiingoBaseURL        string
 	TaskTimeoutMin       int
 }
 
@@ -71,7 +74,10 @@ func Load() Config {
 			SECTickerExchangeURL: valueOrDefault("SMALL_CAP_SEC_TICKER_EXCHANGE_URL", "https://www.sec.gov/files/company_tickers_exchange.json"),
 			SECSubmissionsURL:    valueOrDefault("SMALL_CAP_SEC_SUBMISSIONS_URL", "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"),
 			SECCompanyFactsURL:   valueOrDefault("SMALL_CAP_SEC_COMPANY_FACTS_URL", "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"),
+			PriceProvider:        strings.ToLower(strings.TrimSpace(os.Getenv("SMALL_CAP_PRICE_PROVIDER"))),
 			StooqURLs:            commaSeparatedValues("SMALL_CAP_STOOQ_URLS"),
+			TiingoAPIToken:       strings.TrimSpace(os.Getenv("TIINGO_API_TOKEN")),
+			TiingoBaseURL:        valueOrDefault("SMALL_CAP_TIINGO_BASE_URL", "https://api.tiingo.com"),
 			TaskTimeoutMin:       positiveIntOrDefault("SMALL_CAP_TASK_TIMEOUT_MINUTES", 60),
 		},
 		SEC: SECConfig{

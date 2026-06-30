@@ -44,10 +44,13 @@
 - SEC 下载请求必须带描述性 `SEC_USER_AGENT`，建议包含项目名和联系方式；该配置同时用于常规 SEC filing client 与小盘 discovery 下载器。
 - SEC/Nasdaq/行情下载写入 `.cache/discovery`；当公开源出现瞬时下载失败或流式 EOF 且本地已有同 cache key 文件时，本次运行允许回退使用缓存文件，并在结果中保留来源版本 hash。
 - SEC `companyfacts.zip` 全市场解析采用流式逐文件处理；生产解码总量上限为 64GB，单 entry 上限为 512MB。该上限用于防 zip bomb，不代表一次性内存占用。
-- 候选生成依赖日线价格源计算市值预筛选，必须配置 `SMALL_CAP_STOOQ_URLS` 指向可下载的 Stooq 格式 CSV 或 ZIP。公开站点如果返回浏览器验证、404、限流或非 CSV 内容，系统必须失败并保留错误，不允许降级为模拟价格。
+- 候选生成依赖日线价格源计算市值预筛选，必须配置一个真实价格 Provider，不允许降级为模拟价格：
+  - Stooq 批量模式：配置 `SMALL_CAP_PRICE_PROVIDER=stooq` 或留空，并设置 `SMALL_CAP_STOOQ_URLS` 指向可下载的 Stooq 格式 CSV 或 ZIP。
+  - Tiingo API 模式：配置 `SMALL_CAP_PRICE_PROVIDER=tiingo` 与 `TIINGO_API_TOKEN`；`SMALL_CAP_TIINGO_BASE_URL` 默认 `https://api.tiingo.com`。如果只设置 `TIINGO_API_TOKEN` 且未指定价格 Provider，系统自动使用 Tiingo。
+  - 公开站点或 API 如果返回鉴权失败、浏览器验证、404、限流或非价格内容，系统必须失败或记录缺失覆盖率，不允许生成假的候选。
 - `POST /api/discovery/candidates/refresh` 与 `go run ./cmd/discovery-sync` 的返回状态：
   - `published`：证券基础同步和行情候选生成均完成，当前候选批次已发布。
-  - `market_failed`：证券基础同步完成，但行情候选阶段失败；常见原因是未配置 `SMALL_CAP_STOOQ_URLS`、价格源不可达或价格源未通过质量校验。
+  - `market_failed`：证券基础同步完成，但行情候选阶段失败；常见原因是未配置价格 Provider、`TIINGO_API_TOKEN` 缺失/无权限、价格源不可达、价格覆盖率不足或价格源未通过质量校验。
 
 ## 1. 产品目标
 
@@ -144,7 +147,7 @@
 | 公告历史 | SEC `submissions.zip`、Submissions API 和 EDGAR Archives | 10-K、10-Q、8-K、Form 4、融资文件和风险事件 | 批量文件每日更新，增量公告沿用当前 SEC Monitor 同步能力 |
 | 结构化财务 | SEC `companyfacts.zip`、Company Facts API | 收入、现金、经营现金流、毛利、净利润、股本 | XBRL 标签不统一；必须执行标签优先级、期间归一化和质量校验 |
 | 公告正文/XML | SEC EDGAR Archives | Form 4 明细、8-K 合同、ATM、持续经营、反向拆股、权证 | 规则解析只能产生带置信度的事件，不允许无证据强判定 |
-| 日线价格 | Stooq 免费日线批量数据 | 最近收盘价与市值估算 | 非 SEC/交易所官方行情且无 SLA；实现可替换 Provider，并支持 CSV 导入降级 |
+| 日线价格 | Stooq 免费日线批量数据或 Tiingo Daily API | 最近收盘价与市值估算 | 非 SEC/交易所官方行情且无 SLA；Provider 可替换；Tiingo token 仅通过环境变量注入，不写入仓库；覆盖率不足时不发布候选 |
 | 行业分类 | SEC SIC + 本地可配置行业表 | 行业标签与“赛道空间”评分 | 行业空间属于研究判断，必须人工配置和审计 |
 | Reddit 热度 | Reddit 官方 OAuth Data API，可选 | 关注度、提及趋势和异常热度 | 默认关闭；需要用户提供合法凭据/访问资格；不可用时不影响基本面评分 |
 

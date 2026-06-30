@@ -73,3 +73,30 @@ func TestDiscoverySyncServiceBuildsRunnerWithoutMarketURL(t *testing.T) {
 		t.Fatalf("market err = %v, want missing SMALL_CAP_STOOQ_URLS", err)
 	}
 }
+
+func TestDiscoverySyncServiceBuildsTiingoRunnerFromToken(t *testing.T) {
+	discoveryDB := testDiscoveryDB(t)
+	runner, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{
+		PriceProvider:  "tiingo",
+		TiingoAPIToken: "test-token",
+		TiingoBaseURL:  "https://api.tiingo.com",
+	}).buildRunner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.SyncMarketPrices(context.Background()); err == nil || strings.Contains(err.Error(), "SMALL_CAP_STOOQ_URLS") {
+		t.Fatalf("market err = %v, want tiingo runner without stooq config error", err)
+	}
+}
+
+func TestDiscoverySyncServiceRejectsTiingoWithoutToken(t *testing.T) {
+	discoveryDB := testDiscoveryDB(t)
+	_, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{
+		PriceProvider:  "tiingo",
+		TiingoBaseURL:  "https://api.tiingo.com",
+		TaskTimeoutMin: 1,
+	}).buildRunner()
+	if err == nil || !strings.Contains(err.Error(), "TIINGO_API_TOKEN") {
+		t.Fatalf("err = %v, want TIINGO_API_TOKEN error", err)
+	}
+}

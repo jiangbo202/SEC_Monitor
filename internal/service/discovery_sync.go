@@ -145,24 +145,12 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 		Calendar: calendar,
 		Clock:    time.Now,
 	}
-	if len(s.cfg.StooqURLs) == 0 {
-		return productionDiscoveryRunner{security: security, marketErr: errors.New("SMALL_CAP_STOOQ_URLS is required for market price sync")}, nil
-	}
-	priceURL := strings.TrimSpace(s.cfg.StooqURLs[0])
-	format := discovery.PriceFormatStooq
-	if strings.HasSuffix(strings.ToLower(priceURL), ".zip") {
-		format = discovery.PriceFormatStooqZIP
-	}
-	prices, err := discovery.NewDownloadedPriceProvider(discovery.DownloadedPriceProviderOptions{
-		Provider:   "stooq",
-		URL:        priceURL,
-		CacheKey:   "stooq-us-daily",
-		Format:     format,
-		Downloader: downloader,
-		Validation: discovery.PriceValidationOptions{Now: time.Now().UTC(), Calendar: calendar},
-	})
+	prices, marketErr, err := s.buildPriceProvider(downloader, calendar)
 	if err != nil {
 		return nil, err
+	}
+	if marketErr != nil {
+		return productionDiscoveryRunner{security: security, marketErr: marketErr}, nil
 	}
 	market := &discovery.Coordinator{
 		DB:         s.db,
@@ -180,6 +168,46 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 		Clock:    time.Now,
 	}
 	return productionDiscoveryRunner{security: security, market: market}, nil
+}
+
+func (s *DiscoverySyncService) buildPriceProvider(downloader *discovery.Downloader, calendar discovery.MarketCalendar) (discovery.PriceProvider, error, error) {
+	provider := strings.ToLower(strings.TrimSpace(s.cfg.PriceProvider))
+	if provider == "" && strings.TrimSpace(s.cfg.TiingoAPIToken) != "" {
+		provider = "tiingo"
+	}
+	switch provider {
+	case "", "stooq":
+		if len(s.cfg.StooqURLs) == 0 {
+			return nil, errors.New("SMALL_CAP_STOOQ_URLS is required for market price sync"), nil
+		}
+		priceURL := strings.TrimSpace(s.cfg.StooqURLs[0])
+		format := discovery.PriceFormatStooq
+		if strings.HasSuffix(strings.ToLower(priceURL), ".zip") {
+			format = discovery.PriceFormatStooqZIP
+		}
+		prices, err := discovery.NewDownloadedPriceProvider(discovery.DownloadedPriceProviderOptions{
+			Provider:   "stooq",
+			URL:        priceURL,
+			CacheKey:   "stooq-us-daily",
+			Format:     format,
+			Downloader: downloader,
+			Validation: discovery.PriceValidationOptions{Now: time.Now().UTC(), Calendar: calendar},
+		})
+		return prices, nil, err
+	case "tiingo":
+		if strings.TrimSpace(s.cfg.TiingoAPIToken) == "" {
+			return nil, nil, errors.New("TIINGO_API_TOKEN is required when SMALL_CAP_PRICE_PROVIDER=tiingo")
+		}
+		prices, err := discovery.NewTiingoPriceProvider(discovery.TiingoPriceProviderOptions{
+			Token:    s.cfg.TiingoAPIToken,
+			BaseURL:  s.cfg.TiingoBaseURL,
+			Calendar: calendar,
+			Now:      time.Now,
+		})
+		return prices, nil, err
+	default:
+		return nil, nil, fmt.Errorf("unsupported SMALL_CAP_PRICE_PROVIDER %q", s.cfg.PriceProvider)
+	}
 }
 
 func (r productionDiscoveryRunner) SyncSecurityUniverse(ctx context.Context) (discovery.UniverseBatch, error) {

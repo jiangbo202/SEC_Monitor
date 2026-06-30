@@ -228,9 +228,12 @@ DB_DSN=data/sec_monitor.db
 SEC_BASE_URL=https://data.sec.gov
 SEC_USER_AGENT="sec-monitor/0.1 your-email@example.com"
 SEC_TIMEOUT_MS=10000
+SMALL_CAP_PRICE_PROVIDER=tiingo
+TIINGO_API_TOKEN="your-tiingo-token"
 ```
 
 SEC 要求请求方设置明确的 User-Agent。正式使用前请设置 `SEC_USER_AGENT`。
+小盘候选的 Tiingo token 通过环境变量 `TIINGO_API_TOKEN` 注入，不要写入仓库文件或提交到 git。配置后可用 `go run ./cmd/discovery-sync` 触发真实数据同步。
 
 ## 开发
 
