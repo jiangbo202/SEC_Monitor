@@ -140,7 +140,7 @@ func ParseSECFinancialFactsZIP(z *zip.Reader, allowed map[string]struct{}, limit
 				}
 				for unit, facts := range concept.Units {
 					if unit != spec.Unit {
-						return nil, fmt.Errorf("companyfacts %s/%s:%s: invalid unit %q", cik, namespace, conceptName, unit)
+						continue
 					}
 					for _, x := range facts {
 						fact, err := financialFactFromCompanyFact(cik, namespace, conceptName, spec, x)
