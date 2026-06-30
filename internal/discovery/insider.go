@@ -97,7 +97,7 @@ func (s SECForm4InsiderSource) LoadInsiderTransactions(ctx context.Context, allo
 			}
 			sourceURL, cacheKey, err := form4DocumentLocation(baseURL, filing)
 			if err != nil {
-				return nil, SourceVersion{}, err
+				continue
 			}
 			download, err := s.Downloader.Download(ctx, sourceURL, cacheKey, nil)
 			if err != nil {

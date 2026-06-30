@@ -171,6 +171,7 @@ func TestSECForm4InsiderSourceDownloadsRecentAllowedOwnershipXML(t *testing.T) {
 	source := SECForm4InsiderSource{
 		Metadata: fakeMetadataSource{records: []SecuritySourceRecord{{CIK: "0000001234", FilingMetadata: []FilingMetadata{
 			{CIK: "0000001234", Accession: "0000001234-26-000004", Form: "4", FiledAt: asOf.AddDate(0, 0, -10), PrimaryDocument: "form4.xml"},
+			{CIK: "0000001234", Accession: "0000001234-26-000005", Form: "4", FiledAt: asOf.AddDate(0, 0, -9), PrimaryDocument: "../bad.xml"},
 			{CIK: "0000001234", Accession: "0000001234-26-000003", Form: "4", FiledAt: asOf.AddDate(0, 0, -181), PrimaryDocument: "old.xml"},
 			{CIK: "0000001234", Accession: "0000001234-26-000002", Form: "8-K", FiledAt: asOf.AddDate(0, 0, -2), PrimaryDocument: "8k.xml"},
 			{CIK: "0000009999", Accession: "0000009999-26-000001", Form: "4", FiledAt: asOf.AddDate(0, 0, -2), PrimaryDocument: "other.xml"},
