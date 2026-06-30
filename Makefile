@@ -1,4 +1,4 @@
-.PHONY: start stop restart status logs backend frontend test lint build docker-build docker-up docker-down docker-logs
+.PHONY: start stop restart status logs backend frontend test lint build docker-build docker-up docker-down docker-logs docker-discovery-sync
 
 start:
 	./scripts/local.sh start
@@ -43,3 +43,6 @@ docker-down:
 
 docker-logs:
 	docker compose logs -f sec-monitor
+
+docker-discovery-sync:
+	docker compose exec sec-monitor /app/discovery-sync

@@ -85,6 +85,29 @@ func TestParseSECFinancialFactsZIPSkipsMalformedIndividualFacts(t *testing.T) {
 	assertFinancialFact(t, facts, FinancialMetricOperatingCashFlow, "us-gaap:NetCashProvidedByUsedInOperatingActivities", -3_000_000)
 }
 
+func TestParseSECFinancialFactsZIPSkipsEmptyCompanyFactsDocuments(t *testing.T) {
+	p := zipFile(t, map[string]string{
+		"CIK0000001234.json": `{}`,
+		"CIK0000005678.json": `{"cik":5678,"facts":{"us-gaap":{"Revenues":{"units":{"USD":[{"val":15000000,"start":"2026-01-01","end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"0000005678-26-000001"}]}}}}}`,
+	})
+	z, err := zip.OpenReader(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+
+	facts, err := ParseSECFinancialFactsZIP(&z.Reader, map[string]struct{}{"0000001234": {}, "0000005678": {}}, ZIPParseLimits{MaxEntryBytes: 1 << 20, MaxTotalBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 {
+		t.Fatalf("facts len = %d, want 1: %#v", len(facts), facts)
+	}
+	if facts[0].CIK != "0000005678" {
+		t.Fatalf("fact cik = %q, want 0000005678", facts[0].CIK)
+	}
+}
+
 func TestBuildFinancialSummaryComputesRevenueGrowthAndRunway(t *testing.T) {
 	facts := []FinancialFact{
 		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-03-31", 10_000_000),

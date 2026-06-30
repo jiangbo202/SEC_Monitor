@@ -126,6 +126,9 @@ func ParseSECFinancialFactsZIP(z *zip.Reader, allowed map[string]struct{}, limit
 			return nil, fmt.Errorf("ZIP aggregate decoded bytes exceed limit")
 		}
 		total += n
+		if len(doc.CIK) == 0 && len(doc.Facts) == 0 {
+			continue
+		}
 		cik, err := normalizeCIK(doc.CIK)
 		if err != nil || cik != m[1] {
 			return nil, fmt.Errorf("companyfacts CIK %s invalid cik", m[1])
