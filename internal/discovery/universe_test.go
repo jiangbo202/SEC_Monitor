@@ -372,10 +372,14 @@ func TestCoordinatorRejectsInvalidSourceVersionAndPreservesPointer(t *testing.T)
 	}
 }
 
-func TestCoordinatorInactiveProviderDoesNotLoadOrReplacePrescreen(t *testing.T) {
+func TestCoordinatorMissingProviderHealthRunsValidationWithoutPublishing(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	ny, _ := time.LoadLocation("America/New_York")
 	now := time.Date(2026, 6, 23, 10, 0, 0, 0, ny)
+	securityRow := Security{CIK: "0000009999", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&securityRow).Error; err != nil {
+		t.Fatal(err)
+	}
 	security := UniverseBatch{BatchID: strings.Repeat("c", 64), Kind: BatchKindSecurity, Status: BatchStatusPublished, EffectiveDate: "2026-06-23", SourceVersionsJSON: "[]", ContentSHA256: strings.Repeat("d", 64)}
 	if err := db.Create(&security).Error; err != nil {
 		t.Fatal(err)
@@ -390,17 +394,34 @@ func TestCoordinatorInactiveProviderDoesNotLoadOrReplacePrescreen(t *testing.T) 
 	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: old.BatchID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&ProviderHealth{Provider: "inactive", Status: ProviderStatusValidation}).Error; err != nil {
+	if err := db.Create(&SecurityBatchIdentity{BatchID: security.BatchID, SecurityID: securityRow.ID, CIK: securityRow.CIK, Ticker: "VAL", ProviderTicker: "VAL", Exchange: "Nasdaq", MappingStatus: MappingStatusCurrent}).Error; err != nil {
 		t.Fatal(err)
 	}
-	provider := &fakePriceProvider{name: "inactive"}
+	if err := db.Create(&ClassificationSnapshot{BatchID: security.BatchID, SecurityID: securityRow.ID, Included: true, Status: EffectiveStatusIncluded}).Error; err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakePriceProvider{
+		name:    "new-provider",
+		records: []PriceRecord{{Symbol: "VAL", Source: "new-provider", TradeDate: now, CloseMicros: 1_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "new-provider", SourceVersion: "pv1", SHA256: strings.Repeat("a", 64), EffectiveDate: now, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
+	}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }}
+	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
+		return ProviderDayResult{TradeDate: result.EffectiveDate, coveragePct: 100, timely: true, validationOK: true, goldSHA256: strings.Repeat("b", 64)}, nil
+	}
 	batch, err := c.SyncMarketPrices(context.Background())
 	if err == nil || batch.Status != BatchStatusFailed {
 		t.Fatalf("batch=%#v err=%v", batch, err)
 	}
-	if provider.called != 0 {
+	if provider.called != 1 {
 		t.Fatalf("provider called %d times", provider.called)
+	}
+	var health ProviderHealth
+	if err := db.First(&health, "provider = ?", "new-provider").Error; err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != ProviderStatusValidation || health.QualifiedTradingDays != 1 || health.LastTradeDate != "2026-06-23" {
+		t.Fatalf("health=%#v", health)
 	}
 	var pointer CurrentBatchPointer
 	if err := db.First(&pointer, "kind = ?", BatchKindPrescreen).Error; err != nil {

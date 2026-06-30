@@ -227,20 +227,25 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	}
 	var health ProviderHealth
 	if err := c.DB.WithContext(ctx).First(&health, "provider = ?", providerName).Error; err != nil {
-		cause := fmt.Errorf("load provider health: %w", err)
-		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "health-missing", now, cause)
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			cause := fmt.Errorf("load provider health: %w", err)
+			return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "health-load-failed", now, cause)
+		}
+		health = ProviderHealth{Provider: providerName, Status: ProviderStatusValidation}
 	}
-	if health.Status != ProviderStatusActive {
+	if health.Status == ProviderStatusFailed {
 		cause := fmt.Errorf("%s: %s", ReasonProviderInactive, health.Status)
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, health.Status, now, cause)
 	}
 	var window []providerWindowDay
-	if err := json.Unmarshal([]byte(health.WindowJSON), &window); err != nil {
-		cause := fmt.Errorf("decode active provider health: %w", err)
-		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "health-invalid", now, cause)
+	if strings.TrimSpace(health.WindowJSON) != "" {
+		if err := json.Unmarshal([]byte(health.WindowJSON), &window); err != nil {
+			cause := fmt.Errorf("decode provider health: %w", err)
+			return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "health-invalid", now, cause)
+		}
 	}
 	if err := validateProviderHealthWindow(ctx, c.Calendar, health, window); err != nil {
-		cause := fmt.Errorf("validate active provider health: %w", err)
+		cause := fmt.Errorf("validate provider health: %w", err)
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "calendar-or-health-invalid", now, cause)
 	}
 	trading, calendarErr := c.Calendar.IsTradingDate(ctx, date)
