@@ -145,7 +145,7 @@ func ParseSECFinancialFactsZIP(z *zip.Reader, allowed map[string]struct{}, limit
 					for _, x := range facts {
 						fact, err := financialFactFromCompanyFact(cik, namespace, conceptName, spec, x)
 						if err != nil {
-							return nil, err
+							continue
 						}
 						key := strings.Join([]string{fact.CIK, fact.Concept, fact.PeriodStart.Format(time.DateOnly), fact.PeriodEnd.Format(time.DateOnly), fact.Accession}, "|")
 						if old, ok := seen[key]; ok {
