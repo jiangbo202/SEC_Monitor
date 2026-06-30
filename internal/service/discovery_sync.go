@@ -27,9 +27,10 @@ type DiscoverySyncRunner interface {
 }
 
 type DiscoverySyncService struct {
-	db     *gorm.DB
-	cfg    config.DiscoveryConfig
-	runner DiscoverySyncRunner
+	db      *gorm.DB
+	cfg     config.DiscoveryConfig
+	configs *ConfigService
+	runner  DiscoverySyncRunner
 }
 
 type productionDiscoveryRunner struct {
@@ -55,6 +56,11 @@ func NewDiscoverySyncService(db *gorm.DB, cfg config.DiscoveryConfig) *Discovery
 
 func (s *DiscoverySyncService) WithRunner(runner DiscoverySyncRunner) *DiscoverySyncService {
 	s.runner = runner
+	return s
+}
+
+func (s *DiscoverySyncService) WithConfigService(configs *ConfigService) *DiscoverySyncService {
+	s.configs = configs
 	return s
 }
 
@@ -99,28 +105,36 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 }
 
 func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
-	timeout := time.Duration(s.cfg.TaskTimeoutMin) * time.Minute
+	cfg := s.cfg
+	if s.configs != nil {
+		applied, err := s.configs.ApplyDiscoveryConfig(context.Background(), cfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg = applied
+	}
+	timeout := time.Duration(cfg.TaskTimeoutMin) * time.Minute
 	if timeout <= 0 {
 		timeout = 60 * time.Minute
 	}
 	downloader := &discovery.Downloader{
 		Client:    &http.Client{Timeout: timeout},
-		CacheDir:  s.cfg.CacheDir,
+		CacheDir:  cfg.CacheDir,
 		MaxBytes:  8 << 30,
-		UserAgent: s.cfg.UserAgent,
+		UserAgent: cfg.UserAgent,
 	}
 	limits := discovery.ZIPParseLimits{MaxEntries: 1_000_000, MaxEntryBytes: 512 << 20, MaxTotalBytes: 64 << 30}
 	secBulk := discovery.SECBulkSource{
 		Downloader:      downloader,
-		TickerURL:       s.cfg.SECTickerExchangeURL,
-		SubmissionsURL:  s.cfg.SECSubmissionsURL,
-		CompanyFactsURL: s.cfg.SECCompanyFactsURL,
+		TickerURL:       cfg.SECTickerExchangeURL,
+		SubmissionsURL:  cfg.SECSubmissionsURL,
+		CompanyFactsURL: cfg.SECCompanyFactsURL,
 		Limits:          limits,
 	}
 	nasdaq := discovery.NasdaqDirectorySource{
 		Downloader: downloader,
-		ListedURL:  s.cfg.NasdaqListedURL,
-		OtherURL:   s.cfg.NasdaqOtherListedURL,
+		ListedURL:  cfg.NasdaqListedURL,
+		OtherURL:   cfg.NasdaqOtherListedURL,
 	}
 	metadata := discovery.CompositeSecurityMetadataSource{
 		Nasdaq:           nasdaq,
@@ -145,7 +159,7 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 		Calendar: calendar,
 		Clock:    time.Now,
 	}
-	prices, marketErr, err := s.buildPriceProvider(downloader, calendar)
+	prices, marketErr, err := s.buildPriceProvider(cfg, downloader, calendar)
 	if err != nil {
 		return nil, err
 	}
@@ -170,17 +184,17 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 	return productionDiscoveryRunner{security: security, market: market}, nil
 }
 
-func (s *DiscoverySyncService) buildPriceProvider(downloader *discovery.Downloader, calendar discovery.MarketCalendar) (discovery.PriceProvider, error, error) {
-	provider := strings.ToLower(strings.TrimSpace(s.cfg.PriceProvider))
-	if provider == "" && strings.TrimSpace(s.cfg.TiingoAPIToken) != "" {
+func (s *DiscoverySyncService) buildPriceProvider(cfg config.DiscoveryConfig, downloader *discovery.Downloader, calendar discovery.MarketCalendar) (discovery.PriceProvider, error, error) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.PriceProvider))
+	if provider == "" && strings.TrimSpace(cfg.TiingoAPIToken) != "" {
 		provider = "tiingo"
 	}
 	switch provider {
 	case "", "stooq":
-		if len(s.cfg.StooqURLs) == 0 {
+		if len(cfg.StooqURLs) == 0 {
 			return nil, errors.New("SMALL_CAP_STOOQ_URLS is required for market price sync"), nil
 		}
-		priceURL := strings.TrimSpace(s.cfg.StooqURLs[0])
+		priceURL := strings.TrimSpace(cfg.StooqURLs[0])
 		format := discovery.PriceFormatStooq
 		if strings.HasSuffix(strings.ToLower(priceURL), ".zip") {
 			format = discovery.PriceFormatStooqZIP
@@ -195,18 +209,18 @@ func (s *DiscoverySyncService) buildPriceProvider(downloader *discovery.Download
 		})
 		return prices, nil, err
 	case "tiingo":
-		if strings.TrimSpace(s.cfg.TiingoAPIToken) == "" {
+		if strings.TrimSpace(cfg.TiingoAPIToken) == "" {
 			return nil, nil, errors.New("TIINGO_API_TOKEN is required when SMALL_CAP_PRICE_PROVIDER=tiingo")
 		}
 		prices, err := discovery.NewTiingoPriceProvider(discovery.TiingoPriceProviderOptions{
-			Token:    s.cfg.TiingoAPIToken,
-			BaseURL:  s.cfg.TiingoBaseURL,
+			Token:    cfg.TiingoAPIToken,
+			BaseURL:  cfg.TiingoBaseURL,
 			Calendar: calendar,
 			Now:      time.Now,
 		})
 		return prices, nil, err
 	default:
-		return nil, nil, fmt.Errorf("unsupported SMALL_CAP_PRICE_PROVIDER %q", s.cfg.PriceProvider)
+		return nil, nil, fmt.Errorf("unsupported SMALL_CAP_PRICE_PROVIDER %q", cfg.PriceProvider)
 	}
 }
 

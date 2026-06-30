@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"sec_monitor/internal/config"
 	"sec_monitor/internal/model"
 
 	"gorm.io/gorm"
@@ -71,6 +72,8 @@ type SocialHeatSettings struct {
 	BaselineDays  int
 }
 
+const maskedSecretMarker = "******"
+
 func NewConfigService(db *gorm.DB, audit *AuditService) *ConfigService {
 	return &ConfigService{db: db, audit: audit}
 }
@@ -103,6 +106,9 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.send_time", Value: "09:30", ValueType: "string", Category: "candidate_notification"},
 		{Key: "candidate_notification.max_per_grade", Value: "5", ValueType: "int", Category: "candidate_notification"},
+		{Key: "discovery.price_provider", Value: "", ValueType: "string", Category: "discovery"},
+		{Key: "discovery.tiingo_api_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.tiingo_base_url", Value: "https://api.tiingo.com", ValueType: "string", Category: "discovery"},
 		{Key: "social_heat.enabled", Value: "false", ValueType: "bool", Category: "social_heat"},
 		{Key: "social_heat.provider", Value: "manual", ValueType: "string", Category: "social_heat"},
 		{Key: "social_heat.lookback_hours", Value: "24", ValueType: "int", Category: "social_heat"},
@@ -143,8 +149,19 @@ func (s *ConfigService) UpsertMissing(ctx context.Context, inputs []ConfigInput,
 func (s *ConfigService) UpsertMany(ctx context.Context, inputs []ConfigInput, operator string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, input := range inputs {
+			key := strings.TrimSpace(input.Key)
+			if input.Encrypted && IsMaskedSecret(input.Value) {
+				var existing model.SystemConfig
+				err := tx.Where("config_key = ?", key).First(&existing).Error
+				if err == nil {
+					continue
+				}
+				if err != gorm.ErrRecordNotFound {
+					return err
+				}
+			}
 			cfg := model.SystemConfig{
-				ConfigKey:   strings.TrimSpace(input.Key),
+				ConfigKey:   key,
 				ConfigValue: input.Value,
 				ValueType:   valueOrDefault(input.ValueType, "string"),
 				Category:    strings.TrimSpace(input.Category),
@@ -408,18 +425,40 @@ func (s *ConfigService) SocialHeatSettings(ctx context.Context) (SocialHeatSetti
 	}, nil
 }
 
+func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.DiscoveryConfig) (config.DiscoveryConfig, error) {
+	if s == nil {
+		return cfg, nil
+	}
+	if provider, ok, err := s.GetValue(ctx, "discovery.price_provider"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(provider) != "" {
+		cfg.PriceProvider = strings.ToLower(strings.TrimSpace(provider))
+	}
+	if token, ok, err := s.GetValue(ctx, "discovery.tiingo_api_token"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(token) != "" && !IsMaskedSecret(token) {
+		cfg.TiingoAPIToken = strings.TrimSpace(token)
+	}
+	if baseURL, ok, err := s.GetValue(ctx, "discovery.tiingo_base_url"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(baseURL) != "" {
+		cfg.TiingoBaseURL = strings.TrimSpace(baseURL)
+	}
+	return cfg, nil
+}
+
 func maskSecret(value string) string {
 	if value == "" {
 		return ""
 	}
 	if len(value) <= 6 {
-		return "******"
+		return maskedSecretMarker
 	}
-	return value[:3] + "******" + value[len(value)-3:]
+	return value[:3] + maskedSecretMarker + value[len(value)-3:]
 }
 
 func IsMaskedSecret(value string) bool {
-	return strings.Contains(value, "******")
+	return strings.Contains(value, maskedSecretMarker)
 }
 
 func valueOrDefault(value string, fallback string) string {

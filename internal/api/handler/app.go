@@ -165,7 +165,7 @@ func (h *AppHandler) discoverySyncService() *service.DiscoverySyncService {
 	if h.DiscoverySync != nil {
 		return h.DiscoverySync
 	}
-	return service.NewDiscoverySyncService(h.DiscoveryDB, h.Runtime.Discovery)
+	return service.NewDiscoverySyncService(h.DiscoveryDB, h.Runtime.Discovery).WithConfigService(h.Configs)
 }
 
 func (h *AppHandler) LookupTicker(c *gin.Context) {

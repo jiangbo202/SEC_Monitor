@@ -20,6 +20,16 @@ The local control script reads environment variables before starting services.
 | `SMALL_CAP_TIINGO_BASE_URL` | `https://api.tiingo.com` | Tiingo API base URL. |
 | `SMALL_CAP_STOOQ_URLS` | empty | Comma-separated Stooq CSV/ZIP URLs when using the Stooq provider. |
 
+The same small-cap data-source settings can be managed from the System Settings page:
+
+| UI Field | Stored key | Runtime equivalent |
+|---|---|---|
+| Price Provider | `discovery.price_provider` | `SMALL_CAP_PRICE_PROVIDER` |
+| Tiingo API Token | `discovery.tiingo_api_token` | `TIINGO_API_TOKEN` |
+| Tiingo Base URL | `discovery.tiingo_base_url` | `SMALL_CAP_TIINGO_BASE_URL` |
+
+Stored system settings take precedence over environment variables. The Tiingo token is returned to the browser only as a masked value. Saving the masked value keeps the existing token; clearing the field removes it.
+
 Backend config also accepts:
 
 | Variable | Default |

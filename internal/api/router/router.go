@@ -48,7 +48,7 @@ func New(deps Dependencies) *gin.Engine {
 	}
 	notificationBatches := service.NewNotificationBatchService(deps.DB, notifier, configs)
 	candidateNotifications := service.NewCandidateNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs)
-	discoverySync := service.NewDiscoverySyncService(deps.DiscoveryDB, deps.Config.Discovery)
+	discoverySync := service.NewDiscoverySyncService(deps.DiscoveryDB, deps.Config.Discovery).WithConfigService(configs)
 	filings := service.NewFilingService(deps.DB, secClient, notifier, configs)
 	currentFilingsClient, ok := secClient.(sec.CurrentFilingsClient)
 	if !ok {

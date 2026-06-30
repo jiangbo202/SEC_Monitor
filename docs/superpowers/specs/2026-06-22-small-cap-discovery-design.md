@@ -47,6 +47,7 @@
 - 候选生成依赖日线价格源计算市值预筛选，必须配置一个真实价格 Provider，不允许降级为模拟价格：
   - Stooq 批量模式：配置 `SMALL_CAP_PRICE_PROVIDER=stooq` 或留空，并设置 `SMALL_CAP_STOOQ_URLS` 指向可下载的 Stooq 格式 CSV 或 ZIP。
   - Tiingo API 模式：配置 `SMALL_CAP_PRICE_PROVIDER=tiingo` 与 `TIINGO_API_TOKEN`；`SMALL_CAP_TIINGO_BASE_URL` 默认 `https://api.tiingo.com`。如果只设置 `TIINGO_API_TOKEN` 且未指定价格 Provider，系统自动使用 Tiingo。
+  - 页面配置：系统配置页提供“小盘候选数据源”卡片，保存到 `discovery.price_provider`、`discovery.tiingo_api_token`、`discovery.tiingo_base_url`；页面配置优先于环境变量，Token 返回浏览器时必须脱敏。
   - 公开站点或 API 如果返回鉴权失败、浏览器验证、404、限流或非价格内容，系统必须失败或记录缺失覆盖率，不允许生成假的候选。
 - `POST /api/discovery/candidates/refresh` 与 `go run ./cmd/discovery-sync` 的返回状态：
   - `published`：证券基础同步和行情候选生成均完成，当前候选批次已发布。

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"sec_monitor/internal/config"
+	"sec_monitor/internal/database"
 	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/service"
 
@@ -31,9 +32,11 @@ func TestRunPrintsDiscoverySyncResult(t *testing.T) {
 	}
 	var out bytes.Buffer
 	err = run(context.Background(), config.Config{Discovery: config.DiscoveryConfig{Database: config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"}}}, &out, syncDependencies{
+		openMainDatabase:      func(config.DatabaseConfig) (*gorm.DB, error) { return db, nil },
+		migrateMainDB:         database.Migrate,
 		openDiscoveryDatabase: func(config.DatabaseConfig) (*gorm.DB, error) { return db, nil },
 		migrateDiscoveryDB:    discovery.Migrate,
-		newSyncService: func(*gorm.DB, config.DiscoveryConfig) syncService {
+		newSyncService: func(*gorm.DB, config.DiscoveryConfig, *service.ConfigService) syncService {
 			return fakeSyncService{result: service.DiscoverySyncResult{Status: service.DiscoverySyncStatusPublished, BatchID: "market"}}
 		},
 	})
@@ -52,9 +55,11 @@ func TestRunReturnsMarketFailureAfterPrintingResult(t *testing.T) {
 	}
 	var out bytes.Buffer
 	err = run(context.Background(), config.Config{Discovery: config.DiscoveryConfig{Database: config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"}}}, &out, syncDependencies{
+		openMainDatabase:      func(config.DatabaseConfig) (*gorm.DB, error) { return db, nil },
+		migrateMainDB:         database.Migrate,
 		openDiscoveryDatabase: func(config.DatabaseConfig) (*gorm.DB, error) { return db, nil },
 		migrateDiscoveryDB:    discovery.Migrate,
-		newSyncService: func(*gorm.DB, config.DiscoveryConfig) syncService {
+		newSyncService: func(*gorm.DB, config.DiscoveryConfig, *service.ConfigService) syncService {
 			return fakeSyncService{
 				result: service.DiscoverySyncResult{Status: service.DiscoverySyncStatusMarketFailed, SecurityBatchID: "security"},
 				err:    service.ErrDiscoveryMarketSync,

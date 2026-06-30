@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"sec_monitor/internal/config"
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/telegram"
@@ -396,6 +397,25 @@ func TestConfigServicePersistsAndMasksTelegramToken(t *testing.T) {
 	}
 }
 
+func TestConfigServicePreservesMaskedEncryptedValues(t *testing.T) {
+	db := testDB(t)
+	svc := NewConfigService(db, NewAuditService(db))
+	if err := svc.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "discovery.tiingo_api_token", Value: "real-token", ValueType: "string", Category: "discovery", Encrypted: true},
+	}, "tester"); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+	if err := svc.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "discovery.tiingo_api_token", Value: "rea******ken", ValueType: "string", Category: "discovery", Encrypted: true},
+	}, "tester"); err != nil {
+		t.Fatalf("update masked token: %v", err)
+	}
+	got, ok, err := svc.GetValue(context.Background(), "discovery.tiingo_api_token")
+	if err != nil || !ok || got != "real-token" {
+		t.Fatalf("token = %q ok=%v err=%v, want original real-token", got, ok, err)
+	}
+}
+
 func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 	tests := []struct {
 		name string
@@ -499,6 +519,26 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			}
 			if len(configs) != 5 {
 				t.Fatalf("candidate notification defaults = %d, want 5", len(configs))
+			}
+		}},
+		{name: "ensure discovery datasource defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults: %v", err)
+			}
+			cfg := config.DiscoveryConfig{PriceProvider: "stooq", TiingoAPIToken: "env-token", TiingoBaseURL: "https://env.example.test"}
+			applied, err := svc.ApplyDiscoveryConfig(context.Background(), cfg)
+			if err != nil {
+				t.Fatalf("ApplyDiscoveryConfig: %v", err)
+			}
+			if applied.PriceProvider != "stooq" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" {
+				t.Fatalf("applied defaults = %+v", applied)
+			}
+			configs, err := svc.List(context.Background(), "discovery", true)
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(configs) != 3 {
+				t.Fatalf("discovery defaults = %d, want 3", len(configs))
 			}
 		}},
 	}

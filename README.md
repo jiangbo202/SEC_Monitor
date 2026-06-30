@@ -233,7 +233,7 @@ TIINGO_API_TOKEN="your-tiingo-token"
 ```
 
 SEC 要求请求方设置明确的 User-Agent。正式使用前请设置 `SEC_USER_AGENT`。
-小盘候选的 Tiingo token 通过环境变量 `TIINGO_API_TOKEN` 注入，不要写入仓库文件或提交到 git。配置后可用 `go run ./cmd/discovery-sync` 触发真实数据同步。
+小盘候选的 Tiingo token 可以在页面“系统配置 / 小盘候选数据源”中填写，也可以通过环境变量 `TIINGO_API_TOKEN` 注入；页面配置优先于环境变量。不要把真实 token 写入仓库文件或提交到 git。配置后可用 `go run ./cmd/discovery-sync` 触发真实数据同步。
 
 ## 开发
 

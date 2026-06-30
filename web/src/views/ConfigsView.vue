@@ -85,6 +85,35 @@
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
+            <span>{{ t('pages.configs.discoveryDatasource') }}</span>
+            <el-tag effect="plain">{{ discoveryDatasourceSummary }}</el-tag>
+          </div>
+        </template>
+        <el-form :model="discoveryForm" label-width="150px">
+          <el-form-item :label="t('pages.configs.discoveryPriceProvider')">
+            <el-select v-model="discoveryForm.price_provider" style="width: 220px">
+              <el-option :label="t('pages.configs.discoveryProviderAuto')" value="" />
+              <el-option label="Tiingo" value="tiingo" />
+              <el-option label="Stooq" value="stooq" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.tiingoApiToken')">
+            <el-input
+              v-model="discoveryForm.tiingo_api_token"
+              show-password
+              :placeholder="t('pages.configs.tiingoApiTokenPlaceholder')"
+            />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.tiingoBaseUrl')">
+            <el-input v-model="discoveryForm.tiingo_base_url" placeholder="https://api.tiingo.com" />
+          </el-form-item>
+        </el-form>
+        <el-alert :title="t('pages.configs.discoveryDatasourceHint')" type="info" :closable="false" show-icon />
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
             <span>{{ t('pages.configs.ipoRadar') }}</span>
           </div>
         </template>
@@ -237,6 +266,11 @@ const candidateNotificationForm = reactive({
   send_time: '09:30',
   max_per_grade: 5
 })
+const discoveryForm = reactive({
+  price_provider: '',
+  tiingo_api_token: '',
+  tiingo_base_url: 'https://api.tiingo.com'
+})
 const ipoForm = reactive({
   enabled: true,
   form_types: 'S-1,S-1/A,F-1,F-1/A,S-1MEF',
@@ -293,6 +327,12 @@ const candidateNotificationSummary = computed(() => {
   })
 })
 
+const discoveryDatasourceSummary = computed(() => {
+  if (discoveryForm.price_provider === 'tiingo') return 'Tiingo'
+  if (discoveryForm.price_provider === 'stooq') return 'Stooq'
+  return t('pages.configs.discoveryProviderAuto')
+})
+
 const systemRiskHints = computed(() => {
   const hints: Array<{ title: string, description: string, type: 'warning' | 'info' }> = []
   if (systemForm.data_retention_days < 14) {
@@ -339,6 +379,9 @@ async function load() {
     candidateNotificationForm.notify_b = configValue(configs, 'candidate_notification.notify_b', 'false') === 'true'
     candidateNotificationForm.send_time = configValue(configs, 'candidate_notification.send_time', '09:30')
     candidateNotificationForm.max_per_grade = Number(configValue(configs, 'candidate_notification.max_per_grade', '5'))
+    discoveryForm.price_provider = configValue(configs, 'discovery.price_provider', '')
+    discoveryForm.tiingo_api_token = configValue(configs, 'discovery.tiingo_api_token', '')
+    discoveryForm.tiingo_base_url = configValue(configs, 'discovery.tiingo_base_url', 'https://api.tiingo.com')
     ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
     ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,S-1MEF')
     ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))
@@ -373,6 +416,9 @@ async function save() {
       { key: 'candidate_notification.notify_b', value: String(candidateNotificationForm.notify_b), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.send_time', value: candidateNotificationForm.send_time, value_type: 'string', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.max_per_grade', value: String(candidateNotificationForm.max_per_grade), value_type: 'int', category: 'candidate_notification', encrypted: false },
+      { key: 'discovery.price_provider', value: discoveryForm.price_provider, value_type: 'string', category: 'discovery', encrypted: false },
+      { key: 'discovery.tiingo_api_token', value: discoveryForm.tiingo_api_token, value_type: 'string', category: 'discovery', encrypted: true },
+      { key: 'discovery.tiingo_base_url', value: discoveryForm.tiingo_base_url, value_type: 'string', category: 'discovery', encrypted: false },
       { key: 'ipo.enabled', value: String(ipoForm.enabled), value_type: 'bool', category: 'ipo', encrypted: false },
       { key: 'ipo.form_types', value: ipoForm.form_types, value_type: 'string', category: 'ipo', encrypted: false },
       { key: 'ipo.lookback_days', value: String(ipoForm.lookback_days), value_type: 'int', category: 'ipo', encrypted: false },

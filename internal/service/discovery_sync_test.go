@@ -89,6 +89,26 @@ func TestDiscoverySyncServiceBuildsTiingoRunnerFromToken(t *testing.T) {
 	}
 }
 
+func TestDiscoverySyncServiceUsesStoredDiscoveryConfig(t *testing.T) {
+	mainDB := testDB(t)
+	configs := NewConfigService(mainDB, NewAuditService(mainDB))
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "discovery.price_provider", Value: "tiingo", ValueType: "string", Category: "discovery"},
+		{Key: "discovery.tiingo_api_token", Value: "stored-token", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.tiingo_base_url", Value: "https://api.tiingo.com", ValueType: "string", Category: "discovery"},
+	}, "tester"); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	discoveryDB := testDiscoveryDB(t)
+	runner, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithConfigService(configs).buildRunner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.SyncMarketPrices(context.Background()); err == nil || strings.Contains(err.Error(), "SMALL_CAP_STOOQ_URLS") {
+		t.Fatalf("market err = %v, want stored tiingo config without stooq config error", err)
+	}
+}
+
 func TestDiscoverySyncServiceRejectsTiingoWithoutToken(t *testing.T) {
 	discoveryDB := testDiscoveryDB(t)
 	_, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{
