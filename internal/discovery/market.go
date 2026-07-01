@@ -71,19 +71,25 @@ type PriceProvider interface {
 	Load(ctx context.Context, expected []Listing) ([]PriceRecord, ProviderResult, error)
 }
 
+type DatedPriceProvider interface {
+	PriceProvider
+	LoadForDate(ctx context.Context, expected []Listing, effectiveDate string) ([]PriceRecord, ProviderResult, error)
+}
+
 type NamedPriceProvider interface {
 	PriceProvider
 	ProviderName() string
 }
 
 type PriceValidationOptions struct {
-	Provider      string
-	SourceVersion string
-	SourceURL     string
-	EffectiveDate time.Time
-	Now           time.Time
-	Calendar      MarketCalendar
-	Expected      []Listing
+	Provider                      string
+	SourceVersion                 string
+	SourceURL                     string
+	EffectiveDate                 time.Time
+	Now                           time.Time
+	Calendar                      MarketCalendar
+	Expected                      []Listing
+	AllowPreviousTradingDatePrice bool
 }
 
 type GoldValidationResult struct {
@@ -631,6 +637,14 @@ func validatePriceBatch(ctx context.Context, records []PriceRecord, options Pric
 		return ProviderResult{}, fmt.Errorf("effective date %s is not a trading date", effectiveText)
 	}
 	covered := make(map[string]struct{})
+	previousDate := ""
+	if options.AllowPreviousTradingDatePrice {
+		previous, previousErr := previousTradingDate(ctx, options.Calendar, effectiveDate)
+		if previousErr != nil {
+			return ProviderResult{}, fmt.Errorf("find previous trading date: %w", previousErr)
+		}
+		previousDate = previous.Format(time.DateOnly)
+	}
 	for _, record := range records {
 		date := record.TradeDate.Format(time.DateOnly)
 		isTrading, calendarErr := options.Calendar.IsTradingDate(ctx, date)
@@ -640,7 +654,7 @@ func validatePriceBatch(ctx context.Context, records []PriceRecord, options Pric
 		if !isTrading {
 			return ProviderResult{}, fmt.Errorf("trade date %s is not a trading date", date)
 		}
-		if date < effectiveText {
+		if date < effectiveText && (!options.AllowPreviousTradingDatePrice || date != previousDate) {
 			return ProviderResult{}, fmt.Errorf("stale trade date %s before effective date %s", date, effectiveText)
 		}
 		if date > effectiveText {
@@ -680,6 +694,20 @@ func validatePriceBatch(ctx context.Context, records []PriceRecord, options Pric
 	}, nil
 }
 
+func previousTradingDate(ctx context.Context, calendar MarketCalendar, before time.Time) (time.Time, error) {
+	for offset := 1; offset <= 14; offset++ {
+		candidate := before.AddDate(0, 0, -offset)
+		trading, err := calendar.IsTradingDate(ctx, candidate.Format(time.DateOnly))
+		if err != nil {
+			return time.Time{}, err
+		}
+		if trading {
+			return candidate, nil
+		}
+	}
+	return time.Time{}, errors.New("previous trading date not found")
+}
+
 func nextTradingDate(ctx context.Context, calendar MarketCalendar, after time.Time) (time.Time, error) {
 	for offset := 1; offset <= 14; offset++ {
 		candidate := after.AddDate(0, 0, offset)
@@ -709,7 +737,11 @@ func equalCSVHeader(got, want []string) bool {
 func LoadFrozenMarketGold(primary []PriceRecord, primaryProvider string, now time.Time) (GoldValidationResult, error) {
 	// primary is retained for source compatibility. Frozen audit evidence is
 	// intentionally self-contained and must not be joined to today's records.
-	return validateIndependentGoldCSV(bytes.NewReader(frozenMarketGoldCSV), primaryProvider, now)
+	gold, err := validateIndependentGoldCSV(bytes.NewReader(frozenMarketGoldCSV), primaryProvider, now)
+	if err != nil && strings.Contains(err.Error(), "primary provider does not match provider result") {
+		return gold, fmt.Errorf("%w: %v", ErrGoldEvidenceIncomplete, err)
+	}
+	return gold, err
 }
 
 func validateIndependentGoldCSV(input io.Reader, primaryProvider string, now time.Time) (GoldValidationResult, error) {

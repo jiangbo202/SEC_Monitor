@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -104,6 +106,35 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	return result, err
 }
 
+func (s *DiscoverySyncService) RunMarketOnly(ctx context.Context) (DiscoverySyncResult, error) {
+	if s == nil || s.db == nil {
+		return DiscoverySyncResult{}, errors.New("discovery sync service is not configured")
+	}
+	runner := s.runner
+	if runner == nil {
+		built, err := s.buildRunner()
+		if err != nil {
+			return DiscoverySyncResult{}, err
+		}
+		runner = built
+	}
+	marketBatch, err := runner.SyncMarketPrices(ctx)
+	result := DiscoverySyncResult{MarketBatch: marketBatch, MarketBatchID: marketBatch.BatchID, BatchID: marketBatch.BatchID}
+	if err != nil {
+		result.Status = DiscoverySyncStatusMarketFailed
+		result.Summary, _ = discovery.BuildCandidateSummary(ctx, s.db, 10)
+		result.Health, _ = discovery.BuildCandidateHealth(ctx, s.db)
+		return result, fmt.Errorf("%w: %v", ErrDiscoveryMarketSync, err)
+	}
+	result.Status = DiscoverySyncStatusPublished
+	result.Summary, err = discovery.BuildCandidateSummary(ctx, s.db, 10)
+	if err != nil {
+		return result, err
+	}
+	result.Health, err = discovery.BuildCandidateHealth(ctx, s.db)
+	return result, err
+}
+
 func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 	cfg := s.cfg
 	if s.configs != nil {
@@ -176,10 +207,11 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 			Downloader:   downloader,
 			LookbackDays: 180,
 		},
-		Events:   discovery.SECSubmissionsCapitalEventSource{Metadata: secBulk},
-		Prices:   prices,
-		Calendar: calendar,
-		Clock:    time.Now,
+		Events:       discovery.SECSubmissionsCapitalEventSource{Metadata: secBulk},
+		Prices:       prices,
+		Calendar:     calendar,
+		Clock:        time.Now,
+		ResearchMode: cfg.ResearchMode,
 	}
 	return productionDiscoveryRunner{security: security, market: market}, nil
 }
@@ -187,6 +219,9 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 func (s *DiscoverySyncService) buildPriceProvider(cfg config.DiscoveryConfig, downloader *discovery.Downloader, calendar discovery.MarketCalendar) (discovery.PriceProvider, error, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.PriceProvider))
 	if provider == "" && strings.TrimSpace(cfg.TiingoAPIToken) != "" {
+		provider = "tiingo"
+	}
+	if provider == "" && len(cfg.TiingoAPITokens) > 0 {
 		provider = "tiingo"
 	}
 	switch provider {
@@ -209,14 +244,32 @@ func (s *DiscoverySyncService) buildPriceProvider(cfg config.DiscoveryConfig, do
 		})
 		return prices, nil, err
 	case "tiingo":
-		if strings.TrimSpace(cfg.TiingoAPIToken) == "" {
-			return nil, nil, errors.New("TIINGO_API_TOKEN is required when SMALL_CAP_PRICE_PROVIDER=tiingo")
+		if strings.TrimSpace(cfg.TiingoAPIToken) == "" && len(cfg.TiingoAPITokens) == 0 {
+			return nil, nil, errors.New("TIINGO_API_TOKEN or TIINGO_API_TOKENS is required when SMALL_CAP_PRICE_PROVIDER=tiingo")
 		}
 		prices, err := discovery.NewTiingoPriceProvider(discovery.TiingoPriceProviderOptions{
-			Token:    cfg.TiingoAPIToken,
-			BaseURL:  cfg.TiingoBaseURL,
-			Calendar: calendar,
-			Now:      time.Now,
+			Token:           cfg.TiingoAPIToken,
+			Tokens:          cfg.TiingoAPITokens,
+			BaseURL:         cfg.TiingoBaseURL,
+			Calendar:        calendar,
+			CacheDir:        cfg.CacheDir,
+			Now:             time.Now,
+			Concurrency:     cfg.TiingoConcurrency,
+			RequestBudget:   cfg.TiingoRequestBudget,
+			RequestInterval: time.Duration(cfg.TiingoRequestIntervalMS) * time.Millisecond,
+			ProgressEvery:   100,
+			Progress: func(update discovery.TiingoProgress) {
+				reasons := ""
+				if len(update.SkipReasons) > 0 {
+					parts := make([]string, 0, len(update.SkipReasons))
+					for reason, count := range update.SkipReasons {
+						parts = append(parts, fmt.Sprintf("%s=%d", reason, count))
+					}
+					sort.Strings(parts)
+					reasons = " reasons=" + strings.Join(parts, ",")
+				}
+				log.Printf("tiingo price sync progress: processed=%d/%d records=%d skipped=%d elapsed=%s%s", update.Processed, update.Total, update.Records, update.Skipped, update.Elapsed.Round(time.Second), reasons)
+			},
 		})
 		return prices, nil, err
 	default:

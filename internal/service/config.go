@@ -108,7 +108,10 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "candidate_notification.max_per_grade", Value: "5", ValueType: "int", Category: "candidate_notification"},
 		{Key: "discovery.price_provider", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.tiingo_api_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.tiingo_api_tokens", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
 		{Key: "discovery.tiingo_base_url", Value: "https://api.tiingo.com", ValueType: "string", Category: "discovery"},
+		{Key: "discovery.tiingo_request_budget", Value: "45", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.research_mode", Value: "true", ValueType: "bool", Category: "discovery"},
 		{Key: "social_heat.enabled", Value: "false", ValueType: "bool", Category: "social_heat"},
 		{Key: "social_heat.provider", Value: "manual", ValueType: "string", Category: "social_heat"},
 		{Key: "social_heat.lookback_hours", Value: "24", ValueType: "int", Category: "social_heat"},
@@ -439,12 +442,43 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 	} else if ok && strings.TrimSpace(token) != "" && !IsMaskedSecret(token) {
 		cfg.TiingoAPIToken = strings.TrimSpace(token)
 	}
+	if tokens, ok, err := s.GetValue(ctx, "discovery.tiingo_api_tokens"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(tokens) != "" && !IsMaskedSecret(tokens) {
+		cfg.TiingoAPITokens = commaSeparatedConfigValues(tokens)
+	}
 	if baseURL, ok, err := s.GetValue(ctx, "discovery.tiingo_base_url"); err != nil {
 		return cfg, err
 	} else if ok && strings.TrimSpace(baseURL) != "" {
 		cfg.TiingoBaseURL = strings.TrimSpace(baseURL)
 	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.tiingo_request_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget))
+		if parseErr == nil && parsed >= 0 {
+			cfg.TiingoRequestBudget = parsed
+		}
+	}
+	if researchMode, ok, err := s.GetValue(ctx, "discovery.research_mode"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(researchMode) != "" {
+		parsed, parseErr := strconv.ParseBool(strings.TrimSpace(researchMode))
+		if parseErr == nil {
+			cfg.ResearchMode = parsed
+		}
+	}
 	return cfg, nil
+}
+
+func commaSeparatedConfigValues(value string) []string {
+	var values []string
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
 }
 
 func maskSecret(value string) string {

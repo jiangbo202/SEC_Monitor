@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"strings"
 
 	"sec_monitor/internal/config"
 	"sec_monitor/internal/database"
@@ -18,6 +20,7 @@ import (
 
 type syncService interface {
 	Run(context.Context) (service.DiscoverySyncResult, error)
+	RunMarketOnly(context.Context) (service.DiscoverySyncResult, error)
 }
 
 type syncDependencies struct {
@@ -63,7 +66,14 @@ func run(ctx context.Context, cfg config.Config, output io.Writer, deps syncDepe
 	if err := deps.migrateDiscoveryDB(db); err != nil {
 		return fmt.Errorf("migrate discovery database: %w", err)
 	}
-	result, err := deps.newSyncService(db, cfg.Discovery, configs).Run(ctx)
+	syncer := deps.newSyncService(db, cfg.Discovery, configs)
+	var result service.DiscoverySyncResult
+	phase := strings.ToLower(strings.TrimSpace(os.Getenv("DISCOVERY_SYNC_PHASE")))
+	if phase == "market" || phase == "market-only" {
+		result, err = syncer.RunMarketOnly(ctx)
+	} else {
+		result, err = syncer.Run(ctx)
+	}
 	encodeErr := json.NewEncoder(output).Encode(result)
 	if encodeErr != nil {
 		return fmt.Errorf("write discovery sync result: %w", encodeErr)

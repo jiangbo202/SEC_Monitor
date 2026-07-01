@@ -40,6 +40,7 @@ func (f fakeSECClient) LookupCIK(ctx context.Context, ticker string) (string, st
 }
 
 func (f fakeSECClient) ListFilings(ctx context.Context, query sec.FilingQuery) ([]sec.FilingResult, error) {
+	filingDate := time.Now().UTC().AddDate(0, 0, -1)
 	return []sec.FilingResult{{
 		FilingID:        "0000320193-26-000001",
 		AccessionNumber: "0000320193-26-000001",
@@ -47,7 +48,7 @@ func (f fakeSECClient) ListFilings(ctx context.Context, query sec.FilingQuery) (
 		CIK:             "0000320193",
 		CompanyName:     "Apple Inc.",
 		FilingType:      "8-K",
-		FilingDate:      time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		FilingDate:      filingDate,
 		FilingURL:       "https://sec.gov/aapl/8k",
 		Title:           "Current report",
 	}}, nil

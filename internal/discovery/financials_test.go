@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"archive/zip"
+	"math"
 	"testing"
 	"time"
 )
@@ -157,6 +158,25 @@ func TestBuildFinancialSummaryComputesRevenueGrowthAndRunway(t *testing.T) {
 	if summary.AvailableCashUSD != 30_000_000 {
 		t.Fatalf("available cash = %v, want 30000000", summary.AvailableCashUSD)
 	}
+}
+
+func TestBuildFinancialSummaryCapsRunwayWhenCompanyIsNotBurningCash(t *testing.T) {
+	facts := []FinancialFact{
+		financialInstant(FinancialMetricCash, "2026-03-31", 24_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2025-04-01", "2025-06-30", 3_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2025-07-01", "2025-09-30", 4_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2025-10-01", "2025-12-31", 5_000_000),
+		financialDuration(FinancialMetricOperatingCashFlow, "2026-01-01", "2026-03-31", 6_000_000),
+	}
+
+	summary := BuildFinancialSummary(facts, time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC))
+	if !summary.RunwayAvailable {
+		t.Fatalf("summary missing runway: %#v", summary)
+	}
+	if math.IsInf(summary.CashRunwayMonths, 0) || math.IsNaN(summary.CashRunwayMonths) {
+		t.Fatalf("cash runway must be JSON-safe finite value: %#v", summary)
+	}
+	assertFloatNear(t, summary.CashRunwayMonths, MaxCashRunwayMonths, 0.001)
 }
 
 func assertFinancialFact(t *testing.T, facts []FinancialFact, metric, concept string, amountUSD int64) {

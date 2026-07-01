@@ -60,6 +60,10 @@ type Coordinator struct {
 	Prices     PriceProvider
 	Calendar   MarketCalendar
 	Clock      func() time.Time
+	// ResearchMode allows publishing auditable research batches while a price
+	// provider is still in validation/degraded state. It is intentionally scoped
+	// to discovery output and does not promote the provider health state.
+	ResearchMode bool
 	// AfterStageChunk is a test/operations fault-injection hook. It runs only
 	// after a chunk transaction commits and before the next chunk begins.
 	AfterStageChunk      func(kind string, chunk int) error
@@ -222,8 +226,14 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	if err != nil {
 		return UniverseBatch{}, err
 	}
-	if securityBatch.EffectiveDate != date {
+	if c.ResearchMode {
+		date = securityBatch.EffectiveDate
+	} else if securityBatch.EffectiveDate != date {
 		return UniverseBatch{}, fmt.Errorf("security batch date %s does not match price run date %s", securityBatch.EffectiveDate, date)
+	}
+	effectiveAt, err := parseNYCivilDate(date)
+	if err != nil {
+		return UniverseBatch{}, err
 	}
 	var health ProviderHealth
 	if err := c.DB.WithContext(ctx).First(&health, "provider = ?", providerName).Error; err != nil {
@@ -257,11 +267,19 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "calendar-invalid", now, cause)
 	}
 
-	expected, err := c.currentIncludedListings(ctx, securityBatch.BatchID)
+	expected, err := c.currentPriceRequestListings(ctx, securityBatch.BatchID)
 	if err != nil {
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "security-stage-invalid", now, err)
 	}
-	records, result, err := c.Prices.Load(ctx, expected)
+	var records []PriceRecord
+	var result ProviderResult
+	if c.ResearchMode && len(expected) == 0 {
+		result, err = emptyResearchProviderResult(providerName, securityBatch, now)
+	} else if dated, ok := c.Prices.(DatedPriceProvider); ok {
+		records, result, err = dated.LoadForDate(ctx, expected, securityBatch.EffectiveDate)
+	} else {
+		records, result, err = c.Prices.Load(ctx, expected)
+	}
 	if err != nil {
 		cause := fmt.Errorf("load market prices: %w", err)
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "load-failed", now, cause)
@@ -277,7 +295,7 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 		}
 	}
 	priceVersion := SourceVersion{Source: "price:" + result.Provider, Version: result.SourceVersion, SHA256: result.SHA256, EffectiveAt: result.EffectiveDate}
-	securityVersion := SourceVersion{Source: BatchKindSecurity, Version: securityBatch.BatchID, SHA256: securityBatch.BatchID, EffectiveAt: now}
+	securityVersion := SourceVersion{Source: BatchKindSecurity, Version: securityBatch.BatchID, SHA256: securityBatch.BatchID, EffectiveAt: effectiveAt}
 	var inherited []SourceVersion
 	if err := json.Unmarshal([]byte(securityBatch.SourceVersionsJSON), &inherited); err != nil {
 		cause := fmt.Errorf("decode security batch source versions: %w", err)
@@ -304,13 +322,21 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	if evaluator == nil {
 		evaluator = EvaluateProviderDay
 	}
-	day, err := evaluator(result, records, now)
-	if err != nil {
-		return c.failBatch(ctx, batch, fmt.Errorf("evaluate provider day: %w", err))
+	var day ProviderDayResult
+	if c.ResearchMode && result.Expected == 0 {
+		day = emptyResearchProviderDay(result)
+	} else {
+		day, err = evaluator(result, records, now)
+		if err != nil {
+			return c.failBatch(ctx, batch, fmt.Errorf("evaluate provider day: %w", err))
+		}
 	}
-	nextHealth, err := AdvanceProviderHealth(ctx, c.Calendar, health, day)
-	if err != nil {
-		return c.failBatch(ctx, batch, fmt.Errorf("advance provider health: %w", err))
+	nextHealth := health
+	if !(c.ResearchMode && health.LastTradeDate == day.TradeDate.Format(time.DateOnly)) {
+		nextHealth, err = AdvanceProviderHealth(ctx, c.Calendar, health, day)
+		if err != nil {
+			return c.failBatch(ctx, batch, fmt.Errorf("advance provider health: %w", err))
+		}
 	}
 	nextHealth.Provider = providerName
 	nextHealth.UpdatedAt = now
@@ -322,7 +348,7 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	}); err != nil {
 		return c.failBatch(ctx, batch, fmt.Errorf("persist provider diagnostics: %w", err))
 	}
-	if nextHealth.Status != ProviderStatusActive || !providerWindowDayPasses(providerWindowDay{Date: day.TradeDate.Format(time.DateOnly), CoveragePct: day.coveragePct, Timely: day.timely, ValidationOK: day.validationOK, GoldReady: day.goldReady}) {
+	if !c.ResearchMode && (nextHealth.Status != ProviderStatusActive || !providerWindowDayPasses(providerWindowDay{Date: day.TradeDate.Format(time.DateOnly), CoveragePct: day.coveragePct, Timely: day.timely, ValidationOK: day.validationOK, GoldReady: day.goldReady})) {
 		return c.failBatch(ctx, batch, errors.New("current provider day failed publication gates"))
 	}
 	snapshots, stageErr := c.buildUniverseSnapshots(ctx, securityBatch.BatchID, batch.BatchID, records, result, now)
@@ -365,6 +391,58 @@ func nyCivilDate(value time.Time) (string, error) {
 	return value.In(location).Format(time.DateOnly), nil
 }
 
+func parseNYCivilDate(value string) (time.Time, error) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return time.Time{}, err
+	}
+	parsed, err := time.ParseInLocation(time.DateOnly, strings.TrimSpace(value), location)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid New York civil date %q", value)
+	}
+	return parsed, nil
+}
+
+func emptyResearchProviderResult(provider string, securityBatch UniverseBatch, now time.Time) (ProviderResult, error) {
+	date := strings.TrimSpace(securityBatch.EffectiveDate)
+	if date == "" {
+		var err error
+		date, err = nyCivilDate(now)
+		if err != nil {
+			return ProviderResult{}, err
+		}
+	}
+	effectiveDate, err := parseNYCivilDate(date)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	seed := provider + "\x00research-empty\x00" + securityBatch.BatchID + "\x00" + date
+	sha := sha256.Sum256([]byte(seed))
+	return ProviderResult{
+		Provider:           provider,
+		Status:             ProviderStatusValidation,
+		SourceVersion:      provider + ":research-empty:" + date,
+		SHA256:             hex.EncodeToString(sha[:]),
+		EffectiveDate:      effectiveDate,
+		Records:            0,
+		Expected:           0,
+		CoveragePct:        100,
+		Timely:             true,
+		ValidationErrorPct: 0,
+	}, nil
+}
+
+func emptyResearchProviderDay(result ProviderResult) ProviderDayResult {
+	sha := sha256.Sum256([]byte(result.Provider + "\x00research-empty\x00" + result.SourceVersion))
+	return ProviderDayResult{
+		TradeDate:    result.EffectiveDate,
+		coveragePct:  result.CoveragePct,
+		timely:       result.Timely,
+		validationOK: true,
+		goldSHA256:   hex.EncodeToString(sha[:]),
+	}
+}
+
 func normalizeSourceVersions(effectiveDate string, input ...SourceVersion) ([]SourceVersion, error) {
 	if len(input) == 0 {
 		return nil, errors.New("source versions are required")
@@ -402,9 +480,13 @@ func normalizeSourceVersions(effectiveDate string, input ...SourceVersion) ([]So
 
 func (c *Coordinator) recordPreflightFailure(ctx context.Context, kind, date string, securityBatch UniverseBatch, provider, state string, now time.Time, cause error) (UniverseBatch, error) {
 	sha := sha256.Sum256([]byte(provider + "\x00" + state))
+	effectiveAt, effectiveErr := parseNYCivilDate(date)
+	if effectiveErr != nil {
+		effectiveAt = now
+	}
 	versions, versionErr := normalizeSourceVersions(date,
-		SourceVersion{Source: BatchKindSecurity, Version: securityBatch.BatchID, SHA256: securityBatch.BatchID, EffectiveAt: now},
-		SourceVersion{Source: "provider-preflight:" + provider, Version: state, SHA256: hex.EncodeToString(sha[:]), EffectiveAt: now},
+		SourceVersion{Source: BatchKindSecurity, Version: securityBatch.BatchID, SHA256: securityBatch.BatchID, EffectiveAt: effectiveAt},
+		SourceVersion{Source: "provider-preflight:" + provider, Version: state, SHA256: hex.EncodeToString(sha[:]), EffectiveAt: effectiveAt},
 	)
 	if versionErr != nil {
 		return UniverseBatch{}, cause
@@ -483,7 +565,56 @@ func (c *Coordinator) createDraft(ctx context.Context, kind, date string, versio
 	if existing.Status == BatchStatusPublished {
 		return existing, true, nil
 	}
+	if existing.Status == BatchStatusDraft || existing.Status == BatchStatusFailed || existing.Status == BatchStatusPartial {
+		if err := c.resetRetryableBatch(ctx, batch); err != nil {
+			return UniverseBatch{}, false, err
+		}
+		retry, err := currentBatchByID(ctx, c.DB, id)
+		return retry, false, err
+	}
 	return existing, true, fmt.Errorf("batch %s already exists with status %s", id, existing.Status)
+}
+
+func (c *Coordinator) resetRetryableBatch(ctx context.Context, batch UniverseBatch) error {
+	return c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, model := range []any{
+			&UniverseSnapshot{},
+			&CandidateScoreSnapshot{},
+			&ProviderRun{},
+			&SocialHeatSnapshot{},
+			&CapitalRiskSnapshot{},
+			&FinancialMetricSnapshot{},
+			&BatchShareSelection{},
+			&ClassificationSnapshot{},
+			&SecurityBatchIdentity{},
+			&ListingIdentitySnapshot{},
+		} {
+			if err := cleanupBatchRows(tx, model, batch.BatchID); err != nil {
+				return err
+			}
+		}
+		result := tx.Model(&UniverseBatch{}).Where("batch_id = ?", batch.BatchID).Updates(map[string]any{
+			"kind":                    batch.Kind,
+			"status":                  BatchStatusDraft,
+			"effective_date":          batch.EffectiveDate,
+			"source_versions_json":    batch.SourceVersionsJSON,
+			"content_sha256":          batch.ContentSHA256,
+			"record_count":            0,
+			"universe_source_version": batch.UniverseSourceVersion,
+			"price_source_version":    batch.PriceSourceVersion,
+			"share_source_version":    batch.ShareSourceVersion,
+			"started_at":              batch.StartedAt,
+			"completed_at":            nil,
+			"error_message":           "",
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("reset retryable batch affected %d rows", result.RowsAffected)
+		}
+		return nil
+	})
 }
 
 func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, financials []FinancialFact, insiders []InsiderTransaction, events []CapitalEvent, overrides []ManualSecurityOverride) (string, error) {
@@ -1122,6 +1253,46 @@ func currentPublishedBatch(ctx context.Context, db *gorm.DB, kind string) (Unive
 func (c *Coordinator) currentIncludedListings(ctx context.Context, batchID string) ([]Listing, error) {
 	var identities []SecurityBatchIdentity
 	err := c.DB.WithContext(ctx).Table("security_batch_identities i").Select("i.*").Joins("JOIN classification_snapshots c ON c.security_id = i.security_id AND c.batch_id = i.batch_id").Where("i.batch_id = ? AND c.included = ? AND c.status = ? AND i.mapping_status = ?", batchID, true, EffectiveStatusIncluded, MappingStatusCurrent).Order("i.ticker").Find(&identities).Error
+	rows := make([]Listing, len(identities))
+	for i, identity := range identities {
+		rows[i] = Listing{SecurityID: identity.SecurityID, Ticker: identity.Ticker, ProviderTicker: identity.ProviderTicker, Exchange: identity.Exchange, MappingStatus: identity.MappingStatus}
+	}
+	return rows, err
+}
+
+func (c *Coordinator) currentPriceRequestListings(ctx context.Context, batchID string) ([]Listing, error) {
+	if !c.ResearchMode {
+		return c.currentIncludedListings(ctx, batchID)
+	}
+	rows, err := c.currentResearchPriceListings(ctx, batchID)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) > 0 {
+		return rows, nil
+	}
+	var metricCount int64
+	if err := c.DB.WithContext(ctx).Model(&FinancialMetricSnapshot{}).Where("batch_id = ?", batchID).Count(&metricCount).Error; err != nil {
+		return nil, err
+	}
+	if metricCount == 0 {
+		return c.currentIncludedListings(ctx, batchID)
+	}
+	return rows, nil
+}
+
+func (c *Coordinator) currentResearchPriceListings(ctx context.Context, batchID string) ([]Listing, error) {
+	var identities []SecurityBatchIdentity
+	err := c.DB.WithContext(ctx).
+		Table("security_batch_identities i").
+		Select("i.*").
+		Joins("JOIN classification_snapshots c ON c.security_id = i.security_id AND c.batch_id = i.batch_id").
+		Joins("JOIN financial_metric_snapshots f ON f.security_id = i.security_id AND f.batch_id = i.batch_id").
+		Where("i.batch_id = ? AND c.included = ? AND c.status = ? AND i.mapping_status = ?", batchID, true, EffectiveStatusIncluded, MappingStatusCurrent).
+		Where("f.revenue_growth_available = ? AND (f.quarterly_revenue_yo_y_pct > ? OR f.annual_revenue_yo_y_pct > ?)", true, 20.0, 20.0).
+		Where("NOT EXISTS (SELECT 1 FROM capital_risk_snapshots r WHERE r.batch_id = i.batch_id AND r.security_id = i.security_id AND r.active = ? AND r.blocks_b = ?)", true, true).
+		Order("i.ticker").
+		Find(&identities).Error
 	rows := make([]Listing, len(identities))
 	for i, identity := range identities {
 		rows[i] = Listing{SecurityID: identity.SecurityID, Ticker: identity.Ticker, ProviderTicker: identity.ProviderTicker, Exchange: identity.Exchange, MappingStatus: identity.MappingStatus}

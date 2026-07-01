@@ -525,20 +525,20 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err := svc.EnsureDefaults(context.Background()); err != nil {
 				t.Fatalf("EnsureDefaults: %v", err)
 			}
-			cfg := config.DiscoveryConfig{PriceProvider: "stooq", TiingoAPIToken: "env-token", TiingoBaseURL: "https://env.example.test"}
+			cfg := config.DiscoveryConfig{PriceProvider: "stooq", TiingoAPIToken: "env-token", TiingoBaseURL: "https://env.example.test", TiingoRequestBudget: 10, ResearchMode: false}
 			applied, err := svc.ApplyDiscoveryConfig(context.Background(), cfg)
 			if err != nil {
 				t.Fatalf("ApplyDiscoveryConfig: %v", err)
 			}
-			if applied.PriceProvider != "stooq" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" {
+			if applied.PriceProvider != "stooq" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || !applied.ResearchMode {
 				t.Fatalf("applied defaults = %+v", applied)
 			}
 			configs, err := svc.List(context.Background(), "discovery", true)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 3 {
-				t.Fatalf("discovery defaults = %d, want 3", len(configs))
+			if len(configs) != 6 {
+				t.Fatalf("discovery defaults = %d, want 6", len(configs))
 			}
 		}},
 	}

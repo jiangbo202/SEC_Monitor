@@ -25,6 +25,7 @@ const (
 	FinancialMetricCostOfRevenue        = "cost_of_revenue"
 	FinancialMetricNetIncomeCommon      = "net_income_common"
 	FinancialMetricDebtCurrent          = "debt_current"
+	MaxCashRunwayMonths                 = 999.0
 )
 
 type FinancialFact struct {
@@ -259,7 +260,7 @@ func BuildFinancialSummary(facts []FinancialFact, asOf time.Time) FinancialSumma
 		}
 		conservativeBurn := math.Max(out.CFOBurnMonthlyUSD, out.FCFBurnMonthlyUSD)
 		if conservativeBurn == 0 {
-			out.CashRunwayMonths = math.Inf(1)
+			out.CashRunwayMonths = MaxCashRunwayMonths
 			out.RunwayAvailable = true
 		} else if out.AvailableCashUSD > 0 {
 			out.CashRunwayMonths = out.AvailableCashUSD / conservativeBurn

@@ -20,7 +20,10 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 		"SMALL_CAP_PRICE_PROVIDER",
 		"SMALL_CAP_STOOQ_URLS",
 		"TIINGO_API_TOKEN",
+		"TIINGO_API_TOKENS",
 		"SMALL_CAP_TIINGO_BASE_URL",
+		"SMALL_CAP_TIINGO_REQUEST_BUDGET",
+		"SMALL_CAP_RESEARCH_MODE",
 		"SMALL_CAP_TASK_TIMEOUT_MINUTES",
 	} {
 		t.Setenv(key, "")
@@ -60,8 +63,17 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 	if cfg.Discovery.TiingoAPIToken != "" {
 		t.Fatalf("tiingo token should be empty")
 	}
+	if cfg.Discovery.TiingoAPITokens != nil {
+		t.Fatalf("tiingo tokens should be empty")
+	}
 	if cfg.Discovery.TiingoBaseURL != "https://api.tiingo.com" {
 		t.Fatalf("tiingo base url = %q", cfg.Discovery.TiingoBaseURL)
+	}
+	if cfg.Discovery.TiingoRequestBudget != 45 {
+		t.Fatalf("tiingo request budget = %d", cfg.Discovery.TiingoRequestBudget)
+	}
+	if !cfg.Discovery.ResearchMode {
+		t.Fatalf("research mode should default to true")
 	}
 	if cfg.Discovery.TaskTimeoutMin != 60 {
 		t.Fatalf("task timeout = %d", cfg.Discovery.TaskTimeoutMin)
@@ -89,7 +101,12 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	t.Setenv("SMALL_CAP_PRICE_PROVIDER", "tiingo")
 	t.Setenv("SMALL_CAP_STOOQ_URLS", " https://example.test/a , ,https://example.test/b  ")
 	t.Setenv("TIINGO_API_TOKEN", "test-token")
+	t.Setenv("TIINGO_API_TOKENS", " token-a, token-b ")
 	t.Setenv("SMALL_CAP_TIINGO_BASE_URL", "https://tiingo.example.test")
+	t.Setenv("SMALL_CAP_TIINGO_CONCURRENCY", "4")
+	t.Setenv("SMALL_CAP_TIINGO_REQUEST_BUDGET", "40")
+	t.Setenv("SMALL_CAP_TIINGO_REQUEST_INTERVAL_MS", "250")
+	t.Setenv("SMALL_CAP_RESEARCH_MODE", "false")
 	t.Setenv("SMALL_CAP_TASK_TIMEOUT_MINUTES", "15")
 
 	cfg := Load().Discovery
@@ -109,6 +126,21 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	}
 	if cfg.PriceProvider != "tiingo" || cfg.TiingoAPIToken != "test-token" || cfg.TiingoBaseURL != "https://tiingo.example.test" {
 		t.Fatalf("tiingo config = provider:%q token:%q base:%q", cfg.PriceProvider, cfg.TiingoAPIToken, cfg.TiingoBaseURL)
+	}
+	if !reflect.DeepEqual(cfg.TiingoAPITokens, []string{"token-a", "token-b"}) {
+		t.Fatalf("tiingo tokens = %#v", cfg.TiingoAPITokens)
+	}
+	if cfg.TiingoConcurrency != 4 {
+		t.Fatalf("tiingo concurrency = %d", cfg.TiingoConcurrency)
+	}
+	if cfg.TiingoRequestBudget != 40 {
+		t.Fatalf("tiingo request budget = %d", cfg.TiingoRequestBudget)
+	}
+	if cfg.TiingoRequestIntervalMS != 250 {
+		t.Fatalf("tiingo request interval = %d", cfg.TiingoRequestIntervalMS)
+	}
+	if cfg.ResearchMode {
+		t.Fatalf("research mode should be disabled by override")
 	}
 	if cfg.TaskTimeoutMin != 15 {
 		t.Fatalf("task timeout = %d", cfg.TaskTimeoutMin)

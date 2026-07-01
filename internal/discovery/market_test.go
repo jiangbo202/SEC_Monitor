@@ -288,6 +288,14 @@ func TestPriceValidationRequiresIndependentGoldProvenance(t *testing.T) {
 	}
 }
 
+func TestPriceValidationTreatsFrozenGoldProviderMismatchAsIncomplete(t *testing.T) {
+	primary := []PriceRecord{{Symbol: "BRK.B", TradeDate: civilDate(t, "2026-06-18"), CloseMicros: 500_123_456, Source: "tiingo"}}
+	_, err := LoadFrozenMarketGold(primary, "tiingo", time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC))
+	if !errors.Is(err, ErrGoldEvidenceIncomplete) {
+		t.Fatalf("err = %v, want ErrGoldEvidenceIncomplete", err)
+	}
+}
+
 func TestProviderStateTransitions(t *testing.T) {
 	calendar := &stubMarketCalendar{}
 	state := activatedProviderHealth(t, calendar)

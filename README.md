@@ -22,6 +22,7 @@ SEC Monitor 是一个本地优先的 SEC 情报监控系统，用于跟踪美股
 - 重大事件雷达：聚合 8-K、S-1、S-3、424B、13D 等高关注公告。
 - IPO监控：扫描 SEC 当前申报流并按 CIK 补齐生命周期文件；通过 SEC 官方映射确认最终 Ticker 和交易所，从 424B4 尝试提取发行价与发行数量，并支持市场字段和状态手动校准。
 - Insider Trading：聚合 Form 3/4/5 内幕人持股变动披露。
+- 小盘候选研究：基于 SEC 公司事实、财务指标、资本事件、Form 4 内幕交易和 Tiingo 价格数据，筛选 A/B 级小盘候选并输出候选摘要、健康检查和批次审计记录。
 - 同步历史与调度：内置 `sec_filing_sync` 和 `ipo_radar_sync` 两类周期任务，可立即执行、启停和调整 Cron。
 - 总览页面：分区展示标的监控和 IPO监控 KPI，包含同步健康度、最近公告、IPO进行中公司数、IPO 状态分布和通知状态。
 - Telegram：通知配置、测试发送和重试；首次同步及历史/生命周期补齐默认静默入库，每次同步最多发送一条分组摘要，通知批次可展开查看发送或抑制原因。
@@ -212,6 +213,51 @@ IPO 页面说明：
 - `公司详情`中的`发行事件`表可查看事件分类、发行条款、SEC 文件和通知状态。
 - 手动状态、Ticker、交易所、发行价、发行数量和实际上市日期优先于自动数据。
 
+小盘候选研究功能：
+
+- 功能定位：仅用于研究与通知，不构成投资建议，也不自动交易。
+- 数据来源：SEC 官方 companyfacts/submissions bulk 数据、SEC Form 4、SEC capital event 文件、本地财务解析结果、Tiingo 日线价格。
+- 研究模式默认先做 SEC/财务初筛，再请求 Tiingo 补充价格和市值相关证据，避免对全市场逐只请求价格。
+- A 级候选重点关注：市值小于 500M、收入高增长、现金 runway 充足、近期无融资风险、近 180 天有合格 Form 4 open-market buy。
+- B 级候选重点关注：市值小于 1B、收入增长较好、资本风险可控，并保留质量状态和缺失原因。
+- 风险事件识别包括 S-1、ATM Program、Reverse Split、Going Concern Warning、Warrants 等；相关事件会影响候选资格和得分。
+- 候选得分维度包括收入增长、现金储备、内幕增持、毛利率、股本稀释历史和赛道空间；当前实现中缺失或无法可靠自动判断的维度会以质量状态保守处理。
+- 同步过程按批次落库，保留 source version、provider run、provider health、候选快照和健康检查，便于审计和重跑。
+- market 同步采用研究模式发布：即使 Tiingo provider 仍在 validation/degraded 或当日价格数据部分缺失，也允许发布可审计的研究批次；生产级 provider 激活门槛仍保留在状态机中。
+- 同一交易日可重复补跑 market sync。已失败的同内容批次会被重置后重试，已发布批次保持幂等。
+- Tiingo 限流时会停止继续请求未缓存标的；如果已有可用缓存价格，系统会发布部分研究结果；如果没有任何可用价格，则 market 阶段会失败并等待下次补跑。
+
+小盘候选配置：
+
+- `discovery.price_provider`：价格数据源，当前支持 `tiingo`。
+- `discovery.tiingo_api_token`：单个 Tiingo token。兼容旧配置。
+- `discovery.tiingo_api_tokens`：多个 Tiingo token，逗号或换行分隔；系统会按顺序轮换使用。
+- `discovery.tiingo_request_budget`：单次 market sync 最多发起的 Tiingo HTTP 请求数，用于控制免费额度消耗；`0` 表示使用默认预算。
+- `discovery.cache_dir`：小盘候选 SEC bulk/cache 目录。Docker 推荐使用持久化路径 `/app/data/.cache/discovery`。
+
+Docker 运行小盘候选：
+
+```bash
+make docker-up
+make docker-discovery-sync          # 全流程：security universe + market prescreen
+make docker-discovery-market-sync   # 仅补跑 market prescreen，适合 Tiingo 限流后继续补价格
+```
+
+本地 Go 运行：
+
+```bash
+go run ./cmd/discovery-sync
+DISCOVERY_SYNC_PHASE=market go run ./cmd/discovery-sync
+```
+
+首次执行会下载 SEC bulk 数据，体积通常为数 GB，耗时较长；后续会复用缓存。Docker 模式下请使用 `make docker-discovery-sync`，避免把缓存和数据库写到本地进程的不同路径。
+
+Tiingo 免费额度注意事项：
+
+- 免费额度通常不足以每天对全部美股逐只请求价格；推荐设置较小的 `discovery.tiingo_request_budget`，并依靠缓存分批补齐。
+- 多 token 只能缓解单 token 限流，不能改变 Tiingo 对账号/网络/服务端策略的限制。
+- 页面 API usage 出现 hourly/daily 429 后，需要等待 Tiingo 额度恢复；恢复后运行 `make docker-discovery-market-sync` 继续补齐。
+
 通知批次说明：
 
 - 新标的首次同步只建立数据基线，不发送历史公告通知。
@@ -230,10 +276,13 @@ SEC_USER_AGENT="sec-monitor/0.1 your-email@example.com"
 SEC_TIMEOUT_MS=10000
 SMALL_CAP_PRICE_PROVIDER=tiingo
 TIINGO_API_TOKEN="your-tiingo-token"
+TIINGO_API_TOKENS="token-a,token-b"
+SMALL_CAP_TIINGO_REQUEST_BUDGET=200
+SMALL_CAP_CACHE_DIR=/app/data/.cache/discovery
 ```
 
 SEC 要求请求方设置明确的 User-Agent。正式使用前请设置 `SEC_USER_AGENT`。
-小盘候选的 Tiingo token 可以在页面“系统配置 / 小盘候选数据源”中填写，也可以通过环境变量 `TIINGO_API_TOKEN` 注入；页面配置优先于环境变量。不要把真实 token 写入仓库文件或提交到 git。配置后可用 `go run ./cmd/discovery-sync` 触发真实数据同步。
+小盘候选的 Tiingo token、token 组、请求预算和缓存目录可以在页面“系统配置 / 小盘候选数据源”中填写，也可以通过环境变量注入；页面配置优先于环境变量。不要把真实 token 写入仓库文件或提交到 git。
 
 ## 开发
 

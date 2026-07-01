@@ -104,6 +104,21 @@
               :placeholder="t('pages.configs.tiingoApiTokenPlaceholder')"
             />
           </el-form-item>
+          <el-form-item :label="t('pages.configs.tiingoApiTokens')">
+            <el-input
+              v-model="discoveryForm.tiingo_api_tokens"
+              show-password
+              :placeholder="t('pages.configs.tiingoApiTokensPlaceholder')"
+            />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.tiingoRequestBudget')">
+            <el-input-number
+              v-model="discoveryForm.tiingo_request_budget"
+              :min="0"
+              :step="5"
+              controls-position="right"
+            />
+          </el-form-item>
           <el-form-item :label="t('pages.configs.tiingoBaseUrl')">
             <el-input v-model="discoveryForm.tiingo_base_url" placeholder="https://api.tiingo.com" />
           </el-form-item>
@@ -269,6 +284,8 @@ const candidateNotificationForm = reactive({
 const discoveryForm = reactive({
   price_provider: '',
   tiingo_api_token: '',
+  tiingo_api_tokens: '',
+  tiingo_request_budget: 45,
   tiingo_base_url: 'https://api.tiingo.com'
 })
 const ipoForm = reactive({
@@ -381,6 +398,8 @@ async function load() {
     candidateNotificationForm.max_per_grade = Number(configValue(configs, 'candidate_notification.max_per_grade', '5'))
     discoveryForm.price_provider = configValue(configs, 'discovery.price_provider', '')
     discoveryForm.tiingo_api_token = configValue(configs, 'discovery.tiingo_api_token', '')
+    discoveryForm.tiingo_api_tokens = configValue(configs, 'discovery.tiingo_api_tokens', '')
+    discoveryForm.tiingo_request_budget = Number(configValue(configs, 'discovery.tiingo_request_budget', '45'))
     discoveryForm.tiingo_base_url = configValue(configs, 'discovery.tiingo_base_url', 'https://api.tiingo.com')
     ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
     ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,S-1MEF')
@@ -418,6 +437,8 @@ async function save() {
       { key: 'candidate_notification.max_per_grade', value: String(candidateNotificationForm.max_per_grade), value_type: 'int', category: 'candidate_notification', encrypted: false },
       { key: 'discovery.price_provider', value: discoveryForm.price_provider, value_type: 'string', category: 'discovery', encrypted: false },
       { key: 'discovery.tiingo_api_token', value: discoveryForm.tiingo_api_token, value_type: 'string', category: 'discovery', encrypted: true },
+      { key: 'discovery.tiingo_api_tokens', value: discoveryForm.tiingo_api_tokens, value_type: 'string', category: 'discovery', encrypted: true },
+      { key: 'discovery.tiingo_request_budget', value: String(discoveryForm.tiingo_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
       { key: 'discovery.tiingo_base_url', value: discoveryForm.tiingo_base_url, value_type: 'string', category: 'discovery', encrypted: false },
       { key: 'ipo.enabled', value: String(ipoForm.enabled), value_type: 'bool', category: 'ipo', encrypted: false },
       { key: 'ipo.form_types', value: ipoForm.form_types, value_type: 'string', category: 'ipo', encrypted: false },
