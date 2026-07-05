@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -462,6 +463,23 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 				t.Fatalf("ui defaults = %+v", values)
 			}
 		}},
+		{name: "ensure scheduler timezone default is valid", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults: %v", err)
+			}
+			location, name, err := svc.SchedulerTimezone(context.Background())
+			if err != nil {
+				t.Fatalf("SchedulerTimezone: %v", err)
+			}
+			if location == nil || name != "UTC" {
+				t.Fatalf("scheduler timezone = %v %q, want UTC", location, name)
+			}
+		}},
+		{name: "reject invalid scheduler timezone", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.UpsertMany(context.Background(), []ConfigInput{{Key: "scheduler.timezone", Value: "Not/AZone", ValueType: "string", Category: "scheduler"}}, "tester"); err == nil {
+				t.Fatalf("expected invalid timezone error")
+			}
+		}},
 		{name: "ensure notification defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
 			if err := svc.EnsureDefaults(context.Background()); err != nil {
 				t.Fatalf("EnsureDefaults: %v", err)
@@ -525,20 +543,52 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err := svc.EnsureDefaults(context.Background()); err != nil {
 				t.Fatalf("EnsureDefaults: %v", err)
 			}
-			cfg := config.DiscoveryConfig{PriceProvider: "stooq", TiingoAPIToken: "env-token", TiingoBaseURL: "https://env.example.test", TiingoRequestBudget: 10, ResearchMode: false}
+			cfg := config.DiscoveryConfig{PriceProvider: "stooq", StooqURLs: []string{"https://env.example.test/stooq.csv"}, TiingoAPIToken: "env-token", TiingoBaseURL: "https://env.example.test", TiingoRequestBudget: 10, TwelveDataAPIKey: "env-td", TwelveDataBaseURL: "https://env-td.example.test", TwelveDataRequestBudget: 10, YahooBaseURL: "https://env-yahoo.example.test", YahooRequestBudget: 10, ResearchMode: false, MinPublishCoveragePct: 0}
 			applied, err := svc.ApplyDiscoveryConfig(context.Background(), cfg)
 			if err != nil {
 				t.Fatalf("ApplyDiscoveryConfig: %v", err)
 			}
-			if applied.PriceProvider != "stooq" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || !applied.ResearchMode {
+			if applied.PriceProvider != "stooq" || len(applied.StooqURLs) != 1 || applied.StooqURLs[0] != "https://env.example.test/stooq.csv" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || applied.TwelveDataAPIKey != "env-td" || applied.TwelveDataBaseURL != "https://api.twelvedata.com" || applied.TwelveDataRequestBudget != 700 || applied.TwelveDataRequestIntervalMS != 8000 || applied.YahooBaseURL != "https://query1.finance.yahoo.com" || applied.YahooRequestBudget != 45 || applied.MinPublishCoveragePct != 20 || !applied.ResearchMode {
 				t.Fatalf("applied defaults = %+v", applied)
 			}
 			configs, err := svc.List(context.Background(), "discovery", true)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 6 {
-				t.Fatalf("discovery defaults = %d, want 6", len(configs))
+			if len(configs) != 14 {
+				t.Fatalf("discovery defaults = %d, want 14", len(configs))
+			}
+		}},
+		{name: "stored twelve data config overrides env config", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.UpsertMany(context.Background(), []ConfigInput{
+				{Key: "discovery.twelve_data_api_key", Value: "stored-td", ValueType: "string", Category: "discovery", Encrypted: true},
+				{Key: "discovery.twelve_data_base_url", Value: "https://stored-td.example.test", ValueType: "string", Category: "discovery"},
+				{Key: "discovery.twelve_data_request_budget", Value: "650", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.twelve_data_request_interval_ms", Value: "8500", ValueType: "int", Category: "discovery"},
+			}, "tester"); err != nil {
+				t.Fatalf("seed config: %v", err)
+			}
+			applied, err := svc.ApplyDiscoveryConfig(context.Background(), config.DiscoveryConfig{TwelveDataAPIKey: "env-td", TwelveDataBaseURL: "https://env.example.test", TwelveDataRequestBudget: 10})
+			if err != nil {
+				t.Fatalf("ApplyDiscoveryConfig: %v", err)
+			}
+			if applied.TwelveDataAPIKey != "stored-td" || applied.TwelveDataBaseURL != "https://stored-td.example.test" || applied.TwelveDataRequestBudget != 650 || applied.TwelveDataRequestIntervalMS != 8500 {
+				t.Fatalf("twelve data config = %+v", applied)
+			}
+		}},
+		{name: "stored stooq urls override env config", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.UpsertMany(context.Background(), []ConfigInput{
+				{Key: "discovery.stooq_urls", Value: " https://stored.example.test/a.csv, https://stored.example.test/b.zip ", ValueType: "string", Category: "discovery"},
+			}, "tester"); err != nil {
+				t.Fatalf("seed config: %v", err)
+			}
+			applied, err := svc.ApplyDiscoveryConfig(context.Background(), config.DiscoveryConfig{StooqURLs: []string{"https://env.example.test/stooq.csv"}})
+			if err != nil {
+				t.Fatalf("ApplyDiscoveryConfig: %v", err)
+			}
+			want := []string{"https://stored.example.test/a.csv", "https://stored.example.test/b.zip"}
+			if !reflect.DeepEqual(applied.StooqURLs, want) {
+				t.Fatalf("stooq urls = %#v, want %#v", applied.StooqURLs, want)
 			}
 		}},
 	}

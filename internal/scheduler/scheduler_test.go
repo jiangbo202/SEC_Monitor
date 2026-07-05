@@ -226,6 +226,76 @@ func TestSchedulerTableDriven(t *testing.T) {
 	}
 }
 
+func TestSchedulerReloadAfterStartRunsNewCron(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create(&model.TaskConfig{TaskName: "sec_filing_sync", CronExpr: "@every 1s", Enabled: false}).Error; err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	tasks := service.NewTaskConfigService(db, audit)
+	filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs)
+	sched := New(tasks, filings)
+	if err := sched.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { <-sched.Stop().Done() }()
+
+	if err := db.Model(&model.TaskConfig{}).Where("task_name = ?", "sec_filing_sync").Updates(map[string]any{
+		"enabled": true,
+	}).Error; err != nil {
+		t.Fatalf("enable task: %v", err)
+	}
+	if err := sched.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	deadline := time.After(2500 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			var task model.TaskConfig
+			_ = db.Where("task_name = ?", "sec_filing_sync").First(&task).Error
+			t.Fatalf("task did not run after reload; LastRunAt=%v", task.LastRunAt)
+		case <-ticker.C:
+			var task model.TaskConfig
+			if err := db.Where("task_name = ?", "sec_filing_sync").First(&task).Error; err != nil {
+				t.Fatalf("load task: %v", err)
+			}
+			if task.LastRunAt != nil {
+				return
+			}
+		}
+	}
+}
+
+func TestSchedulerUsesConfiguredTimezone(t *testing.T) {
+	db := testDB(t)
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []service.ConfigInput{{Key: "scheduler.timezone", Value: "Asia/Shanghai", ValueType: "string", Category: "scheduler"}}, "test"); err != nil {
+		t.Fatalf("timezone config: %v", err)
+	}
+	tasks := service.NewTaskConfigService(db, audit)
+	filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs)
+	sched := New(tasks, filings, configs)
+	location, err := sched.schedulerLocation(context.Background())
+	if err != nil {
+		t.Fatalf("schedulerLocation: %v", err)
+	}
+	if location.String() != "Asia/Shanghai" {
+		t.Fatalf("location = %s, want Asia/Shanghai", location)
+	}
+}
+
 func nowUTC() time.Time {
 	return time.Now().UTC()
 }

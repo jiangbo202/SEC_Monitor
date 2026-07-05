@@ -85,6 +85,29 @@
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
+            <span>{{ t('pages.configs.schedulerSettings') }}</span>
+            <el-tag effect="plain">{{ schedulerForm.timezone }}</el-tag>
+          </div>
+        </template>
+        <el-form :model="schedulerForm" label-width="150px">
+          <el-form-item :label="t('pages.configs.schedulerTimezone')">
+            <el-select
+              v-model="schedulerForm.timezone"
+              filterable
+              allow-create
+              default-first-option
+              style="width: 240px"
+            >
+              <el-option v-for="item in timezoneOptions" :key="item" :label="item" :value="item" />
+            </el-select>
+          </el-form-item>
+        </el-form>
+        <el-alert :title="t('pages.configs.schedulerTimezoneHint')" type="info" :closable="false" show-icon />
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
             <span>{{ t('pages.configs.discoveryDatasource') }}</span>
             <el-tag effect="plain">{{ discoveryDatasourceSummary }}</el-tag>
           </div>
@@ -94,8 +117,21 @@
             <el-select v-model="discoveryForm.price_provider" style="width: 220px">
               <el-option :label="t('pages.configs.discoveryProviderAuto')" value="" />
               <el-option label="Tiingo" value="tiingo" />
+              <el-option label="Tiingo → Twelve Data → Yahoo" value="tiingo,twelvedata,yahoo" />
+              <el-option label="Tiingo → Yahoo" value="tiingo,yahoo" />
+              <el-option label="Twelve Data" value="twelvedata" />
+              <el-option label="Stooq → Tiingo → Yahoo" value="stooq,tiingo,yahoo" />
+              <el-option label="Yahoo" value="yahoo" />
               <el-option label="Stooq" value="stooq" />
             </el-select>
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.stooqUrls')">
+            <el-input
+              v-model="discoveryForm.stooq_urls"
+              type="textarea"
+              :rows="2"
+              :placeholder="t('pages.configs.stooqUrlsPlaceholder')"
+            />
           </el-form-item>
           <el-form-item :label="t('pages.configs.tiingoApiToken')">
             <el-input
@@ -121,6 +157,52 @@
           </el-form-item>
           <el-form-item :label="t('pages.configs.tiingoBaseUrl')">
             <el-input v-model="discoveryForm.tiingo_base_url" placeholder="https://api.tiingo.com" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.twelveDataApiKey')">
+            <el-input
+              v-model="discoveryForm.twelve_data_api_key"
+              show-password
+              :placeholder="t('pages.configs.twelveDataApiKeyPlaceholder')"
+            />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.twelveDataRequestBudget')">
+            <el-input-number
+              v-model="discoveryForm.twelve_data_request_budget"
+              :min="0"
+              :step="50"
+              controls-position="right"
+            />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.twelveDataRequestIntervalMs')">
+            <el-input-number
+              v-model="discoveryForm.twelve_data_request_interval_ms"
+              :min="1000"
+              :step="500"
+              controls-position="right"
+            />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.twelveDataBaseUrl')">
+            <el-input v-model="discoveryForm.twelve_data_base_url" placeholder="https://api.twelvedata.com" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.yahooRequestBudget')">
+            <el-input-number
+              v-model="discoveryForm.yahoo_request_budget"
+              :min="0"
+              :step="5"
+              controls-position="right"
+            />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.yahooBaseUrl')">
+            <el-input v-model="discoveryForm.yahoo_base_url" placeholder="https://query1.finance.yahoo.com" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.minPublishCoveragePct')">
+            <el-input-number
+              v-model="discoveryForm.min_publish_coverage_pct"
+              :min="0"
+              :max="100"
+              :step="5"
+              controls-position="right"
+            />
           </el-form-item>
         </el-form>
         <el-alert :title="t('pages.configs.discoveryDatasourceHint')" type="info" :closable="false" show-icon />
@@ -281,12 +363,22 @@ const candidateNotificationForm = reactive({
   send_time: '09:30',
   max_per_grade: 5
 })
+const schedulerForm = reactive({ timezone: 'UTC' })
+const timezoneOptions = ['Asia/Shanghai', 'UTC', 'America/New_York', 'America/Los_Angeles']
 const discoveryForm = reactive({
   price_provider: '',
+  stooq_urls: '',
   tiingo_api_token: '',
   tiingo_api_tokens: '',
   tiingo_request_budget: 45,
-  tiingo_base_url: 'https://api.tiingo.com'
+  tiingo_base_url: 'https://api.tiingo.com',
+  twelve_data_api_key: '',
+  twelve_data_request_budget: 700,
+  twelve_data_request_interval_ms: 8000,
+  twelve_data_base_url: 'https://api.twelvedata.com',
+  yahoo_request_budget: 45,
+  yahoo_base_url: 'https://query1.finance.yahoo.com',
+  min_publish_coverage_pct: 20
 })
 const ipoForm = reactive({
   enabled: true,
@@ -346,6 +438,11 @@ const candidateNotificationSummary = computed(() => {
 
 const discoveryDatasourceSummary = computed(() => {
   if (discoveryForm.price_provider === 'tiingo') return 'Tiingo'
+  if (discoveryForm.price_provider === 'tiingo,twelvedata,yahoo') return 'Tiingo → Twelve Data → Yahoo'
+  if (discoveryForm.price_provider === 'tiingo,yahoo') return 'Tiingo → Yahoo'
+  if (discoveryForm.price_provider === 'twelvedata') return 'Twelve Data'
+  if (discoveryForm.price_provider === 'stooq,tiingo,yahoo') return 'Stooq → Tiingo → Yahoo'
+  if (discoveryForm.price_provider === 'yahoo') return 'Yahoo'
   if (discoveryForm.price_provider === 'stooq') return 'Stooq'
   return t('pages.configs.discoveryProviderAuto')
 })
@@ -396,11 +493,20 @@ async function load() {
     candidateNotificationForm.notify_b = configValue(configs, 'candidate_notification.notify_b', 'false') === 'true'
     candidateNotificationForm.send_time = configValue(configs, 'candidate_notification.send_time', '09:30')
     candidateNotificationForm.max_per_grade = Number(configValue(configs, 'candidate_notification.max_per_grade', '5'))
+    schedulerForm.timezone = configValue(configs, 'scheduler.timezone', 'UTC')
     discoveryForm.price_provider = configValue(configs, 'discovery.price_provider', '')
+    discoveryForm.stooq_urls = configValue(configs, 'discovery.stooq_urls', '')
     discoveryForm.tiingo_api_token = configValue(configs, 'discovery.tiingo_api_token', '')
     discoveryForm.tiingo_api_tokens = configValue(configs, 'discovery.tiingo_api_tokens', '')
     discoveryForm.tiingo_request_budget = Number(configValue(configs, 'discovery.tiingo_request_budget', '45'))
     discoveryForm.tiingo_base_url = configValue(configs, 'discovery.tiingo_base_url', 'https://api.tiingo.com')
+    discoveryForm.twelve_data_api_key = configValue(configs, 'discovery.twelve_data_api_key', '')
+    discoveryForm.twelve_data_request_budget = Number(configValue(configs, 'discovery.twelve_data_request_budget', '700'))
+    discoveryForm.twelve_data_request_interval_ms = Number(configValue(configs, 'discovery.twelve_data_request_interval_ms', '8000'))
+    discoveryForm.twelve_data_base_url = configValue(configs, 'discovery.twelve_data_base_url', 'https://api.twelvedata.com')
+    discoveryForm.yahoo_request_budget = Number(configValue(configs, 'discovery.yahoo_request_budget', '45'))
+    discoveryForm.yahoo_base_url = configValue(configs, 'discovery.yahoo_base_url', 'https://query1.finance.yahoo.com')
+    discoveryForm.min_publish_coverage_pct = Number(configValue(configs, 'discovery.min_publish_coverage_pct', '20'))
     ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
     ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,S-1MEF')
     ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))
@@ -435,11 +541,20 @@ async function save() {
       { key: 'candidate_notification.notify_b', value: String(candidateNotificationForm.notify_b), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.send_time', value: candidateNotificationForm.send_time, value_type: 'string', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.max_per_grade', value: String(candidateNotificationForm.max_per_grade), value_type: 'int', category: 'candidate_notification', encrypted: false },
+      { key: 'scheduler.timezone', value: schedulerForm.timezone, value_type: 'string', category: 'scheduler', encrypted: false },
       { key: 'discovery.price_provider', value: discoveryForm.price_provider, value_type: 'string', category: 'discovery', encrypted: false },
+      { key: 'discovery.stooq_urls', value: discoveryForm.stooq_urls, value_type: 'string', category: 'discovery', encrypted: false },
       { key: 'discovery.tiingo_api_token', value: discoveryForm.tiingo_api_token, value_type: 'string', category: 'discovery', encrypted: true },
       { key: 'discovery.tiingo_api_tokens', value: discoveryForm.tiingo_api_tokens, value_type: 'string', category: 'discovery', encrypted: true },
       { key: 'discovery.tiingo_request_budget', value: String(discoveryForm.tiingo_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
       { key: 'discovery.tiingo_base_url', value: discoveryForm.tiingo_base_url, value_type: 'string', category: 'discovery', encrypted: false },
+      { key: 'discovery.twelve_data_api_key', value: discoveryForm.twelve_data_api_key, value_type: 'string', category: 'discovery', encrypted: true },
+      { key: 'discovery.twelve_data_request_budget', value: String(discoveryForm.twelve_data_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.twelve_data_request_interval_ms', value: String(discoveryForm.twelve_data_request_interval_ms), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.twelve_data_base_url', value: discoveryForm.twelve_data_base_url, value_type: 'string', category: 'discovery', encrypted: false },
+      { key: 'discovery.yahoo_request_budget', value: String(discoveryForm.yahoo_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.yahoo_base_url', value: discoveryForm.yahoo_base_url, value_type: 'string', category: 'discovery', encrypted: false },
+      { key: 'discovery.min_publish_coverage_pct', value: String(discoveryForm.min_publish_coverage_pct), value_type: 'float', category: 'discovery', encrypted: false },
       { key: 'ipo.enabled', value: String(ipoForm.enabled), value_type: 'bool', category: 'ipo', encrypted: false },
       { key: 'ipo.form_types', value: ipoForm.form_types, value_type: 'string', category: 'ipo', encrypted: false },
       { key: 'ipo.lookback_days', value: String(ipoForm.lookback_days), value_type: 'int', category: 'ipo', encrypted: false },

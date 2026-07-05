@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/telegram"
@@ -16,11 +17,12 @@ import (
 )
 
 type FilingService struct {
-	db       *gorm.DB
-	sec      sec.Client
-	notifier telegram.Notifier
-	configs  *ConfigService
-	batches  *NotificationBatchService
+	db          *gorm.DB
+	sec         sec.Client
+	notifier    telegram.Notifier
+	configs     *ConfigService
+	batches     *NotificationBatchService
+	discoveryDB *gorm.DB
 }
 
 type FilingFilter struct {
@@ -66,6 +68,14 @@ type CleanupPreview struct {
 
 func NewFilingService(db *gorm.DB, secClient sec.Client, notifier telegram.Notifier, configs *ConfigService) *FilingService {
 	return &FilingService{db: db, sec: secClient, notifier: notifier, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
+}
+
+func (s *FilingService) WithDiscoveryDB(db *gorm.DB) *FilingService {
+	if s == nil {
+		return s
+	}
+	s.discoveryDB = db
+	return s
 }
 
 func (s *FilingService) List(ctx context.Context, filter FilingFilter) (PageResult[FilingItem], error) {
@@ -225,6 +235,7 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 			if created {
 				result.NewFilings++
 				targetNewFilings++
+				_ = s.recordCandidateRecalcEvent(ctx, filing)
 				notificationCandidates = append(notificationCandidates, filingNotificationCandidate(filing, target.LastSyncAt, notificationSettings, time.Now()))
 			}
 		}
@@ -244,6 +255,17 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 	}
 	s.finishSyncRun(ctx, run.ID, result, status, "")
 	return result, nil
+}
+
+func (s *FilingService) recordCandidateRecalcEvent(ctx context.Context, filing model.Filing) error {
+	if s == nil || s.discoveryDB == nil {
+		return nil
+	}
+	_, err := discovery.RecordCandidateRecalcEventForFiling(ctx, s.discoveryDB, discovery.CandidateRecalcFilingInput{
+		FilingID: filing.FilingID, AccessionNumber: filing.AccessionNumber, Ticker: filing.Ticker, CIK: filing.CIK,
+		FilingType: filing.FilingType, FilingDate: filing.FilingDate,
+	})
+	return err
 }
 
 func (s *FilingService) ListSyncRuns(ctx context.Context, filter SyncRunFilter) (PageResult[model.SyncRun], error) {

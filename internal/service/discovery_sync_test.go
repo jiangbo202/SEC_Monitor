@@ -20,6 +20,13 @@ type fakeDiscoveryRunner struct {
 	marketCalls   int
 }
 
+type stubServiceCalendar struct{}
+
+func (s *stubServiceCalendar) IsTradingDate(context.Context, string) (bool, error) { return true, nil }
+func (s *stubServiceCalendar) IsTradingDay(context.Context, time.Time) (bool, error) {
+	return true, nil
+}
+
 func (f *fakeDiscoveryRunner) SyncSecurityUniverse(ctx context.Context) (discovery.UniverseBatch, error) {
 	f.securityCalls++
 	return f.securityBatch, f.securityErr
@@ -118,5 +125,41 @@ func TestDiscoverySyncServiceRejectsTiingoWithoutToken(t *testing.T) {
 	}).buildRunner()
 	if err == nil || !strings.Contains(err.Error(), "TIINGO_API_TOKEN") {
 		t.Fatalf("err = %v, want TIINGO_API_TOKEN error", err)
+	}
+}
+
+func TestDiscoverySyncServiceBuildsProviderChain(t *testing.T) {
+	discoveryDB := testDiscoveryDB(t)
+	provider, marketErr, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{
+		PriceProvider:           "tiingo,twelvedata,yahoo",
+		TiingoAPIToken:          "test-token",
+		TiingoBaseURL:           "https://api.tiingo.com",
+		TwelveDataAPIKey:        "td-key",
+		TwelveDataBaseURL:       "https://api.twelvedata.com",
+		TwelveDataRequestBudget: 10,
+		YahooBaseURL:            "https://query1.finance.yahoo.com",
+		TiingoRequestBudget:     10,
+		YahooRequestBudget:      10,
+	}).buildPriceProvider(config.DiscoveryConfig{
+		PriceProvider:           "tiingo,twelvedata,yahoo",
+		TiingoAPIToken:          "test-token",
+		TiingoBaseURL:           "https://api.tiingo.com",
+		TwelveDataAPIKey:        "td-key",
+		TwelveDataBaseURL:       "https://api.twelvedata.com",
+		TwelveDataRequestBudget: 10,
+		YahooBaseURL:            "https://query1.finance.yahoo.com",
+		TiingoRequestBudget:     10,
+		YahooRequestBudget:      10,
+	}, nil, &stubServiceCalendar{})
+	if err != nil || marketErr != nil {
+		t.Fatalf("buildPriceProvider err=%v marketErr=%v", err, marketErr)
+	}
+	named, ok := provider.(discovery.NamedPriceProvider)
+	if !ok || named.ProviderName() != "chain" {
+		t.Fatalf("provider=%T", provider)
+	}
+	allowlist, ok := provider.(discovery.RecordSourceAllowlistProvider)
+	if !ok || strings.Join(allowlist.AllowedRecordSources(), ",") != "tiingo,twelvedata,yahoo" {
+		t.Fatalf("allowed sources = %#v", allowlist.AllowedRecordSources())
 	}
 }

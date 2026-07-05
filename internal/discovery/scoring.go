@@ -106,7 +106,8 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 		input.Financial.RunwayAvailable && input.Financial.CashRunwayMonths >= 12 &&
 		recentInsider && !blocksA && !blocksB
 	score.EligibleB = input.MarketCapUSD >= 30_000_000 && input.MarketCapUSD < 1_000_000_000 &&
-		input.Financial.RevenueGrowthAvailable && growth > 20 && !blocksB
+		input.Financial.RevenueGrowthAvailable && growth > 20 && !blocksB &&
+		score.SectorScore >= 7
 	switch {
 	case score.EligibleA:
 		score.Grade = CandidateGradeA

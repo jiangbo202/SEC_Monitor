@@ -21,15 +21,16 @@ func TestScoreDiscoveryCandidateGradesAWhenCoreSignalsPass(t *testing.T) {
 		Insiders: []InsiderTransactionSnapshot{{
 			Role: InsiderRoleCEO, TransactionDate: asOf.AddDate(0, 0, -30), Qualified: true, ValueMicros: 75_000_000_000,
 		}},
-		Risks: []CapitalRiskSnapshot{{Kind: CapitalEventRegisteredFinancing, Active: true, BlocksA: false, Severity: CapitalRiskSeverityMedium}},
-		AsOf:  asOf,
+		Risks:       []CapitalRiskSnapshot{{Kind: CapitalEventRegisteredFinancing, Active: true, BlocksA: false, Severity: CapitalRiskSeverityMedium}},
+		SectorScore: 8,
+		AsOf:        asOf,
 	}
 
 	score := ScoreDiscoveryCandidate(input)
 	if score.Grade != CandidateGradeA || !score.EligibleA || !score.EligibleB {
 		t.Fatalf("score = %#v", score)
 	}
-	if score.TotalScore != 80 || score.RevenueGrowthScore != 30 || score.CashRunwayScore != 20 || score.InsiderScore != 20 || score.DilutionRiskScore != 10 {
+	if score.TotalScore != 88 || score.RevenueGrowthScore != 30 || score.CashRunwayScore != 20 || score.InsiderScore != 20 || score.DilutionRiskScore != 10 || score.SectorScore != 8 {
 		t.Fatalf("score components = %#v", score)
 	}
 }
@@ -46,16 +47,43 @@ func TestScoreDiscoveryCandidateDowngradesForAOnlyRiskAndMissingInsider(t *testi
 			QuarterlyRevenueYoYPct: 25,
 			CashRunwayMonths:       8,
 		},
-		Risks: []CapitalRiskSnapshot{{Kind: CapitalEventATMProgram, Active: true, BlocksA: true, BlocksB: false, Severity: CapitalRiskSeverityHigh}},
-		AsOf:  asOf,
+		Risks:       []CapitalRiskSnapshot{{Kind: CapitalEventATMProgram, Active: true, BlocksA: true, BlocksB: false, Severity: CapitalRiskSeverityHigh}},
+		SectorScore: 8,
+		AsOf:        asOf,
 	}
 
 	score := ScoreDiscoveryCandidate(input)
 	if score.Grade != CandidateGradeB || score.EligibleA || !score.EligibleB {
 		t.Fatalf("score = %#v", score)
 	}
-	if score.TotalScore != 30 || score.DilutionRiskScore != 0 {
+	if score.TotalScore != 38 || score.DilutionRiskScore != 0 || score.SectorScore != 8 {
 		t.Fatalf("score components = %#v", score)
+	}
+}
+
+func TestScoreDiscoveryCandidateRequiresStrongSectorForBGrade(t *testing.T) {
+	asOf := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	input := DiscoveryScoreInput{
+		SecurityID:   10,
+		Ticker:       "LOWSEC",
+		MarketCapUSD: 650_000_000,
+		Financial: FinancialMetricSnapshot{
+			RevenueGrowthAvailable: true,
+			QuarterlyRevenueYoYPct: 35,
+		},
+		SectorScore: 6,
+		AsOf:        asOf,
+	}
+
+	score := ScoreDiscoveryCandidate(input)
+	if score.Grade != CandidateGradeExcluded || score.EligibleB {
+		t.Fatalf("low-sector score = %#v", score)
+	}
+
+	input.SectorScore = 7
+	score = ScoreDiscoveryCandidate(input)
+	if score.Grade != CandidateGradeB || !score.EligibleB || score.SectorScore != 7 {
+		t.Fatalf("strong-sector score = %#v", score)
 	}
 }
 

@@ -7,6 +7,7 @@ AGENTS.md
 
 # Local build/test/runtime artifacts
 .cache/
+.tmp/
 .runtime/
 data/
 dist/

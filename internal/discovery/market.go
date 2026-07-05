@@ -81,6 +81,10 @@ type NamedPriceProvider interface {
 	ProviderName() string
 }
 
+type RecordSourceAllowlistProvider interface {
+	AllowedRecordSources() []string
+}
+
 type PriceValidationOptions struct {
 	Provider                      string
 	SourceVersion                 string
@@ -526,13 +530,15 @@ func parsePriceMicros(value string) (int64, error) {
 			return 0, errors.New("invalid decimal")
 		}
 	}
-	if len(fraction) > 6 {
-		return 0, errors.New("price precision exceeds 6 decimal places")
-	}
 	whole, err := strconv.ParseInt(parts[0], 10, 64)
 	const maxInt64 = int64(^uint64(0) >> 1)
 	if err != nil || whole > maxInt64/1_000_000 {
 		return 0, errors.New("price is out of range")
+	}
+	roundUp := false
+	if len(fraction) > 6 {
+		roundUp = fraction[6] >= '5'
+		fraction = fraction[:6]
 	}
 	fraction += strings.Repeat("0", 6-len(fraction))
 	frac := int64(0)
@@ -540,6 +546,16 @@ func parsePriceMicros(value string) (int64, error) {
 		frac, err = strconv.ParseInt(fraction, 10, 64)
 		if err != nil {
 			return 0, errors.New("invalid decimal")
+		}
+	}
+	if roundUp {
+		frac++
+		if frac == 1_000_000 {
+			if whole >= maxInt64/1_000_000 {
+				return 0, errors.New("price is out of range")
+			}
+			whole++
+			frac = 0
 		}
 	}
 	if whole == maxInt64/1_000_000 && frac > maxInt64%1_000_000 {
@@ -633,7 +649,7 @@ func validatePriceBatch(ctx context.Context, records []PriceRecord, options Pric
 	if err != nil {
 		return ProviderResult{}, fmt.Errorf("validate effective trading date: %w", err)
 	}
-	if !trading {
+	if !trading && !options.AllowPreviousTradingDatePrice {
 		return ProviderResult{}, fmt.Errorf("effective date %s is not a trading date", effectiveText)
 	}
 	covered := make(map[string]struct{})
@@ -1092,8 +1108,12 @@ type ProviderDayResult struct {
 // a normal validation state, not an activation error.
 func EvaluateProviderDay(result ProviderResult, primary []PriceRecord, now time.Time) (ProviderDayResult, error) {
 	hash := sha256.Sum256(frozenMarketGoldCSV)
+	tradeDate := result.EffectiveDate
+	if len(primary) > 0 {
+		tradeDate = latestPriceRecordDate(primary)
+	}
 	day := ProviderDayResult{
-		TradeDate: result.EffectiveDate, coveragePct: result.CoveragePct, timely: result.Timely,
+		TradeDate: tradeDate, coveragePct: result.CoveragePct, timely: result.Timely,
 		validationOK: result.ValidationErrorPct <= DefaultValidationErrorPct, goldSHA256: hex.EncodeToString(hash[:]),
 	}
 	if result.EffectiveDate.IsZero() {

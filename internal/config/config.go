@@ -25,24 +25,32 @@ type DatabaseConfig struct {
 }
 
 type DiscoveryConfig struct {
-	Database                DatabaseConfig
-	CacheDir                string
-	UserAgent               string
-	NasdaqListedURL         string
-	NasdaqOtherListedURL    string
-	SECTickerExchangeURL    string
-	SECSubmissionsURL       string
-	SECCompanyFactsURL      string
-	PriceProvider           string
-	StooqURLs               []string
-	TiingoAPIToken          string
-	TiingoAPITokens         []string
-	TiingoBaseURL           string
-	TiingoConcurrency       int
-	TiingoRequestBudget     int
-	TiingoRequestIntervalMS int
-	ResearchMode            bool
-	TaskTimeoutMin          int
+	Database                    DatabaseConfig
+	CacheDir                    string
+	UserAgent                   string
+	NasdaqListedURL             string
+	NasdaqOtherListedURL        string
+	SECTickerExchangeURL        string
+	SECSubmissionsURL           string
+	SECCompanyFactsURL          string
+	PriceProvider               string
+	StooqURLs                   []string
+	TiingoAPIToken              string
+	TiingoAPITokens             []string
+	TiingoBaseURL               string
+	TiingoConcurrency           int
+	TiingoRequestBudget         int
+	TiingoRequestIntervalMS     int
+	TwelveDataAPIKey            string
+	TwelveDataBaseURL           string
+	TwelveDataRequestBudget     int
+	TwelveDataRequestIntervalMS int
+	YahooBaseURL                string
+	YahooRequestBudget          int
+	YahooRequestIntervalMS      int
+	ResearchMode                bool
+	MinPublishCoveragePct       float64
+	TaskTimeoutMin              int
 }
 
 type SECConfig struct {
@@ -72,23 +80,31 @@ func Load() Config {
 				Type: valueOrDefault("SMALL_CAP_DATABASE_TYPE", "sqlite"),
 				DSN:  valueOrDefault("SMALL_CAP_DATABASE_DSN", filepath.Join(filepath.Dir(database.DSN), "small_cap.db")),
 			},
-			CacheDir:                valueOrDefault("SMALL_CAP_CACHE_DIR", ".cache/discovery"),
-			UserAgent:               valueOrDefault("SEC_USER_AGENT", "sec-monitor/0.1 contact@example.com"),
-			NasdaqListedURL:         valueOrDefault("SMALL_CAP_NASDAQ_LISTED_URL", "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"),
-			NasdaqOtherListedURL:    valueOrDefault("SMALL_CAP_NASDAQ_OTHER_LISTED_URL", "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"),
-			SECTickerExchangeURL:    valueOrDefault("SMALL_CAP_SEC_TICKER_EXCHANGE_URL", "https://www.sec.gov/files/company_tickers_exchange.json"),
-			SECSubmissionsURL:       valueOrDefault("SMALL_CAP_SEC_SUBMISSIONS_URL", "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"),
-			SECCompanyFactsURL:      valueOrDefault("SMALL_CAP_SEC_COMPANY_FACTS_URL", "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"),
-			PriceProvider:           strings.ToLower(strings.TrimSpace(os.Getenv("SMALL_CAP_PRICE_PROVIDER"))),
-			StooqURLs:               commaSeparatedValues("SMALL_CAP_STOOQ_URLS"),
-			TiingoAPIToken:          strings.TrimSpace(os.Getenv("TIINGO_API_TOKEN")),
-			TiingoAPITokens:         commaSeparatedValues("TIINGO_API_TOKENS"),
-			TiingoBaseURL:           valueOrDefault("SMALL_CAP_TIINGO_BASE_URL", "https://api.tiingo.com"),
-			TiingoConcurrency:       positiveIntOrDefault("SMALL_CAP_TIINGO_CONCURRENCY", 1),
-			TiingoRequestBudget:     intOrDefault("SMALL_CAP_TIINGO_REQUEST_BUDGET", 45),
-			TiingoRequestIntervalMS: positiveIntOrDefault("SMALL_CAP_TIINGO_REQUEST_INTERVAL_MS", 1000),
-			ResearchMode:            boolOrDefault("SMALL_CAP_RESEARCH_MODE", true),
-			TaskTimeoutMin:          positiveIntOrDefault("SMALL_CAP_TASK_TIMEOUT_MINUTES", 60),
+			CacheDir:                    valueOrDefault("SMALL_CAP_CACHE_DIR", ".cache/discovery"),
+			UserAgent:                   valueOrDefault("SEC_USER_AGENT", "sec-monitor/0.1 contact@example.com"),
+			NasdaqListedURL:             valueOrDefault("SMALL_CAP_NASDAQ_LISTED_URL", "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"),
+			NasdaqOtherListedURL:        valueOrDefault("SMALL_CAP_NASDAQ_OTHER_LISTED_URL", "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"),
+			SECTickerExchangeURL:        valueOrDefault("SMALL_CAP_SEC_TICKER_EXCHANGE_URL", "https://www.sec.gov/files/company_tickers_exchange.json"),
+			SECSubmissionsURL:           valueOrDefault("SMALL_CAP_SEC_SUBMISSIONS_URL", "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"),
+			SECCompanyFactsURL:          valueOrDefault("SMALL_CAP_SEC_COMPANY_FACTS_URL", "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"),
+			PriceProvider:               strings.ToLower(strings.TrimSpace(os.Getenv("SMALL_CAP_PRICE_PROVIDER"))),
+			StooqURLs:                   commaSeparatedValues("SMALL_CAP_STOOQ_URLS"),
+			TiingoAPIToken:              strings.TrimSpace(os.Getenv("TIINGO_API_TOKEN")),
+			TiingoAPITokens:             commaSeparatedValues("TIINGO_API_TOKENS"),
+			TiingoBaseURL:               valueOrDefault("SMALL_CAP_TIINGO_BASE_URL", "https://api.tiingo.com"),
+			TiingoConcurrency:           positiveIntOrDefault("SMALL_CAP_TIINGO_CONCURRENCY", 1),
+			TiingoRequestBudget:         intOrDefault("SMALL_CAP_TIINGO_REQUEST_BUDGET", 45),
+			TiingoRequestIntervalMS:     positiveIntOrDefault("SMALL_CAP_TIINGO_REQUEST_INTERVAL_MS", 1000),
+			TwelveDataAPIKey:            strings.TrimSpace(os.Getenv("TWELVE_DATA_API_KEY")),
+			TwelveDataBaseURL:           valueOrDefault("SMALL_CAP_TWELVE_DATA_BASE_URL", "https://api.twelvedata.com"),
+			TwelveDataRequestBudget:     intOrDefault("SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET", 700),
+			TwelveDataRequestIntervalMS: positiveIntOrDefault("SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS", 8000),
+			YahooBaseURL:                valueOrDefault("SMALL_CAP_YAHOO_BASE_URL", "https://query1.finance.yahoo.com"),
+			YahooRequestBudget:          intOrDefault("SMALL_CAP_YAHOO_REQUEST_BUDGET", 45),
+			YahooRequestIntervalMS:      positiveIntOrDefault("SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS", 1000),
+			ResearchMode:                boolOrDefault("SMALL_CAP_RESEARCH_MODE", true),
+			MinPublishCoveragePct:       floatOrDefault("SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT", 20),
+			TaskTimeoutMin:              positiveIntOrDefault("SMALL_CAP_TASK_TIMEOUT_MINUTES", 60),
 		},
 		SEC: SECConfig{
 			BaseURL:   valueOrDefault("SEC_BASE_URL", "https://data.sec.gov"),
@@ -127,6 +143,18 @@ func intOrDefault(key string, fallback int) int {
 		return fallback
 	}
 	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func floatOrDefault(key string, fallback float64) float64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return fallback
 	}

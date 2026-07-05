@@ -92,6 +92,7 @@ export const candidateDetailTypecheck: CandidateDetail = {
   sector: { sic: 1000, category: '未分类赛道', score: 8, label: '优秀赛道', rationale: '基于 SIC 1000。' },
   data_quality: { financial: 'valid' },
   evidence: [{ field: 'total_score', value: '88', source: 'candidate_score_snapshots' }],
+  recent_filings: [],
 }
 
 export const candidateHealthTypecheck: CandidateHealth = {

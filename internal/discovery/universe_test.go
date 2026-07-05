@@ -178,7 +178,7 @@ func TestCoordinatorPublishesPrescreenWithExactEvidence(t *testing.T) {
 	if err := db.First(&score, "batch_id = ? AND security_id = ?", batch.BatchID, snapshot.SecurityID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if score.Grade != CandidateGradeA || !score.EligibleA || score.TotalScore != 80 || score.RevenueGrowthScore != 30 || score.CashRunwayScore != 20 || score.InsiderScore != 20 || score.DilutionRiskScore != 10 {
+	if score.Grade != CandidateGradeA || !score.EligibleA || score.TotalScore != 86 || score.RevenueGrowthScore != 30 || score.CashRunwayScore != 20 || score.InsiderScore != 20 || score.DilutionRiskScore != 10 || score.SectorScore != 6 {
 		t.Fatalf("score=%#v", score)
 	}
 	if securityBatch.BatchID == batch.BatchID {
@@ -189,6 +189,76 @@ func TestCoordinatorPublishesPrescreenWithExactEvidence(t *testing.T) {
 func testSourceVersion(source, version string, day time.Time) SourceVersion {
 	sum := sha256.Sum256([]byte(source + ":" + version))
 	return SourceVersion{Source: source, Version: version, SHA256: hex.EncodeToString(sum[:]), EffectiveAt: day}
+}
+
+func TestAlignSourceVersionsToBatchDateAllowsFutureSourceTimestamp(t *testing.T) {
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceAt := time.Date(2026, 7, 4, 0, 53, 0, 0, shanghai)
+	sourceVersion := testSourceVersion("metadata:composite", "v1", sourceAt)
+	aligned, err := alignSourceVersionsToBatchDate("2026-07-03", []SourceVersion{sourceVersion})
+	if err != nil {
+		t.Fatalf("alignSourceVersionsToBatchDate: %v", err)
+	}
+	if len(aligned) != 1 {
+		t.Fatalf("aligned length = %d, want 1", len(aligned))
+	}
+	if aligned[0].Source != sourceVersion.Source || aligned[0].Version != sourceVersion.Version || aligned[0].SHA256 != sourceVersion.SHA256 {
+		t.Fatalf("aligned changed source identity: %+v", aligned[0])
+	}
+	if got := aligned[0].EffectiveAt.Format(time.DateOnly); got != "2026-07-03" {
+		t.Fatalf("aligned effective date = %s, want 2026-07-03", got)
+	}
+	if _, err := normalizeSourceVersions("2026-07-03", aligned...); err != nil {
+		t.Fatalf("normalizeSourceVersions after alignment: %v", err)
+	}
+}
+
+func TestPersistCandidateScoreSnapshotsUsesSecuritySICForSectorScore(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	securityBatch := UniverseBatch{BatchID: "security-sector", Kind: BatchKindSecurity, Status: BatchStatusPublished, EffectiveDate: "2026-06-30", StartedAt: now}
+	marketBatch := UniverseBatch{BatchID: "market-sector", Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-06-30", StartedAt: now}
+	if err := db.Create(&securityBatch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&marketBatch).Error; err != nil {
+		t.Fatal(err)
+	}
+	security := Security{CIK: "0000099999", CompanyName: "Software Co", SIC: 0, CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&SecurityBatchIdentity{BatchID: securityBatch.BatchID, SecurityID: security.ID, CIK: security.CIK, Ticker: "SOFT", CompanyName: "Software Co", SIC: 7372, MappingStatus: MappingStatusCurrent, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	metric := FinancialMetricSnapshot{
+		BatchID: securityBatch.BatchID, SecurityID: security.ID,
+		RevenueGrowthAvailable: true, QuarterlyRevenueYoYPct: 35,
+		RunwayAvailable: true, CashRunwayMonths: 18, CreatedAt: now,
+	}
+	if err := db.Create(&metric).Error; err != nil {
+		t.Fatal(err)
+	}
+	universeRows := []UniverseSnapshot{{
+		BatchID: marketBatch.BatchID, SecurityID: security.ID, Ticker: "SOFT",
+		MarketCapUSD: 650_000_000, QualityStatus: QualityStatusValid, CreatedAt: now,
+	}}
+
+	c := Coordinator{DB: db}
+	if err := c.persistCandidateScoreSnapshots(context.Background(), securityBatch.BatchID, marketBatch.BatchID, universeRows, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var score CandidateScoreSnapshot
+	if err := db.First(&score, "batch_id = ? AND security_id = ?", marketBatch.BatchID, security.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if score.SectorScore != 9 || score.Grade != CandidateGradeB || !score.EligibleB {
+		t.Fatalf("score = %#v", score)
+	}
 }
 
 func TestCoordinatorPublishesSecurityUniverseIdempotently(t *testing.T) {
@@ -227,8 +297,18 @@ func TestCoordinatorPublishesSecurityUniverseIdempotently(t *testing.T) {
 	changed := record
 	changed.CompanyName = "Conflicting content"
 	c.Metadata = fakeMetadataSource{records: []SecuritySourceRecord{changed}, version: testSourceVersion("metadata", "v1", now)}
-	if _, err := c.SyncSecurityUniverse(context.Background()); err == nil || !strings.Contains(err.Error(), "content conflict") {
-		t.Fatalf("same source versions with changed content error = %v", err)
+	third, err := c.SyncSecurityUniverse(context.Background())
+	if err != nil {
+		t.Fatalf("same source versions with changed content should create new batch: %v", err)
+	}
+	if third.BatchID == first.BatchID || third.Status != BatchStatusPublished {
+		t.Fatalf("third batch = %#v, first = %#v", third, first)
+	}
+	if err := db.First(&pointer, "kind = ?", BatchKindSecurity).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pointer.BatchID != third.BatchID {
+		t.Fatalf("pointer = %s, want %s", pointer.BatchID, third.BatchID)
 	}
 }
 
@@ -508,6 +588,48 @@ func TestCoordinatorResearchModePublishesValidationProviderBatch(t *testing.T) {
 	}
 }
 
+func TestCoordinatorResearchModeRejectsLowCoverageWithoutPublishing(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ny, _ := time.LoadLocation("America/New_York")
+	now := time.Date(2026, 6, 23, 10, 0, 0, 0, ny)
+	seedSecurityBatchForMarketTest(t, db, now, []marketSeedSecurity{
+		{CIK: "0000000011", Ticker: "LOW1", Growth: 45, Runway: 18, Shares: 10_000_000},
+		{CIK: "0000000012", Ticker: "LOW2", Growth: 45, Runway: 18, Shares: 10_000_000},
+	})
+	old := UniverseBatch{BatchID: strings.Repeat("f", 64), Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-06-20", StartedAt: now.Add(-time.Hour)}
+	if err := db.Create(&old).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: old.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	priceSHA := sha256.Sum256([]byte("low-coverage-prices"))
+	provider := &fakePriceProvider{
+		name:    "tiingo",
+		records: []PriceRecord{{Symbol: "LOW1", Source: "tiingo", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:partial", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 2, CoveragePct: 50, Timely: true},
+	}
+	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }, ResearchMode: true, MinPublishCoveragePct: 75}
+	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
+		return ProviderDayResult{TradeDate: result.EffectiveDate, coveragePct: result.CoveragePct, timely: true, validationOK: true, goldReady: false, goldSHA256: strings.Repeat("c", 64)}, nil
+	}
+
+	batch, err := c.SyncMarketPrices(context.Background())
+	if err == nil || batch.Status != BatchStatusFailed {
+		t.Fatalf("batch=%#v err=%v", batch, err)
+	}
+	if !strings.Contains(batch.ErrorMessage, "coverage") {
+		t.Fatalf("error message = %q, want coverage reason", batch.ErrorMessage)
+	}
+	var pointer CurrentBatchPointer
+	if err := db.First(&pointer, "kind = ?", BatchKindPrescreen).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pointer.BatchID != old.BatchID {
+		t.Fatalf("pointer changed to %s", pointer.BatchID)
+	}
+}
+
 func TestCoordinatorResearchModeUsesSecurityBatchDateForMarketOnlyCatchup(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	ny, _ := time.LoadLocation("America/New_York")
@@ -534,6 +656,40 @@ func TestCoordinatorResearchModeUsesSecurityBatchDateForMarketOnlyCatchup(t *tes
 	}
 	if provider.requestedDate != "2026-06-30" {
 		t.Fatalf("requested date = %q", provider.requestedDate)
+	}
+}
+
+func TestCoordinatorResearchModeAllowsNonTradingSecurityDateWithPreviousPrice(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ny, _ := time.LoadLocation("America/New_York")
+	securityDate := time.Date(2026, 7, 3, 10, 0, 0, 0, ny)
+	priceDate := time.Date(2026, 7, 2, 10, 0, 0, 0, ny)
+	now := time.Date(2026, 7, 4, 1, 30, 0, 0, time.UTC)
+	seedSecurityBatchForMarketTest(t, db, securityDate, []marketSeedSecurity{{CIK: "0000000023", Ticker: "HOLI", Growth: 45, Runway: 18, Shares: 10_000_000}})
+	priceSHA := sha256.Sum256([]byte("holiday-previous-price"))
+	provider := &fakePriceProvider{
+		name:    "tiingo",
+		records: []PriceRecord{{Symbol: "HOLI", Source: "tiingo", TradeDate: priceDate, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:2026-07-02", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: securityDate, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
+	}
+	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{holidays: map[string]bool{"2026-07-03": true}}, Clock: func() time.Time { return now }, ResearchMode: true}
+
+	batch, err := c.SyncMarketPrices(context.Background())
+	if err != nil {
+		t.Fatalf("SyncMarketPrices() error = %v", err)
+	}
+	if batch.Status != BatchStatusPublished || batch.EffectiveDate != "2026-07-03" {
+		t.Fatalf("batch=%#v", batch)
+	}
+	if provider.requestedDate != "2026-07-03" {
+		t.Fatalf("requested date = %q", provider.requestedDate)
+	}
+	var health ProviderHealth
+	if err := db.First(&health, "provider = ?", "tiingo").Error; err != nil {
+		t.Fatal(err)
+	}
+	if health.LastTradeDate != "2026-07-02" {
+		t.Fatalf("health last trade date = %q, want 2026-07-02", health.LastTradeDate)
 	}
 }
 
@@ -608,7 +764,7 @@ func TestCoordinatorRetriesExistingFailedMarketBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	batchID, encoded, err := batchIdentity(BatchKindPrescreen, "2026-06-30", versions)
+	batchID, encoded, err := batchIdentity(BatchKindPrescreen, "2026-06-30", versions, contentSHA)
 	if err != nil {
 		t.Fatal(err)
 	}

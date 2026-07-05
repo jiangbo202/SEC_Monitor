@@ -68,6 +68,7 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 	}
 	result, err := discovery.ListCandidateScores(c.Request.Context(), h.DiscoveryDB, discovery.CandidateScoreQuery{
 		Page: page, PageSize: pageSize, Ticker: c.Query("ticker"), Grade: c.Query("grade"),
+		SectorCategory: c.Query("sector_category"), SortBy: c.Query("sort_by"), SortOrder: c.Query("sort_order"),
 		EligibleA: eligibleA, EligibleB: eligibleB,
 	})
 	if err != nil {
@@ -83,7 +84,47 @@ func (h *AppHandler) GetDiscoveryCandidateDetail(c *gin.Context) {
 		Error(c, err)
 		return
 	}
+	if h.DB != nil {
+		filings, err := h.listRecentCandidateFilings(c.Request.Context(), result.Score.Ticker, result.Security.CIK, 20)
+		if err != nil {
+			Error(c, err)
+			return
+		}
+		result.RecentFilings = filings
+	}
 	OK(c, result)
+}
+
+func (h *AppHandler) listRecentCandidateFilings(ctx context.Context, ticker, cik string, limit int) ([]discovery.RecentSECFiling, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	query := h.DB.WithContext(ctx).Model(&model.Filing{})
+	symbol := strings.ToUpper(strings.TrimSpace(ticker))
+	issuerCIK := strings.TrimSpace(cik)
+	switch {
+	case symbol != "" && issuerCIK != "":
+		query = query.Where("ticker = ? OR cik = ?", symbol, issuerCIK)
+	case symbol != "":
+		query = query.Where("ticker = ?", symbol)
+	case issuerCIK != "":
+		query = query.Where("cik = ?", issuerCIK)
+	default:
+		return []discovery.RecentSECFiling{}, nil
+	}
+	var rows []model.Filing
+	if err := query.Order("filing_date DESC").Order("published_at DESC").Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]discovery.RecentSECFiling, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, discovery.RecentSECFiling{
+			FilingID: row.FilingID, AccessionNumber: row.AccessionNumber, Ticker: row.Ticker, CIK: row.CIK,
+			CompanyName: row.CompanyName, FilingType: row.FilingType, FilingDate: row.FilingDate,
+			PublishedAt: row.PublishedAt, FilingURL: row.FilingURL, Title: row.Title,
+		})
+	}
+	return items, nil
 }
 
 func (h *AppHandler) GetDiscoveryCandidateHealth(c *gin.Context) {
@@ -147,6 +188,39 @@ func (h *AppHandler) SendDiscoveryCandidateNotification(c *gin.Context) {
 		return
 	}
 	result, err := h.candidateNotificationService().Send(c.Request.Context(), input)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ListDiscoveryBatches(c *gin.Context) {
+	page, pageSize := pageParams(c)
+	result, err := discovery.ListBatches(c.Request.Context(), h.DiscoveryDB, discovery.BatchQuery{
+		Page: page, PageSize: pageSize, Kind: c.Query("kind"), Status: c.Query("status"),
+	})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ListDiscoveryProviderRuns(c *gin.Context) {
+	page, pageSize := pageParams(c)
+	result, err := discovery.ListProviderDiagnostics(c.Request.Context(), h.DiscoveryDB, discovery.ProviderRunQuery{
+		Page: page, PageSize: pageSize, Provider: c.Query("provider"), Status: c.Query("status"), BatchID: c.Query("batch_id"),
+	})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ListDiscoveryProviderHealth(c *gin.Context) {
+	result, err := discovery.ListProviderHealth(c.Request.Context(), h.DiscoveryDB)
 	if err != nil {
 		Error(c, err)
 		return
@@ -576,6 +650,12 @@ func (h *AppHandler) UpdateSystemConfigs(c *gin.Context) {
 	if err := h.Configs.UpsertMany(c.Request.Context(), input, operator(c)); err != nil {
 		Error(c, err)
 		return
+	}
+	if h.Scheduler != nil {
+		if err := h.Scheduler.Reload(c.Request.Context()); err != nil {
+			Error(c, err)
+			return
+		}
 	}
 	configs, err := h.Configs.List(c.Request.Context(), "", true)
 	if err != nil {

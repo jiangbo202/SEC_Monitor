@@ -131,6 +131,7 @@ func TestParseSECFinancialFactsZIPUsesFilenameCIKWhenDocumentCIKIsMissing(t *tes
 func TestBuildFinancialSummaryComputesRevenueGrowthAndRunway(t *testing.T) {
 	facts := []FinancialFact{
 		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-03-31", 10_000_000),
+		financialDuration(FinancialMetricRevenue, "2025-10-01", "2025-12-31", 12_000_000),
 		financialDuration(FinancialMetricRevenue, "2026-01-01", "2026-03-31", 15_000_000),
 		financialDuration(FinancialMetricRevenue, "2024-01-01", "2024-12-31", 40_000_000),
 		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-12-31", 55_000_000),
@@ -151,7 +152,12 @@ func TestBuildFinancialSummaryComputesRevenueGrowthAndRunway(t *testing.T) {
 		t.Fatalf("summary missing required metrics: %#v", summary)
 	}
 	assertFloatNear(t, summary.QuarterlyRevenueYoYPct, 50, 0.001)
+	assertFloatNear(t, summary.QuarterlyRevenueQoQPct, 25, 0.001)
 	assertFloatNear(t, summary.AnnualRevenueYoYPct, 37.5, 0.001)
+	assertFloatNear(t, summary.AnnualRevenueQoQPct, 37.5, 0.001)
+	if summary.PreviousQuarterRevenueUSD != 12_000_000 {
+		t.Fatalf("previous quarter revenue = %v, want 12000000", summary.PreviousQuarterRevenueUSD)
+	}
 	assertFloatNear(t, summary.CFOBurnMonthlyUSD, 1_500_000, 0.001)
 	assertFloatNear(t, summary.FCFBurnMonthlyUSD, 2_000_000, 0.001)
 	assertFloatNear(t, summary.CashRunwayMonths, 15, 0.001)

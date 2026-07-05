@@ -23,7 +23,15 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 		"TIINGO_API_TOKENS",
 		"SMALL_CAP_TIINGO_BASE_URL",
 		"SMALL_CAP_TIINGO_REQUEST_BUDGET",
+		"TWELVE_DATA_API_KEY",
+		"SMALL_CAP_TWELVE_DATA_BASE_URL",
+		"SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET",
+		"SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS",
+		"SMALL_CAP_YAHOO_BASE_URL",
+		"SMALL_CAP_YAHOO_REQUEST_BUDGET",
+		"SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS",
 		"SMALL_CAP_RESEARCH_MODE",
+		"SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT",
 		"SMALL_CAP_TASK_TIMEOUT_MINUTES",
 	} {
 		t.Setenv(key, "")
@@ -72,8 +80,17 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 	if cfg.Discovery.TiingoRequestBudget != 45 {
 		t.Fatalf("tiingo request budget = %d", cfg.Discovery.TiingoRequestBudget)
 	}
+	if cfg.Discovery.YahooBaseURL != "https://query1.finance.yahoo.com" || cfg.Discovery.YahooRequestBudget != 45 {
+		t.Fatalf("yahoo config = base:%q budget:%d", cfg.Discovery.YahooBaseURL, cfg.Discovery.YahooRequestBudget)
+	}
+	if cfg.Discovery.TwelveDataAPIKey != "" || cfg.Discovery.TwelveDataBaseURL != "https://api.twelvedata.com" || cfg.Discovery.TwelveDataRequestBudget != 700 || cfg.Discovery.TwelveDataRequestIntervalMS != 8000 {
+		t.Fatalf("twelve data config = key:%q base:%q budget:%d interval:%d", cfg.Discovery.TwelveDataAPIKey, cfg.Discovery.TwelveDataBaseURL, cfg.Discovery.TwelveDataRequestBudget, cfg.Discovery.TwelveDataRequestIntervalMS)
+	}
 	if !cfg.Discovery.ResearchMode {
 		t.Fatalf("research mode should default to true")
+	}
+	if cfg.Discovery.MinPublishCoveragePct != 20 {
+		t.Fatalf("min publish coverage = %f", cfg.Discovery.MinPublishCoveragePct)
 	}
 	if cfg.Discovery.TaskTimeoutMin != 60 {
 		t.Fatalf("task timeout = %d", cfg.Discovery.TaskTimeoutMin)
@@ -106,7 +123,15 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	t.Setenv("SMALL_CAP_TIINGO_CONCURRENCY", "4")
 	t.Setenv("SMALL_CAP_TIINGO_REQUEST_BUDGET", "40")
 	t.Setenv("SMALL_CAP_TIINGO_REQUEST_INTERVAL_MS", "250")
+	t.Setenv("TWELVE_DATA_API_KEY", "td-key")
+	t.Setenv("SMALL_CAP_TWELVE_DATA_BASE_URL", "https://td.example.test")
+	t.Setenv("SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET", "600")
+	t.Setenv("SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS", "750")
+	t.Setenv("SMALL_CAP_YAHOO_BASE_URL", "https://yahoo.example.test")
+	t.Setenv("SMALL_CAP_YAHOO_REQUEST_BUDGET", "30")
+	t.Setenv("SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS", "500")
 	t.Setenv("SMALL_CAP_RESEARCH_MODE", "false")
+	t.Setenv("SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT", "35.5")
 	t.Setenv("SMALL_CAP_TASK_TIMEOUT_MINUTES", "15")
 
 	cfg := Load().Discovery
@@ -139,8 +164,17 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	if cfg.TiingoRequestIntervalMS != 250 {
 		t.Fatalf("tiingo request interval = %d", cfg.TiingoRequestIntervalMS)
 	}
+	if cfg.TwelveDataAPIKey != "td-key" || cfg.TwelveDataBaseURL != "https://td.example.test" || cfg.TwelveDataRequestBudget != 600 || cfg.TwelveDataRequestIntervalMS != 750 {
+		t.Fatalf("twelve data config = %#v", cfg)
+	}
+	if cfg.YahooBaseURL != "https://yahoo.example.test" || cfg.YahooRequestBudget != 30 || cfg.YahooRequestIntervalMS != 500 {
+		t.Fatalf("yahoo config = %#v", cfg)
+	}
 	if cfg.ResearchMode {
 		t.Fatalf("research mode should be disabled by override")
+	}
+	if cfg.MinPublishCoveragePct != 35.5 {
+		t.Fatalf("min publish coverage = %f", cfg.MinPublishCoveragePct)
 	}
 	if cfg.TaskTimeoutMin != 15 {
 		t.Fatalf("task timeout = %d", cfg.TaskTimeoutMin)

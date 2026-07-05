@@ -284,6 +284,39 @@ func TestTiingoPriceProviderHonorsRequestBudget(t *testing.T) {
 	}
 }
 
+func TestTiingoPriceProviderAppliesRequestBudgetPerToken(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	client := httpClientForHandler(func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		return textResponse(http.StatusOK, `[{"date":"2026-06-30","open":1,"high":2,"low":1,"close":1.5,"volume":10}]`), nil
+	})
+	provider, err := NewTiingoPriceProvider(TiingoPriceProviderOptions{
+		Tokens:        []string{"token-a", "token-b"},
+		BaseURL:       "https://tiingo.example.test",
+		Client:        client,
+		Now:           func() time.Time { return time.Date(2026, 6, 30, 16, 0, 0, 0, time.UTC) },
+		Calendar:      &stubMarketCalendar{},
+		RequestBudget: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records, result, err := provider.LoadForDate(context.Background(), []Listing{{Ticker: "A"}, {Ticker: "B"}, {Ticker: "C"}, {Ticker: "D"}, {Ticker: "E"}}, "2026-06-30")
+	if err != nil {
+		t.Fatalf("LoadForDate() error = %v", err)
+	}
+	if requests != 4 {
+		t.Fatalf("http requests = %d, want 4", requests)
+	}
+	if len(records) != 4 || result.Expected != 5 || result.Records != 4 {
+		t.Fatalf("records=%+v result=%+v", records, result)
+	}
+}
+
 func TestTiingoPriceProviderRotatesTokensAfterRateLimit(t *testing.T) {
 	var tokens []string
 	client := httpClientForHandler(func(req *http.Request) (*http.Response, error) {

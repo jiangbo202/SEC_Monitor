@@ -207,11 +207,12 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 			Downloader:   downloader,
 			LookbackDays: 180,
 		},
-		Events:       discovery.SECSubmissionsCapitalEventSource{Metadata: secBulk},
-		Prices:       prices,
-		Calendar:     calendar,
-		Clock:        time.Now,
-		ResearchMode: cfg.ResearchMode,
+		Events:                discovery.SECSubmissionsCapitalEventSource{Metadata: secBulk},
+		Prices:                prices,
+		Calendar:              calendar,
+		Clock:                 time.Now,
+		ResearchMode:          cfg.ResearchMode,
+		MinPublishCoveragePct: cfg.MinPublishCoveragePct,
 	}
 	return productionDiscoveryRunner{security: security, market: market}, nil
 }
@@ -224,6 +225,61 @@ func (s *DiscoverySyncService) buildPriceProvider(cfg config.DiscoveryConfig, do
 	if provider == "" && len(cfg.TiingoAPITokens) > 0 {
 		provider = "tiingo"
 	}
+	if strings.Contains(provider, ",") {
+		parts := strings.Split(provider, ",")
+		children := make([]discovery.PriceProvider, 0, len(parts))
+		var setupErrs []string
+		for _, part := range parts {
+			childName := strings.ToLower(strings.TrimSpace(part))
+			if childName == "" {
+				continue
+			}
+			childCfg := cfg
+			childCfg.PriceProvider = childName
+			child, marketErr, err := s.buildSinglePriceProvider(childCfg, downloader, calendar)
+			if err != nil {
+				log.Printf("price provider chain setup skipped provider=%s reason=%q", childName, err.Error())
+				setupErrs = append(setupErrs, err.Error())
+				continue
+			}
+			if marketErr != nil {
+				log.Printf("price provider chain setup skipped provider=%s reason=%q", childName, marketErr.Error())
+				setupErrs = append(setupErrs, marketErr.Error())
+				continue
+			}
+			children = append(children, child)
+		}
+		if len(children) == 0 {
+			if len(setupErrs) > 0 {
+				return nil, nil, fmt.Errorf("price provider chain has no usable provider: %s", strings.Join(setupErrs, "; "))
+			}
+			return nil, nil, errors.New("price provider chain has no usable provider")
+		}
+		chain, err := discovery.NewPriceProviderChain(discovery.PriceProviderChainOptions{
+			Providers: children,
+			Calendar:  calendar,
+			Now:       time.Now,
+			Diagnostics: func(event discovery.PriceProviderChainDiagnostic) {
+				log.Printf(
+					"price provider chain: event=%s provider=%s expected=%d records=%d remaining=%d coverage=%.2f elapsed=%s error=%q",
+					event.Event,
+					event.Provider,
+					event.Expected,
+					event.Records,
+					event.Remaining,
+					event.CoveragePct,
+					event.Elapsed.Round(time.Second),
+					event.Error,
+				)
+			},
+		})
+		return chain, nil, err
+	}
+	return s.buildSinglePriceProvider(cfg, downloader, calendar)
+}
+
+func (s *DiscoverySyncService) buildSinglePriceProvider(cfg config.DiscoveryConfig, downloader *discovery.Downloader, calendar discovery.MarketCalendar) (discovery.PriceProvider, error, error) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.PriceProvider))
 	switch provider {
 	case "", "stooq":
 		if len(cfg.StooqURLs) == 0 {
@@ -270,6 +326,42 @@ func (s *DiscoverySyncService) buildPriceProvider(cfg config.DiscoveryConfig, do
 				}
 				log.Printf("tiingo price sync progress: processed=%d/%d records=%d skipped=%d elapsed=%s%s", update.Processed, update.Total, update.Records, update.Skipped, update.Elapsed.Round(time.Second), reasons)
 			},
+		})
+		return prices, nil, err
+	case "twelvedata":
+		if strings.TrimSpace(cfg.TwelveDataAPIKey) == "" {
+			return nil, nil, errors.New("TWELVE_DATA_API_KEY is required when SMALL_CAP_PRICE_PROVIDER=twelvedata")
+		}
+		prices, err := discovery.NewTwelveDataPriceProvider(discovery.TwelveDataPriceProviderOptions{
+			APIKey:          cfg.TwelveDataAPIKey,
+			BaseURL:         cfg.TwelveDataBaseURL,
+			Calendar:        calendar,
+			CacheDir:        cfg.CacheDir,
+			Now:             time.Now,
+			RequestBudget:   cfg.TwelveDataRequestBudget,
+			RequestInterval: time.Duration(cfg.TwelveDataRequestIntervalMS) * time.Millisecond,
+			ProgressEvery:   25,
+			Progress: func(update discovery.TwelveDataProgress) {
+				reasons := ""
+				if len(update.SkipReasons) > 0 {
+					parts := make([]string, 0, len(update.SkipReasons))
+					for reason, count := range update.SkipReasons {
+						parts = append(parts, fmt.Sprintf("%s=%d", reason, count))
+					}
+					sort.Strings(parts)
+					reasons = " reasons=" + strings.Join(parts, ",")
+				}
+				log.Printf("twelve data price sync progress: processed=%d/%d records=%d skipped=%d elapsed=%s%s", update.Processed, update.Total, update.Records, update.Skipped, update.Elapsed.Round(time.Second), reasons)
+			},
+		})
+		return prices, nil, err
+	case "yahoo":
+		prices, err := discovery.NewYahooPriceProvider(discovery.YahooPriceProviderOptions{
+			BaseURL:         cfg.YahooBaseURL,
+			Calendar:        calendar,
+			Now:             time.Now,
+			RequestBudget:   cfg.YahooRequestBudget,
+			RequestInterval: time.Duration(cfg.YahooRequestIntervalMS) * time.Millisecond,
 		})
 		return prices, nil, err
 	default:

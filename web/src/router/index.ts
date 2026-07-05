@@ -6,6 +6,7 @@ import TargetsView from '@/views/TargetsView.vue'
 import FilingsView from '@/views/FilingsView.vue'
 import EventRadarView from '@/views/EventRadarView.vue'
 import DiscoveryCandidatesView from '@/views/DiscoveryCandidatesView.vue'
+import DiscoveryLogsView from '@/views/DiscoveryLogsView.vue'
 import IPORadarView from '@/views/IPORadarView.vue'
 import InsiderTradingView from '@/views/InsiderTradingView.vue'
 import SyncRunsView from '@/views/SyncRunsView.vue'
@@ -27,6 +28,7 @@ const router = createRouter({
         { path: 'targets', name: 'targets', component: TargetsView },
         { path: 'filings', name: 'filings', component: FilingsView },
         { path: 'discovery-candidates', name: 'discovery-candidates', component: DiscoveryCandidatesView },
+        { path: 'discovery-logs', name: 'discovery-logs', component: DiscoveryLogsView },
         { path: 'event-radar', name: 'event-radar', component: EventRadarView },
         { path: 'insider-trading', name: 'insider-trading', component: InsiderTradingView },
         { path: 'ipo-radar', name: 'ipo-radar', component: IPORadarView },

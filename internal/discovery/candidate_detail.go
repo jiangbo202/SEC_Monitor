@@ -5,25 +5,40 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
 
 type CandidateDetail struct {
-	BatchID      string                       `json:"batch_id"`
-	Security     Security                     `json:"security"`
-	Universe     *UniverseSnapshot            `json:"universe,omitempty"`
-	Score        CandidateScoreSnapshot       `json:"score"`
-	Financial    *FinancialMetricSnapshot     `json:"financial,omitempty"`
-	Insiders     []InsiderTransactionSnapshot `json:"insiders"`
-	CapitalRisks []CapitalRiskSnapshot        `json:"capital_risks"`
-	Sector       SectorExplanation            `json:"sector"`
-	DataQuality  map[string]string            `json:"data_quality"`
-	Evidence     []Evidence                   `json:"evidence"`
+	BatchID       string                       `json:"batch_id"`
+	Security      Security                     `json:"security"`
+	Universe      *UniverseSnapshot            `json:"universe,omitempty"`
+	Score         CandidateScoreSnapshot       `json:"score"`
+	Financial     *FinancialMetricSnapshot     `json:"financial,omitempty"`
+	Insiders      []InsiderTransactionSnapshot `json:"insiders"`
+	CapitalRisks  []CapitalRiskSnapshot        `json:"capital_risks"`
+	RecentFilings []RecentSECFiling            `json:"recent_filings"`
+	Sector        SectorExplanation            `json:"sector"`
+	DataQuality   map[string]string            `json:"data_quality"`
+	Evidence      []Evidence                   `json:"evidence"`
+}
+
+type RecentSECFiling struct {
+	FilingID        string     `json:"filing_id"`
+	AccessionNumber string     `json:"accession_number"`
+	Ticker          string     `json:"ticker"`
+	CIK             string     `json:"cik"`
+	CompanyName     string     `json:"company_name"`
+	FilingType      string     `json:"filing_type"`
+	FilingDate      time.Time  `json:"filing_date"`
+	PublishedAt     *time.Time `json:"published_at"`
+	FilingURL       string     `json:"filing_url"`
+	Title           string     `json:"title"`
 }
 
 func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (CandidateDetail, error) {
-	result := CandidateDetail{Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
+	result := CandidateDetail{Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -42,11 +57,24 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		return result, gorm.ErrRecordNotFound
 	}
 	result.BatchID = batch.BatchID
+	evidenceBatchID := strings.TrimSpace(batch.UniverseSourceVersion)
+	if evidenceBatchID == "" {
+		evidenceBatchID = batch.BatchID
+	}
 	if err := db.WithContext(ctx).First(&result.Score, "batch_id = ? AND ticker = ?", batch.BatchID, symbol).Error; err != nil {
 		return result, err
 	}
 	if err := db.WithContext(ctx).First(&result.Security, result.Score.SecurityID).Error; err != nil {
 		return result, err
+	}
+	if batch.UniverseSourceVersion != "" {
+		var identity SecurityBatchIdentity
+		err := db.WithContext(ctx).First(&identity, "batch_id = ? AND security_id = ?", batch.UniverseSourceVersion, result.Score.SecurityID).Error
+		if err == nil {
+			applyIdentityToSecurity(&result.Security, identity)
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return result, err
+		}
 	}
 	result.Sector = ExplainSectorScore(result.Score, result.Security)
 	var universe UniverseSnapshot
@@ -59,7 +87,7 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		result.DataQuality["universe"] = QualityStatusMissing
 	}
 	var financial FinancialMetricSnapshot
-	if err := db.WithContext(ctx).First(&financial, "batch_id = ? AND security_id = ?", batch.BatchID, result.Score.SecurityID).Error; err == nil {
+	if err := db.WithContext(ctx).First(&financial, "batch_id = ? AND security_id = ?", evidenceBatchID, result.Score.SecurityID).Error; err == nil {
 		result.Financial = &financial
 		if financial.RevenueGrowthAvailable || financial.RunwayAvailable {
 			result.DataQuality["financial"] = QualityStatusValid
@@ -79,12 +107,30 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	} else {
 		result.DataQuality["insider"] = QualityStatusMissing
 	}
-	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id = ?", batch.BatchID, result.Score.SecurityID).Order("severity DESC, effective_at DESC").Find(&result.CapitalRisks).Error; err != nil {
+	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id = ?", evidenceBatchID, result.Score.SecurityID).Order("severity DESC, effective_at DESC").Find(&result.CapitalRisks).Error; err != nil {
 		return result, err
 	}
 	result.DataQuality["capital_risk"] = QualityStatusValid
 	result.Evidence = candidateDetailEvidence(result)
 	return result, nil
+}
+
+func applyIdentityToSecurity(security *Security, identity SecurityBatchIdentity) {
+	if security == nil {
+		return
+	}
+	if strings.TrimSpace(identity.CompanyName) != "" {
+		security.CompanyName = identity.CompanyName
+	}
+	if identity.SIC != 0 {
+		security.SIC = identity.SIC
+	}
+	if strings.TrimSpace(identity.StateOfIncorporation) != "" {
+		security.StateOfIncorporation = identity.StateOfIncorporation
+	}
+	if strings.TrimSpace(identity.LatestAnnualForm) != "" {
+		security.LatestAnnualForm = identity.LatestAnnualForm
+	}
 }
 
 func stringOrDefault(value string, fallback string) string {

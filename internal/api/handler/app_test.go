@@ -149,6 +149,13 @@ func TestAppHandlerListsDiscoveryCandidates(t *testing.T) {
 
 func TestAppHandlerGetsDiscoveryCandidateDetail(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Filing{}); err != nil {
+		t.Fatalf("migrate main: %v", err)
+	}
 	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open discovery db: %v", err)
@@ -170,14 +177,17 @@ func TestAppHandlerGetsDiscoveryCandidateDetail(t *testing.T) {
 	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "DAPI", Grade: discovery.CandidateGradeA, EligibleA: true, TotalScore: 87}).Error; err != nil {
 		t.Fatal(err)
 	}
-	h := &AppHandler{DiscoveryDB: discoveryDB, DiscoverySync: service.NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithRunner(fakeDiscoveryRunner{})}
+	if err := db.Create(&model.Filing{FilingID: "filing-1", AccessionNumber: "0000002468-26-000001", Ticker: "DAPI", CIK: security.CIK, CompanyName: "Detail API Co", FilingType: "8-K", FilingDate: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC), FilingURL: "https://sec.test/filing", Title: "DAPI 8-K"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &AppHandler{DB: db, DiscoveryDB: discoveryDB, DiscoverySync: service.NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithRunner(fakeDiscoveryRunner{})}
 	r := gin.New()
 	r.GET("/discovery/candidates/:ticker/detail", h.GetDiscoveryCandidateDetail)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/discovery/candidates/DAPI/detail", nil)
 	r.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ticker":"DAPI"`) || !strings.Contains(rec.Body.String(), `"company_name":"Detail API Co"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ticker":"DAPI"`) || !strings.Contains(rec.Body.String(), `"company_name":"Detail API Co"`) || !strings.Contains(rec.Body.String(), `"recent_filings"`) || !strings.Contains(rec.Body.String(), `"filing_type":"8-K"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -476,6 +486,60 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.GET("/exports/backup.json", h.ExportBackupJSON)
 	r.GET("/not-implemented", NotImplemented("example"))
 	return r, db, sched
+}
+
+func TestAppHandlerListsDiscoveryRunDiagnostics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main db: %v", err)
+	}
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	started := time.Date(2026, 7, 1, 5, 30, 0, 0, time.UTC)
+	completed := started.Add(10 * time.Minute)
+	securityBatch := discovery.UniverseBatch{BatchID: "sec-batch", Kind: discovery.BatchKindSecurity, Status: discovery.BatchStatusPublished, EffectiveDate: "2026-06-30", SourceVersionsJSON: "[]", ContentSHA256: strings.Repeat("a", 64), RecordCount: 6012, StartedAt: started, CompletedAt: &completed}
+	marketBatch := discovery.UniverseBatch{BatchID: "market-batch", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusFailed, EffectiveDate: "2026-06-30", SourceVersionsJSON: "[]", ContentSHA256: strings.Repeat("b", 64), ErrorMessage: "tiingo rate limited", StartedAt: started.Add(time.Minute), CompletedAt: &completed}
+	if err := discoveryDB.Create(&[]discovery.UniverseBatch{securityBatch, marketBatch}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.ProviderRun{BatchID: marketBatch.BatchID, Provider: "tiingo", Status: discovery.ProviderStatusValidation, SourceVersion: "tiingo:test", SHA256: strings.Repeat("c", 64), EffectiveDate: started, RecordCount: 100, ExpectedCount: 200, CoveragePct: 50, CreatedAt: completed}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.ProviderHealth{Provider: "tiingo", Status: discovery.ProviderStatusValidation, LastTradeDate: "2026-06-30", QualifiedTradingDays: 1, UpdatedAt: completed}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &AppHandler{DB: db, DiscoveryDB: discoveryDB}
+	r := gin.New()
+	r.GET("/discovery/batches", h.ListDiscoveryBatches)
+	r.GET("/discovery/provider-runs", h.ListDiscoveryProviderRuns)
+	r.GET("/discovery/provider-health", h.ListDiscoveryProviderHealth)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/discovery/batches?kind=market-prescreen&status=failed", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"batch_id":"market-batch"`) || !strings.Contains(rec.Body.String(), `"error_message":"tiingo rate limited"`) {
+		t.Fatalf("batches status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/discovery/provider-runs?provider=tiingo&batch_id=market-batch", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"record_count":100`) || !strings.Contains(rec.Body.String(), `"coverage_pct":50`) {
+		t.Fatalf("provider runs status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/discovery/provider-health", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"provider":"tiingo"`) || !strings.Contains(rec.Body.String(), `"last_trade_date":"2026-06-30"`) {
+		t.Fatalf("provider health status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestAppHandlerRoutesTableDriven(t *testing.T) {

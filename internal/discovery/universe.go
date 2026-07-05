@@ -63,7 +63,8 @@ type Coordinator struct {
 	// ResearchMode allows publishing auditable research batches while a price
 	// provider is still in validation/degraded state. It is intentionally scoped
 	// to discovery output and does not promote the provider health state.
-	ResearchMode bool
+	ResearchMode          bool
+	MinPublishCoveragePct float64
 	// AfterStageChunk is a test/operations fault-injection hook. It runs only
 	// after a chunk transaction commits and before the next chunk begins.
 	AfterStageChunk      func(kind string, chunk int) error
@@ -164,6 +165,10 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	if c.Insiders != nil {
 		sourceVersions = append(sourceVersions, insiderVersion)
 	}
+	sourceVersions, err = alignSourceVersionsToBatchDate(date, sourceVersions)
+	if err != nil {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
+	}
 	versions, err := normalizeSourceVersions(date, sourceVersions...)
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
@@ -177,6 +182,10 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 		return UniverseBatch{}, err
 	}
 	sourceVersions = append(sourceVersions, overrideVersion)
+	sourceVersions, err = alignSourceVersionsToBatchDate(date, sourceVersions)
+	if err != nil {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
+	}
 	versions, err = normalizeSourceVersions(date, sourceVersions...)
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
@@ -263,8 +272,10 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 		if calendarErr == nil {
 			calendarErr = fmt.Errorf("%s is not a trading date", date)
 		}
-		cause := fmt.Errorf("validate price run calendar: %w", calendarErr)
-		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "calendar-invalid", now, cause)
+		if !c.ResearchMode {
+			cause := fmt.Errorf("validate price run calendar: %w", calendarErr)
+			return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "calendar-invalid", now, cause)
+		}
 	}
 
 	expected, err := c.currentPriceRequestListings(ctx, securityBatch.BatchID)
@@ -288,8 +299,9 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 		cause := errors.New("price provider identity changed during load")
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "identity-invalid", now, cause)
 	}
+	allowedRecordSources := allowedPriceRecordSources(c.Prices, providerName)
 	for _, record := range records {
-		if record.Source != providerName || strings.TrimSpace(record.Symbol) == "" {
+		if _, ok := allowedRecordSources[strings.ToLower(strings.TrimSpace(record.Source))]; !ok || strings.TrimSpace(record.Symbol) == "" {
 			cause := errors.New("price records do not match provider identity")
 			return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "records-invalid", now, cause)
 		}
@@ -350,6 +362,9 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	}
 	if !c.ResearchMode && (nextHealth.Status != ProviderStatusActive || !providerWindowDayPasses(providerWindowDay{Date: day.TradeDate.Format(time.DateOnly), CoveragePct: day.coveragePct, Timely: day.timely, ValidationOK: day.validationOK, GoldReady: day.goldReady})) {
 		return c.failBatch(ctx, batch, errors.New("current provider day failed publication gates"))
+	}
+	if c.ResearchMode && c.MinPublishCoveragePct > 0 && result.Expected > 0 && result.CoveragePct < c.MinPublishCoveragePct {
+		return c.failBatch(ctx, batch, fmt.Errorf("market price coverage %.1f%% is below publish threshold %.1f%%", result.CoveragePct, c.MinPublishCoveragePct))
 	}
 	snapshots, stageErr := c.buildUniverseSnapshots(ctx, securityBatch.BatchID, batch.BatchID, records, result, now)
 	if stageErr == nil {
@@ -432,6 +447,21 @@ func emptyResearchProviderResult(provider string, securityBatch UniverseBatch, n
 	}, nil
 }
 
+func allowedPriceRecordSources(provider PriceProvider, providerName string) map[string]struct{} {
+	allowed := map[string]struct{}{strings.ToLower(strings.TrimSpace(providerName)): {}}
+	if provider == nil {
+		return allowed
+	}
+	if sourceProvider, ok := provider.(RecordSourceAllowlistProvider); ok {
+		for _, source := range sourceProvider.AllowedRecordSources() {
+			if source = strings.ToLower(strings.TrimSpace(source)); source != "" {
+				allowed[source] = struct{}{}
+			}
+		}
+	}
+	return allowed
+}
+
 func emptyResearchProviderDay(result ProviderResult) ProviderDayResult {
 	sha := sha256.Sum256([]byte(result.Provider + "\x00research-empty\x00" + result.SourceVersion))
 	return ProviderDayResult{
@@ -478,6 +508,20 @@ func normalizeSourceVersions(effectiveDate string, input ...SourceVersion) ([]So
 	return result, nil
 }
 
+func alignSourceVersionsToBatchDate(effectiveDate string, input []SourceVersion) ([]SourceVersion, error) {
+	effectiveAt, err := parseNYCivilDate(effectiveDate)
+	if err != nil {
+		return nil, err
+	}
+	result := append([]SourceVersion(nil), input...)
+	for i := range result {
+		if !result[i].EffectiveAt.IsZero() {
+			result[i].EffectiveAt = effectiveAt
+		}
+	}
+	return result, nil
+}
+
 func (c *Coordinator) recordPreflightFailure(ctx context.Context, kind, date string, securityBatch UniverseBatch, provider, state string, now time.Time, cause error) (UniverseBatch, error) {
 	sha := sha256.Sum256([]byte(provider + "\x00" + state))
 	effectiveAt, effectiveErr := parseNYCivilDate(date)
@@ -520,12 +564,16 @@ func (c *Coordinator) recordEarlyFailure(ctx context.Context, kind string, now t
 	return c.failBatch(ctx, batch, cause)
 }
 
-func batchIdentity(kind, date string, versions []SourceVersion) (string, string, error) {
+func batchIdentity(kind, date string, versions []SourceVersion, contentSHA string) (string, string, error) {
+	if !validSHA256(contentSHA) {
+		return "", "", errors.New("batch content SHA256 is required")
+	}
 	encoded, err := json.Marshal(versions)
 	if err != nil {
 		return "", "", err
 	}
-	digest := sha256.Sum256(append([]byte(kind+"\n"+date+"\n"), encoded...))
+	seed := append([]byte(kind+"\n"+date+"\n"+contentSHA+"\n"), encoded...)
+	digest := sha256.Sum256(seed)
 	return hex.EncodeToString(digest[:]), string(encoded), nil
 }
 
@@ -533,7 +581,7 @@ func (c *Coordinator) createDraft(ctx context.Context, kind, date string, versio
 	if !validSHA256(contentSHA) {
 		return UniverseBatch{}, false, errors.New("batch content SHA256 is required")
 	}
-	id, encoded, err := batchIdentity(kind, date, versions)
+	id, encoded, err := batchIdentity(kind, date, versions, contentSHA)
 	if err != nil {
 		return UniverseBatch{}, false, err
 	}
@@ -1037,9 +1085,11 @@ func financialMetricSnapshot(batchID string, securityID uint, summary FinancialS
 		BatchID: batchID, SecurityID: securityID, ParserVersion: FinancialParserVersion,
 		RevenueGrowthAvailable: summary.RevenueGrowthAvailable, RunwayAvailable: summary.RunwayAvailable,
 		LatestQuarterRevenueUSD: summary.LatestQuarterRevenueUSD, PriorYearQuarterRevenueUSD: summary.PriorYearQuarterRevenueUSD,
-		QuarterlyRevenueYoYPct: summary.QuarterlyRevenueYoYPct, LatestAnnualRevenueUSD: summary.LatestAnnualRevenueUSD,
+		PreviousQuarterRevenueUSD: summary.PreviousQuarterRevenueUSD, QuarterlyRevenueYoYPct: summary.QuarterlyRevenueYoYPct,
+		QuarterlyRevenueQoQPct: summary.QuarterlyRevenueQoQPct, LatestAnnualRevenueUSD: summary.LatestAnnualRevenueUSD,
 		PriorAnnualRevenueUSD: summary.PriorAnnualRevenueUSD, AnnualRevenueYoYPct: summary.AnnualRevenueYoYPct,
-		AvailableCashUSD: summary.AvailableCashUSD, TTMOperatingCashFlowUSD: summary.TTMOperatingCashFlowUSD,
+		AnnualRevenueQoQPct: summary.AnnualRevenueQoQPct,
+		AvailableCashUSD:    summary.AvailableCashUSD, TTMOperatingCashFlowUSD: summary.TTMOperatingCashFlowUSD,
 		TTMCapitalExpenditureUSD: summary.TTMCapitalExpenditureUSD, CFOBurnMonthlyUSD: summary.CFOBurnMonthlyUSD,
 		FCFBurnMonthlyUSD: summary.FCFBurnMonthlyUSD, CashRunwayMonths: summary.CashRunwayMonths,
 		QualityFlagsJSON: flags, CreatedAt: now,
@@ -1555,15 +1605,24 @@ func (c *Coordinator) persistCandidateScoreSnapshots(ctx context.Context, securi
 	for _, risk := range risks {
 		risksBySecurity[risk.SecurityID] = append(risksBySecurity[risk.SecurityID], risk)
 	}
+	var identities []SecurityBatchIdentity
+	if err := c.DB.WithContext(ctx).Where("batch_id = ? AND security_id IN ?", securityBatchID, securityIDs).Find(&identities).Error; err != nil {
+		return err
+	}
+	identityBySecurity := map[uint]SecurityBatchIdentity{}
+	for _, identity := range identities {
+		identityBySecurity[identity.SecurityID] = identity
+	}
 	rows := make([]CandidateScoreSnapshot, 0, len(universeRows))
 	for _, snapshot := range universeRows {
 		if snapshot.SecurityID == 0 || snapshot.QualityStatus != QualityStatusValid || snapshot.MarketCapUSD <= 0 {
 			continue
 		}
+		sectorScore := SectorRatingForSIC(identityBySecurity[snapshot.SecurityID].SIC).Score
 		score := ScoreDiscoveryCandidate(DiscoveryScoreInput{
 			SecurityID: snapshot.SecurityID, Ticker: snapshot.Ticker, MarketCapUSD: snapshot.MarketCapUSD,
 			Financial: metricBySecurity[snapshot.SecurityID], Insiders: insidersBySecurity[snapshot.SecurityID],
-			Risks: risksBySecurity[snapshot.SecurityID], AsOf: now,
+			Risks: risksBySecurity[snapshot.SecurityID], SectorScore: sectorScore, AsOf: now,
 		})
 		rows = append(rows, CandidateScoreToSnapshot(marketBatchID, score, now))
 	}

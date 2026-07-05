@@ -4,6 +4,14 @@
       <h1>{{ t('pages.scheduler.title') }}</h1>
       <el-button :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
     </div>
+    <el-alert
+      class="scheduler-timezone"
+      type="info"
+      :closable="false"
+      show-icon
+      :title="t('pages.scheduler.timezoneTitle', { timezone: schedulerTimezone })"
+      :description="t('pages.scheduler.timezoneDescription')"
+    />
     <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.scheduler.empty')">
       <el-table-column prop="task_name" :label="t('common.task')" min-width="180" show-overflow-tooltip />
       <el-table-column label="Cron" min-width="200">
@@ -45,13 +53,14 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, TaskConfig } from '@/api/types'
+import type { ApiResponse, SystemConfig, TaskConfig } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
 const loading = ref(false)
 const running = ref(false)
 const rows = ref<TaskConfig[]>([])
+const schedulerTimezone = ref('UTC')
 const cronPresets = computed(() => [
   { label: t('pages.scheduler.presets.every5'), value: '*/5 * * * *' },
   { label: t('pages.scheduler.presets.every30'), value: '*/30 * * * *' },
@@ -62,8 +71,12 @@ const cronPresets = computed(() => [
 async function load() {
   loading.value = true
   try {
-    const res = await apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs')
-    rows.value = res.data.data
+    const [tasksRes, configsRes] = await Promise.all([
+      apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs'),
+      apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs?category=scheduler')
+    ])
+    rows.value = tasksRes.data.data
+    schedulerTimezone.value = configsRes.data.data.find((item) => item.config_key === 'scheduler.timezone')?.config_value || 'UTC'
   } finally {
     loading.value = false
   }
@@ -116,3 +129,9 @@ function formatDateTime(value?: string | null) {
 
 onMounted(load)
 </script>
+
+<style scoped>
+.scheduler-timezone {
+  margin-bottom: 16px;
+}
+</style>

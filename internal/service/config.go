@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"sec_monitor/internal/config"
 	"sec_monitor/internal/model"
@@ -86,6 +87,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "sec.fetch_full_history", Value: "false", ValueType: "bool", Category: "sec"},
 		{Key: "system.data_retention_days", Value: "30", ValueType: "int", Category: "system"},
 		{Key: "system.storage_by_day", Value: "false", ValueType: "bool", Category: "system"},
+		{Key: "scheduler.timezone", Value: "UTC", ValueType: "string", Category: "scheduler"},
 		{Key: "ui.default_locale", Value: "zh-CN", ValueType: "string", Category: "ui"},
 		{Key: "ui.onboarding_completed", Value: "false", ValueType: "bool", Category: "ui"},
 		{Key: "notification.important_only", Value: "false", ValueType: "bool", Category: "notification"},
@@ -107,10 +109,18 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "candidate_notification.send_time", Value: "09:30", ValueType: "string", Category: "candidate_notification"},
 		{Key: "candidate_notification.max_per_grade", Value: "5", ValueType: "int", Category: "candidate_notification"},
 		{Key: "discovery.price_provider", Value: "", ValueType: "string", Category: "discovery"},
+		{Key: "discovery.stooq_urls", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.tiingo_api_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
 		{Key: "discovery.tiingo_api_tokens", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
 		{Key: "discovery.tiingo_base_url", Value: "https://api.tiingo.com", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.tiingo_request_budget", Value: "45", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.twelve_data_api_key", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.twelve_data_base_url", Value: "https://api.twelvedata.com", ValueType: "string", Category: "discovery"},
+		{Key: "discovery.twelve_data_request_budget", Value: "700", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.twelve_data_request_interval_ms", Value: "8000", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.yahoo_base_url", Value: "https://query1.finance.yahoo.com", ValueType: "string", Category: "discovery"},
+		{Key: "discovery.yahoo_request_budget", Value: "45", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.min_publish_coverage_pct", Value: "20", ValueType: "float", Category: "discovery"},
 		{Key: "discovery.research_mode", Value: "true", ValueType: "bool", Category: "discovery"},
 		{Key: "social_heat.enabled", Value: "false", ValueType: "bool", Category: "social_heat"},
 		{Key: "social_heat.provider", Value: "manual", ValueType: "string", Category: "social_heat"},
@@ -153,6 +163,9 @@ func (s *ConfigService) UpsertMany(ctx context.Context, inputs []ConfigInput, op
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, input := range inputs {
 			key := strings.TrimSpace(input.Key)
+			if err := validateConfigInput(key, input.Value); err != nil {
+				return err
+			}
 			if input.Encrypted && IsMaskedSecret(input.Value) {
 				var existing model.SystemConfig
 				err := tx.Where("config_key = ?", key).First(&existing).Error
@@ -186,6 +199,16 @@ func (s *ConfigService) UpsertMany(ctx context.Context, inputs []ConfigInput, op
 	})
 }
 
+func validateConfigInput(key string, value string) error {
+	switch key {
+	case "scheduler.timezone":
+		if _, err := schedulerLocationFromValue(value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *ConfigService) List(ctx context.Context, category string, maskSensitive bool) ([]model.SystemConfig, error) {
 	query := s.db.WithContext(ctx).Model(&model.SystemConfig{})
 	if category != "" {
@@ -215,6 +238,33 @@ func (s *ConfigService) GetValue(ctx context.Context, key string) (string, bool,
 		return "", false, err
 	}
 	return cfg.ConfigValue, true, nil
+}
+
+func (s *ConfigService) SchedulerTimezone(ctx context.Context) (*time.Location, string, error) {
+	value, ok, err := s.GetValue(ctx, "scheduler.timezone")
+	if err != nil {
+		return nil, "", err
+	}
+	if !ok {
+		value = "UTC"
+	}
+	location, err := schedulerLocationFromValue(value)
+	if err != nil {
+		return nil, "", err
+	}
+	return location, location.String(), nil
+}
+
+func schedulerLocationFromValue(value string) (*time.Location, error) {
+	name := strings.TrimSpace(value)
+	if name == "" {
+		name = "UTC"
+	}
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, ErrValidation
+	}
+	return location, nil
 }
 
 func (s *ConfigService) Telegram(ctx context.Context) (TelegramConfig, error) {
@@ -437,6 +487,11 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 	} else if ok && strings.TrimSpace(provider) != "" {
 		cfg.PriceProvider = strings.ToLower(strings.TrimSpace(provider))
 	}
+	if urls, ok, err := s.GetValue(ctx, "discovery.stooq_urls"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(urls) != "" {
+		cfg.StooqURLs = commaSeparatedConfigValues(urls)
+	}
 	if token, ok, err := s.GetValue(ctx, "discovery.tiingo_api_token"); err != nil {
 		return cfg, err
 	} else if ok && strings.TrimSpace(token) != "" && !IsMaskedSecret(token) {
@@ -458,6 +513,53 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 		parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget))
 		if parseErr == nil && parsed >= 0 {
 			cfg.TiingoRequestBudget = parsed
+		}
+	}
+	if apiKey, ok, err := s.GetValue(ctx, "discovery.twelve_data_api_key"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(apiKey) != "" && !IsMaskedSecret(apiKey) {
+		cfg.TwelveDataAPIKey = strings.TrimSpace(apiKey)
+	}
+	if baseURL, ok, err := s.GetValue(ctx, "discovery.twelve_data_base_url"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(baseURL) != "" {
+		cfg.TwelveDataBaseURL = strings.TrimSpace(baseURL)
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.twelve_data_request_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget))
+		if parseErr == nil && parsed >= 0 {
+			cfg.TwelveDataRequestBudget = parsed
+		}
+	}
+	if interval, ok, err := s.GetValue(ctx, "discovery.twelve_data_request_interval_ms"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(interval) != "" {
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(interval))
+		if parseErr == nil && parsed > 0 {
+			cfg.TwelveDataRequestIntervalMS = parsed
+		}
+	}
+	if baseURL, ok, err := s.GetValue(ctx, "discovery.yahoo_base_url"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(baseURL) != "" {
+		cfg.YahooBaseURL = strings.TrimSpace(baseURL)
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.yahoo_request_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget))
+		if parseErr == nil && parsed >= 0 {
+			cfg.YahooRequestBudget = parsed
+		}
+	}
+	if coverage, ok, err := s.GetValue(ctx, "discovery.min_publish_coverage_pct"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(coverage) != "" {
+		parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(coverage), 64)
+		if parseErr == nil && parsed >= 0 {
+			cfg.MinPublishCoveragePct = parsed
 		}
 	}
 	if researchMode, ok, err := s.GetValue(ctx, "discovery.research_mode"); err != nil {

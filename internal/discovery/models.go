@@ -219,10 +219,13 @@ type FinancialMetricSnapshot struct {
 	RunwayAvailable            bool      `json:"runway_available"`
 	LatestQuarterRevenueUSD    int64     `json:"latest_quarter_revenue_usd"`
 	PriorYearQuarterRevenueUSD int64     `json:"prior_year_quarter_revenue_usd"`
+	PreviousQuarterRevenueUSD  int64     `json:"previous_quarter_revenue_usd"`
 	QuarterlyRevenueYoYPct     float64   `json:"quarterly_revenue_yoy_pct"`
+	QuarterlyRevenueQoQPct     float64   `json:"quarterly_revenue_qoq_pct"`
 	LatestAnnualRevenueUSD     int64     `json:"latest_annual_revenue_usd"`
 	PriorAnnualRevenueUSD      int64     `json:"prior_annual_revenue_usd"`
 	AnnualRevenueYoYPct        float64   `json:"annual_revenue_yoy_pct"`
+	AnnualRevenueQoQPct        float64   `json:"annual_revenue_qoq_pct"`
 	AvailableCashUSD           float64   `json:"available_cash_usd"`
 	TTMOperatingCashFlowUSD    float64   `json:"ttm_operating_cash_flow_usd"`
 	TTMCapitalExpenditureUSD   float64   `json:"ttm_capital_expenditure_usd"`
@@ -324,6 +327,22 @@ type CandidateScoreSnapshot struct {
 	Security               Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
+type CandidateRecalcEvent struct {
+	ID              uint      `json:"id"`
+	BatchID         string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_candidate_recalc_filing_batch,priority:2;index"`
+	SecurityID      uint      `json:"security_id" gorm:"index"`
+	Ticker          string    `json:"ticker" gorm:"size:32;index"`
+	CIK             string    `json:"cik" gorm:"size:10;index"`
+	FilingID        string    `json:"filing_id" gorm:"size:128;uniqueIndex:idx_candidate_recalc_filing_batch,priority:1"`
+	AccessionNumber string    `json:"accession_number" gorm:"size:128;index"`
+	FilingType      string    `json:"filing_type" gorm:"size:64;index"`
+	FilingDate      time.Time `json:"filing_date" gorm:"index"`
+	Status          string    `json:"status" gorm:"size:32;index"`
+	Reason          string    `json:"reason" gorm:"type:text"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
 type UniverseBatch struct {
 	BatchID               string                    `json:"batch_id" gorm:"size:64;primaryKey"`
 	Kind                  string                    `json:"kind" gorm:"size:32;index"`
@@ -338,6 +357,8 @@ type UniverseBatch struct {
 	StartedAt             time.Time                 `json:"started_at"`
 	CompletedAt           *time.Time                `json:"completed_at"`
 	ErrorMessage          string                    `json:"error_message" gorm:"type:text"`
+	ProviderSummary       *BatchProviderSummary     `json:"provider_summary,omitempty" gorm:"-"`
+	CandidateCount        int64                     `json:"candidate_count" gorm:"-"`
 	Classifications       []ClassificationSnapshot  `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	Identities            []SecurityBatchIdentity   `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ListingIdentities     []ListingIdentitySnapshot `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
@@ -348,6 +369,18 @@ type UniverseBatch struct {
 	Snapshots             []UniverseSnapshot        `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	ShareSelections       []BatchShareSelection     `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 	CurrentPointers       []CurrentBatchPointer     `json:"-" gorm:"foreignKey:BatchID;references:BatchID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
+type BatchProviderSummary struct {
+	Provider          string           `json:"provider"`
+	Status            string           `json:"status"`
+	ExpectedCount     int              `json:"expected_count"`
+	RecordCount       int              `json:"record_count"`
+	CoveragePct       float64          `json:"coverage_pct"`
+	Timely            bool             `json:"timely"`
+	SourceVersion     string           `json:"source_version"`
+	ErrorMessage      string           `json:"error_message"`
+	PriceSourceCounts map[string]int64 `json:"price_source_counts"`
 }
 
 // ListingIdentitySnapshot stages every exchange listing, including identities

@@ -46,10 +46,13 @@ type FinancialSummary struct {
 
 	LatestQuarterRevenueUSD    int64
 	PriorYearQuarterRevenueUSD int64
+	PreviousQuarterRevenueUSD  int64
 	QuarterlyRevenueYoYPct     float64
+	QuarterlyRevenueQoQPct     float64
 	LatestAnnualRevenueUSD     int64
 	PriorAnnualRevenueUSD      int64
 	AnnualRevenueYoYPct        float64
+	AnnualRevenueQoQPct        float64
 
 	AvailableCashUSD         float64
 	TTMOperatingCashFlowUSD  float64
@@ -236,6 +239,11 @@ func BuildFinancialSummary(facts []FinancialFact, asOf time.Time) FinancialSumma
 				out.QualityFlags = append(out.QualityFlags, "extreme_revenue_growth")
 			}
 		}
+		previousQ, okPreviousQ := matchingPreviousDurationFact(facts, latestQ, FinancialMetricRevenue, 75, 105)
+		if okPreviousQ && previousQ.AmountMicros > 0 {
+			out.PreviousQuarterRevenueUSD = previousQ.AmountMicros / 1_000_000
+			out.QuarterlyRevenueQoQPct = (float64(latestQ.AmountMicros)/float64(previousQ.AmountMicros) - 1) * 100
+		}
 	}
 	latestAnnual, okLatestAnnual := latestDurationFact(facts, FinancialMetricRevenue, 330, 400)
 	if okLatestAnnual {
@@ -244,6 +252,7 @@ func BuildFinancialSummary(facts []FinancialFact, asOf time.Time) FinancialSumma
 			out.LatestAnnualRevenueUSD = latestAnnual.AmountMicros / 1_000_000
 			out.PriorAnnualRevenueUSD = priorAnnual.AmountMicros / 1_000_000
 			out.AnnualRevenueYoYPct = (float64(latestAnnual.AmountMicros)/float64(priorAnnual.AmountMicros) - 1) * 100
+			out.AnnualRevenueQoQPct = out.AnnualRevenueYoYPct
 		}
 	}
 	cash, okCash := latestInstantAmount(facts, FinancialMetricCash)
@@ -318,6 +327,25 @@ func latestDurationFact(facts []FinancialFact, metric string, minDays, maxDays i
 
 func matchingYearAgoFact(facts []FinancialFact, target FinancialFact, metric string, minDays, maxDays int) (FinancialFact, bool) {
 	wantEnd := target.PeriodEnd.AddDate(-1, 0, 0)
+	var selected FinancialFact
+	ok := false
+	for _, fact := range facts {
+		if fact.Metric != metric || fact.PeriodStart.IsZero() {
+			continue
+		}
+		days := int(fact.PeriodEnd.Sub(fact.PeriodStart).Hours()/24) + 1
+		if days < minDays || days > maxDays || absDurationDays(fact.PeriodEnd.Sub(wantEnd)) > 7 {
+			continue
+		}
+		if !ok || factFiledAfter(fact, selected) {
+			selected, ok = fact, true
+		}
+	}
+	return selected, ok
+}
+
+func matchingPreviousDurationFact(facts []FinancialFact, target FinancialFact, metric string, minDays, maxDays int) (FinancialFact, bool) {
+	wantEnd := target.PeriodStart.AddDate(0, 0, -1)
 	var selected FinancialFact
 	ok := false
 	for _, fact := range facts {

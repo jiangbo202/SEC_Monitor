@@ -49,13 +49,13 @@ func New(deps Dependencies) *gin.Engine {
 	notificationBatches := service.NewNotificationBatchService(deps.DB, notifier, configs)
 	candidateNotifications := service.NewCandidateNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs)
 	discoverySync := service.NewDiscoverySyncService(deps.DiscoveryDB, deps.Config.Discovery).WithConfigService(configs)
-	filings := service.NewFilingService(deps.DB, secClient, notifier, configs)
+	filings := service.NewFilingService(deps.DB, secClient, notifier, configs).WithDiscoveryDB(deps.DiscoveryDB)
 	currentFilingsClient, ok := secClient.(sec.CurrentFilingsClient)
 	if !ok {
 		currentFilingsClient = sec.NewHTTPClient(deps.Config.SEC.BaseURL, deps.Config.SEC.UserAgent, time.Duration(deps.Config.SEC.TimeoutMS)*time.Millisecond)
 	}
 	ipoRadar := service.NewIPORadarService(deps.DB, currentFilingsClient, notifier, configs)
-	sched := scheduler.New(tasks, filings, ipoRadar, candidateNotifications, discoverySync)
+	sched := scheduler.New(tasks, filings, configs, ipoRadar, candidateNotifications, discoverySync)
 	_ = sched.Start(context.Background())
 	app := &handler.AppHandler{
 		Runtime:               deps.Config,
@@ -88,6 +88,9 @@ func New(deps Dependencies) *gin.Engine {
 		api.GET("/discovery/candidates/summary", app.PreviewDiscoveryCandidateSummary)
 		api.GET("/discovery/candidates/:ticker/detail", app.GetDiscoveryCandidateDetail)
 		api.GET("/discovery/candidates", app.ListDiscoveryCandidates)
+		api.GET("/discovery/batches", app.ListDiscoveryBatches)
+		api.GET("/discovery/provider-runs", app.ListDiscoveryProviderRuns)
+		api.GET("/discovery/provider-health", app.ListDiscoveryProviderHealth)
 
 		api.GET("/watch-targets", app.ListWatchTargets)
 		api.POST("/watch-targets", app.CreateWatchTarget)

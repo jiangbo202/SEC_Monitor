@@ -216,23 +216,30 @@ IPO 页面说明：
 小盘候选研究功能：
 
 - 功能定位：仅用于研究与通知，不构成投资建议，也不自动交易。
-- 数据来源：SEC 官方 companyfacts/submissions bulk 数据、SEC Form 4、SEC capital event 文件、本地财务解析结果、Tiingo 日线价格。
-- 研究模式默认先做 SEC/财务初筛，再请求 Tiingo 补充价格和市值相关证据，避免对全市场逐只请求价格。
+- 数据来源：SEC 官方 companyfacts/submissions bulk 数据、SEC Form 4、SEC capital event 文件、本地财务解析结果，以及配置的日线价格源。
+- 研究模式默认先做 SEC/财务初筛，再按价格源链补充价格和市值相关证据，避免对全市场逐只请求价格。
 - A 级候选重点关注：市值小于 500M、收入高增长、现金 runway 充足、近期无融资风险、近 180 天有合格 Form 4 open-market buy。
 - B 级候选重点关注：市值小于 1B、收入增长较好、资本风险可控，并保留质量状态和缺失原因。
 - 风险事件识别包括 S-1、ATM Program、Reverse Split、Going Concern Warning、Warrants 等；相关事件会影响候选资格和得分。
 - 候选得分维度包括收入增长、现金储备、内幕增持、毛利率、股本稀释历史和赛道空间；当前实现中缺失或无法可靠自动判断的维度会以质量状态保守处理。
 - 同步过程按批次落库，保留 source version、provider run、provider health、候选快照和健康检查，便于审计和重跑。
-- market 同步采用研究模式发布：即使 Tiingo provider 仍在 validation/degraded 或当日价格数据部分缺失，也允许发布可审计的研究批次；生产级 provider 激活门槛仍保留在状态机中。
+- market 同步采用研究模式发布：即使价格 provider 仍在 validation/degraded 或当日价格数据部分缺失，也允许发布可审计的研究批次；生产级 provider 激活门槛仍保留在状态机中。
+- 研究模式支持最低发布覆盖率保护；当本次价格覆盖率低于阈值时，系统保留诊断和价格证据但不发布新候选批次，避免用少量结果覆盖已有完整列表。
 - 同一交易日可重复补跑 market sync。已失败的同内容批次会被重置后重试，已发布批次保持幂等。
-- Tiingo 限流时会停止继续请求未缓存标的；如果已有可用缓存价格，系统会发布部分研究结果；如果没有任何可用价格，则 market 阶段会失败并等待下次补跑。
+- Tiingo 限流时会停止继续请求未缓存标的；若配置了后续价格源，系统会继续用后续来源补缺口；如果最终覆盖率低于最低发布阈值，则 market 阶段失败并等待下次补跑。
 
 小盘候选配置：
 
-- `discovery.price_provider`：价格数据源，当前支持 `tiingo`。
+- `discovery.price_provider`：价格数据源。支持单源 `tiingo`、`twelvedata`、`yahoo`、`stooq`，也支持链式配置如 `tiingo,twelvedata,yahoo`、`tiingo,yahoo` 或 `stooq,tiingo,yahoo`。链式模式会按顺序请求，后续 provider 只补前面未覆盖的 ticker。
+- `discovery.stooq_urls`：Stooq 格式 CSV/ZIP 下载地址，多个用逗号分隔。必须是后端可直接下载的数据文件 URL，普通网页地址不可用；当前未内置可靠官方默认地址。
 - `discovery.tiingo_api_token`：单个 Tiingo token。兼容旧配置。
 - `discovery.tiingo_api_tokens`：多个 Tiingo token，逗号或换行分隔；系统会按顺序轮换使用。
-- `discovery.tiingo_request_budget`：单次 market sync 最多发起的 Tiingo HTTP 请求数，用于控制免费额度消耗；`0` 表示使用默认预算。
+- `discovery.tiingo_request_budget`：单次 market sync 每个 Tiingo token 最多发起的 HTTP 请求数，用于控制免费额度消耗；`0` 表示不限制。
+- `discovery.twelve_data_api_key`：Twelve Data API Key。
+- `discovery.twelve_data_request_budget`：单次 market sync 最多发起的 Twelve Data 请求数，默认 `700`。
+- `discovery.twelve_data_request_interval_ms`：Twelve Data 请求间隔，默认 `8000ms`，用于控制免费层 `8 API credits/minute` 的分钟额度。
+- `discovery.yahoo_request_budget`：单次 market sync 最多发起的 Yahoo chart 请求数；Yahoo 不需要 token，但仍建议控制请求量。
+- `discovery.min_publish_coverage_pct`：研究模式最低发布覆盖率，默认 `20`。低于该值时不会覆盖当前已发布候选列表。
 - `discovery.cache_dir`：小盘候选 SEC bulk/cache 目录。Docker 推荐使用持久化路径 `/app/data/.cache/discovery`。
 
 Docker 运行小盘候选：
@@ -255,6 +262,8 @@ DISCOVERY_SYNC_PHASE=market go run ./cmd/discovery-sync
 Tiingo 免费额度注意事项：
 
 - 免费额度通常不足以每天对全部美股逐只请求价格；推荐设置较小的 `discovery.tiingo_request_budget`，并依靠缓存分批补齐。
+- 推荐价格源使用 `tiingo,twelvedata,yahoo`：Tiingo 先请求有限预算内的标的，Twelve Data 再补 Tiingo 未覆盖的缺口，Yahoo 最后兜底。
+- Twelve Data 免费额度接近一次全量 market sync，且有 `8 API credits/minute` 限制；默认每 8 秒请求一次。补 700 个 ticker 约需 90 分钟，适合每天定时跑一次，不要频繁手动重跑。
 - 多 token 只能缓解单 token 限流，不能改变 Tiingo 对账号/网络/服务端策略的限制。
 - 页面 API usage 出现 hourly/daily 429 后，需要等待 Tiingo 额度恢复；恢复后运行 `make docker-discovery-market-sync` 继续补齐。
 
@@ -274,15 +283,20 @@ DB_DSN=data/sec_monitor.db
 SEC_BASE_URL=https://data.sec.gov
 SEC_USER_AGENT="sec-monitor/0.1 your-email@example.com"
 SEC_TIMEOUT_MS=10000
-SMALL_CAP_PRICE_PROVIDER=tiingo
+SMALL_CAP_PRICE_PROVIDER=tiingo,twelvedata,yahoo
 TIINGO_API_TOKEN="your-tiingo-token"
 TIINGO_API_TOKENS="token-a,token-b"
-SMALL_CAP_TIINGO_REQUEST_BUDGET=200
+SMALL_CAP_TIINGO_REQUEST_BUDGET=45
+TWELVE_DATA_API_KEY="your-twelve-data-key"
+SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET=700
+SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS=8000
+SMALL_CAP_YAHOO_REQUEST_BUDGET=200
+SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT=20
 SMALL_CAP_CACHE_DIR=/app/data/.cache/discovery
 ```
 
 SEC 要求请求方设置明确的 User-Agent。正式使用前请设置 `SEC_USER_AGENT`。
-小盘候选的 Tiingo token、token 组、请求预算和缓存目录可以在页面“系统配置 / 小盘候选数据源”中填写，也可以通过环境变量注入；页面配置优先于环境变量。不要把真实 token 写入仓库文件或提交到 git。
+小盘候选的价格源、Tiingo token、token 组、Twelve Data API Key、请求预算、Yahoo 请求预算和最低发布覆盖率可以在页面“系统配置 / 小盘候选数据源”中填写，也可以通过环境变量注入；页面配置优先于环境变量。不要把真实 token 写入仓库文件或提交到 git。
 
 ## 开发
 

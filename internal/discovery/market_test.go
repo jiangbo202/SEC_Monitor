@@ -97,7 +97,6 @@ func TestPriceValidationRejectsInvalidRows(t *testing.T) {
 		{"non trading", "ACME,2026-06-19,1,2,1,1,1,USD,false,manual\n", "trading"},
 		{"future", "ACME,2026-06-22,1,2,1,1,1,USD,false,manual\n", "future"},
 		{"stale", "ACME,2026-06-17,1,2,1,1,1,USD,false,manual\n", "stale"},
-		{"too precise", "ACME,2026-06-18,1.0000001,2,1,1,1,USD,false,manual\n", "precision"},
 		{"plus whole", "ACME,2026-06-18,+1,2,1,1,1,USD,false,manual\n", "decimal"},
 		{"plus fraction", "ACME,2026-06-18,1.+1,2,1,1,1,USD,false,manual\n", "decimal"},
 		{"overflow", "ACME,2026-06-18,9223372036854.775808,9223372036854.775808,9223372036854.775808,9223372036854.775808,1,USD,false,manual\n", "range"},
@@ -173,6 +172,20 @@ func TestPriceValidationTreatsEffectiveDateAsCivilDate(t *testing.T) {
 	}
 	if got := result.EffectiveDate.Format(time.DateOnly); got != "2026-06-18" {
 		t.Fatalf("EffectiveDate = %s", got)
+	}
+}
+
+func TestPriceValidationAllowsPreviousTradingPriceForNonTradingEffectiveDate(t *testing.T) {
+	input := "symbol,trade_date,open,high,low,close,volume,currency,is_adjusted,source\nACME,2026-06-18,1,2,1,1,1,USD,false,manual\n"
+	opts := marketValidationOptions(t, []Listing{{Ticker: "ACME"}})
+	opts.EffectiveDate = civilDate(t, "2026-06-19")
+	opts.AllowPreviousTradingDatePrice = true
+	_, result, err := ParsePriceCSV(context.Background(), strings.NewReader(input), PriceFormatNormalized, opts)
+	if err != nil {
+		t.Fatalf("ParsePriceCSV() error = %v", err)
+	}
+	if got := result.EffectiveDate.Format(time.DateOnly); got != "2026-06-19" {
+		t.Fatalf("EffectiveDate = %s, want 2026-06-19", got)
 	}
 }
 

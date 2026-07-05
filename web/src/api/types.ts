@@ -155,6 +155,45 @@ export interface CandidateScore {
   reason_code: string
   scoring_version: string
   created_at: string
+  price_close_usd?: number
+  price_volume?: number
+  price_trade_date?: string | null
+  price_currency?: string
+  price_quality_status?: string
+  price_source?: string
+  sector_category?: string
+  sector_label?: string
+  sector_sic?: number
+  sector_rating_score?: number
+  revenue_growth_explanation?: RevenueGrowthExplanation
+  capital_risk_summaries?: CapitalRiskSummary[]
+}
+
+export interface CapitalRiskSummary {
+  kind: string
+  severity: string
+  blocks_a: boolean
+  blocks_b: boolean
+  reason: string
+  effective_at: string
+}
+
+export interface RevenueGrowthExplanation {
+  method: string
+  source: string
+  revenue_growth_available: boolean
+  quarterly_revenue_yoy_pct: number
+  quarterly_revenue_qoq_pct: number
+  annual_revenue_yoy_pct: number
+  annual_revenue_qoq_pct: number
+  latest_quarter_revenue_usd: number
+  prior_year_quarter_revenue_usd: number
+  previous_quarter_revenue_usd: number
+  latest_annual_revenue_usd: number
+  prior_annual_revenue_usd: number
+  selected_revenue_growth_pct: number
+  selected_revenue_growth_basis: string
+  quality_flags_json: string
 }
 
 export interface DiscoverySecurity {
@@ -167,7 +206,9 @@ export interface DiscoverySecurity {
 
 export interface DiscoveryFinancialMetric {
   quarterly_revenue_yoy_pct: number
+  quarterly_revenue_qoq_pct: number
   annual_revenue_yoy_pct: number
+  annual_revenue_qoq_pct: number
   cash_runway_months: number
   revenue_growth_available: boolean
   runway_available: boolean
@@ -209,6 +250,19 @@ export interface SectorExplanation {
   rationale: string
 }
 
+export interface RecentSECFiling {
+  filing_id: string
+  accession_number: string
+  ticker: string
+  cik: string
+  company_name: string
+  filing_type: string
+  filing_date: string
+  published_at?: string | null
+  filing_url: string
+  title: string
+}
+
 export interface CandidateDetail {
   batch_id: string
   security: DiscoverySecurity
@@ -219,6 +273,7 @@ export interface CandidateDetail {
   sector: SectorExplanation
   data_quality: Record<string, string>
   evidence: DiscoveryEvidence[]
+  recent_filings: RecentSECFiling[]
 }
 
 export interface CandidateSummary {
@@ -273,6 +328,74 @@ export interface DiscoveryWorkflowResult {
   market_batch_id?: string
   summary: CandidateSummary
   health: CandidateHealth
+}
+
+export interface DiscoveryBatch {
+  batch_id: string
+  kind: string
+  status: string
+  effective_date: string
+  source_versions_json: string
+  content_sha256: string
+  record_count: number
+  universe_source_version: string
+  price_source_version: string
+  share_source_version: string
+  started_at: string
+  completed_at?: string | null
+  error_message: string
+  provider_summary?: BatchProviderSummary | null
+  candidate_count: number
+}
+
+export interface BatchProviderSummary {
+  provider: string
+  status: string
+  expected_count: number
+  record_count: number
+  coverage_pct: number
+  timely: boolean
+  source_version: string
+  error_message: string
+  price_source_counts: Record<string, number>
+}
+
+export interface ProviderRun {
+  id: number
+  batch_id: string
+  provider: string
+  status: string
+  source_version: string
+  sha256: string
+  effective_date: string
+  record_count: number
+  expected_count: number
+  coverage_pct: number
+  validation_error_pct: number
+  timely: boolean
+  gold_provider: string
+  gold_source_url: string
+  gold_sha256: string
+  gold_rows: number
+  gold_error_pct: number
+  error_message: string
+  created_at: string
+}
+
+export interface ProviderHealth {
+  provider: string
+  status: string
+  qualified_trading_days: number
+  failure_streak: number
+  last_trade_date: string
+  window_json: string
+  gold_evidence_ready: boolean
+  gold_sha256: string
+  updated_at: string
+}
+
+export interface ProviderHealthPage {
+  items: ProviderHealth[]
 }
 
 export interface CandidateReport {

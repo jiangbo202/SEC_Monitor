@@ -51,6 +51,13 @@ func TestParsePriceMicrosAcceptsExactInt64Maximum(t *testing.T) {
 	}
 }
 
+func TestParsePriceMicrosRoundsProviderPrecisionBeyondMicros(t *testing.T) {
+	got, err := parsePriceMicros("1.1234567")
+	if err != nil || got != 1_123_457 {
+		t.Fatalf("parse rounded micros = %d, err = %v", got, err)
+	}
+}
+
 func TestImportPriceCSVUsesBoundedBatches(t *testing.T) {
 	var input strings.Builder
 	input.WriteString("symbol,trade_date,close,currency,is_adjusted,source\n")

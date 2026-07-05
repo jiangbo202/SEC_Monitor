@@ -20,20 +20,25 @@ const (
 type Scheduler struct {
 	cron                   *cron.Cron
 	tasks                  *service.TaskConfigService
+	configs                *service.ConfigService
 	filings                *service.FilingService
 	ipo                    *service.IPORadarService
 	candidateNotifications *service.CandidateNotificationService
 	discoverySync          *service.DiscoverySyncService
 	mu                     sync.Mutex
 	running                bool
+	started                bool
 }
 
 func New(tasks *service.TaskConfigService, filings *service.FilingService, services ...any) *Scheduler {
 	var ipoService *service.IPORadarService
 	var candidateNotifications *service.CandidateNotificationService
 	var discoverySync *service.DiscoverySyncService
+	var configs *service.ConfigService
 	for _, svc := range services {
 		switch typed := svc.(type) {
+		case *service.ConfigService:
+			configs = typed
 		case *service.IPORadarService:
 			ipoService = typed
 		case *service.CandidateNotificationService:
@@ -45,6 +50,7 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 	return &Scheduler{
 		cron:                   cron.New(),
 		tasks:                  tasks,
+		configs:                configs,
 		filings:                filings,
 		ipo:                    ipoService,
 		candidateNotifications: candidateNotifications,
@@ -56,16 +62,27 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	if err := s.Reload(ctx); err != nil {
 		return err
 	}
+	s.mu.Lock()
 	s.cron.Start()
+	s.started = true
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *Scheduler) Stop() context.Context {
-	return s.cron.Stop()
+	s.mu.Lock()
+	cronInstance := s.cron
+	s.started = false
+	s.mu.Unlock()
+	return cronInstance.Stop()
 }
 
 func (s *Scheduler) Reload(ctx context.Context) error {
-	s.cron = cron.New()
+	location, err := s.schedulerLocation(ctx)
+	if err != nil {
+		return err
+	}
+	nextCron := cron.New(cron.WithLocation(location))
 	tasks, err := s.tasks.List(ctx)
 	if err != nil {
 		return err
@@ -78,13 +95,35 @@ func (s *Scheduler) Reload(ctx context.Context) error {
 		if !s.canRunTask(taskName) {
 			continue
 		}
-		if _, err := s.cron.AddFunc(task.CronExpr, func() {
+		if _, err := nextCron.AddFunc(task.CronExpr, func() {
 			_ = s.RunTask(context.Background(), taskName)
 		}); err != nil {
 			return err
 		}
 	}
+	s.mu.Lock()
+	previousCron := s.cron
+	wasStarted := s.started
+	s.cron = nextCron
+	if wasStarted {
+		s.cron.Start()
+	}
+	s.mu.Unlock()
+	if wasStarted && previousCron != nil {
+		<-previousCron.Stop().Done()
+	}
 	return nil
+}
+
+func (s *Scheduler) schedulerLocation(ctx context.Context) (*time.Location, error) {
+	if s == nil || s.configs == nil {
+		return time.UTC, nil
+	}
+	location, _, err := s.configs.SchedulerTimezone(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return location, nil
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context) error {

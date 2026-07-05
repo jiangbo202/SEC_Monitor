@@ -19,8 +19,8 @@
       :closable="false"
       show-icon
       class="health-alert"
-      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜缺财务 ${health.missing_financials}｜缺内幕 ${health.missing_insiders}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
-      :description="health.issues.length ? health.issues.join('；') : '当前候选证据链完整度正常。'"
+      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜财务指标不可用 ${health.missing_financials}｜无合格内幕增持 ${health.missing_insiders}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
+      :description="health.issues.length ? health.issues.map(formatHealthIssue).join('；') : '当前候选证据链完整度正常。'"
     />
 
     <el-card shadow="never" class="filter-card">
@@ -47,6 +47,11 @@
             <el-option label="否" value="false" />
           </el-select>
         </el-form-item>
+        <el-form-item label="赛道分类">
+          <el-select v-model="filters.sector_category" clearable filterable style="width: 180px">
+            <el-option v-for="category in sectorCategoryOptions" :key="category" :label="category" :value="category" />
+          </el-select>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="search">查询</el-button>
           <el-button @click="reset">重置</el-button>
@@ -54,29 +59,107 @@
       </el-form>
     </el-card>
 
-    <el-table :data="rows" v-loading="loading" border empty-text="暂无候选">
+    <el-table :data="rows" v-loading="loading" border empty-text="暂无候选" @sort-change="onSortChange">
       <el-table-column prop="grade" label="等级" width="90" align="center">
         <template #default="{ row }">
           <el-tag :type="gradeTagType(row.grade)" effect="dark">{{ gradeLabel(row.grade) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="ticker" label="Ticker" width="110" />
-      <el-table-column prop="total_score" label="总分" width="90" align="right" />
-      <el-table-column prop="market_cap_usd" label="市值" width="130" align="right">
+      <el-table-column prop="ticker" label="Ticker" width="110" sortable="custom" />
+      <el-table-column prop="total_score" label="总分" width="90" align="right" sortable="custom" />
+      <el-table-column prop="market_cap_usd" label="市值" width="130" align="right" sortable="custom">
         <template #default="{ row }">{{ formatUSD(row.market_cap_usd) }}</template>
       </el-table-column>
-      <el-table-column prop="revenue_growth_pct" label="收入增长" width="110" align="right">
-        <template #default="{ row }">{{ formatPct(row.revenue_growth_pct) }}</template>
+      <el-table-column prop="price_close_usd" label="价格" width="100" align="right" sortable="custom">
+        <template #default="{ row }">{{ formatPrice(row.price_close_usd, row.price_currency) }}</template>
       </el-table-column>
-      <el-table-column prop="cash_runway_months" label="现金 runway" width="120" align="right">
+      <el-table-column prop="price_volume" label="成交量" width="120" align="right" sortable="custom">
+        <template #default="{ row }">{{ formatVolume(row.price_volume) }}</template>
+      </el-table-column>
+      <el-table-column prop="price_trade_date" label="价格日期" width="110" sortable="custom">
+        <template #default="{ row }">{{ formatDate(row.price_trade_date) }}</template>
+      </el-table-column>
+      <el-table-column prop="sector_category" label="赛道分类" min-width="150">
+        <template #default="{ row }">
+          <el-space wrap>
+            <span>{{ row.sector_category || '-' }}</span>
+            <el-tag v-if="Number.isFinite(row.sector_rating_score)" size="small" :type="sectorTagType(row.sector_rating_score)" effect="plain">
+              {{ row.sector_rating_score }}/10
+            </el-tag>
+          </el-space>
+        </template>
+      </el-table-column>
+      <el-table-column prop="quarterly_revenue_yoy_pct" label="季度同比" width="110" align="right" sortable="custom">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <div v-for="line in revenueGrowthCalculationTooltipLines(row, 'quarterly_yoy')" :key="line">{{ line }}</div>
+              </div>
+            </template>
+            <span class="metric-help">{{ formatPct(revenueGrowthQuarterly(row)) }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column prop="quarterly_revenue_qoq_pct" label="季度环比" width="110" align="right" sortable="custom">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <div v-for="line in revenueGrowthCalculationTooltipLines(row, 'quarterly_qoq')" :key="line">{{ line }}</div>
+              </div>
+            </template>
+            <span class="metric-help">{{ formatPct(revenueGrowthQuarterlyQoQ(row)) }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column prop="annual_revenue_yoy_pct" label="年度同比" width="110" align="right" sortable="custom">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <div v-for="line in revenueGrowthCalculationTooltipLines(row, 'annual_yoy')" :key="line">{{ line }}</div>
+              </div>
+            </template>
+            <span class="metric-help">{{ formatPct(revenueGrowthAnnual(row)) }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column prop="annual_revenue_qoq_pct" label="年度环比" width="110" align="right" sortable="custom">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <div v-for="line in revenueGrowthCalculationTooltipLines(row, 'annual_qoq')" :key="line">{{ line }}</div>
+              </div>
+            </template>
+            <span class="metric-help">{{ formatPct(revenueGrowthAnnualQoQ(row)) }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column prop="cash_runway_months" label="现金 runway" width="120" align="right" sortable="custom">
         <template #default="{ row }">{{ formatMonths(row.cash_runway_months) }}</template>
       </el-table-column>
       <el-table-column label="核心信号" min-width="220">
         <template #default="{ row }">
           <el-space wrap>
             <el-tag v-if="row.recent_qualified_insider" type="success" effect="plain">内部人买入</el-tag>
-            <el-tag v-if="row.active_blocks_a" type="danger" effect="plain">阻断A</el-tag>
-            <el-tag v-if="row.active_blocks_b" type="danger" effect="plain">阻断B</el-tag>
+            <el-tooltip v-if="row.active_blocks_a" placement="top" effect="dark">
+              <template #content>
+                <div class="metric-tooltip">
+                  <div v-for="line in capitalRiskTooltipLines(row, 'A')" :key="line">{{ line }}</div>
+                </div>
+              </template>
+              <el-tag type="danger" effect="plain" class="risk-tag">阻断A</el-tag>
+            </el-tooltip>
+            <el-tooltip v-if="row.active_blocks_b" placement="top" effect="dark">
+              <template #content>
+                <div class="metric-tooltip">
+                  <div v-for="line in capitalRiskTooltipLines(row, 'B')" :key="line">{{ line }}</div>
+                </div>
+              </template>
+              <el-tag type="danger" effect="plain" class="risk-tag">阻断B</el-tag>
+            </el-tooltip>
             <el-tag v-if="!row.active_blocks_a && !row.active_blocks_b" type="info" effect="plain">无阻断风险</el-tag>
           </el-space>
         </template>
@@ -262,11 +345,30 @@
           <template #header>财务证据</template>
           <el-descriptions v-if="candidateDetail.financial" :column="2" border size="small">
             <el-descriptions-item label="季度收入 YoY">{{ formatPct(candidateDetail.financial.quarterly_revenue_yoy_pct) }}</el-descriptions-item>
+            <el-descriptions-item label="季度收入 QoQ">{{ formatPct(candidateDetail.financial.quarterly_revenue_qoq_pct) }}</el-descriptions-item>
             <el-descriptions-item label="年度收入 YoY">{{ formatPct(candidateDetail.financial.annual_revenue_yoy_pct) }}</el-descriptions-item>
+            <el-descriptions-item label="年度收入环比">{{ formatPct(candidateDetail.financial.annual_revenue_qoq_pct) }}</el-descriptions-item>
             <el-descriptions-item label="现金 Runway">{{ formatMonths(candidateDetail.financial.cash_runway_months) }}</el-descriptions-item>
             <el-descriptions-item label="质量标记">{{ candidateDetail.financial.quality_flags_json || '-' }}</el-descriptions-item>
           </el-descriptions>
           <el-empty v-else description="暂无财务证据" />
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>近期 SEC 公告</template>
+          <el-table :data="candidateDetail.recent_filings || []" size="small" border empty-text="暂无近期公告">
+            <el-table-column prop="filing_date" label="日期" width="120">
+              <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
+            </el-table-column>
+            <el-table-column prop="filing_type" label="类型" width="90" />
+            <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
+            <el-table-column label="链接" width="80">
+              <template #default="{ row }">
+                <el-link v-if="row.filing_url" :href="row.filing_url" target="_blank" type="primary">打开</el-link>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+          </el-table>
         </el-card>
 
         <el-card shadow="never">
@@ -341,7 +443,28 @@ const forceCandidateNotification = ref(false)
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
-const filters = reactive({ grade: '', ticker: '', eligible_a: '', eligible_b: '' })
+const filters = reactive({ grade: '', ticker: '', eligible_a: '', eligible_b: '', sector_category: '' })
+const sortState = reactive({ sort_by: '', sort_order: '' })
+const sectorCategoryOptions = [
+  '生物医药',
+  '软件与数据服务',
+  '电子/半导体',
+  '医疗器械',
+  '通信服务',
+  '医疗服务',
+  '能源',
+  '矿业/资源',
+  '化工/生命科学材料',
+  '工业制造',
+  '计算机硬件',
+  '消费/零售',
+  '商业服务',
+  '消费服务',
+  '教育服务',
+  '专业服务',
+  '其他已分类赛道',
+  '赛道数据缺失',
+]
 
 function requestParams() {
   const params: Record<string, string | number> = { page: page.value, page_size: pageSize }
@@ -349,6 +472,9 @@ function requestParams() {
   if (filters.ticker) params.ticker = filters.ticker.trim().toUpperCase()
   if (filters.eligible_a) params.eligible_a = filters.eligible_a
   if (filters.eligible_b) params.eligible_b = filters.eligible_b
+  if (filters.sector_category) params.sector_category = filters.sector_category
+  if (sortState.sort_by) params.sort_by = sortState.sort_by
+  if (sortState.sort_order) params.sort_order = sortState.sort_order
   return params
 }
 
@@ -467,11 +593,19 @@ function reset() {
   filters.ticker = ''
   filters.eligible_a = ''
   filters.eligible_b = ''
+  filters.sector_category = ''
   search()
 }
 
 function onPageChange(next: number) {
   page.value = next
+  load()
+}
+
+function onSortChange({ prop, order }: { prop?: string; order?: 'ascending' | 'descending' | null }) {
+  sortState.sort_by = order && prop ? prop : ''
+  sortState.sort_order = order === 'ascending' ? 'asc' : order === 'descending' ? 'desc' : ''
+  page.value = 1
   load()
 }
 
@@ -487,6 +621,13 @@ function gradeTagType(grade: string) {
   return 'info'
 }
 
+function sectorTagType(score?: number) {
+  if (!Number.isFinite(score)) return 'info'
+  if (Number(score) >= 7) return 'success'
+  if (Number(score) >= 5) return 'warning'
+  return 'info'
+}
+
 function healthStatusLabel(status: string) {
   if (status === 'ok') return '正常'
   if (status === 'degraded') return '降级'
@@ -494,14 +635,140 @@ function healthStatusLabel(status: string) {
   return status || '-'
 }
 
+function formatHealthIssue(issue: string) {
+  const [code, count] = issue.split(':')
+  if (code === 'missing_financials') return `财务指标不可用：${count || 0}`
+  if (code === 'missing_insiders') return `无合格内幕增持：${count || 0}`
+  if (code === 'missing_market_cap') return `缺市值：${count || 0}`
+  if (code === 'no_current_published_prescreen_batch') return '暂无已发布的小盘候选批次'
+  return issue
+}
+
 function formatUSD(value: number) {
-  if (!value) return '-'
-  if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`
-  return `$${(value / 1_000_000).toFixed(1)}M`
+	if (!value) return '-'
+	if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`
+	return `$${(value / 1_000_000).toFixed(1)}M`
+}
+
+function formatPrice(value?: number, currency?: string) {
+  if (!Number.isFinite(value)) return '-'
+  const prefix = currency === 'USD' || !currency ? '$' : `${currency} `
+  return `${prefix}${Number(value).toFixed(2)}`
+}
+
+function formatVolume(value?: number) {
+  if (!Number.isFinite(value)) return '-'
+  if (Number(value) >= 1_000_000) return `${(Number(value) / 1_000_000).toFixed(1)}M`
+  if (Number(value) >= 1_000) return `${(Number(value) / 1_000).toFixed(1)}K`
+  return String(value)
 }
 
 function formatPct(value: number) {
-  return Number.isFinite(value) ? `${value.toFixed(1)}%` : '-'
+	return Number.isFinite(value) ? `${value.toFixed(1)}%` : '-'
+}
+
+function formatPlainUSD(value?: number) {
+  if (!Number.isFinite(value)) return '-'
+  return `$${Number(value).toLocaleString()}`
+}
+
+function revenueGrowthCalculationTooltipLines(row: CandidateScore, period: 'quarterly_yoy' | 'quarterly_qoq' | 'annual_yoy' | 'annual_qoq') {
+  const info = row.revenue_growth_explanation
+  if (!info) {
+    return ['来源：candidate_score_snapshots.revenue_growth_pct；详情数据未返回，无法展开原始收入计算。']
+  }
+  const isQuarterly = period.startsWith('quarterly')
+  const isQoQ = period.endsWith('qoq')
+  const currentRevenue = isQuarterly ? info.latest_quarter_revenue_usd : info.latest_annual_revenue_usd
+  const priorRevenue = isQuarterly
+    ? (isQoQ ? info.previous_quarter_revenue_usd : info.prior_year_quarter_revenue_usd)
+    : info.prior_annual_revenue_usd
+  const resultPct = period === 'quarterly_yoy'
+    ? info.quarterly_revenue_yoy_pct
+    : period === 'quarterly_qoq'
+      ? info.quarterly_revenue_qoq_pct
+      : period === 'annual_yoy'
+        ? info.annual_revenue_yoy_pct
+        : info.annual_revenue_qoq_pct
+  const title = period === 'quarterly_yoy'
+    ? '季度收入同比 YoY'
+    : period === 'quarterly_qoq'
+      ? '季度收入环比 QoQ'
+      : period === 'annual_yoy'
+        ? '年度收入同比 YoY'
+        : '年度收入环比'
+  const currentLabel = isQuarterly ? '最新季度收入' : '最新年度收入'
+  const priorLabel = period === 'quarterly_yoy'
+    ? '去年同期季度收入'
+    : period === 'quarterly_qoq'
+      ? '上一季度收入'
+      : '上一年度收入'
+  return [
+    `${title}`,
+    `来源：${info.source || 'SEC companyfacts / financial_metric_snapshots'}`,
+    `${currentLabel}：${formatPlainUSD(currentRevenue)}`,
+    `${priorLabel}：${formatPlainUSD(priorRevenue)}`,
+    `公式：（${currentLabel} - ${priorLabel}）/ ${priorLabel} × 100%`,
+    `代入：（${formatPlainUSD(currentRevenue)} - ${formatPlainUSD(priorRevenue)}）/ ${formatPlainUSD(priorRevenue)} × 100% = ${formatPct(resultPct)}`,
+    `质量标记：${info.quality_flags_json || '-'}`,
+  ]
+}
+
+function revenueGrowthQuarterly(row: CandidateScore) {
+  return row.revenue_growth_explanation?.revenue_growth_available
+    ? row.revenue_growth_explanation.quarterly_revenue_yoy_pct
+    : row.revenue_growth_pct
+}
+
+function revenueGrowthAnnual(row: CandidateScore) {
+  return row.revenue_growth_explanation?.revenue_growth_available
+    ? row.revenue_growth_explanation.annual_revenue_yoy_pct
+    : row.revenue_growth_pct
+}
+
+function revenueGrowthQuarterlyQoQ(row: CandidateScore) {
+  return row.revenue_growth_explanation?.revenue_growth_available
+    ? row.revenue_growth_explanation.quarterly_revenue_qoq_pct
+    : NaN
+}
+
+function revenueGrowthAnnualQoQ(row: CandidateScore) {
+  return row.revenue_growth_explanation?.revenue_growth_available
+    ? row.revenue_growth_explanation.annual_revenue_qoq_pct
+    : NaN
+}
+
+function capitalRiskTooltipLines(row: CandidateScore, grade: 'A' | 'B') {
+  const risks = (row.capital_risk_summaries || []).filter((risk) => grade === 'A' ? risk.blocks_a : risk.blocks_b)
+  if (!risks.length) {
+    return [`${grade}级阻断：当前列表未返回具体风险原因，请打开详情查看融资/稀释风险。`]
+  }
+  const lines = [`${grade}级阻断原因：`]
+  risks.forEach((risk, index) => {
+    lines.push(`${index + 1}. ${capitalRiskKindLabel(risk.kind)}｜${capitalRiskSeverityLabel(risk.severity)}｜${formatDate(risk.effective_at)}`)
+    lines.push(`   ${risk.reason || '-'}`)
+  })
+  return lines
+}
+
+function capitalRiskKindLabel(kind: string) {
+  const labels: Record<string, string> = {
+    registered_financing: '注册融资',
+    atm_program: 'ATM 发行计划',
+    reverse_split: '反向拆股',
+    going_concern: '持续经营警告',
+    warrants: '认股权证/稀释',
+    shelf_registration: 'Shelf 注册',
+    offering: '发行/融资',
+  }
+  return labels[kind] || kind || '-'
+}
+
+function capitalRiskSeverityLabel(severity: string) {
+  if (severity === 'high') return '高风险'
+  if (severity === 'medium') return '中风险'
+  if (severity === 'low') return '低风险'
+  return severity || '-'
 }
 
 function formatMonths(value: number) {
@@ -545,5 +812,19 @@ onMounted(load)
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.metric-help {
+  cursor: help;
+  border-bottom: 1px dotted var(--el-text-color-secondary);
+}
+
+.risk-tag {
+  cursor: help;
+}
+
+.metric-tooltip {
+  max-width: 520px;
+  line-height: 1.6;
 }
 </style>

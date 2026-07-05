@@ -184,7 +184,7 @@ func (provider *TiingoPriceProvider) loadSymbols(ctx context.Context, requests [
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	state := &tiingoLoadState{budget: provider.options.RequestBudget}
+	state := &tiingoLoadState{budget: provider.totalRequestBudget()}
 	started := time.Now()
 	jobs := make(chan tiingoRequest)
 	var wg sync.WaitGroup
@@ -243,6 +243,17 @@ func (provider *TiingoPriceProvider) loadSymbols(ctx context.Context, requests [
 		return nil, fmt.Errorf("tiingo returned no usable price records; skipped=%d reasons=%s", skipped, formatTiingoSkipReasons(skipReasons))
 	}
 	return records, nil
+}
+
+func (provider *TiingoPriceProvider) totalRequestBudget() int {
+	if provider == nil || provider.options.RequestBudget <= 0 {
+		return 0
+	}
+	tokenCount := len(provider.options.Tokens)
+	if tokenCount <= 0 {
+		tokenCount = 1
+	}
+	return provider.options.RequestBudget * tokenCount
 }
 
 type tiingoLoadState struct {
