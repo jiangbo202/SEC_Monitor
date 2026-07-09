@@ -27,6 +27,14 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		PriceCurrency        string                   `json:"price_currency"`
 		PriceQualityStatus   string                   `json:"price_quality_status"`
 		PriceSource          string                   `json:"price_source"`
+		QualityTier          string                   `json:"quality_tier"`
+		QualityTags          []string                 `json:"quality_tags"`
+		QualityAdjustedScore int                      `json:"quality_adjusted_score"`
+		ReviewPriorityScore  int                      `json:"review_priority_score"`
+		ChangeStatus         string                   `json:"change_status"`
+		PreviousTotalScore   *int                     `json:"previous_total_score"`
+		PreviousGrade        string                   `json:"previous_grade"`
+		Performance          CandidatePerformance     `json:"performance"`
 		SectorCategory       string                   `json:"sector_category"`
 		SectorLabel          string                   `json:"sector_label"`
 		SectorSIC            int                      `json:"sector_sic"`
@@ -42,6 +50,14 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		PriceCurrency:        row.PriceCurrency,
 		PriceQualityStatus:   row.PriceQualityStatus,
 		PriceSource:          row.PriceSource,
+		QualityTier:          row.QualityTier,
+		QualityTags:          row.QualityTags,
+		QualityAdjustedScore: row.QualityAdjustedScore,
+		ReviewPriorityScore:  row.ReviewPriorityScore,
+		ChangeStatus:         row.ChangeStatus,
+		PreviousTotalScore:   row.PreviousTotalScore,
+		PreviousGrade:        row.PreviousGrade,
+		Performance:          sanitizeCandidatePerformance(row.Performance),
 		SectorCategory:       row.SectorCategory,
 		SectorLabel:          row.SectorLabel,
 		SectorSIC:            row.SectorSIC,
@@ -49,6 +65,17 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		RevenueGrowthInfo:    row.RevenueGrowthInfo,
 		CapitalRiskSummaries: row.CapitalRiskSummaries,
 	})
+}
+
+func sanitizeCandidatePerformance(value CandidatePerformance) CandidatePerformance {
+	value.BaseClose = finiteFloat(value.BaseClose, 0)
+	value.Close1D = finiteFloat(value.Close1D, 0)
+	value.Close5D = finiteFloat(value.Close5D, 0)
+	value.Close20D = finiteFloat(value.Close20D, 0)
+	value.Return1D = finiteFloatPtr(value.Return1D)
+	value.Return5D = finiteFloatPtr(value.Return5D)
+	value.Return20D = finiteFloatPtr(value.Return20D)
+	return value
 }
 
 func (row FinancialMetricSnapshot) MarshalJSON() ([]byte, error) {
@@ -79,4 +106,12 @@ func finiteFloat(value float64, fallback float64) float64 {
 		return fallback
 	}
 	return value
+}
+
+func finiteFloatPtr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	out := finiteFloat(*value, 0)
+	return &out
 }

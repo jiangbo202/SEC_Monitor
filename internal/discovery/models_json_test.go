@@ -19,8 +19,10 @@ func TestCandidateScoreSnapshotMarshalJSONSanitizesNonFiniteFloats(t *testing.T)
 	}
 }
 
-func TestCandidateScoreResultMarshalJSONIncludesPriceEvidence(t *testing.T) {
+func TestCandidateScoreResultMarshalJSONIncludesEnrichedEvidence(t *testing.T) {
 	tradeDate := mustParseDate(t, "2026-06-30")
+	previousScore := 72
+	return1D := 15.07
 	payload, err := json.Marshal(CandidateScoreResult{
 		CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "PX", RevenueGrowthPct: math.Inf(1), CashRunwayMonths: math.Inf(1)},
 		PriceCloseUSD:          12.34,
@@ -29,10 +31,24 @@ func TestCandidateScoreResultMarshalJSONIncludesPriceEvidence(t *testing.T) {
 		PriceCurrency:          "USD",
 		PriceQualityStatus:     QualityStatusValid,
 		PriceSource:            "tiingo",
-		SectorCategory:         "软件与数据服务",
-		SectorLabel:            "优秀赛道",
-		SectorSIC:              7372,
-		SectorRatingScore:      9,
+		QualityTier:            "premium_a",
+		QualityTags:            []string{"high_growth", "valid_price"},
+		QualityAdjustedScore:   88,
+		ReviewPriorityScore:    91,
+		ChangeStatus:           "improved",
+		PreviousTotalScore:     &previousScore,
+		PreviousGrade:          "B",
+		Performance: CandidatePerformance{
+			BaseDate:  "2026-06-30",
+			BaseClose: 12.34,
+			Date1D:    "2026-07-01",
+			Close1D:   14.20,
+			Return1D:  &return1D,
+		},
+		SectorCategory:    "软件与数据服务",
+		SectorLabel:       "优秀赛道",
+		SectorSIC:         7372,
+		SectorRatingScore: 9,
 	})
 	if err != nil {
 		t.Fatalf("MarshalJSON() error = %v", err)
@@ -48,6 +64,14 @@ func TestCandidateScoreResultMarshalJSONIncludesPriceEvidence(t *testing.T) {
 		`"price_currency":"USD"`,
 		`"price_quality_status":"valid"`,
 		`"price_source":"tiingo"`,
+		`"quality_tier":"premium_a"`,
+		`"quality_tags":["high_growth","valid_price"]`,
+		`"quality_adjusted_score":88`,
+		`"review_priority_score":91`,
+		`"change_status":"improved"`,
+		`"previous_total_score":72`,
+		`"previous_grade":"B"`,
+		`"performance":{"base_date":"2026-06-30","base_close":12.34,"date_1d":"2026-07-01","close_1d":14.2,"return_1d":15.07`,
 		`"sector_category":"软件与数据服务"`,
 		`"sector_label":"优秀赛道"`,
 		`"sector_sic":7372`,
