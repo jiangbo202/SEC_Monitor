@@ -10,15 +10,18 @@ import (
 )
 
 const CandidateWatchStatusActive = "active"
+const CandidateWatchStatusArchived = "archived"
 
 type CandidateWatchInput struct {
 	Ticker string `json:"ticker"`
 	Note   string `json:"note"`
+	Status string `json:"status"`
 }
 
 type CandidateWatchQuery struct {
 	Page, PageSize int
 	Ticker         string
+	Status         string
 }
 
 type CandidateWatchPage struct {
@@ -44,6 +47,13 @@ func ListCandidateWatches(ctx context.Context, db *gorm.DB, filter CandidateWatc
 	query := db.WithContext(ctx).Model(&CandidateWatch{})
 	if ticker := normalizeTicker(filter.Ticker); ticker != "" {
 		query = query.Where("ticker = ?", ticker)
+	}
+	status := normalizeCandidateWatchStatus(filter.Status)
+	if status == "" {
+		status = CandidateWatchStatusActive
+	}
+	if status != "all" {
+		query = query.Where("status = ?", status)
 	}
 	if err := query.Count(&result.Total).Error; err != nil {
 		return result, err
@@ -126,7 +136,14 @@ func UpsertCandidateWatch(ctx context.Context, db *gorm.DB, input CandidateWatch
 	if ticker == "" {
 		return CandidateWatch{}, errors.New("ticker is required")
 	}
-	watch := CandidateWatch{Ticker: ticker, Status: CandidateWatchStatusActive, Note: strings.TrimSpace(input.Note), UpdatedAt: time.Now().UTC()}
+	status := normalizeCandidateWatchStatus(input.Status)
+	if status == "" {
+		status = CandidateWatchStatusActive
+	}
+	if status != CandidateWatchStatusActive && status != CandidateWatchStatusArchived {
+		return CandidateWatch{}, errors.New("invalid watch status")
+	}
+	watch := CandidateWatch{Ticker: ticker, Status: status, Note: strings.TrimSpace(input.Note), UpdatedAt: time.Now().UTC()}
 	if score, ok, err := currentCandidateScoreByTicker(ctx, db, ticker); err != nil {
 		return CandidateWatch{}, err
 	} else if ok {
@@ -192,4 +209,8 @@ func currentCandidateScoreByTicker(ctx context.Context, db *gorm.DB, ticker stri
 
 func normalizeTicker(ticker string) string {
 	return strings.ToUpper(strings.TrimSpace(ticker))
+}
+
+func normalizeCandidateWatchStatus(status string) string {
+	return strings.ToLower(strings.TrimSpace(status))
 }

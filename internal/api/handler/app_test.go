@@ -257,6 +257,24 @@ func TestAppHandlerManagesCandidateWatches(t *testing.T) {
 		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/discovery/candidate-watches", strings.NewReader(`{"ticker":"wapi","note":"later","status":"archived"}`))
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"archived"`) {
+		t.Fatalf("archive status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/discovery/candidate-watches", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":0`) {
+		t.Fatalf("active list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/discovery/candidate-watches?status=archived", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":1`) {
+		t.Fatalf("archived list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodDelete, "/discovery/candidate-watches/1", nil)
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {

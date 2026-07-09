@@ -524,6 +524,9 @@
     </el-drawer>
 
     <el-dialog v-model="watchDialogVisible" title="小盘候选关注列表" width="1080px">
+      <div class="watch-toolbar">
+        <el-switch v-model="showArchivedWatches" active-text="显示归档" @change="loadCandidateWatches" />
+      </div>
       <el-table :data="watchRows" v-loading="watchLoading" border empty-text="暂无关注候选">
         <el-table-column prop="ticker" label="Ticker" width="110" />
         <el-table-column prop="company_name" label="公司" min-width="180" show-overflow-tooltip />
@@ -550,13 +553,23 @@
           <template #default="{ row }">{{ formatPerformance(row.latest_score?.performance?.return_5d ?? row.latest_score?.performance?.return_1d) }}</template>
         </el-table-column>
         <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="status" label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'archived' ? 'info' : 'success'" effect="plain">
+              {{ row.status === 'archived' ? '归档' : '关注中' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="updated_at" label="更新时间" width="170">
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="130" fixed="right">
+        <el-table-column label="操作" width="190" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.latest_score" link type="primary" @click="openDetail(row.latest_score)">详情</el-button>
-            <el-button link type="danger" @click="deleteCandidateWatch(row.id)">取消</el-button>
+            <el-button link type="primary" @click="editCandidateWatch(row)">备注</el-button>
+            <el-button v-if="row.status === 'archived'" link type="success" @click="restoreCandidateWatch(row)">恢复</el-button>
+            <el-button v-else link type="warning" @click="archiveCandidateWatch(row)">归档</el-button>
+            <el-button link type="danger" @click="deleteCandidateWatch(row.id)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -607,6 +620,7 @@ const watchingTicker = ref('')
 const watchLoading = ref(false)
 const watchDialogVisible = ref(false)
 const watchRows = ref<CandidateWatch[]>([])
+const showArchivedWatches = ref(false)
 const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
 const health = ref<CandidateHealth | null>(null)
@@ -776,11 +790,35 @@ async function openWatchList() {
 async function loadCandidateWatches() {
   watchLoading.value = true
   try {
-    const res = await apiClient.get<ApiResponse<PageResult<CandidateWatch>>>('/discovery/candidate-watches', { params: { page: 1, page_size: 100 } })
+    const status = showArchivedWatches.value ? 'archived' : 'active'
+    const res = await apiClient.get<ApiResponse<PageResult<CandidateWatch>>>('/discovery/candidate-watches', { params: { page: 1, page_size: 100, status } })
     watchRows.value = res.data.data.items || []
   } finally {
     watchLoading.value = false
   }
+}
+
+async function editCandidateWatch(row: CandidateWatch) {
+  const { value } = await ElMessageBox.prompt('更新关注备注', row.ticker, {
+    inputValue: row.note || '',
+    confirmButtonText: '保存',
+    cancelButtonText: '取消',
+  })
+  await saveCandidateWatch(row, String(value || ''), row.status || 'active')
+}
+
+async function archiveCandidateWatch(row: CandidateWatch) {
+  await saveCandidateWatch(row, row.note || '', 'archived')
+}
+
+async function restoreCandidateWatch(row: CandidateWatch) {
+  await saveCandidateWatch(row, row.note || '', 'active')
+}
+
+async function saveCandidateWatch(row: CandidateWatch, note: string, status: string) {
+  await apiClient.post('/discovery/candidate-watches', { ticker: row.ticker, note, status })
+  ElMessage.success('关注列表已更新')
+  await loadCandidateWatches()
 }
 
 async function deleteCandidateWatch(id: number) {
@@ -1198,6 +1236,12 @@ onMounted(load)
 
 .force-resend-checkbox {
   margin-right: auto;
+}
+
+.watch-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
 }
 
 .quick-filter-row {

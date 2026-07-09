@@ -101,7 +101,7 @@ func (h *AppHandler) GetDiscoveryCandidateOverview(c *gin.Context) {
 func (h *AppHandler) ListCandidateWatches(c *gin.Context) {
 	page, pageSize := pageParams(c)
 	result, err := discovery.ListCandidateWatches(c.Request.Context(), h.DiscoveryDB, discovery.CandidateWatchQuery{
-		Page: page, PageSize: pageSize, Ticker: c.Query("ticker"),
+		Page: page, PageSize: pageSize, Ticker: c.Query("ticker"), Status: c.Query("status"),
 	})
 	if err != nil {
 		Error(c, err)

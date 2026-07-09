@@ -538,6 +538,25 @@ func TestCandidateWatchLifecycle(t *testing.T) {
 	if page.Items[0].LatestScore == nil || page.Items[0].LatestScore.TotalScore != 72 || page.Items[0].LatestScore.QualityTier == "" {
 		t.Fatalf("latest score not attached = %#v", page.Items[0])
 	}
+	watch, err = UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "WCH", Note: "paused", Status: CandidateWatchStatusArchived})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watch.Status != CandidateWatchStatusArchived || watch.Note != "paused" {
+		t.Fatalf("archived watch = %#v", watch)
+	}
+	page, err = ListCandidateWatches(context.Background(), db, CandidateWatchQuery{Page: 1, PageSize: 10})
+	if err != nil || page.Total != 0 {
+		t.Fatalf("default active page=%#v err=%v", page, err)
+	}
+	page, err = ListCandidateWatches(context.Background(), db, CandidateWatchQuery{Page: 1, PageSize: 10, Status: CandidateWatchStatusArchived})
+	if err != nil || page.Total != 1 || page.Items[0].Status != CandidateWatchStatusArchived {
+		t.Fatalf("archived page=%#v err=%v", page, err)
+	}
+	watch, err = UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "WCH", Status: CandidateWatchStatusActive})
+	if err != nil || watch.Status != CandidateWatchStatusActive {
+		t.Fatalf("restore watch=%#v err=%v", watch, err)
+	}
 	if err := DeleteCandidateWatch(context.Background(), db, watch.ID); err != nil {
 		t.Fatal(err)
 	}
