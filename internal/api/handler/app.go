@@ -87,6 +87,45 @@ func (h *AppHandler) GetDiscoveryCandidateOverview(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) ListCandidateWatches(c *gin.Context) {
+	page, pageSize := pageParams(c)
+	result, err := discovery.ListCandidateWatches(c.Request.Context(), h.DiscoveryDB, discovery.CandidateWatchQuery{
+		Page: page, PageSize: pageSize, Ticker: c.Query("ticker"),
+	})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) UpsertCandidateWatch(c *gin.Context) {
+	var input discovery.CandidateWatchInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		Error(c, err)
+		return
+	}
+	result, err := discovery.UpsertCandidateWatch(c.Request.Context(), h.DiscoveryDB, input)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) DeleteCandidateWatch(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		Error(c, service.ErrValidation)
+		return
+	}
+	if err := discovery.DeleteCandidateWatch(c.Request.Context(), h.DiscoveryDB, uint(id)); err != nil {
+		Error(c, err)
+		return
+	}
+	c.Status(204)
+}
+
 func (h *AppHandler) GetDiscoveryCandidateDetail(c *gin.Context) {
 	result, err := discovery.GetCandidateDetail(c.Request.Context(), h.DiscoveryDB, c.Param("ticker"))
 	if err != nil {

@@ -68,6 +68,7 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 		{name: "insider_transaction_snapshots", model: &InsiderTransactionSnapshot{}},
 		{name: "candidate_score_snapshots", model: &CandidateScoreSnapshot{}},
 		{name: "candidate_recalc_events", model: &CandidateRecalcEvent{}},
+		{name: "candidate_watches", model: &CandidateWatch{}},
 		{name: "universe_batches", model: &UniverseBatch{}},
 		{name: "universe_snapshots", model: &UniverseSnapshot{}},
 		{name: "manual_security_overrides", model: &ManualSecurityOverride{}},

@@ -163,16 +163,45 @@ export interface CandidateScore {
   price_source?: string
   quality_tier?: string
   quality_tags?: string[]
+  quality_adjusted_score?: number
   review_priority_score?: number
   change_status?: string
   previous_total_score?: number | null
   previous_grade?: string
+  performance?: CandidatePerformance
   sector_category?: string
   sector_label?: string
   sector_sic?: number
   sector_rating_score?: number
   revenue_growth_explanation?: RevenueGrowthExplanation
   capital_risk_summaries?: CapitalRiskSummary[]
+}
+
+export interface CandidatePerformance {
+  base_date: string
+  base_close: number
+  date_1d: string
+  close_1d: number
+  return_1d?: number | null
+  date_5d: string
+  close_5d: number
+  return_5d?: number | null
+  date_20d: string
+  close_20d: number
+  return_20d?: number | null
+}
+
+export interface CandidateWatch {
+  id: number
+  ticker: string
+  security_id: number
+  cik: string
+  company_name: string
+  status: string
+  note: string
+  source_batch_id: string
+  created_at: string
+  updated_at: string
 }
 
 export interface CandidateOverview {

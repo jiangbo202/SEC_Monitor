@@ -189,6 +189,55 @@ func TestAppHandlerGetsDiscoveryCandidateOverview(t *testing.T) {
 	}
 }
 
+func TestAppHandlerManagesCandidateWatches(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	security := discovery.Security{CIK: "0000007777", CompanyName: "Watch API", CatalogStatus: discovery.SecurityCatalogPublished}
+	if err := discoveryDB.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := discovery.UniverseBatch{BatchID: "watch-api", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished, StartedAt: time.Now()}
+	if err := discoveryDB.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CurrentBatchPointer{Kind: discovery.BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "WAPI", Grade: discovery.CandidateGradeB}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &AppHandler{DiscoveryDB: discoveryDB}
+	r := gin.New()
+	r.GET("/discovery/candidate-watches", h.ListCandidateWatches)
+	r.POST("/discovery/candidate-watches", h.UpsertCandidateWatch)
+	r.DELETE("/discovery/candidate-watches/:id", h.DeleteCandidateWatch)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/discovery/candidate-watches", strings.NewReader(`{"ticker":"wapi","note":"track"}`))
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ticker":"WAPI"`) || !strings.Contains(rec.Body.String(), `"company_name":"Watch API"`) {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/discovery/candidate-watches", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":1`) {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/discovery/candidate-watches/1", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAppHandlerGetsDiscoveryCandidateDetail(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})

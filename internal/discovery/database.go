@@ -60,6 +60,7 @@ func Migrate(db *gorm.DB) error {
 			&SocialHeatSnapshot{},
 			&CandidateScoreSnapshot{},
 			&CandidateRecalcEvent{},
+			&CandidateWatch{},
 			&BatchShareSelection{},
 			&UniverseSnapshot{},
 			&ManualSecurityOverride{},

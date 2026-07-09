@@ -62,10 +62,12 @@ type CandidateScoreResult struct {
 	PriceSource          string                   `json:"price_source"`
 	QualityTier          string                   `json:"quality_tier"`
 	QualityTags          []string                 `json:"quality_tags"`
+	QualityAdjustedScore int                      `json:"quality_adjusted_score"`
 	ReviewPriorityScore  int                      `json:"review_priority_score"`
 	ChangeStatus         string                   `json:"change_status"`
 	PreviousTotalScore   *int                     `json:"previous_total_score"`
 	PreviousGrade        string                   `json:"previous_grade"`
+	Performance          CandidatePerformance     `json:"performance"`
 	SectorCategory       string                   `json:"sector_category"`
 	SectorLabel          string                   `json:"sector_label"`
 	SectorSIC            int                      `json:"sector_sic"`
@@ -81,6 +83,20 @@ type CapitalRiskSummary struct {
 	BlocksB     bool      `json:"blocks_b"`
 	Reason      string    `json:"reason"`
 	EffectiveAt time.Time `json:"effective_at"`
+}
+
+type CandidatePerformance struct {
+	BaseDate  string   `json:"base_date"`
+	BaseClose float64  `json:"base_close"`
+	Date1D    string   `json:"date_1d"`
+	Close1D   float64  `json:"close_1d"`
+	Return1D  *float64 `json:"return_1d"`
+	Date5D    string   `json:"date_5d"`
+	Close5D   float64  `json:"close_5d"`
+	Return5D  *float64 `json:"return_5d"`
+	Date20D   string   `json:"date_20d"`
+	Close20D  float64  `json:"close_20d"`
+	Return20D *float64 `json:"return_20d"`
 }
 
 type CandidateScorePage struct {
@@ -263,6 +279,9 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		return result, err
 	}
 	annotateCandidateQuality(items)
+	if err = hydrateCandidatePerformance(ctx, db, items); err != nil {
+		return result, err
+	}
 	sortCandidateScoreResults(items, filter.SortBy, filter.SortOrder)
 	result.Total = int64(len(items))
 	start := (page - 1) * size
@@ -583,8 +602,30 @@ func annotateCandidateQuality(items []CandidateScoreResult) {
 	for i := range items {
 		items[i].QualityTags = candidateQualityTags(items[i])
 		items[i].QualityTier = candidateQualityTier(items[i])
+		items[i].QualityAdjustedScore = candidateQualityAdjustedScore(items[i])
 		items[i].ReviewPriorityScore = candidateReviewPriorityScore(items[i])
 	}
+}
+
+func candidateQualityAdjustedScore(item CandidateScoreResult) int {
+	score := item.TotalScore
+	capValue := 100
+	if hasAnyQualityTag(item.QualityTags, "financials_missing") {
+		capValue = minInt(capValue, 55)
+	}
+	if hasAnyQualityTag(item.QualityTags, "low_revenue_base", "extreme_revenue_growth") {
+		capValue = minInt(capValue, 60)
+	}
+	if hasAnyQualityTag(item.QualityTags, "low_liquidity") {
+		capValue = minInt(capValue, 65)
+	}
+	if item.ActiveBlocksA || item.ActiveBlocksB || hasAnyQualityTag(item.QualityTags, "active_capital_risk") {
+		capValue = minInt(capValue, 62)
+	}
+	if score > capValue {
+		return capValue
+	}
+	return score
 }
 
 func candidateQualityTier(item CandidateScoreResult) string {
@@ -639,7 +680,7 @@ func candidateQualityTags(item CandidateScoreResult) []string {
 }
 
 func candidateReviewPriorityScore(item CandidateScoreResult) int {
-	score := item.TotalScore * 10
+	score := item.QualityAdjustedScore * 10
 	switch item.QualityTier {
 	case "a":
 		score += 120
@@ -675,6 +716,13 @@ func candidateReviewPriorityScore(item CandidateScoreResult) int {
 	}
 	score -= 10 * countPenaltyQualityTags(item.QualityTags)
 	return score
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func countPenaltyQualityTags(tags []string) int {
@@ -819,6 +867,47 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batchID str
 		items[i].PriceSource = price.Source
 	}
 	return items, nil
+}
+
+func hydrateCandidatePerformance(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {
+	for i := range items {
+		if items[i].PriceTradeDate == nil || items[i].PriceCloseUSD <= 0 || strings.TrimSpace(items[i].Ticker) == "" {
+			continue
+		}
+		performance, err := buildCandidatePerformance(ctx, db, items[i].Ticker, *items[i].PriceTradeDate, items[i].PriceCloseUSD)
+		if err != nil {
+			return err
+		}
+		items[i].Performance = performance
+	}
+	return nil
+}
+
+func buildCandidatePerformance(ctx context.Context, db *gorm.DB, ticker string, baseDate time.Time, baseClose float64) (CandidatePerformance, error) {
+	result := CandidatePerformance{BaseDate: baseDate.Format(time.DateOnly), BaseClose: baseClose}
+	var rows []PriceSnapshot
+	err := db.WithContext(ctx).
+		Where("symbol = ? AND trade_date > ? AND quality_status = ?", strings.ToUpper(strings.TrimSpace(ticker)), baseDate, QualityStatusValid).
+		Order("trade_date ASC").
+		Limit(20).
+		Find(&rows).Error
+	if err != nil {
+		return result, err
+	}
+	apply := func(index int, date *string, close *float64, ret **float64) {
+		if len(rows) <= index || baseClose <= 0 {
+			return
+		}
+		value := float64(rows[index].CloseMicros) / 1_000_000
+		*date = rows[index].TradeDate.Format(time.DateOnly)
+		*close = value
+		returnPct := (value/baseClose - 1) * 100
+		*ret = &returnPct
+	}
+	apply(0, &result.Date1D, &result.Close1D, &result.Return1D)
+	apply(4, &result.Date5D, &result.Close5D, &result.Return5D)
+	apply(19, &result.Date20D, &result.Close20D, &result.Return20D)
+	return result, nil
 }
 
 func ListBatches(ctx context.Context, db *gorm.DB, filter BatchQuery) (BatchPage, error) {

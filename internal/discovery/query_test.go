@@ -256,8 +256,58 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	if !containsString(page.Items[1].QualityTags, "low_revenue_base") || !containsString(page.Items[1].QualityTags, "low_liquidity") || page.Items[1].QualityTier != "watch_b" || page.Items[1].ChangeStatus != "new" {
 		t.Fatalf("watch candidate annotations = %#v", page.Items[1])
 	}
+	if page.Items[1].QualityAdjustedScore >= page.Items[1].TotalScore || page.Items[1].QualityAdjustedScore > 60 {
+		t.Fatalf("watch candidate adjusted score = %#v", page.Items[1])
+	}
 	if !containsString(page.Items[2].QualityTags, "active_capital_risk") || page.Items[2].ChangeStatus != "weakened" {
 		t.Fatalf("old candidate annotations = %#v", page.Items[2])
+	}
+}
+
+func TestCandidateScoreQueryIncludesForwardPerformance(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0000006151", CompanyName: "Perf Co", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	current := UniverseBatch{BatchID: "current-perf", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now()}
+	if err := db.Create(&current).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: current.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CandidateScoreSnapshot{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "PERF", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72, MarketCapUSD: 100_000_000, RevenueGrowthPct: 50, CashRunwayMonths: 18}).Error; err != nil {
+		t.Fatal(err)
+	}
+	baseDate := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	prices := []PriceSnapshot{
+		{Source: "tiingo", SourceVersion: "v1", Symbol: "PERF", TradeDate: baseDate, CloseMicros: 1_000_000, Volume: 200_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "tiingo", SourceVersion: "v2", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 1), CloseMicros: 1_100_000, Volume: 210_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "tiingo", SourceVersion: "v3", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 2), CloseMicros: 1_120_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "tiingo", SourceVersion: "v4", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 3), CloseMicros: 1_180_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "tiingo", SourceVersion: "v5", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 4), CloseMicros: 1_200_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "tiingo", SourceVersion: "v6", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 5), CloseMicros: 1_250_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
+	}
+	if err := db.Create(&prices).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&UniverseSnapshot{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "PERF", MarketCapUSD: 100_000_000, PriceSnapshotID: &prices[0].ID, QualityStatus: QualityStatusValid}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Performance.Return1D == nil || page.Items[0].Performance.Return5D == nil {
+		t.Fatalf("performance = %#v", page.Items)
+	}
+	if got := *page.Items[0].Performance.Return1D; got < 9.9 || got > 10.1 {
+		t.Fatalf("1d return = %v", got)
+	}
+	if got := *page.Items[0].Performance.Return5D; got < 24.9 || got > 25.1 {
+		t.Fatalf("5d return = %v", got)
 	}
 }
 
@@ -354,6 +404,53 @@ func TestBuildCandidateSummaryActionableOnlyFiltersNoisyBCandidates(t *testing.T
 	}
 	if summary.TotalB != 2 || len(summary.ItemsB) != 1 || summary.ItemsB[0].Ticker != "SNTF" || strings.Contains(summary.Message, "WNTF") {
 		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestCandidateWatchLifecycle(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0000006401", CompanyName: "Watch Co", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := UniverseBatch{BatchID: "watch-market", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now()}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "WCH", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	watch, err := UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "wch", Note: "track"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watch.Ticker != "WCH" || watch.SecurityID != security.ID || watch.CIK != security.CIK || watch.CompanyName != security.CompanyName || watch.Status != "active" || watch.SourceBatchID != batch.BatchID {
+		t.Fatalf("watch = %#v", watch)
+	}
+	watch, err = UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "WCH", Note: "updated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watch.Note != "updated" {
+		t.Fatalf("updated watch = %#v", watch)
+	}
+	page, err := ListCandidateWatches(context.Background(), db, CandidateWatchQuery{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Ticker != "WCH" {
+		t.Fatalf("page = %#v", page)
+	}
+	if err := DeleteCandidateWatch(context.Background(), db, watch.ID); err != nil {
+		t.Fatal(err)
+	}
+	page, err = ListCandidateWatches(context.Background(), db, CandidateWatchQuery{Page: 1, PageSize: 10})
+	if err != nil || page.Total != 0 {
+		t.Fatalf("after delete page=%#v err=%v", page, err)
 	}
 }
 

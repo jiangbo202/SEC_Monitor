@@ -343,6 +343,19 @@ type CandidateRecalcEvent struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+type CandidateWatch struct {
+	ID            uint      `json:"id"`
+	Ticker        string    `json:"ticker" gorm:"size:32;uniqueIndex;index"`
+	SecurityID    uint      `json:"security_id" gorm:"index"`
+	CIK           string    `json:"cik" gorm:"size:10;index"`
+	CompanyName   string    `json:"company_name" gorm:"size:255"`
+	Status        string    `json:"status" gorm:"size:16;index"`
+	Note          string    `json:"note" gorm:"type:text"`
+	SourceBatchID string    `json:"source_batch_id" gorm:"size:64;index"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 type UniverseBatch struct {
 	BatchID               string                    `json:"batch_id" gorm:"size:64;primaryKey"`
 	Kind                  string                    `json:"kind" gorm:"size:32;index"`

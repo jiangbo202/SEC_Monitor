@@ -7,6 +7,8 @@
       </div>
       <el-space>
         <el-button :loading="workflowLoading" type="primary" plain @click="runWorkflow">刷新候选工作流</el-button>
+        <el-button :loading="watchLoading" @click="openWatchList">关注列表</el-button>
+        <el-button @click="sectorDialogVisible = true">赛道分布</el-button>
         <el-button :loading="reportLoading" @click="openReport">查看日报</el-button>
         <el-button :loading="summaryLoading" @click="previewSummary">预检通知摘要</el-button>
         <el-button :loading="loading" @click="load">刷新</el-button>
@@ -95,6 +97,14 @@
       </el-table-column>
       <el-table-column prop="ticker" label="Ticker" width="110" sortable="custom" />
       <el-table-column prop="total_score" label="总分" width="90" align="right" sortable="custom" />
+      <el-table-column prop="quality_adjusted_score" label="调整分" width="90" align="right">
+        <template #default="{ row }">
+          <el-tooltip v-if="row.quality_adjusted_score !== row.total_score" content="已按低基数、极端增长、低流动性或融资风险进行上限保护" placement="top">
+            <span class="metric-help">{{ row.quality_adjusted_score ?? row.total_score }}</span>
+          </el-tooltip>
+          <span v-else>{{ row.quality_adjusted_score ?? row.total_score }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="review_priority_score" label="优先级" width="100" align="right" sortable="custom">
         <template #default="{ row }">{{ row.review_priority_score ?? '-' }}</template>
       </el-table-column>
@@ -181,6 +191,21 @@
       <el-table-column prop="cash_runway_months" label="现金 runway" width="120" align="right" sortable="custom">
         <template #default="{ row }">{{ formatMonths(row.cash_runway_months) }}</template>
       </el-table-column>
+      <el-table-column label="表现" width="140" align="right">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <div>基准：{{ row.performance?.base_date || '-' }} / {{ formatPrice(row.performance?.base_close, 'USD') }}</div>
+                <div>1日：{{ formatPerformance(row.performance?.return_1d) }} {{ row.performance?.date_1d || '' }}</div>
+                <div>5日：{{ formatPerformance(row.performance?.return_5d) }} {{ row.performance?.date_5d || '' }}</div>
+                <div>20日：{{ formatPerformance(row.performance?.return_20d) }} {{ row.performance?.date_20d || '' }}</div>
+              </div>
+            </template>
+            <span class="metric-help">{{ formatPerformance(row.performance?.return_5d ?? row.performance?.return_1d) }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
       <el-table-column label="核心信号" min-width="220">
         <template #default="{ row }">
           <el-space wrap>
@@ -218,7 +243,7 @@
         <template #default="{ row }">
           <el-space>
             <el-button link type="primary" :loading="detailLoadingTicker === row.ticker" @click="openDetail(row)">详情</el-button>
-            <el-button link type="primary" :loading="watchingTicker === row.ticker" @click="addToWatchTargets(row)">加入监控</el-button>
+            <el-button link type="primary" :loading="watchingTicker === row.ticker" @click="addToCandidateWatches(row)">关注</el-button>
           </el-space>
         </template>
       </el-table-column>
@@ -449,6 +474,34 @@
         </el-card>
       </div>
     </el-drawer>
+
+    <el-dialog v-model="watchDialogVisible" title="小盘候选关注列表" width="760px">
+      <el-table :data="watchRows" v-loading="watchLoading" border empty-text="暂无关注候选">
+        <el-table-column prop="ticker" label="Ticker" width="110" />
+        <el-table-column prop="company_name" label="公司" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="note" label="备注" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="updated_at" label="更新时间" width="170">
+          <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="danger" @click="deleteCandidateWatch(row.id)">取消</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
+
+    <el-dialog v-model="sectorDialogVisible" title="候选赛道分布" width="720px">
+      <el-table :data="sectorRows" border empty-text="暂无赛道统计">
+        <el-table-column prop="name" label="赛道" min-width="180" />
+        <el-table-column prop="count" label="候选数" width="100" align="right" />
+        <el-table-column label="占比" min-width="180">
+          <template #default="{ row }">
+            <el-progress :percentage="sectorPercentage(row.count)" :stroke-width="10" />
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
@@ -467,6 +520,7 @@ import type {
   CandidateReport,
   CandidateScore,
   CandidateSummary,
+  CandidateWatch,
   DiscoveryWorkflowResult,
   PageResult,
 } from '@/api/types'
@@ -479,6 +533,10 @@ const reportLoading = ref(false)
 const detailVisible = ref(false)
 const detailLoadingTicker = ref('')
 const watchingTicker = ref('')
+const watchLoading = ref(false)
+const watchDialogVisible = ref(false)
+const watchRows = ref<CandidateWatch[]>([])
+const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
 const health = ref<CandidateHealth | null>(null)
 const report = ref<CandidateReport | null>(null)
@@ -503,6 +561,9 @@ const topSectorCount = computed(() => {
   const entries = Object.entries(overview.value?.sector_counts || {}).sort((a, b) => b[1] - a[1])
   return entries[0]?.[1] || 0
 })
+const sectorRows = computed(() => Object.entries(overview.value?.sector_counts || {})
+  .map(([name, count]) => ({ name, count }))
+  .sort((a, b) => b.count - a.count))
 const sectorCategoryOptions = [
   '生物医药',
   '软件与数据服务',
@@ -607,27 +668,40 @@ async function openDetail(row: CandidateScore) {
   }
 }
 
-async function addToWatchTargets(row: CandidateScore) {
+async function addToCandidateWatches(row: CandidateScore) {
   watchingTicker.value = row.ticker
   try {
-    await apiClient.post('/watch-targets', {
+    await apiClient.post('/discovery/candidate-watches', {
       ticker: row.ticker,
-      company_name: row.ticker,
-      target_type: 'stock',
-      group: 'small-cap-candidate',
-      status: 'enabled',
+      note: qualityTierLabel(row.quality_tier),
     })
-    ElMessage.success(`${row.ticker} 已加入监控标的`)
+    ElMessage.success(`${row.ticker} 已加入候选关注列表`)
   } catch (err: any) {
-    const message = err?.response?.data?.message || ''
-    if (message.toLowerCase().includes('duplicate') || message.includes('UNIQUE')) {
-      ElMessage.info(`${row.ticker} 已在监控标的中`)
-    } else {
-      ElMessage.error(message || '加入监控失败')
-    }
+    ElMessage.error(err?.response?.data?.message || '加入关注失败')
   } finally {
     watchingTicker.value = ''
   }
+}
+
+async function openWatchList() {
+  watchDialogVisible.value = true
+  await loadCandidateWatches()
+}
+
+async function loadCandidateWatches() {
+  watchLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<PageResult<CandidateWatch>>>('/discovery/candidate-watches', { params: { page: 1, page_size: 100 } })
+    watchRows.value = res.data.data.items || []
+  } finally {
+    watchLoading.value = false
+  }
+}
+
+async function deleteCandidateWatch(id: number) {
+  await apiClient.delete(`/discovery/candidate-watches/${id}`)
+  ElMessage.success('已取消关注')
+  await loadCandidateWatches()
 }
 
 async function previewSummary() {
@@ -799,6 +873,18 @@ function formatVolume(value?: number) {
   if (Number(value) >= 1_000_000) return `${(Number(value) / 1_000_000).toFixed(1)}M`
   if (Number(value) >= 1_000) return `${(Number(value) / 1_000).toFixed(1)}K`
   return String(value)
+}
+
+function formatPerformance(value?: number | null) {
+  if (!Number.isFinite(value)) return '-'
+  const num = Number(value)
+  return `${num >= 0 ? '+' : ''}${num.toFixed(1)}%`
+}
+
+function sectorPercentage(count: number) {
+  const totalCount = overview.value?.total || 0
+  if (!totalCount) return 0
+  return Number(((count / totalCount) * 100).toFixed(1))
 }
 
 function formatPct(value: number) {
