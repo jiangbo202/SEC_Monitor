@@ -39,7 +39,7 @@
       <el-card shadow="never" class="overview-card">
         <span class="overview-label">变化</span>
         <strong>{{ overview.change_counts?.new || 0 }}</strong>
-        <small>新增 / 改善 {{ overview.change_counts?.improved || 0 }}</small>
+        <small>改善 {{ overview.change_counts?.improved || 0 }} / 退出 {{ overview.change_counts?.exited || 0 }}</small>
       </el-card>
       <el-card shadow="never" class="overview-card">
         <span class="overview-label">数据提示</span>
@@ -307,6 +307,8 @@
           </el-descriptions-item>
           <el-descriptions-item v-if="notificationPreview" label="发送时间">{{ notificationPreview.settings.send_time }}</el-descriptions-item>
           <el-descriptions-item v-if="notificationPreview" label="每级最多">{{ notificationPreview.settings.max_per_grade }}</el-descriptions-item>
+          <el-descriptions-item v-if="notificationPreview" label="仅行动候选">{{ notificationPreview.settings.actionable_only ? '是' : '否' }}</el-descriptions-item>
+          <el-descriptions-item v-if="notificationPreview" label="最小优先级">{{ notificationPreview.settings.min_review_priority_score || '-' }}</el-descriptions-item>
         </el-descriptions>
         <el-input
           :model-value="summary.message"
@@ -401,6 +403,23 @@
 
     <el-drawer v-model="detailVisible" title="候选证据链" size="720px">
       <div v-if="candidateDetail" class="candidate-detail">
+        <el-card shadow="never">
+          <template #header>研究摘要</template>
+          <div class="detail-summary-grid">
+            <div>
+              <div class="detail-summary-title">值得关注</div>
+              <el-space wrap>
+                <el-tag v-for="signal in candidatePositiveSignals(candidateDetail)" :key="signal" type="success" effect="plain">{{ signal }}</el-tag>
+              </el-space>
+            </div>
+            <div>
+              <div class="detail-summary-title">需要谨慎</div>
+              <el-space wrap>
+                <el-tag v-for="risk in candidateRiskSignals(candidateDetail)" :key="risk" :type="risk === '暂无明显风险' ? 'info' : 'warning'" effect="plain">{{ risk }}</el-tag>
+              </el-space>
+            </div>
+          </div>
+        </el-card>
         <el-descriptions :column="2" border>
           <el-descriptions-item label="Ticker">{{ candidateDetail.score.ticker }}</el-descriptions-item>
           <el-descriptions-item label="公司">{{ candidateDetail.security.company_name }}</el-descriptions-item>
@@ -1067,6 +1086,28 @@ function capitalRiskSeverityLabel(severity: string) {
   return severity || '-'
 }
 
+function candidatePositiveSignals(detail: CandidateDetail) {
+  const signals: string[] = []
+  if (detail.score.grade === 'A') signals.push('A级候选')
+  if (detail.score.grade === 'B' && detail.score.total_score >= 70) signals.push('高分B级')
+  if (detail.score.revenue_growth_pct >= 40) signals.push('收入高增长')
+  if (detail.score.cash_runway_months >= 12) signals.push('现金 runway 充足')
+  if (detail.score.recent_qualified_insider) signals.push('近期合格内幕买入')
+  if (detail.sector?.score >= 7) signals.push('赛道评分较高')
+  return signals.length ? signals : ['暂无强信号']
+}
+
+function candidateRiskSignals(detail: CandidateDetail) {
+  const risks: string[] = []
+  if (detail.score.active_blocks_a || detail.score.active_blocks_b) risks.push('存在阻断风险')
+  if (detail.score.cash_runway_months > 0 && detail.score.cash_runway_months < 9) risks.push('现金 runway 偏短')
+  if (!detail.score.recent_qualified_insider) risks.push('缺少合格内幕买入')
+  if (detail.financial?.quality_flags_json?.includes('low_revenue_base')) risks.push('收入基数偏低')
+  if (detail.financial?.quality_flags_json?.includes('extreme_revenue_growth')) risks.push('增长异常需核验')
+  if (detail.capital_risks?.length) risks.push(`融资/稀释事件 ${detail.capital_risks.length} 条`)
+  return risks.length ? risks : ['暂无明显风险']
+}
+
 function formatMonths(value: number) {
   return Number.isFinite(value) && value > 0 ? `${value.toFixed(1)} 月` : '-'
 }
@@ -1153,6 +1194,18 @@ onMounted(load)
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.detail-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.detail-summary-title {
+  margin-bottom: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
 }
 
 .metric-help {

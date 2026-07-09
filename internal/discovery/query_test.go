@@ -377,6 +377,39 @@ func TestBuildCandidateOverviewSummarizesCandidateDimensions(t *testing.T) {
 	}
 }
 
+func TestBuildCandidateOverviewCountsExitedCandidates(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	securities := []Security{
+		{CIK: "0000006251", CompanyName: "Keep", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000006252", CompanyName: "Gone", CatalogStatus: SecurityCatalogPublished},
+	}
+	if err := db.Create(&securities).Error; err != nil {
+		t.Fatal(err)
+	}
+	old := UniverseBatch{BatchID: "old-exit", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Hour)}
+	current := UniverseBatch{BatchID: "current-exit", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now()}
+	if err := db.Create(&[]UniverseBatch{old, current}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: current.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]CandidateScoreSnapshot{
+		{BatchID: old.BatchID, SecurityID: securities[0].ID, Ticker: "KEEP", Grade: CandidateGradeB, EligibleB: true, TotalScore: 70},
+		{BatchID: old.BatchID, SecurityID: securities[1].ID, Ticker: "GONE", Grade: CandidateGradeB, EligibleB: true, TotalScore: 69},
+		{BatchID: current.BatchID, SecurityID: securities[0].ID, Ticker: "KEEP", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	overview, err := BuildCandidateOverview(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.ChangeCounts["exited"] != 1 {
+		t.Fatalf("change counts = %#v", overview.ChangeCounts)
+	}
+}
+
 func TestBuildCandidateSummaryActionableOnlyFiltersNoisyBCandidates(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	securities := []Security{
@@ -418,6 +451,48 @@ func TestBuildCandidateSummaryActionableOnlyFiltersNoisyBCandidates(t *testing.T
 		t.Fatal(err)
 	}
 	if summary.TotalB != 2 || len(summary.ItemsB) != 1 || summary.ItemsB[0].Ticker != "SNTF" || strings.Contains(summary.Message, "WNTF") {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestBuildCandidateSummaryFiltersByMinimumPriority(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	securities := []Security{
+		{CIK: "0000006351", CompanyName: "High Priority", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000006352", CompanyName: "Low Priority", CatalogStatus: SecurityCatalogPublished},
+	}
+	if err := db.Create(&securities).Error; err != nil {
+		t.Fatal(err)
+	}
+	securityBatch := UniverseBatch{BatchID: "security-priority-summary", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Minute)}
+	current := UniverseBatch{BatchID: "market-priority-summary", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
+	if err := db.Create(&[]UniverseBatch{securityBatch, current}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: current.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]CandidateScoreSnapshot{
+		{BatchID: current.BatchID, SecurityID: securities[0].ID, Ticker: "HIGH", Grade: CandidateGradeA, EligibleA: true, TotalScore: 88, MarketCapUSD: 200_000_000, RevenueGrowthPct: 55, CashRunwayMonths: 18, RecentQualifiedInsider: true},
+		{BatchID: current.BatchID, SecurityID: securities[1].ID, Ticker: "LOW", Grade: CandidateGradeA, EligibleA: true, TotalScore: 70, MarketCapUSD: 900_000_000, RevenueGrowthPct: 15, CashRunwayMonths: 7},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]FinancialMetricSnapshot{
+		{BatchID: securityBatch.BatchID, SecurityID: securities[0].ID, RevenueGrowthAvailable: true, RunwayAvailable: true, LatestQuarterRevenueUSD: 10_000_000, QuarterlyRevenueYoYPct: 55},
+		{BatchID: securityBatch.BatchID, SecurityID: securities[1].ID, RevenueGrowthAvailable: true, RunwayAvailable: true, LatestQuarterRevenueUSD: 8_000_000, QuarterlyRevenueYoYPct: 15},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	summary, err := BuildCandidateSummaryWithOptions(context.Background(), db, CandidateSummaryOptions{
+		LimitPerGrade:          5,
+		IncludeA:               true,
+		MinReviewPriorityScore: 950,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalA != 2 || len(summary.ItemsA) != 1 || summary.ItemsA[0].Ticker != "HIGH" {
 		t.Fatalf("summary = %#v", summary)
 	}
 }

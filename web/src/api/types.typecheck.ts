@@ -55,6 +55,8 @@ export const candidateNotificationPreviewTypecheck: CandidateNotificationPreview
     notify_b: false,
     send_time: '09:30',
     max_per_grade: 5,
+    actionable_only: true,
+    min_review_priority_score: 0,
   },
   summary: candidateSummaryTypecheck,
 }

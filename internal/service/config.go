@@ -59,11 +59,13 @@ type IPORadarSettings struct {
 }
 
 type CandidateNotificationSettings struct {
-	Enabled     bool
-	NotifyA     bool
-	NotifyB     bool
-	SendTime    string
-	MaxPerGrade int
+	Enabled                bool   `json:"enabled"`
+	NotifyA                bool   `json:"notify_a"`
+	NotifyB                bool   `json:"notify_b"`
+	SendTime               string `json:"send_time"`
+	MaxPerGrade            int    `json:"max_per_grade"`
+	ActionableOnly         bool   `json:"actionable_only"`
+	MinReviewPriorityScore int    `json:"min_review_priority_score"`
 }
 
 type SocialHeatSettings struct {
@@ -108,6 +110,8 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.send_time", Value: "09:30", ValueType: "string", Category: "candidate_notification"},
 		{Key: "candidate_notification.max_per_grade", Value: "5", ValueType: "int", Category: "candidate_notification"},
+		{Key: "candidate_notification.actionable_only", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.min_review_priority_score", Value: "0", ValueType: "int", Category: "candidate_notification"},
 		{Key: "discovery.price_provider", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.stooq_urls", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.tiingo_api_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
@@ -425,9 +429,18 @@ func (s *ConfigService) CandidateNotificationSettings(ctx context.Context) (Cand
 	if err != nil {
 		return CandidateNotificationSettings{}, err
 	}
+	actionableRaw, _, err := s.GetValue(ctx, "candidate_notification.actionable_only")
+	if err != nil {
+		return CandidateNotificationSettings{}, err
+	}
+	minPriorityRaw, _, err := s.GetValue(ctx, "candidate_notification.min_review_priority_score")
+	if err != nil {
+		return CandidateNotificationSettings{}, err
+	}
 	enabled, _ := strconv.ParseBool(enabledRaw)
 	notifyA, _ := strconv.ParseBool(notifyARaw)
 	notifyB, _ := strconv.ParseBool(notifyBRaw)
+	actionableOnly, _ := strconv.ParseBool(actionableRaw)
 	maxPerGrade, _ := strconv.Atoi(maxRaw)
 	if maxPerGrade <= 0 {
 		maxPerGrade = 5
@@ -435,12 +448,18 @@ func (s *ConfigService) CandidateNotificationSettings(ctx context.Context) (Cand
 	if maxPerGrade > 20 {
 		maxPerGrade = 20
 	}
+	minPriority, _ := strconv.Atoi(minPriorityRaw)
+	if minPriority < 0 {
+		minPriority = 0
+	}
 	return CandidateNotificationSettings{
-		Enabled:     enabled,
-		NotifyA:     notifyA,
-		NotifyB:     notifyB,
-		SendTime:    valueOrDefault(sendTime, "09:30"),
-		MaxPerGrade: maxPerGrade,
+		Enabled:                enabled,
+		NotifyA:                notifyA,
+		NotifyB:                notifyB,
+		SendTime:               valueOrDefault(sendTime, "09:30"),
+		MaxPerGrade:            maxPerGrade,
+		ActionableOnly:         actionableOnly,
+		MinReviewPriorityScore: minPriority,
 	}, nil
 }
 

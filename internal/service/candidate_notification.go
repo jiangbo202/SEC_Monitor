@@ -60,10 +60,11 @@ func (s *CandidateNotificationService) Preview(ctx context.Context) (CandidateNo
 		return result, nil
 	}
 	summary, err := discovery.BuildCandidateSummaryWithOptions(ctx, s.discoveryDB, discovery.CandidateSummaryOptions{
-		LimitPerGrade:  settings.MaxPerGrade,
-		IncludeA:       settings.NotifyA,
-		IncludeB:       settings.NotifyB,
-		ActionableOnly: true,
+		LimitPerGrade:          settings.MaxPerGrade,
+		IncludeA:               settings.NotifyA,
+		IncludeB:               settings.NotifyB,
+		ActionableOnly:         settings.ActionableOnly,
+		MinReviewPriorityScore: settings.MinReviewPriorityScore,
 	})
 	if err != nil {
 		return CandidateNotificationPreview{}, err

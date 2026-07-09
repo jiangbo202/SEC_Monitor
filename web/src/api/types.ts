@@ -344,6 +344,8 @@ export interface CandidateNotificationSettings {
   notify_b: boolean
   send_time: string
   max_per_grade: number
+  actionable_only: boolean
+  min_review_priority_score: number
 }
 
 export interface CandidateNotificationPreview {

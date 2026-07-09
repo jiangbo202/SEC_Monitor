@@ -78,6 +78,12 @@
           <el-form-item :label="t('pages.configs.candidateMaxPerGrade')">
             <el-input-number v-model="candidateNotificationForm.max_per_grade" :min="1" :max="20" />
           </el-form-item>
+          <el-form-item :label="t('pages.configs.candidateActionableOnly')">
+            <el-switch v-model="candidateNotificationForm.actionable_only" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.candidateMinPriority')">
+            <el-input-number v-model="candidateNotificationForm.min_review_priority_score" :min="0" :max="2000" :step="50" />
+          </el-form-item>
         </el-form>
         <el-alert :title="t('pages.configs.candidateNotificationHint')" type="info" :closable="false" show-icon />
       </el-card>
@@ -361,7 +367,9 @@ const candidateNotificationForm = reactive({
   notify_a: false,
   notify_b: false,
   send_time: '09:30',
-  max_per_grade: 5
+  max_per_grade: 5,
+  actionable_only: true,
+  min_review_priority_score: 0
 })
 const schedulerForm = reactive({ timezone: 'UTC' })
 const timezoneOptions = ['Asia/Shanghai', 'UTC', 'America/New_York', 'America/Los_Angeles']
@@ -493,6 +501,8 @@ async function load() {
     candidateNotificationForm.notify_b = configValue(configs, 'candidate_notification.notify_b', 'false') === 'true'
     candidateNotificationForm.send_time = configValue(configs, 'candidate_notification.send_time', '09:30')
     candidateNotificationForm.max_per_grade = Number(configValue(configs, 'candidate_notification.max_per_grade', '5'))
+    candidateNotificationForm.actionable_only = configValue(configs, 'candidate_notification.actionable_only', 'true') === 'true'
+    candidateNotificationForm.min_review_priority_score = Number(configValue(configs, 'candidate_notification.min_review_priority_score', '0'))
     schedulerForm.timezone = configValue(configs, 'scheduler.timezone', 'UTC')
     discoveryForm.price_provider = configValue(configs, 'discovery.price_provider', '')
     discoveryForm.stooq_urls = configValue(configs, 'discovery.stooq_urls', '')
@@ -541,6 +551,8 @@ async function save() {
       { key: 'candidate_notification.notify_b', value: String(candidateNotificationForm.notify_b), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.send_time', value: candidateNotificationForm.send_time, value_type: 'string', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.max_per_grade', value: String(candidateNotificationForm.max_per_grade), value_type: 'int', category: 'candidate_notification', encrypted: false },
+      { key: 'candidate_notification.actionable_only', value: String(candidateNotificationForm.actionable_only), value_type: 'bool', category: 'candidate_notification', encrypted: false },
+      { key: 'candidate_notification.min_review_priority_score', value: String(candidateNotificationForm.min_review_priority_score), value_type: 'int', category: 'candidate_notification', encrypted: false },
       { key: 'scheduler.timezone', value: schedulerForm.timezone, value_type: 'string', category: 'scheduler', encrypted: false },
       { key: 'discovery.price_provider', value: discoveryForm.price_provider, value_type: 'string', category: 'discovery', encrypted: false },
       { key: 'discovery.stooq_urls', value: discoveryForm.stooq_urls, value_type: 'string', category: 'discovery', encrypted: false },

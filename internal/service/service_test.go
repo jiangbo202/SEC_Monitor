@@ -624,15 +624,15 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CandidateNotificationSettings: %v", err)
 			}
-			if settings.Enabled || settings.NotifyA || settings.NotifyB || settings.SendTime != "09:30" || settings.MaxPerGrade != 5 {
+			if settings.Enabled || settings.NotifyA || settings.NotifyB || settings.SendTime != "09:30" || settings.MaxPerGrade != 5 || !settings.ActionableOnly || settings.MinReviewPriorityScore != 0 {
 				t.Fatalf("settings = %+v", settings)
 			}
 			configs, err := svc.List(context.Background(), "candidate_notification", false)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 5 {
-				t.Fatalf("candidate notification defaults = %d, want 5", len(configs))
+			if len(configs) != 7 {
+				t.Fatalf("candidate notification defaults = %d, want 7", len(configs))
 			}
 		}},
 		{name: "ensure social heat defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {

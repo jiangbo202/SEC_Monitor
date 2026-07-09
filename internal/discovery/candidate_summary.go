@@ -22,10 +22,11 @@ type CandidateSummary struct {
 }
 
 type CandidateSummaryOptions struct {
-	LimitPerGrade  int
-	IncludeA       bool
-	IncludeB       bool
-	ActionableOnly bool
+	LimitPerGrade          int
+	IncludeA               bool
+	IncludeB               bool
+	ActionableOnly         bool
+	MinReviewPriorityScore int
 }
 
 func BuildCandidateSummary(ctx context.Context, db *gorm.DB, limitPerGrade int) (CandidateSummary, error) {
@@ -51,12 +52,12 @@ func BuildCandidateSummaryWithOptions(ctx context.Context, db *gorm.DB, options 
 	}
 	result.BatchID = batch.BatchID
 	if options.IncludeA {
-		if result.TotalA, result.ItemsA, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeA, "eligible_a", limit, options.ActionableOnly); err != nil {
+		if result.TotalA, result.ItemsA, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeA, "eligible_a", limit, options); err != nil {
 			return result, err
 		}
 	}
 	if options.IncludeB {
-		if result.TotalB, result.ItemsB, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeB, "eligible_b", limit, options.ActionableOnly); err != nil {
+		if result.TotalB, result.ItemsB, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeB, "eligible_b", limit, options); err != nil {
 			return result, err
 		}
 	}
@@ -94,20 +95,26 @@ func currentPublishedPrescreenBatch(ctx context.Context, db *gorm.DB) (UniverseB
 	return batch, true, nil
 }
 
-func listCandidateSummaryItems(ctx context.Context, db *gorm.DB, batchID, grade, eligibilityColumn string, limit int, actionableOnly bool) (int, []CandidateScoreSnapshot, error) {
+func listCandidateSummaryItems(ctx context.Context, db *gorm.DB, batchID, grade, eligibilityColumn string, limit int, options CandidateSummaryOptions) (int, []CandidateScoreSnapshot, error) {
 	items := []CandidateScoreSnapshot{}
 	query := db.WithContext(ctx).Model(&CandidateScoreSnapshot{}).Where("batch_id = ? AND grade = ? AND "+eligibilityColumn+" = ?", batchID, grade, true)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return 0, items, err
 	}
-	if actionableOnly && grade == CandidateGradeB {
+	if options.ActionableOnly || options.MinReviewPriorityScore > 0 {
 		page, err := ListCandidateScores(ctx, db, CandidateScoreQuery{Grade: grade, Page: 1, PageSize: maxDiscoveryPageSize})
 		if err != nil {
 			return 0, items, err
 		}
 		for _, item := range page.Items {
-			if !item.EligibleB || !candidateSummaryActionableB(item) {
+			if !candidateSummaryMatchesEligibility(item, grade) {
+				continue
+			}
+			if options.ActionableOnly && grade == CandidateGradeB && !candidateSummaryActionableB(item) {
+				continue
+			}
+			if options.MinReviewPriorityScore > 0 && item.ReviewPriorityScore < options.MinReviewPriorityScore {
 				continue
 			}
 			items = append(items, item.CandidateScoreSnapshot)
@@ -119,6 +126,16 @@ func listCandidateSummaryItems(ctx context.Context, db *gorm.DB, batchID, grade,
 	}
 	err := query.Order("total_score DESC").Order("market_cap_usd ASC").Order("ticker ASC").Limit(limit).Find(&items).Error
 	return int(total), items, err
+}
+
+func candidateSummaryMatchesEligibility(item CandidateScoreResult, grade string) bool {
+	if grade == CandidateGradeA {
+		return item.EligibleA
+	}
+	if grade == CandidateGradeB {
+		return item.EligibleB
+	}
+	return false
 }
 
 func candidateSummaryActionableB(item CandidateScoreResult) bool {

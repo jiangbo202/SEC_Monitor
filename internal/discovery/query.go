@@ -345,7 +345,57 @@ func BuildCandidateOverview(ctx context.Context, db *gorm.DB) (CandidateOverview
 			break
 		}
 	}
+	exited, err := countExitedCandidates(ctx, db, result.BatchID)
+	if err != nil {
+		return result, err
+	}
+	if exited > 0 {
+		result.ChangeCounts["exited"] = exited
+	}
 	return result, nil
+}
+
+func countExitedCandidates(ctx context.Context, db *gorm.DB, currentBatchID string) (int, error) {
+	if currentBatchID == "" {
+		return 0, nil
+	}
+	var current UniverseBatch
+	if err := db.WithContext(ctx).First(&current, "batch_id = ? AND kind = ?", currentBatchID, BatchKindPrescreen).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	var previous UniverseBatch
+	err := db.WithContext(ctx).
+		Where("kind = ? AND status = ? AND started_at < ?", BatchKindPrescreen, BatchStatusPublished, current.StartedAt).
+		Order("started_at DESC").
+		First(&previous).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var currentRows []CandidateScoreSnapshot
+	if err = db.WithContext(ctx).Where("batch_id = ?", currentBatchID).Find(&currentRows).Error; err != nil {
+		return 0, err
+	}
+	currentTickers := map[string]struct{}{}
+	for _, row := range currentRows {
+		currentTickers[row.Ticker] = struct{}{}
+	}
+	var previousRows []CandidateScoreSnapshot
+	if err = db.WithContext(ctx).Where("batch_id = ?", previous.BatchID).Find(&previousRows).Error; err != nil {
+		return 0, err
+	}
+	exited := 0
+	for _, row := range previousRows {
+		if _, ok := currentTickers[row.Ticker]; !ok {
+			exited++
+		}
+	}
+	return exited, nil
 }
 
 func hydrateCandidateCapitalRiskSummaries(ctx context.Context, db *gorm.DB, batchID string, items []CandidateScoreResult) ([]CandidateScoreResult, error) {
