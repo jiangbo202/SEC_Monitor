@@ -253,6 +253,9 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	if page.Items[0].ReviewPriorityScore <= page.Items[1].ReviewPriorityScore {
 		t.Fatalf("default priority order not applied: %#v", page.Items)
 	}
+	if !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "质量：强B", 80) || !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "变化：改善", 45) {
+		t.Fatalf("strong candidate priority reasons = %#v", page.Items[0].ReviewPriorityReasons)
+	}
 	if !containsString(page.Items[1].QualityTags, "low_revenue_base") || !containsString(page.Items[1].QualityTags, "low_liquidity") || page.Items[1].QualityTier != "watch_b" || page.Items[1].ChangeStatus != "new" {
 		t.Fatalf("watch candidate annotations = %#v", page.Items[1])
 	}
@@ -261,6 +264,18 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	}
 	if !containsString(page.Items[2].QualityTags, "active_capital_risk") || page.Items[2].ChangeStatus != "weakened" {
 		t.Fatalf("old candidate annotations = %#v", page.Items[2])
+	}
+	filtered, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{
+		QualityTier:            "strong_b",
+		ChangeStatus:           "improved",
+		MinReviewPriorityScore: 900,
+		ExcludeQualityTags:     []string{"low_liquidity"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Total != 1 || filtered.Items[0].Ticker != "STRB" {
+		t.Fatalf("filtered candidates = %#v", filtered)
 	}
 }
 
@@ -516,6 +531,15 @@ func TestBuildCandidateSummaryWithoutCurrentBatchIsEmpty(t *testing.T) {
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPriorityReason(values []ReviewPriorityReason, label string, points int) bool {
+	for _, value := range values {
+		if value.Label == label && value.Points == points {
 			return true
 		}
 	}

@@ -21,49 +21,51 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 	score.CashRunwayMonths = finiteCashRunwayMonths(score.CashRunwayMonths)
 	type alias struct {
 		scoreAlias
-		PriceCloseUSD        float64                  `json:"price_close_usd"`
-		PriceVolume          int64                    `json:"price_volume"`
-		PriceTradeDate       *time.Time               `json:"price_trade_date"`
-		PriceCurrency        string                   `json:"price_currency"`
-		PriceQualityStatus   string                   `json:"price_quality_status"`
-		PriceSource          string                   `json:"price_source"`
-		QualityTier          string                   `json:"quality_tier"`
-		QualityTags          []string                 `json:"quality_tags"`
-		QualityAdjustedScore int                      `json:"quality_adjusted_score"`
-		ReviewPriorityScore  int                      `json:"review_priority_score"`
-		ChangeStatus         string                   `json:"change_status"`
-		PreviousTotalScore   *int                     `json:"previous_total_score"`
-		PreviousGrade        string                   `json:"previous_grade"`
-		Performance          CandidatePerformance     `json:"performance"`
-		SectorCategory       string                   `json:"sector_category"`
-		SectorLabel          string                   `json:"sector_label"`
-		SectorSIC            int                      `json:"sector_sic"`
-		SectorRatingScore    int                      `json:"sector_rating_score"`
-		RevenueGrowthInfo    RevenueGrowthExplanation `json:"revenue_growth_explanation"`
-		CapitalRiskSummaries []CapitalRiskSummary     `json:"capital_risk_summaries"`
+		PriceCloseUSD         float64                  `json:"price_close_usd"`
+		PriceVolume           int64                    `json:"price_volume"`
+		PriceTradeDate        *time.Time               `json:"price_trade_date"`
+		PriceCurrency         string                   `json:"price_currency"`
+		PriceQualityStatus    string                   `json:"price_quality_status"`
+		PriceSource           string                   `json:"price_source"`
+		QualityTier           string                   `json:"quality_tier"`
+		QualityTags           []string                 `json:"quality_tags"`
+		QualityAdjustedScore  int                      `json:"quality_adjusted_score"`
+		ReviewPriorityScore   int                      `json:"review_priority_score"`
+		ReviewPriorityReasons []ReviewPriorityReason   `json:"review_priority_reasons"`
+		ChangeStatus          string                   `json:"change_status"`
+		PreviousTotalScore    *int                     `json:"previous_total_score"`
+		PreviousGrade         string                   `json:"previous_grade"`
+		Performance           CandidatePerformance     `json:"performance"`
+		SectorCategory        string                   `json:"sector_category"`
+		SectorLabel           string                   `json:"sector_label"`
+		SectorSIC             int                      `json:"sector_sic"`
+		SectorRatingScore     int                      `json:"sector_rating_score"`
+		RevenueGrowthInfo     RevenueGrowthExplanation `json:"revenue_growth_explanation"`
+		CapitalRiskSummaries  []CapitalRiskSummary     `json:"capital_risk_summaries"`
 	}
 	return json.Marshal(alias{
-		scoreAlias:           score,
-		PriceCloseUSD:        finiteFloat(row.PriceCloseUSD, 0),
-		PriceVolume:          row.PriceVolume,
-		PriceTradeDate:       row.PriceTradeDate,
-		PriceCurrency:        row.PriceCurrency,
-		PriceQualityStatus:   row.PriceQualityStatus,
-		PriceSource:          row.PriceSource,
-		QualityTier:          row.QualityTier,
-		QualityTags:          row.QualityTags,
-		QualityAdjustedScore: row.QualityAdjustedScore,
-		ReviewPriorityScore:  row.ReviewPriorityScore,
-		ChangeStatus:         row.ChangeStatus,
-		PreviousTotalScore:   row.PreviousTotalScore,
-		PreviousGrade:        row.PreviousGrade,
-		Performance:          sanitizeCandidatePerformance(row.Performance),
-		SectorCategory:       row.SectorCategory,
-		SectorLabel:          row.SectorLabel,
-		SectorSIC:            row.SectorSIC,
-		SectorRatingScore:    row.SectorRatingScore,
-		RevenueGrowthInfo:    row.RevenueGrowthInfo,
-		CapitalRiskSummaries: row.CapitalRiskSummaries,
+		scoreAlias:            score,
+		PriceCloseUSD:         finiteFloat(row.PriceCloseUSD, 0),
+		PriceVolume:           row.PriceVolume,
+		PriceTradeDate:        row.PriceTradeDate,
+		PriceCurrency:         row.PriceCurrency,
+		PriceQualityStatus:    row.PriceQualityStatus,
+		PriceSource:           row.PriceSource,
+		QualityTier:           row.QualityTier,
+		QualityTags:           row.QualityTags,
+		QualityAdjustedScore:  row.QualityAdjustedScore,
+		ReviewPriorityScore:   row.ReviewPriorityScore,
+		ReviewPriorityReasons: row.ReviewPriorityReasons,
+		ChangeStatus:          row.ChangeStatus,
+		PreviousTotalScore:    row.PreviousTotalScore,
+		PreviousGrade:         row.PreviousGrade,
+		Performance:           sanitizeCandidatePerformance(row.Performance),
+		SectorCategory:        row.SectorCategory,
+		SectorLabel:           row.SectorLabel,
+		SectorSIC:             row.SectorSIC,
+		SectorRatingScore:     row.SectorRatingScore,
+		RevenueGrowthInfo:     row.RevenueGrowthInfo,
+		CapitalRiskSummaries:  row.CapitalRiskSummaries,
 	})
 }
 

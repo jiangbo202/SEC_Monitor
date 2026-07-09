@@ -66,10 +66,21 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 		}
 		eligibleB = &parsed
 	}
+	minPriority := 0
+	if value := strings.TrimSpace(c.Query("min_review_priority_score")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			Error(c, service.ErrValidation)
+			return
+		}
+		minPriority = parsed
+	}
 	result, err := discovery.ListCandidateScores(c.Request.Context(), h.DiscoveryDB, discovery.CandidateScoreQuery{
 		Page: page, PageSize: pageSize, Ticker: c.Query("ticker"), Grade: c.Query("grade"),
-		SectorCategory: c.Query("sector_category"), SortBy: c.Query("sort_by"), SortOrder: c.Query("sort_order"),
-		EligibleA: eligibleA, EligibleB: eligibleB,
+		SectorCategory: c.Query("sector_category"), QualityTier: c.Query("quality_tier"), ChangeStatus: c.Query("change_status"),
+		SortBy: c.Query("sort_by"), SortOrder: c.Query("sort_order"), MinReviewPriorityScore: minPriority,
+		ExcludeQualityTags: splitQueryValues(c.QueryArray("exclude_quality_tag"), c.Query("exclude_quality_tag")),
+		EligibleA:          eligibleA, EligibleB: eligibleB,
 	})
 	if err != nil {
 		Error(c, err)
@@ -1065,6 +1076,31 @@ func pageParams(c *gin.Context) (int, int) {
 func uintParam(c *gin.Context, name string) uint {
 	value, _ := strconv.ParseUint(c.Param(name), 10, 64)
 	return uint(value)
+}
+
+func splitQueryValues(values []string, csv string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			add(part)
+		}
+	}
+	for _, part := range strings.Split(csv, ",") {
+		add(part)
+	}
+	return out
 }
 
 func operator(c *gin.Context) string {

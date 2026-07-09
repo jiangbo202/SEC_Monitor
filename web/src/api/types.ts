@@ -165,6 +165,7 @@ export interface CandidateScore {
   quality_tags?: string[]
   quality_adjusted_score?: number
   review_priority_score?: number
+  review_priority_reasons?: ReviewPriorityReason[]
   change_status?: string
   previous_total_score?: number | null
   previous_grade?: string
@@ -175,6 +176,12 @@ export interface CandidateScore {
   sector_rating_score?: number
   revenue_growth_explanation?: RevenueGrowthExplanation
   capital_risk_summaries?: CapitalRiskSummary[]
+}
+
+export interface ReviewPriorityReason {
+  label: string
+  points: number
+  kind: string
 }
 
 export interface CandidatePerformance {

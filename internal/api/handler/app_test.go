@@ -35,6 +35,32 @@ func (fakeDiscoveryRunner) SyncMarketPrices(context.Context) (discovery.Universe
 	return discovery.UniverseBatch{BatchID: "ops-current", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished}, nil
 }
 
+func TestSplitQueryValuesDeduplicatesCSVAndRepeatedParams(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []string
+		csv    string
+		want   []string
+	}{
+		{name: "csv only", csv: "low_liquidity, active_capital_risk", want: []string{"low_liquidity", "active_capital_risk"}},
+		{name: "repeated and csv", values: []string{"low_liquidity", "low_liquidity,financials_missing"}, csv: "financials_missing", want: []string{"low_liquidity", "financials_missing"}},
+		{name: "empty values ignored", values: []string{"", " , "}, csv: "", want: []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitQueryValues(tt.values, tt.csv)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got=%#v want=%#v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got=%#v want=%#v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func (f fakeSECClient) LookupCIK(ctx context.Context, ticker string) (string, string, error) {
 	return "0000320193", "Apple Inc.", nil
 }

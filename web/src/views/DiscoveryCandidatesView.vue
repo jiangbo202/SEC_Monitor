@@ -54,6 +54,21 @@
     </div>
 
     <el-card shadow="never" class="filter-card">
+      <div class="quick-filter-row">
+        <span class="quick-filter-label">快捷筛选</span>
+        <el-button :type="quickFilterActive('high_priority') ? 'primary' : 'default'" plain @click="toggleQuickFilter('high_priority')">
+          高优先级
+        </el-button>
+        <el-button :type="quickFilterActive('strong_b') ? 'primary' : 'default'" plain @click="toggleQuickFilter('strong_b')">
+          强B
+        </el-button>
+        <el-button :type="quickFilterActive('improved') ? 'primary' : 'default'" plain @click="toggleQuickFilter('improved')">
+          改善
+        </el-button>
+        <el-button :type="quickFilterActive('exclude_low_liquidity') ? 'primary' : 'default'" plain @click="toggleQuickFilter('exclude_low_liquidity')">
+          排除低流动性
+        </el-button>
+      </div>
       <el-form :inline="true" :model="filters">
         <el-form-item label="等级">
           <el-select v-model="filters.grade" clearable style="width: 120px">
@@ -106,7 +121,21 @@
         </template>
       </el-table-column>
       <el-table-column prop="review_priority_score" label="优先级" width="100" align="right" sortable="custom">
-        <template #default="{ row }">{{ row.review_priority_score ?? '-' }}</template>
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="priority-tooltip">
+                <div class="priority-tooltip-title">优先级 = 质量、变化、流动性和风险的复核排序分</div>
+                <div v-for="reason in row.review_priority_reasons || []" :key="`${reason.label}-${reason.points}`" class="priority-reason">
+                  <span>{{ reason.label }}</span>
+                  <strong :class="reason.points >= 0 ? 'positive' : 'negative'">{{ formatSignedNumber(reason.points) }}</strong>
+                </div>
+                <div v-if="!(row.review_priority_reasons || []).length">暂无明细</div>
+              </div>
+            </template>
+            <span class="metric-help">{{ row.review_priority_score ?? '-' }}</span>
+          </el-tooltip>
+        </template>
       </el-table-column>
       <el-table-column prop="quality_tier" label="质量" width="110">
         <template #default="{ row }">
@@ -551,7 +580,17 @@ const forceCandidateNotification = ref(false)
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
-const filters = reactive({ grade: '', ticker: '', eligible_a: '', eligible_b: '', sector_category: '' })
+const filters = reactive({
+  grade: '',
+  ticker: '',
+  eligible_a: '',
+  eligible_b: '',
+  sector_category: '',
+  quality_tier: '',
+  change_status: '',
+  min_review_priority_score: 0,
+  exclude_quality_tags: [] as string[],
+})
 const sortState = reactive({ sort_by: '', sort_order: '' })
 const topSectorLabel = computed(() => {
   const entries = Object.entries(overview.value?.sector_counts || {}).sort((a, b) => b[1] - a[1])
@@ -592,6 +631,10 @@ function requestParams() {
   if (filters.eligible_a) params.eligible_a = filters.eligible_a
   if (filters.eligible_b) params.eligible_b = filters.eligible_b
   if (filters.sector_category) params.sector_category = filters.sector_category
+  if (filters.quality_tier) params.quality_tier = filters.quality_tier
+  if (filters.change_status) params.change_status = filters.change_status
+  if (filters.min_review_priority_score) params.min_review_priority_score = filters.min_review_priority_score
+  if (filters.exclude_quality_tags.length) params.exclude_quality_tag = filters.exclude_quality_tags.join(',')
   if (sortState.sort_by) params.sort_by = sortState.sort_by
   if (sortState.sort_order) params.sort_order = sortState.sort_order
   return params
@@ -754,6 +797,31 @@ function reset() {
   filters.eligible_a = ''
   filters.eligible_b = ''
   filters.sector_category = ''
+  filters.quality_tier = ''
+  filters.change_status = ''
+  filters.min_review_priority_score = 0
+  filters.exclude_quality_tags = []
+  search()
+}
+
+function quickFilterActive(kind: string) {
+  if (kind === 'high_priority') return filters.min_review_priority_score > 0
+  if (kind === 'strong_b') return filters.quality_tier === 'strong_b'
+  if (kind === 'improved') return filters.change_status === 'improved'
+  if (kind === 'exclude_low_liquidity') return filters.exclude_quality_tags.includes('low_liquidity')
+  return false
+}
+
+function toggleQuickFilter(kind: string) {
+  if (kind === 'high_priority') {
+    filters.min_review_priority_score = filters.min_review_priority_score > 0 ? 0 : 900
+  } else if (kind === 'strong_b') {
+    filters.quality_tier = filters.quality_tier === 'strong_b' ? '' : 'strong_b'
+  } else if (kind === 'improved') {
+    filters.change_status = filters.change_status === 'improved' ? '' : 'improved'
+  } else if (kind === 'exclude_low_liquidity') {
+    filters.exclude_quality_tags = filters.exclude_quality_tags.includes('low_liquidity') ? [] : ['low_liquidity']
+  }
   search()
 }
 
@@ -879,6 +947,10 @@ function formatPerformance(value?: number | null) {
   if (!Number.isFinite(value)) return '-'
   const num = Number(value)
   return `${num >= 0 ? '+' : ''}${num.toFixed(1)}%`
+}
+
+function formatSignedNumber(value: number) {
+  return `${value >= 0 ? '+' : ''}${value}`
 }
 
 function sectorPercentage(count: number) {
@@ -1064,6 +1136,19 @@ onMounted(load)
   margin-right: auto;
 }
 
+.quick-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.quick-filter-label {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
 .candidate-detail {
   display: flex;
   flex-direction: column;
@@ -1082,6 +1167,31 @@ onMounted(load)
 .metric-tooltip {
   max-width: 520px;
   line-height: 1.6;
+}
+
+.priority-tooltip {
+  min-width: 260px;
+  max-width: 360px;
+  line-height: 1.6;
+}
+
+.priority-tooltip-title {
+  margin-bottom: 6px;
+  color: var(--el-text-color-secondary);
+}
+
+.priority-reason {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.priority-reason .positive {
+  color: var(--el-color-success-light-3);
+}
+
+.priority-reason .negative {
+  color: var(--el-color-danger-light-3);
 }
 
 @media (max-width: 1200px) {

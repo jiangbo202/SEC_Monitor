@@ -27,11 +27,15 @@ type UniversePage struct {
 }
 
 type CandidateScoreQuery struct {
-	Page, PageSize       int
-	Ticker, Grade        string
-	SectorCategory       string
-	SortBy, SortOrder    string
-	EligibleA, EligibleB *bool
+	Page, PageSize         int
+	Ticker, Grade          string
+	SectorCategory         string
+	QualityTier            string
+	ChangeStatus           string
+	SortBy, SortOrder      string
+	MinReviewPriorityScore int
+	ExcludeQualityTags     []string
+	EligibleA, EligibleB   *bool
 }
 
 type RevenueGrowthExplanation struct {
@@ -54,26 +58,33 @@ type RevenueGrowthExplanation struct {
 
 type CandidateScoreResult struct {
 	CandidateScoreSnapshot
-	PriceCloseUSD        float64                  `json:"price_close_usd"`
-	PriceVolume          int64                    `json:"price_volume"`
-	PriceTradeDate       *time.Time               `json:"price_trade_date"`
-	PriceCurrency        string                   `json:"price_currency"`
-	PriceQualityStatus   string                   `json:"price_quality_status"`
-	PriceSource          string                   `json:"price_source"`
-	QualityTier          string                   `json:"quality_tier"`
-	QualityTags          []string                 `json:"quality_tags"`
-	QualityAdjustedScore int                      `json:"quality_adjusted_score"`
-	ReviewPriorityScore  int                      `json:"review_priority_score"`
-	ChangeStatus         string                   `json:"change_status"`
-	PreviousTotalScore   *int                     `json:"previous_total_score"`
-	PreviousGrade        string                   `json:"previous_grade"`
-	Performance          CandidatePerformance     `json:"performance"`
-	SectorCategory       string                   `json:"sector_category"`
-	SectorLabel          string                   `json:"sector_label"`
-	SectorSIC            int                      `json:"sector_sic"`
-	SectorRatingScore    int                      `json:"sector_rating_score"`
-	RevenueGrowthInfo    RevenueGrowthExplanation `json:"revenue_growth_explanation"`
-	CapitalRiskSummaries []CapitalRiskSummary     `json:"capital_risk_summaries"`
+	PriceCloseUSD         float64                  `json:"price_close_usd"`
+	PriceVolume           int64                    `json:"price_volume"`
+	PriceTradeDate        *time.Time               `json:"price_trade_date"`
+	PriceCurrency         string                   `json:"price_currency"`
+	PriceQualityStatus    string                   `json:"price_quality_status"`
+	PriceSource           string                   `json:"price_source"`
+	QualityTier           string                   `json:"quality_tier"`
+	QualityTags           []string                 `json:"quality_tags"`
+	QualityAdjustedScore  int                      `json:"quality_adjusted_score"`
+	ReviewPriorityScore   int                      `json:"review_priority_score"`
+	ReviewPriorityReasons []ReviewPriorityReason   `json:"review_priority_reasons"`
+	ChangeStatus          string                   `json:"change_status"`
+	PreviousTotalScore    *int                     `json:"previous_total_score"`
+	PreviousGrade         string                   `json:"previous_grade"`
+	Performance           CandidatePerformance     `json:"performance"`
+	SectorCategory        string                   `json:"sector_category"`
+	SectorLabel           string                   `json:"sector_label"`
+	SectorSIC             int                      `json:"sector_sic"`
+	SectorRatingScore     int                      `json:"sector_rating_score"`
+	RevenueGrowthInfo     RevenueGrowthExplanation `json:"revenue_growth_explanation"`
+	CapitalRiskSummaries  []CapitalRiskSummary     `json:"capital_risk_summaries"`
+}
+
+type ReviewPriorityReason struct {
+	Label  string `json:"label"`
+	Points int    `json:"points"`
+	Kind   string `json:"kind"`
 }
 
 type CapitalRiskSummary struct {
@@ -279,6 +290,7 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		return result, err
 	}
 	annotateCandidateQuality(items)
+	items = filterCandidateScoreResults(items, filter)
 	if err = hydrateCandidatePerformance(ctx, db, items); err != nil {
 		return result, err
 	}
@@ -603,8 +615,35 @@ func annotateCandidateQuality(items []CandidateScoreResult) {
 		items[i].QualityTags = candidateQualityTags(items[i])
 		items[i].QualityTier = candidateQualityTier(items[i])
 		items[i].QualityAdjustedScore = candidateQualityAdjustedScore(items[i])
+		items[i].ReviewPriorityReasons = candidateReviewPriorityReasons(items[i])
 		items[i].ReviewPriorityScore = candidateReviewPriorityScore(items[i])
 	}
+}
+
+func filterCandidateScoreResults(items []CandidateScoreResult, filter CandidateScoreQuery) []CandidateScoreResult {
+	qualityTier := strings.TrimSpace(filter.QualityTier)
+	changeStatus := strings.TrimSpace(filter.ChangeStatus)
+	excludeTags := normalizedStringSet(filter.ExcludeQualityTags)
+	if qualityTier == "" && changeStatus == "" && filter.MinReviewPriorityScore == 0 && len(excludeTags) == 0 {
+		return items
+	}
+	filtered := items[:0]
+	for _, item := range items {
+		if qualityTier != "" && item.QualityTier != qualityTier {
+			continue
+		}
+		if changeStatus != "" && item.ChangeStatus != changeStatus {
+			continue
+		}
+		if filter.MinReviewPriorityScore > 0 && item.ReviewPriorityScore < filter.MinReviewPriorityScore {
+			continue
+		}
+		if hasExcludedQualityTag(item.QualityTags, excludeTags) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }
 
 func candidateQualityAdjustedScore(item CandidateScoreResult) int {
@@ -680,42 +719,66 @@ func candidateQualityTags(item CandidateScoreResult) []string {
 }
 
 func candidateReviewPriorityScore(item CandidateScoreResult) int {
-	score := item.QualityAdjustedScore * 10
+	score := 0
+	for _, reason := range candidateReviewPriorityReasons(item) {
+		score += reason.Points
+	}
+	return score
+}
+
+func candidateReviewPriorityReasons(item CandidateScoreResult) []ReviewPriorityReason {
+	reasons := []ReviewPriorityReason{}
+	add := func(label string, points int) {
+		if points == 0 {
+			return
+		}
+		kind := "neutral"
+		if points > 0 {
+			kind = "positive"
+		}
+		if points < 0 {
+			kind = "negative"
+		}
+		reasons = append(reasons, ReviewPriorityReason{Label: label, Points: points, Kind: kind})
+	}
+	add("质量调整分", item.QualityAdjustedScore*10)
 	switch item.QualityTier {
 	case "a":
-		score += 120
+		add("质量：A级", 120)
 	case "strong_b":
-		score += 80
+		add("质量：强B", 80)
 	case "standard_b":
-		score += 30
+		add("质量：普通B", 30)
 	case "watch_b":
-		score -= 30
+		add("质量：观察B", -30)
 	}
 	if item.ChangeStatus == "new" {
-		score += 35
+		add("变化：新增", 35)
 	}
 	if item.ChangeStatus == "improved" {
-		score += 45
+		add("变化：改善", 45)
 	}
 	if item.RecentQualifiedInsider {
-		score += 50
+		add("近期合格内幕买入", 50)
 	}
 	if item.PriceSource == "tiingo" {
-		score += 20
+		add("价格源：Tiingo", 20)
 	}
 	if item.PriceVolume >= 500_000 {
-		score += 25
+		add("成交量：50万以上", 25)
 	} else if item.PriceVolume >= 100_000 {
-		score += 10
+		add("成交量：10万以上", 10)
 	}
 	if item.MarketCapUSD > 0 && item.MarketCapUSD <= 500_000_000 {
-		score += 20
+		add("市值：5亿美元以内", 20)
 	}
 	if item.ActiveBlocksA || item.ActiveBlocksB {
-		score -= 80
+		add("存在阻断风险", -80)
 	}
-	score -= 10 * countPenaltyQualityTags(item.QualityTags)
-	return score
+	if penalty := countPenaltyQualityTags(item.QualityTags); penalty > 0 {
+		add("质量风险标签", -10*penalty)
+	}
+	return reasons
 }
 
 func minInt(a, b int) int {
@@ -745,6 +808,29 @@ func hasAnyQualityTag(tags []string, candidates ...string) bool {
 		}
 	}
 	return false
+}
+
+func hasExcludedQualityTag(tags []string, excludeTags map[string]struct{}) bool {
+	if len(excludeTags) == 0 {
+		return false
+	}
+	for _, tag := range tags {
+		if _, ok := excludeTags[strings.TrimSpace(tag)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedStringSet(values []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out[value] = struct{}{}
+		}
+	}
+	return out
 }
 
 func parseStringArrayJSON(raw string) []string {
