@@ -998,12 +998,20 @@ func sortIPOCompanies(items []IPOCompanyItem, sortBy string, sortOrder string) {
 		"stale":     6,
 	}
 	sortBy = strings.ToLower(strings.TrimSpace(sortBy))
-	if sortBy != "status" {
+	defaultSort := sortBy == ""
+	if sortBy != "status" && sortBy != "latest_update" {
 		sortBy = "latest_update"
 	}
 	ascending := strings.EqualFold(strings.TrimSpace(sortOrder), "asc")
 	sort.SliceStable(items, func(i, j int) bool {
 		left, right := items[i], items[j]
+		if defaultSort {
+			leftActive := activeIPOCompanyStatus(left.Status)
+			rightActive := activeIPOCompanyStatus(right.Status)
+			if leftActive != rightActive {
+				return leftActive
+			}
+		}
 		if sortBy == "status" {
 			leftRank := statusRank[left.Status]
 			rightRank := statusRank[right.Status]
@@ -1029,6 +1037,15 @@ func sortIPOCompanies(items []IPOCompanyItem, sortBy string, sortOrder string) {
 		}
 		return left.CIK < right.CIK
 	})
+}
+
+func activeIPOCompanyStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "new", "updating", "effective":
+		return true
+	default:
+		return false
+	}
 }
 
 func ipoCompanyLatestActivity(item IPOCompanyItem) time.Time {

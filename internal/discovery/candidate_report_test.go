@@ -2,8 +2,12 @@ package discovery
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestBuildCandidateReportIncludesSummaryAndHealth(t *testing.T) {
@@ -29,5 +33,62 @@ func TestBuildCandidateReportIncludesSummaryAndHealth(t *testing.T) {
 	}
 	if report.Date != "2026-06-30" || report.Batch.BatchID != batch.BatchID || report.Summary.TotalA != 1 {
 		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestBuildCandidateReportBranchesTableDriven(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, db *gorm.DB) string
+		wantErr error
+		wantID  string
+	}{
+		{
+			name:    "missing database returns error",
+			setup:   nil,
+			wantErr: errors.New("database is required"),
+		},
+		{
+			name:    "missing batch returns record not found",
+			setup:   func(t *testing.T, db *gorm.DB) string { return "2026-06-30" },
+			wantErr: gorm.ErrRecordNotFound,
+		},
+		{
+			name: "falls back to current published batch when date misses",
+			setup: func(t *testing.T, db *gorm.DB) string {
+				batch := UniverseBatch{BatchID: "fallback-current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-06-29", StartedAt: time.Now()}
+				if err := db.Create(&batch).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+					t.Fatal(err)
+				}
+				return "2026-06-30"
+			},
+			wantID: "fallback-current",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var db *gorm.DB
+			date := "2026-06-30"
+			if tt.setup != nil {
+				db = openMigratedTestDatabase(t)
+				date = tt.setup(t, db)
+			}
+			report, err := BuildCandidateReport(context.Background(), db, date)
+			if tt.wantErr != nil {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr.Error()) {
+					t.Fatalf("BuildCandidateReport err=%v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("BuildCandidateReport: %v", err)
+			}
+			if report.Batch.BatchID != tt.wantID {
+				t.Fatalf("report batch = %q, want %q", report.Batch.BatchID, tt.wantID)
+			}
+		})
 	}
 }

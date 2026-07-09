@@ -291,7 +291,7 @@ const companiesPage = ref(1)
 const pageSize = 20
 const filingFilters = reactive({ company_name: '', cik: '', filing_type: '', notified: '' })
 const companyFilters = reactive({ company_name: '', cik: '', status: '' })
-const companySort = reactive({ sort_by: 'latest_update', sort_order: 'desc' })
+const companySort = reactive({ sort_by: '', sort_order: '' })
 const filingDetails = ref<Record<string, IPOFiling[]>>({})
 const offeringEvents = ref<Record<string, IPOOfferingEvent[]>>({})
 const selectedCompany = ref<IPOCompany | null>(null)
@@ -327,6 +327,13 @@ async function loadCompanies() {
 }
 
 function onCompanySortChange({ prop, order }: { prop?: string, order?: string | null }) {
+  if (!order) {
+    companySort.sort_by = ''
+    companySort.sort_order = ''
+    companiesPage.value = 1
+    loadCompanies()
+    return
+  }
   companySort.sort_by = prop === 'status' ? 'status' : 'latest_update'
   companySort.sort_order = order === 'ascending' ? 'asc' : 'desc'
   companiesPage.value = 1

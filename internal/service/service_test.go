@@ -417,6 +417,102 @@ func TestConfigServicePreservesMaskedEncryptedValues(t *testing.T) {
 	}
 }
 
+func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
+	tests := []struct {
+		name    string
+		inputs  []ConfigInput
+		want    config.DiscoveryConfig
+		wantErr bool
+	}{
+		{
+			name: "applies stored discovery datasource values",
+			inputs: []ConfigInput{
+				{Key: "discovery.price_provider", Value: "Tiingo", ValueType: "string", Category: "discovery"},
+				{Key: "discovery.stooq_urls", Value: "https://a.test/listed.zip, https://b.test/other.zip", ValueType: "string", Category: "discovery"},
+				{Key: "discovery.tiingo_api_token", Value: "primary-token", ValueType: "string", Category: "discovery", Encrypted: true},
+				{Key: "discovery.tiingo_api_tokens", Value: "token-a, token-b", ValueType: "string", Category: "discovery", Encrypted: true},
+				{Key: "discovery.tiingo_base_url", Value: "https://tiingo.test", ValueType: "string", Category: "discovery"},
+				{Key: "discovery.tiingo_request_budget", Value: "12", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.twelve_data_api_key", Value: "twelve-key", ValueType: "string", Category: "discovery", Encrypted: true},
+				{Key: "discovery.twelve_data_base_url", Value: "https://twelve.test", ValueType: "string", Category: "discovery"},
+				{Key: "discovery.twelve_data_request_budget", Value: "34", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.twelve_data_request_interval_ms", Value: "1500", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.yahoo_base_url", Value: "https://yahoo.test", ValueType: "string", Category: "discovery"},
+				{Key: "discovery.yahoo_request_budget", Value: "56", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.min_publish_coverage_pct", Value: "85.5", ValueType: "float", Category: "discovery"},
+				{Key: "discovery.research_mode", Value: "false", ValueType: "bool", Category: "discovery"},
+			},
+			want: config.DiscoveryConfig{
+				PriceProvider:               "tiingo",
+				StooqURLs:                   []string{"https://a.test/listed.zip", "https://b.test/other.zip"},
+				TiingoAPIToken:              "primary-token",
+				TiingoAPITokens:             []string{"token-a", "token-b"},
+				TiingoBaseURL:               "https://tiingo.test",
+				TiingoRequestBudget:         12,
+				TwelveDataAPIKey:            "twelve-key",
+				TwelveDataBaseURL:           "https://twelve.test",
+				TwelveDataRequestBudget:     34,
+				TwelveDataRequestIntervalMS: 1500,
+				YahooBaseURL:                "https://yahoo.test",
+				YahooRequestBudget:          56,
+				MinPublishCoveragePct:       85.5,
+				ResearchMode:                false,
+			},
+		},
+		{
+			name: "ignores masked and invalid numeric discovery values",
+			inputs: []ConfigInput{
+				{Key: "discovery.tiingo_api_token", Value: "old-token", ValueType: "string", Category: "discovery", Encrypted: true},
+				{Key: "discovery.tiingo_api_tokens", Value: "old-a,old-b", ValueType: "string", Category: "discovery", Encrypted: true},
+				{Key: "discovery.twelve_data_api_key", Value: "old-twelve", ValueType: "string", Category: "discovery", Encrypted: true},
+				{Key: "discovery.tiingo_request_budget", Value: "bad", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.twelve_data_request_budget", Value: "-1", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.twelve_data_request_interval_ms", Value: "0", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.yahoo_request_budget", Value: "-2", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.min_publish_coverage_pct", Value: "-1", ValueType: "float", Category: "discovery"},
+				{Key: "discovery.research_mode", Value: "not-bool", ValueType: "bool", Category: "discovery"},
+			},
+			want: config.DiscoveryConfig{
+				TiingoAPIToken:              "old-token",
+				TiingoAPITokens:             []string{"old-a", "old-b"},
+				TwelveDataAPIKey:            "old-twelve",
+				TiingoRequestBudget:         7,
+				TwelveDataRequestBudget:     8,
+				TwelveDataRequestIntervalMS: 9,
+				YahooRequestBudget:          10,
+				MinPublishCoveragePct:       11,
+				ResearchMode:                true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			svc := NewConfigService(db, NewAuditService(db))
+			if err := svc.UpsertMany(context.Background(), tt.inputs, "tester"); err != nil {
+				t.Fatalf("UpsertMany: %v", err)
+			}
+			got, err := svc.ApplyDiscoveryConfig(context.Background(), config.DiscoveryConfig{
+				TiingoRequestBudget:         7,
+				TwelveDataRequestBudget:     8,
+				TwelveDataRequestIntervalMS: 9,
+				YahooRequestBudget:          10,
+				MinPublishCoveragePct:       11,
+				ResearchMode:                true,
+			})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ApplyDiscoveryConfig err=%v wantErr=%v", err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("config = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 	tests := []struct {
 		name string
@@ -537,6 +633,42 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			}
 			if len(configs) != 5 {
 				t.Fatalf("candidate notification defaults = %d, want 5", len(configs))
+			}
+		}},
+		{name: "ensure social heat defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.EnsureDefaults(context.Background()); err != nil {
+				t.Fatalf("EnsureDefaults: %v", err)
+			}
+			settings, err := svc.SocialHeatSettings(context.Background())
+			if err != nil {
+				t.Fatalf("SocialHeatSettings: %v", err)
+			}
+			if settings.Enabled || settings.Provider != "manual" || settings.LookbackHours != 24 || settings.BaselineDays != 30 {
+				t.Fatalf("settings = %+v", settings)
+			}
+			configs, err := svc.List(context.Background(), "social_heat", false)
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(configs) != 4 {
+				t.Fatalf("social heat defaults = %d, want 4", len(configs))
+			}
+		}},
+		{name: "social heat settings normalize invalid numbers", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
+			if err := svc.UpsertMany(context.Background(), []ConfigInput{
+				{Key: "social_heat.enabled", Value: "true", ValueType: "bool", Category: "social_heat"},
+				{Key: "social_heat.provider", Value: "", ValueType: "string", Category: "social_heat"},
+				{Key: "social_heat.lookback_hours", Value: "0", ValueType: "int", Category: "social_heat"},
+				{Key: "social_heat.baseline_days", Value: "-1", ValueType: "int", Category: "social_heat"},
+			}, "tester"); err != nil {
+				t.Fatalf("UpsertMany: %v", err)
+			}
+			settings, err := svc.SocialHeatSettings(context.Background())
+			if err != nil {
+				t.Fatalf("SocialHeatSettings: %v", err)
+			}
+			if !settings.Enabled || settings.Provider != "manual" || settings.LookbackHours != 24 || settings.BaselineDays != 30 {
+				t.Fatalf("settings = %+v", settings)
 			}
 		}},
 		{name: "ensure discovery datasource defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
@@ -1244,6 +1376,7 @@ func TestSortIPOCompaniesTableDriven(t *testing.T) {
 		{CIK: "2", CompanyName: "Beta", Status: "stale", LatestFilingDate: now, LatestAcceptedAt: ptrTime(now.Add(-2 * time.Hour))},
 		{CIK: "1", CompanyName: "Alpha", Status: "updating", LatestFilingDate: now.Add(30 * time.Minute)},
 		{CIK: "4", CompanyName: "Alpha", Status: "new", LatestFilingDate: now.AddDate(0, 0, -1), LatestAcceptedAt: ptrTime(now.Add(-time.Hour))},
+		{CIK: "5", CompanyName: "ListedCo", Status: "listed", LatestFilingDate: now.Add(time.Hour), LatestAcceptedAt: ptrTime(now.Add(time.Hour))},
 	}
 	tests := []struct {
 		name      string
@@ -1251,10 +1384,10 @@ func TestSortIPOCompaniesTableDriven(t *testing.T) {
 		sortOrder string
 		wantCIKs  []string
 	}{
-		{name: "defaults to latest SEC activity descending", wantCIKs: []string{"1", "4", "3", "2"}},
-		{name: "sorts latest SEC activity ascending", sortBy: "latest_update", sortOrder: "asc", wantCIKs: []string{"2", "4", "3", "1"}},
-		{name: "sorts status ascending with latest activity tie break", sortBy: "status", sortOrder: "asc", wantCIKs: []string{"4", "3", "1", "2"}},
-		{name: "sorts status descending with latest activity tie break", sortBy: "status", sortOrder: "desc", wantCIKs: []string{"2", "1", "4", "3"}},
+		{name: "defaults to active IPOs before completed companies", wantCIKs: []string{"1", "4", "3", "5", "2"}},
+		{name: "sorts latest SEC activity ascending", sortBy: "latest_update", sortOrder: "asc", wantCIKs: []string{"2", "4", "3", "1", "5"}},
+		{name: "sorts status ascending with latest activity tie break", sortBy: "status", sortOrder: "asc", wantCIKs: []string{"4", "3", "1", "5", "2"}},
+		{name: "sorts status descending with latest activity tie break", sortBy: "status", sortOrder: "desc", wantCIKs: []string{"2", "5", "1", "4", "3"}},
 	}
 
 	for _, tt := range tests {
@@ -1412,6 +1545,48 @@ func TestFilingServiceRefreshesEnabledTargetsDeduplicatesAndSuppressesInitialNot
 	}
 	if runs.Total != 2 || runs.Items[0].Status != "success" {
 		t.Fatalf("sync runs = %+v", runs)
+	}
+}
+
+func TestFilingServiceListTargetSyncDetailsTableDriven(t *testing.T) {
+	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		targetID  uint
+		limit     int
+		wantIDs   []uint
+		wantTotal int
+	}{
+		{name: "default limit newest first", targetID: 1, limit: 0, wantIDs: []uint{4, 2, 1}, wantTotal: 3},
+		{name: "explicit limit", targetID: 1, limit: 1, wantIDs: []uint{4}, wantTotal: 1},
+		{name: "filters target", targetID: 2, limit: 10, wantIDs: []uint{3}, wantTotal: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			details := []model.SyncRunDetail{
+				{ID: 1, SyncRunID: 1, TargetID: 1, Ticker: "AAPL", Status: "success", StartedAt: now.Add(-3 * time.Hour)},
+				{ID: 2, SyncRunID: 2, TargetID: 1, Ticker: "AAPL", Status: "success", StartedAt: now.Add(-2 * time.Hour)},
+				{ID: 3, SyncRunID: 3, TargetID: 2, Ticker: "MSFT", Status: "success", StartedAt: now.Add(-1 * time.Hour)},
+				{ID: 4, SyncRunID: 4, TargetID: 1, Ticker: "AAPL", Status: "failed", StartedAt: now.Add(-1 * time.Hour)},
+				{ID: 5, SyncRunID: 5, TargetID: 1, Ticker: "AAPL", Status: "success", StartedAt: now.Add(-4 * time.Hour)},
+			}
+			if err := db.Create(&details).Error; err != nil {
+				t.Fatalf("seed details: %v", err)
+			}
+			got, err := NewFilingService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db))).ListTargetSyncDetails(context.Background(), tt.targetID, tt.limit)
+			if err != nil {
+				t.Fatalf("ListTargetSyncDetails: %v", err)
+			}
+			if len(got) != tt.wantTotal {
+				t.Fatalf("details = %+v, want total %d", got, tt.wantTotal)
+			}
+			for index, wantID := range tt.wantIDs {
+				if got[index].ID != wantID {
+					t.Fatalf("detail %d id = %d, want %d; details=%+v", index, got[index].ID, wantID, got)
+				}
+			}
+		})
 	}
 }
 
@@ -1750,6 +1925,45 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			}
 			if updated.CronExpr != "*/30 * * * *" || updated.Enabled {
 				t.Fatalf("updated = %+v", updated)
+			}
+		}},
+		{name: "mark run lifecycle", run: func(t *testing.T, svc *TaskConfigService) {
+			if err := svc.EnsureDefault(context.Background()); err != nil {
+				t.Fatalf("EnsureDefault: %v", err)
+			}
+			if err := svc.MarkRunStarted(context.Background(), "ipo_radar_sync"); err != nil {
+				t.Fatalf("MarkRunStarted: %v", err)
+			}
+			tasks, err := svc.List(context.Background())
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			var task model.TaskConfig
+			for _, item := range tasks {
+				if item.TaskName == "ipo_radar_sync" {
+					task = item
+					break
+				}
+			}
+			if !task.Running {
+				t.Fatalf("running task = %+v, want running", task)
+			}
+			ranAt := time.Date(2026, 6, 20, 9, 30, 0, 0, time.UTC)
+			if err := svc.MarkRunFinished(context.Background(), "ipo_radar_sync", ranAt); err != nil {
+				t.Fatalf("MarkRunFinished: %v", err)
+			}
+			tasks, err = svc.List(context.Background())
+			if err != nil {
+				t.Fatalf("List after finish: %v", err)
+			}
+			for _, item := range tasks {
+				if item.TaskName == "ipo_radar_sync" {
+					task = item
+					break
+				}
+			}
+			if task.Running || task.LastRunAt == nil || !task.LastRunAt.Equal(ranAt) {
+				t.Fatalf("finished task = %+v, want not running at %s", task, ranAt)
 			}
 		}},
 		{name: "missing task returns not found", run: func(t *testing.T, svc *TaskConfigService) {
