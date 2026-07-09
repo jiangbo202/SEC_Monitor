@@ -22,9 +22,14 @@ type CandidateWatchQuery struct {
 }
 
 type CandidateWatchPage struct {
-	Page, PageSize int              `json:"page"`
-	Total          int64            `json:"total"`
-	Items          []CandidateWatch `json:"items"`
+	Page, PageSize int                    `json:"page"`
+	Total          int64                  `json:"total"`
+	Items          []CandidateWatchResult `json:"items"`
+}
+
+type CandidateWatchResult struct {
+	CandidateWatch
+	LatestScore *CandidateScoreResult `json:"latest_score,omitempty"`
 }
 
 func ListCandidateWatches(ctx context.Context, db *gorm.DB, filter CandidateWatchQuery) (CandidateWatchPage, error) {
@@ -32,7 +37,7 @@ func ListCandidateWatches(ctx context.Context, db *gorm.DB, filter CandidateWatc
 	if err != nil {
 		return CandidateWatchPage{}, err
 	}
-	result := CandidateWatchPage{Page: page, PageSize: size, Items: []CandidateWatch{}}
+	result := CandidateWatchPage{Page: page, PageSize: size, Items: []CandidateWatchResult{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -43,8 +48,74 @@ func ListCandidateWatches(ctx context.Context, db *gorm.DB, filter CandidateWatc
 	if err := query.Count(&result.Total).Error; err != nil {
 		return result, err
 	}
-	err = query.Order("updated_at DESC").Order("ticker ASC").Offset((page - 1) * size).Limit(size).Find(&result.Items).Error
-	return result, err
+	var watches []CandidateWatch
+	if err := query.Order("updated_at DESC").Order("ticker ASC").Offset((page - 1) * size).Limit(size).Find(&watches).Error; err != nil {
+		return result, err
+	}
+	result.Items = make([]CandidateWatchResult, 0, len(watches))
+	for _, watch := range watches {
+		result.Items = append(result.Items, CandidateWatchResult{CandidateWatch: watch})
+	}
+	if err := attachLatestCandidateScores(ctx, db, result.Items); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func attachLatestCandidateScores(ctx context.Context, db *gorm.DB, items []CandidateWatchResult) error {
+	if len(items) == 0 {
+		return nil
+	}
+	batch, ok, err := currentPublishedPrescreenBatch(ctx, db)
+	if err != nil || !ok {
+		return err
+	}
+	tickers := make([]string, 0, len(items))
+	for _, item := range items {
+		tickers = append(tickers, item.Ticker)
+	}
+	var scores []CandidateScoreSnapshot
+	if err := db.WithContext(ctx).Where("batch_id = ? AND ticker IN ?", batch.BatchID, tickers).Find(&scores).Error; err != nil {
+		return err
+	}
+	if len(scores) == 0 {
+		return nil
+	}
+	scoreItems, err := hydrateCandidateSectorEvidence(ctx, db, batch.UniverseSourceVersion, scores)
+	if err != nil {
+		return err
+	}
+	if scoreItems, err = hydrateCandidateRevenueGrowthEvidence(ctx, db, batch.UniverseSourceVersion, scoreItems); err != nil {
+		return err
+	}
+	if scoreItems, err = hydrateCandidatePriceEvidence(ctx, db, batch.BatchID, scoreItems); err != nil {
+		return err
+	}
+	riskBatchID := strings.TrimSpace(batch.UniverseSourceVersion)
+	if riskBatchID == "" {
+		riskBatchID = batch.BatchID
+	}
+	if scoreItems, err = hydrateCandidateCapitalRiskSummaries(ctx, db, riskBatchID, scoreItems); err != nil {
+		return err
+	}
+	if scoreItems, err = annotateCandidateChanges(ctx, db, batch, scoreItems); err != nil {
+		return err
+	}
+	annotateCandidateQuality(scoreItems)
+	if err = hydrateCandidatePerformance(ctx, db, scoreItems); err != nil {
+		return err
+	}
+	byTicker := map[string]CandidateScoreResult{}
+	for _, score := range scoreItems {
+		byTicker[score.Ticker] = score
+	}
+	for i := range items {
+		if score, ok := byTicker[items[i].Ticker]; ok {
+			scoreCopy := score
+			items[i].LatestScore = &scoreCopy
+		}
+	}
+	return nil
 }
 
 func UpsertCandidateWatch(ctx context.Context, db *gorm.DB, input CandidateWatchInput) (CandidateWatch, error) {

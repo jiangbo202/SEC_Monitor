@@ -523,16 +523,39 @@
       </div>
     </el-drawer>
 
-    <el-dialog v-model="watchDialogVisible" title="小盘候选关注列表" width="760px">
+    <el-dialog v-model="watchDialogVisible" title="小盘候选关注列表" width="1080px">
       <el-table :data="watchRows" v-loading="watchLoading" border empty-text="暂无关注候选">
         <el-table-column prop="ticker" label="Ticker" width="110" />
         <el-table-column prop="company_name" label="公司" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="note" label="备注" min-width="160" show-overflow-tooltip />
+        <el-table-column label="当前质量" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.latest_score" :type="qualityTierTagType(row.latest_score.quality_tier)" effect="plain">
+              {{ qualityTierLabel(row.latest_score.quality_tier) }}
+            </el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="变化" width="90">
+          <template #default="{ row }">
+            <el-tag v-if="row.latest_score" :type="changeStatusTagType(row.latest_score.change_status)" effect="plain">
+              {{ changeStatusLabel(row.latest_score.change_status) }}
+            </el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="优先级" width="90" align="right">
+          <template #default="{ row }">{{ row.latest_score?.review_priority_score ?? '-' }}</template>
+        </el-table-column>
+        <el-table-column label="表现" width="100" align="right">
+          <template #default="{ row }">{{ formatPerformance(row.latest_score?.performance?.return_5d ?? row.latest_score?.performance?.return_1d) }}</template>
+        </el-table-column>
+        <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
         <el-table-column prop="updated_at" label="更新时间" width="170">
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="操作" width="130" fixed="right">
           <template #default="{ row }">
+            <el-button v-if="row.latest_score" link type="primary" @click="openDetail(row.latest_score)">详情</el-button>
             <el-button link type="danger" @click="deleteCandidateWatch(row.id)">取消</el-button>
           </template>
         </el-table-column>

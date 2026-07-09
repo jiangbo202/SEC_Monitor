@@ -510,7 +510,7 @@ func TestCandidateWatchLifecycle(t *testing.T) {
 	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "WCH", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72}).Error; err != nil {
+	if err := db.Create(&CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "WCH", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72, MarketCapUSD: 180_000_000, RevenueGrowthPct: 45, CashRunwayMonths: 15}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -534,6 +534,9 @@ func TestCandidateWatchLifecycle(t *testing.T) {
 	}
 	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Ticker != "WCH" {
 		t.Fatalf("page = %#v", page)
+	}
+	if page.Items[0].LatestScore == nil || page.Items[0].LatestScore.TotalScore != 72 || page.Items[0].LatestScore.QualityTier == "" {
+		t.Fatalf("latest score not attached = %#v", page.Items[0])
 	}
 	if err := DeleteCandidateWatch(context.Background(), db, watch.ID); err != nil {
 		t.Fatal(err)

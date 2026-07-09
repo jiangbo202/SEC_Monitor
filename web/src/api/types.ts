@@ -207,6 +207,7 @@ export interface CandidateWatch {
   status: string
   note: string
   source_batch_id: string
+  latest_score?: CandidateScore
   created_at: string
   updated_at: string
 }
