@@ -39,6 +39,10 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 		return result, nil
 	}
 	result.BatchID = batch.BatchID
+	financialBatchID := batch.UniverseSourceVersion
+	if financialBatchID == "" {
+		financialBatchID = batch.BatchID
+	}
 
 	var scores []CandidateScoreSnapshot
 	if err := db.WithContext(ctx).Where("batch_id = ? AND grade IN ?", batch.BatchID, []string{CandidateGradeA, CandidateGradeB}).Find(&scores).Error; err != nil {
@@ -50,7 +54,7 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 			result.MissingMarketCap++
 		}
 		var financial FinancialMetricSnapshot
-		err := db.WithContext(ctx).First(&financial, "batch_id = ? AND security_id = ?", batch.BatchID, score.SecurityID).Error
+		err := db.WithContext(ctx).First(&financial, "batch_id = ? AND security_id = ?", financialBatchID, score.SecurityID).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && !financial.RevenueGrowthAvailable && !financial.RunwayAvailable) {
 			result.MissingFinancials++
 		} else if err != nil {

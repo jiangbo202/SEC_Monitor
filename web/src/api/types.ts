@@ -161,12 +161,29 @@ export interface CandidateScore {
   price_currency?: string
   price_quality_status?: string
   price_source?: string
+  quality_tier?: string
+  quality_tags?: string[]
+  review_priority_score?: number
+  change_status?: string
+  previous_total_score?: number | null
+  previous_grade?: string
   sector_category?: string
   sector_label?: string
   sector_sic?: number
   sector_rating_score?: number
   revenue_growth_explanation?: RevenueGrowthExplanation
   capital_risk_summaries?: CapitalRiskSummary[]
+}
+
+export interface CandidateOverview {
+  batch_id: string
+  total: number
+  grade_counts: Record<string, number>
+  quality_tier_counts: Record<string, number>
+  change_counts: Record<string, number>
+  sector_counts: Record<string, number>
+  quality_tag_counts: Record<string, number>
+  top_candidates: CandidateScore[]
 }
 
 export interface CapitalRiskSummary {

@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -59,6 +60,12 @@ type CandidateScoreResult struct {
 	PriceCurrency        string                   `json:"price_currency"`
 	PriceQualityStatus   string                   `json:"price_quality_status"`
 	PriceSource          string                   `json:"price_source"`
+	QualityTier          string                   `json:"quality_tier"`
+	QualityTags          []string                 `json:"quality_tags"`
+	ReviewPriorityScore  int                      `json:"review_priority_score"`
+	ChangeStatus         string                   `json:"change_status"`
+	PreviousTotalScore   *int                     `json:"previous_total_score"`
+	PreviousGrade        string                   `json:"previous_grade"`
 	SectorCategory       string                   `json:"sector_category"`
 	SectorLabel          string                   `json:"sector_label"`
 	SectorSIC            int                      `json:"sector_sic"`
@@ -80,6 +87,17 @@ type CandidateScorePage struct {
 	Page, PageSize int                    `json:"page"`
 	Total          int64                  `json:"total"`
 	Items          []CandidateScoreResult `json:"items"`
+}
+
+type CandidateOverview struct {
+	BatchID           string                 `json:"batch_id"`
+	Total             int64                  `json:"total"`
+	GradeCounts       map[string]int         `json:"grade_counts"`
+	QualityTierCounts map[string]int         `json:"quality_tier_counts"`
+	ChangeCounts      map[string]int         `json:"change_counts"`
+	SectorCounts      map[string]int         `json:"sector_counts"`
+	QualityTagCounts  map[string]int         `json:"quality_tag_counts"`
+	TopCandidates     []CandidateScoreResult `json:"top_candidates"`
 }
 
 type BatchQuery struct {
@@ -240,6 +258,11 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if err != nil {
 		return result, err
 	}
+	items, err = annotateCandidateChanges(ctx, db, batch, items)
+	if err != nil {
+		return result, err
+	}
+	annotateCandidateQuality(items)
 	sortCandidateScoreResults(items, filter.SortBy, filter.SortOrder)
 	result.Total = int64(len(items))
 	start := (page - 1) * size
@@ -252,6 +275,45 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		end = len(items)
 	}
 	result.Items = items[start:end]
+	return result, nil
+}
+
+func BuildCandidateOverview(ctx context.Context, db *gorm.DB) (CandidateOverview, error) {
+	result := CandidateOverview{
+		GradeCounts:       map[string]int{},
+		QualityTierCounts: map[string]int{},
+		ChangeCounts:      map[string]int{},
+		SectorCounts:      map[string]int{},
+		QualityTagCounts:  map[string]int{},
+		TopCandidates:     []CandidateScoreResult{},
+	}
+	for pageNumber := 1; ; pageNumber++ {
+		page, err := ListCandidateScores(ctx, db, CandidateScoreQuery{Page: pageNumber, PageSize: maxDiscoveryPageSize})
+		if err != nil {
+			return result, err
+		}
+		result.Total = page.Total
+		if len(page.Items) > 0 && result.BatchID == "" {
+			result.BatchID = page.Items[0].BatchID
+		}
+		for _, item := range page.Items {
+			result.GradeCounts[item.Grade]++
+			result.QualityTierCounts[item.QualityTier]++
+			result.ChangeCounts[item.ChangeStatus]++
+			if item.SectorCategory != "" {
+				result.SectorCounts[item.SectorCategory]++
+			}
+			for _, tag := range item.QualityTags {
+				result.QualityTagCounts[tag]++
+			}
+			if len(result.TopCandidates) < 10 {
+				result.TopCandidates = append(result.TopCandidates, item)
+			}
+		}
+		if int64(pageNumber*maxDiscoveryPageSize) >= page.Total || len(page.Items) == 0 {
+			break
+		}
+	}
 	return result, nil
 }
 
@@ -383,7 +445,12 @@ func candidateSortLess(a, b CandidateScoreResult, field string) bool {
 		return a.RevenueGrowthInfo.AnnualRevenueQoQPct < b.RevenueGrowthInfo.AnnualRevenueQoQPct
 	case "cash_runway_months":
 		return a.CashRunwayMonths < b.CashRunwayMonths
+	case "review_priority_score":
+		return a.ReviewPriorityScore < b.ReviewPriorityScore
 	default:
+		if a.ReviewPriorityScore != b.ReviewPriorityScore {
+			return a.ReviewPriorityScore > b.ReviewPriorityScore
+		}
 		if a.Grade != b.Grade {
 			return a.Grade < b.Grade
 		}
@@ -426,9 +493,222 @@ func candidateSortEqual(a, b CandidateScoreResult, field string) bool {
 		return a.RevenueGrowthInfo.AnnualRevenueQoQPct == b.RevenueGrowthInfo.AnnualRevenueQoQPct
 	case "cash_runway_months":
 		return a.CashRunwayMonths == b.CashRunwayMonths
+	case "review_priority_score":
+		return a.ReviewPriorityScore == b.ReviewPriorityScore
 	default:
 		return false
 	}
+}
+
+func annotateCandidateChanges(ctx context.Context, db *gorm.DB, current UniverseBatch, items []CandidateScoreResult) ([]CandidateScoreResult, error) {
+	if len(items) == 0 {
+		return items, nil
+	}
+	var previous UniverseBatch
+	query := db.WithContext(ctx).
+		Where("kind = ? AND status = ? AND batch_id <> ?", BatchKindPrescreen, BatchStatusPublished, current.BatchID)
+	if !current.StartedAt.IsZero() {
+		query = query.Where("started_at < ?", current.StartedAt)
+	}
+	err := query.Order("started_at DESC").Order("batch_id DESC").First(&previous).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		for i := range items {
+			items[i].ChangeStatus = "new"
+		}
+		return items, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	securityIDs := make([]uint, 0, len(items))
+	for _, item := range items {
+		securityIDs = append(securityIDs, item.SecurityID)
+	}
+	var previousScores []CandidateScoreSnapshot
+	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id IN ?", previous.BatchID, securityIDs).Find(&previousScores).Error; err != nil {
+		return nil, err
+	}
+	bySecurity := map[uint]CandidateScoreSnapshot{}
+	for _, score := range previousScores {
+		bySecurity[score.SecurityID] = score
+	}
+	for i := range items {
+		previousScore, ok := bySecurity[items[i].SecurityID]
+		if !ok {
+			items[i].ChangeStatus = "new"
+			continue
+		}
+		score := previousScore.TotalScore
+		items[i].PreviousTotalScore = &score
+		items[i].PreviousGrade = previousScore.Grade
+		items[i].ChangeStatus = candidateChangeStatus(previousScore, items[i].CandidateScoreSnapshot)
+	}
+	return items, nil
+}
+
+func candidateChangeStatus(previous, current CandidateScoreSnapshot) string {
+	if previous.Grade != current.Grade {
+		if candidateGradeRank(current.Grade) < candidateGradeRank(previous.Grade) {
+			return "improved"
+		}
+		return "weakened"
+	}
+	delta := current.TotalScore - previous.TotalScore
+	if delta >= 3 {
+		return "improved"
+	}
+	if delta <= -3 {
+		return "weakened"
+	}
+	if !previous.ActiveBlocksA && current.ActiveBlocksA || !previous.ActiveBlocksB && current.ActiveBlocksB {
+		return "weakened"
+	}
+	return "unchanged"
+}
+
+func candidateGradeRank(grade string) int {
+	switch strings.ToUpper(strings.TrimSpace(grade)) {
+	case CandidateGradeA:
+		return 1
+	case CandidateGradeB:
+		return 2
+	case CandidateGradeExcluded:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func annotateCandidateQuality(items []CandidateScoreResult) {
+	for i := range items {
+		items[i].QualityTags = candidateQualityTags(items[i])
+		items[i].QualityTier = candidateQualityTier(items[i])
+		items[i].ReviewPriorityScore = candidateReviewPriorityScore(items[i])
+	}
+}
+
+func candidateQualityTier(item CandidateScoreResult) string {
+	if item.Grade == CandidateGradeA {
+		return "a"
+	}
+	if item.ActiveBlocksA || item.ActiveBlocksB || hasAnyQualityTag(item.QualityTags, "low_revenue_base", "extreme_revenue_growth", "low_liquidity", "financials_missing") {
+		return "watch_b"
+	}
+	if item.TotalScore >= 70 && item.CashRunwayMonths >= 12 && item.RevenueGrowthPct >= 40 {
+		return "strong_b"
+	}
+	return "standard_b"
+}
+
+func candidateQualityTags(item CandidateScoreResult) []string {
+	seen := map[string]struct{}{}
+	tags := []string{}
+	add := func(tag string) {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			return
+		}
+		if _, ok := seen[tag]; ok {
+			return
+		}
+		seen[tag] = struct{}{}
+		tags = append(tags, tag)
+	}
+	for _, tag := range parseStringArrayJSON(item.RevenueGrowthInfo.QualityFlagsJSON) {
+		add(tag)
+	}
+	if !item.RevenueGrowthInfo.RevenueGrowthAvailable && item.RevenueGrowthInfo.QualityFlagsJSON == "" {
+		add("financials_missing")
+	}
+	if !item.RecentQualifiedInsider {
+		add("no_insider_buy")
+	}
+	if item.ActiveBlocksA || item.ActiveBlocksB || len(item.CapitalRiskSummaries) > 0 {
+		add("active_capital_risk")
+	}
+	if item.PriceVolume > 0 && item.PriceVolume < 100_000 {
+		add("low_liquidity")
+	}
+	if item.PriceSource != "" && item.PriceSource != "tiingo" {
+		add("secondary_price_source")
+	}
+	if item.PriceQualityStatus != "" && item.PriceQualityStatus != QualityStatusValid {
+		add("price_quality_" + item.PriceQualityStatus)
+	}
+	return tags
+}
+
+func candidateReviewPriorityScore(item CandidateScoreResult) int {
+	score := item.TotalScore * 10
+	switch item.QualityTier {
+	case "a":
+		score += 120
+	case "strong_b":
+		score += 80
+	case "standard_b":
+		score += 30
+	case "watch_b":
+		score -= 30
+	}
+	if item.ChangeStatus == "new" {
+		score += 35
+	}
+	if item.ChangeStatus == "improved" {
+		score += 45
+	}
+	if item.RecentQualifiedInsider {
+		score += 50
+	}
+	if item.PriceSource == "tiingo" {
+		score += 20
+	}
+	if item.PriceVolume >= 500_000 {
+		score += 25
+	} else if item.PriceVolume >= 100_000 {
+		score += 10
+	}
+	if item.MarketCapUSD > 0 && item.MarketCapUSD <= 500_000_000 {
+		score += 20
+	}
+	if item.ActiveBlocksA || item.ActiveBlocksB {
+		score -= 80
+	}
+	score -= 10 * countPenaltyQualityTags(item.QualityTags)
+	return score
+}
+
+func countPenaltyQualityTags(tags []string) int {
+	count := 0
+	for _, tag := range tags {
+		switch tag {
+		case "low_revenue_base", "extreme_revenue_growth", "low_liquidity", "financials_missing", "active_capital_risk":
+			count++
+		}
+	}
+	return count
+}
+
+func hasAnyQualityTag(tags []string, candidates ...string) bool {
+	for _, tag := range tags {
+		for _, candidate := range candidates {
+			if tag == candidate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func parseStringArrayJSON(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return []string{}
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return []string{}
+	}
+	return values
 }
 
 func timeValueBefore(a, b *time.Time) bool {

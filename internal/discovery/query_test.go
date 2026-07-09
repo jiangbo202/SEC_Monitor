@@ -167,6 +167,196 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	}
 }
 
+func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	securities := []Security{
+		{CIK: "0000006101", CompanyName: "Strong B", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000006102", CompanyName: "Watch B", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000006103", CompanyName: "Old B", CatalogStatus: SecurityCatalogPublished},
+	}
+	if err := db.Create(&securities).Error; err != nil {
+		t.Fatal(err)
+	}
+	securityBatch := UniverseBatch{BatchID: "security-current", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now()}
+	oldBatch := UniverseBatch{BatchID: "old-market", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now().Add(-24 * time.Hour)}
+	current := UniverseBatch{BatchID: "current-market", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
+	if err := db.Create(&[]UniverseBatch{securityBatch, oldBatch, current}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: current.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	identities := []SecurityBatchIdentity{
+		{BatchID: securityBatch.BatchID, SecurityID: securities[0].ID, CIK: securities[0].CIK, Ticker: "STRB", SIC: 7372, CompanyName: "Strong B", MappingStatus: MappingStatusCurrent},
+		{BatchID: securityBatch.BatchID, SecurityID: securities[1].ID, CIK: securities[1].CIK, Ticker: "WATB", SIC: 2834, CompanyName: "Watch B", MappingStatus: MappingStatusCurrent},
+		{BatchID: securityBatch.BatchID, SecurityID: securities[2].ID, CIK: securities[2].CIK, Ticker: "OLDB", SIC: 1311, CompanyName: "Old B", MappingStatus: MappingStatusCurrent},
+	}
+	if err := db.Create(&identities).Error; err != nil {
+		t.Fatal(err)
+	}
+	oldScores := []CandidateScoreSnapshot{
+		{BatchID: oldBatch.BatchID, SecurityID: securities[0].ID, Ticker: "STRB", Grade: CandidateGradeB, EligibleB: true, TotalScore: 64, MarketCapUSD: 420_000_000},
+		{BatchID: oldBatch.BatchID, SecurityID: securities[2].ID, Ticker: "OLDB", Grade: CandidateGradeB, EligibleB: true, TotalScore: 71, MarketCapUSD: 500_000_000},
+	}
+	currentScores := []CandidateScoreSnapshot{
+		{BatchID: current.BatchID, SecurityID: securities[0].ID, Ticker: "STRB", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72, MarketCapUSD: 260_000_000, RevenueGrowthPct: 58, CashRunwayMonths: 18, DilutionRiskScore: 10, SectorScore: 9},
+		{BatchID: current.BatchID, SecurityID: securities[1].ID, Ticker: "WATB", Grade: CandidateGradeB, EligibleB: true, TotalScore: 69, MarketCapUSD: 80_000_000, RevenueGrowthPct: 2500, CashRunwayMonths: 11, DilutionRiskScore: 10, SectorScore: 9},
+		{BatchID: current.BatchID, SecurityID: securities[2].ID, Ticker: "OLDB", Grade: CandidateGradeB, EligibleB: true, TotalScore: 67, MarketCapUSD: 520_000_000, RevenueGrowthPct: 35, CashRunwayMonths: 9, ActiveBlocksA: true, DilutionRiskScore: 6, SectorScore: 4},
+	}
+	if err := db.Create(&oldScores).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&currentScores).Error; err != nil {
+		t.Fatal(err)
+	}
+	metrics := []FinancialMetricSnapshot{
+		{BatchID: securityBatch.BatchID, SecurityID: securities[0].ID, RevenueGrowthAvailable: true, RunwayAvailable: true, QuarterlyRevenueYoYPct: 58, AnnualRevenueYoYPct: 44, LatestQuarterRevenueUSD: 15_000_000, PriorYearQuarterRevenueUSD: 9_500_000},
+		{BatchID: securityBatch.BatchID, SecurityID: securities[1].ID, RevenueGrowthAvailable: true, RunwayAvailable: true, QuarterlyRevenueYoYPct: 2500, AnnualRevenueYoYPct: 1000, LatestQuarterRevenueUSD: 400_000, PriorYearQuarterRevenueUSD: 15_000, QualityFlagsJSON: `["low_revenue_base","extreme_revenue_growth"]`},
+		{BatchID: securityBatch.BatchID, SecurityID: securities[2].ID, RevenueGrowthAvailable: true, RunwayAvailable: true, QuarterlyRevenueYoYPct: 35, AnnualRevenueYoYPct: 30, LatestQuarterRevenueUSD: 8_000_000, PriorYearQuarterRevenueUSD: 5_900_000},
+	}
+	if err := db.Create(&metrics).Error; err != nil {
+		t.Fatal(err)
+	}
+	priceDate := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
+	prices := []PriceSnapshot{
+		{Source: "tiingo", SourceVersion: "p1", Symbol: "STRB", TradeDate: priceDate, CloseMicros: 2_000_000, Volume: 900_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "twelvedata", SourceVersion: "p1", Symbol: "WATB", TradeDate: priceDate, CloseMicros: 900_000, Volume: 30_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "twelvedata", SourceVersion: "p1", Symbol: "OLDB", TradeDate: priceDate, CloseMicros: 4_000_000, Volume: 120_000, Currency: "USD", QualityStatus: QualityStatusValid},
+	}
+	if err := db.Create(&prices).Error; err != nil {
+		t.Fatal(err)
+	}
+	universe := []UniverseSnapshot{
+		{BatchID: current.BatchID, SecurityID: securities[0].ID, Ticker: "STRB", MarketCapUSD: 260_000_000, PriceSnapshotID: &prices[0].ID, QualityStatus: QualityStatusValid},
+		{BatchID: current.BatchID, SecurityID: securities[1].ID, Ticker: "WATB", MarketCapUSD: 80_000_000, PriceSnapshotID: &prices[1].ID, QualityStatus: QualityStatusValid},
+		{BatchID: current.BatchID, SecurityID: securities[2].ID, Ticker: "OLDB", MarketCapUSD: 520_000_000, PriceSnapshotID: &prices[2].ID, QualityStatus: QualityStatusValid},
+	}
+	if err := db.Create(&universe).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CapitalRiskSnapshot{
+		BatchID: securityBatch.BatchID, SecurityID: securities[2].ID, Kind: CapitalEventATMProgram, Active: true, BlocksA: true, BlocksB: false, Severity: CapitalRiskSeverityHigh, Reason: "ATM active", EffectiveAt: priceDate,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 3 || len(page.Items) != 3 {
+		t.Fatalf("page=%#v", page)
+	}
+	if page.Items[0].Ticker != "STRB" || page.Items[0].QualityTier != "strong_b" || page.Items[0].ChangeStatus != "improved" {
+		t.Fatalf("strong candidate annotations = %#v", page.Items[0])
+	}
+	if page.Items[0].ReviewPriorityScore <= page.Items[1].ReviewPriorityScore {
+		t.Fatalf("default priority order not applied: %#v", page.Items)
+	}
+	if !containsString(page.Items[1].QualityTags, "low_revenue_base") || !containsString(page.Items[1].QualityTags, "low_liquidity") || page.Items[1].QualityTier != "watch_b" || page.Items[1].ChangeStatus != "new" {
+		t.Fatalf("watch candidate annotations = %#v", page.Items[1])
+	}
+	if !containsString(page.Items[2].QualityTags, "active_capital_risk") || page.Items[2].ChangeStatus != "weakened" {
+		t.Fatalf("old candidate annotations = %#v", page.Items[2])
+	}
+}
+
+func TestBuildCandidateOverviewSummarizesCandidateDimensions(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	securities := []Security{
+		{CIK: "0000006201", CompanyName: "Strong B", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000006202", CompanyName: "Watch B", CatalogStatus: SecurityCatalogPublished},
+	}
+	if err := db.Create(&securities).Error; err != nil {
+		t.Fatal(err)
+	}
+	securityBatch := UniverseBatch{BatchID: "security-overview", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Minute)}
+	current := UniverseBatch{BatchID: "market-overview", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
+	if err := db.Create(&[]UniverseBatch{securityBatch, current}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: current.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]SecurityBatchIdentity{
+		{BatchID: securityBatch.BatchID, SecurityID: securities[0].ID, Ticker: "GOOD", SIC: 7372, CompanyName: "Strong B"},
+		{BatchID: securityBatch.BatchID, SecurityID: securities[1].ID, Ticker: "RISK", SIC: 2834, CompanyName: "Watch B"},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]CandidateScoreSnapshot{
+		{BatchID: current.BatchID, SecurityID: securities[0].ID, Ticker: "GOOD", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72, MarketCapUSD: 250_000_000, RevenueGrowthPct: 55, CashRunwayMonths: 16, DilutionRiskScore: 10, SectorScore: 9},
+		{BatchID: current.BatchID, SecurityID: securities[1].ID, Ticker: "RISK", Grade: CandidateGradeB, EligibleB: true, TotalScore: 68, MarketCapUSD: 90_000_000, RevenueGrowthPct: 2000, CashRunwayMonths: 10, DilutionRiskScore: 10, SectorScore: 9},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]FinancialMetricSnapshot{
+		{BatchID: securityBatch.BatchID, SecurityID: securities[0].ID, RevenueGrowthAvailable: true, RunwayAvailable: true, LatestQuarterRevenueUSD: 10_000_000, QuarterlyRevenueYoYPct: 55, AnnualRevenueYoYPct: 40},
+		{BatchID: securityBatch.BatchID, SecurityID: securities[1].ID, RevenueGrowthAvailable: true, RunwayAvailable: true, LatestQuarterRevenueUSD: 200_000, QuarterlyRevenueYoYPct: 2000, AnnualRevenueYoYPct: 1500, QualityFlagsJSON: `["low_revenue_base","extreme_revenue_growth"]`},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	overview, err := BuildCandidateOverview(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.Total != 2 || overview.GradeCounts[CandidateGradeB] != 2 || overview.QualityTierCounts["strong_b"] != 1 || overview.QualityTierCounts["watch_b"] != 1 {
+		t.Fatalf("overview counts = %#v", overview)
+	}
+	if overview.ChangeCounts["new"] != 2 || overview.SectorCounts["软件与数据服务"] != 1 || overview.QualityTagCounts["low_revenue_base"] != 1 {
+		t.Fatalf("overview dimensions = %#v", overview)
+	}
+	if len(overview.TopCandidates) != 2 || overview.TopCandidates[0].Ticker != "GOOD" {
+		t.Fatalf("top candidates = %#v", overview.TopCandidates)
+	}
+}
+
+func TestBuildCandidateSummaryActionableOnlyFiltersNoisyBCandidates(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	securities := []Security{
+		{CIK: "0000006301", CompanyName: "Strong Notify", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000006302", CompanyName: "Watch Notify", CatalogStatus: SecurityCatalogPublished},
+	}
+	if err := db.Create(&securities).Error; err != nil {
+		t.Fatal(err)
+	}
+	securityBatch := UniverseBatch{BatchID: "security-notify", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Minute)}
+	current := UniverseBatch{BatchID: "market-notify", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
+	if err := db.Create(&[]UniverseBatch{securityBatch, current}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: current.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]SecurityBatchIdentity{
+		{BatchID: securityBatch.BatchID, SecurityID: securities[0].ID, Ticker: "SNTF", SIC: 7372, CompanyName: "Strong Notify"},
+		{BatchID: securityBatch.BatchID, SecurityID: securities[1].ID, Ticker: "WNTF", SIC: 2834, CompanyName: "Watch Notify"},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]CandidateScoreSnapshot{
+		{BatchID: current.BatchID, SecurityID: securities[0].ID, Ticker: "SNTF", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72, MarketCapUSD: 220_000_000, RevenueGrowthPct: 55, CashRunwayMonths: 18},
+		{BatchID: current.BatchID, SecurityID: securities[1].ID, Ticker: "WNTF", Grade: CandidateGradeB, EligibleB: true, TotalScore: 71, MarketCapUSD: 80_000_000, RevenueGrowthPct: 2000, CashRunwayMonths: 18},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]FinancialMetricSnapshot{
+		{BatchID: securityBatch.BatchID, SecurityID: securities[0].ID, RevenueGrowthAvailable: true, RunwayAvailable: true, QuarterlyRevenueYoYPct: 55, AnnualRevenueYoYPct: 44, LatestQuarterRevenueUSD: 20_000_000},
+		{BatchID: securityBatch.BatchID, SecurityID: securities[1].ID, RevenueGrowthAvailable: true, RunwayAvailable: true, QuarterlyRevenueYoYPct: 2000, AnnualRevenueYoYPct: 1500, LatestQuarterRevenueUSD: 100_000, QualityFlagsJSON: `["low_revenue_base","extreme_revenue_growth"]`},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := BuildCandidateSummaryWithOptions(context.Background(), db, CandidateSummaryOptions{LimitPerGrade: 5, IncludeB: true, ActionableOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalB != 2 || len(summary.ItemsB) != 1 || summary.ItemsB[0].Ticker != "SNTF" || strings.Contains(summary.Message, "WNTF") {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestBuildCandidateSummaryUsesCurrentPublishedBatchAndLimitsByGrade(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	securities := []Security{
@@ -224,6 +414,15 @@ func TestBuildCandidateSummaryWithoutCurrentBatchIsEmpty(t *testing.T) {
 	if summary.TotalA != 0 || summary.TotalB != 0 || len(summary.ItemsA) != 0 || len(summary.ItemsB) != 0 || !strings.Contains(summary.Message, "暂无小盘候选批次") {
 		t.Fatalf("summary = %#v", summary)
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBatchAndProviderQueriesPaginateFilterAndOrder(t *testing.T) {

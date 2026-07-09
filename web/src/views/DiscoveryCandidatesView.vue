@@ -23,6 +23,34 @@
       :description="health.issues.length ? health.issues.map(formatHealthIssue).join('；') : '当前候选证据链完整度正常。'"
     />
 
+    <div v-if="overview" class="overview-grid">
+      <el-card shadow="never" class="overview-card">
+        <span class="overview-label">当前候选</span>
+        <strong>{{ overview.total }}</strong>
+        <small>A {{ overview.grade_counts?.A || 0 }} / B {{ overview.grade_counts?.B || 0 }}</small>
+      </el-card>
+      <el-card shadow="never" class="overview-card">
+        <span class="overview-label">强B候选</span>
+        <strong>{{ overview.quality_tier_counts?.strong_b || 0 }}</strong>
+        <small>观察B {{ overview.quality_tier_counts?.watch_b || 0 }}</small>
+      </el-card>
+      <el-card shadow="never" class="overview-card">
+        <span class="overview-label">变化</span>
+        <strong>{{ overview.change_counts?.new || 0 }}</strong>
+        <small>新增 / 改善 {{ overview.change_counts?.improved || 0 }}</small>
+      </el-card>
+      <el-card shadow="never" class="overview-card">
+        <span class="overview-label">数据提示</span>
+        <strong>{{ overview.quality_tag_counts?.low_revenue_base || 0 }}</strong>
+        <small>低收入基数</small>
+      </el-card>
+      <el-card shadow="never" class="overview-card overview-wide">
+        <span class="overview-label">主要赛道</span>
+        <strong>{{ topSectorLabel }}</strong>
+        <small>{{ topSectorCount }} 只</small>
+      </el-card>
+    </div>
+
     <el-card shadow="never" class="filter-card">
       <el-form :inline="true" :model="filters">
         <el-form-item label="等级">
@@ -67,6 +95,19 @@
       </el-table-column>
       <el-table-column prop="ticker" label="Ticker" width="110" sortable="custom" />
       <el-table-column prop="total_score" label="总分" width="90" align="right" sortable="custom" />
+      <el-table-column prop="review_priority_score" label="优先级" width="100" align="right" sortable="custom">
+        <template #default="{ row }">{{ row.review_priority_score ?? '-' }}</template>
+      </el-table-column>
+      <el-table-column prop="quality_tier" label="质量" width="110">
+        <template #default="{ row }">
+          <el-tag :type="qualityTierTagType(row.quality_tier)" effect="plain">{{ qualityTierLabel(row.quality_tier) }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="change_status" label="变化" width="100">
+        <template #default="{ row }">
+          <el-tag :type="changeStatusTagType(row.change_status)" effect="plain">{{ changeStatusLabel(row.change_status) }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="market_cap_usd" label="市值" width="130" align="right" sortable="custom">
         <template #default="{ row }">{{ formatUSD(row.market_cap_usd) }}</template>
       </el-table-column>
@@ -161,6 +202,9 @@
               <el-tag type="danger" effect="plain" class="risk-tag">阻断B</el-tag>
             </el-tooltip>
             <el-tag v-if="!row.active_blocks_a && !row.active_blocks_b" type="info" effect="plain">无阻断风险</el-tag>
+            <el-tag v-for="tag in displayQualityTags(row.quality_tags)" :key="tag" :type="qualityTagType(tag)" effect="plain">
+              {{ qualityTagLabel(tag) }}
+            </el-tag>
           </el-space>
         </template>
       </el-table-column>
@@ -170,9 +214,12 @@
         </template>
       </el-table-column>
       <el-table-column prop="reason_code" label="原因" min-width="140" />
-      <el-table-column label="操作" width="110" fixed="right">
+      <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" :loading="detailLoadingTicker === row.ticker" @click="openDetail(row)">详情</el-button>
+          <el-space>
+            <el-button link type="primary" :loading="detailLoadingTicker === row.ticker" @click="openDetail(row)">详情</el-button>
+            <el-button link type="primary" :loading="watchingTicker === row.ticker" @click="addToWatchTargets(row)">加入监控</el-button>
+          </el-space>
         </template>
       </el-table-column>
     </el-table>
@@ -406,7 +453,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
 import type {
@@ -416,6 +463,7 @@ import type {
   CandidateNotificationPreview,
   CandidateNotificationSendInput,
   CandidateNotificationSendResult,
+  CandidateOverview,
   CandidateReport,
   CandidateScore,
   CandidateSummary,
@@ -424,11 +472,13 @@ import type {
 } from '@/api/types'
 
 const rows = ref<CandidateScore[]>([])
+const overview = ref<CandidateOverview | null>(null)
 const loading = ref(false)
 const workflowLoading = ref(false)
 const reportLoading = ref(false)
 const detailVisible = ref(false)
 const detailLoadingTicker = ref('')
+const watchingTicker = ref('')
 const candidateDetail = ref<CandidateDetail | null>(null)
 const health = ref<CandidateHealth | null>(null)
 const report = ref<CandidateReport | null>(null)
@@ -445,6 +495,14 @@ const pageSize = 20
 const total = ref(0)
 const filters = reactive({ grade: '', ticker: '', eligible_a: '', eligible_b: '', sector_category: '' })
 const sortState = reactive({ sort_by: '', sort_order: '' })
+const topSectorLabel = computed(() => {
+  const entries = Object.entries(overview.value?.sector_counts || {}).sort((a, b) => b[1] - a[1])
+  return entries[0]?.[0] || '-'
+})
+const topSectorCount = computed(() => {
+  const entries = Object.entries(overview.value?.sector_counts || {}).sort((a, b) => b[1] - a[1])
+  return entries[0]?.[1] || 0
+})
 const sectorCategoryOptions = [
   '生物医药',
   '软件与数据服务',
@@ -484,7 +542,7 @@ async function load() {
     const res = await apiClient.get<ApiResponse<PageResult<CandidateScore>>>('/discovery/candidates', { params: requestParams() })
     rows.value = res.data.data.items || []
     total.value = res.data.data.total || 0
-    await loadHealth()
+    await Promise.all([loadHealth(), loadOverview()])
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '加载候选失败')
   } finally {
@@ -495,6 +553,11 @@ async function load() {
 async function loadHealth() {
   const res = await apiClient.get<ApiResponse<CandidateHealth>>('/discovery/candidates/health')
   health.value = res.data.data
+}
+
+async function loadOverview() {
+  const res = await apiClient.get<ApiResponse<CandidateOverview>>('/discovery/candidates/overview')
+  overview.value = res.data.data
 }
 
 async function runWorkflow() {
@@ -541,6 +604,29 @@ async function openDetail(row: CandidateScore) {
     ElMessage.error(err?.response?.data?.message || '加载候选详情失败')
   } finally {
     detailLoadingTicker.value = ''
+  }
+}
+
+async function addToWatchTargets(row: CandidateScore) {
+  watchingTicker.value = row.ticker
+  try {
+    await apiClient.post('/watch-targets', {
+      ticker: row.ticker,
+      company_name: row.ticker,
+      target_type: 'stock',
+      group: 'small-cap-candidate',
+      status: 'enabled',
+    })
+    ElMessage.success(`${row.ticker} 已加入监控标的`)
+  } catch (err: any) {
+    const message = err?.response?.data?.message || ''
+    if (message.toLowerCase().includes('duplicate') || message.includes('UNIQUE')) {
+      ElMessage.info(`${row.ticker} 已在监控标的中`)
+    } else {
+      ElMessage.error(message || '加入监控失败')
+    }
+  } finally {
+    watchingTicker.value = ''
   }
 }
 
@@ -618,6 +704,58 @@ function gradeLabel(grade: string) {
 function gradeTagType(grade: string) {
   if (grade === 'A') return 'success'
   if (grade === 'B') return 'warning'
+  return 'info'
+}
+
+function qualityTierLabel(tier?: string) {
+  if (tier === 'a') return 'A级'
+  if (tier === 'strong_b') return '强B'
+  if (tier === 'standard_b') return '普通B'
+  if (tier === 'watch_b') return '观察B'
+  return '-'
+}
+
+function qualityTierTagType(tier?: string) {
+  if (tier === 'a' || tier === 'strong_b') return 'success'
+  if (tier === 'standard_b') return 'warning'
+  if (tier === 'watch_b') return 'info'
+  return 'info'
+}
+
+function changeStatusLabel(status?: string) {
+  if (status === 'new') return '新增'
+  if (status === 'improved') return '改善'
+  if (status === 'weakened') return '转弱'
+  if (status === 'unchanged') return '延续'
+  return '-'
+}
+
+function changeStatusTagType(status?: string) {
+  if (status === 'new' || status === 'improved') return 'success'
+  if (status === 'weakened') return 'danger'
+  if (status === 'unchanged') return 'info'
+  return 'info'
+}
+
+function displayQualityTags(tags?: string[]) {
+  return (tags || []).filter((tag) => tag !== 'no_insider_buy').slice(0, 3)
+}
+
+function qualityTagLabel(tag: string) {
+  const labels: Record<string, string> = {
+    low_revenue_base: '低收入基数',
+    extreme_revenue_growth: '极端增长',
+    low_liquidity: '低流动性',
+    financials_missing: '财务缺失',
+    active_capital_risk: '融资风险',
+    secondary_price_source: '补充价格源',
+  }
+  return labels[tag] || tag
+}
+
+function qualityTagType(tag: string) {
+  if (tag === 'active_capital_risk' || tag === 'financials_missing') return 'danger'
+  if (tag === 'low_revenue_base' || tag === 'extreme_revenue_growth' || tag === 'low_liquidity') return 'warning'
   return 'info'
 }
 
@@ -789,6 +927,38 @@ onMounted(load)
   margin-bottom: 12px;
 }
 
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr)) minmax(220px, 1.4fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.overview-card :deep(.el-card__body) {
+  display: flex;
+  min-height: 72px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+
+.overview-card strong {
+  color: var(--el-text-color-primary);
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.overview-card small,
+.overview-label {
+  color: var(--el-text-color-secondary);
+}
+
+.overview-wide strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .summary-alert {
   margin-bottom: 12px;
 }
@@ -826,5 +996,11 @@ onMounted(load)
 .metric-tooltip {
   max-width: 520px;
   line-height: 1.6;
+}
+
+@media (max-width: 1200px) {
+  .overview-grid {
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
 }
 </style>

@@ -78,6 +78,15 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) GetDiscoveryCandidateOverview(c *gin.Context) {
+	result, err := discovery.BuildCandidateOverview(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) GetDiscoveryCandidateDetail(c *gin.Context) {
 	result, err := discovery.GetCandidateDetail(c.Request.Context(), h.DiscoveryDB, c.Param("ticker"))
 	if err != nil {

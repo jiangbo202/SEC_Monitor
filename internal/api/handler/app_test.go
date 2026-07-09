@@ -147,6 +147,48 @@ func TestAppHandlerListsDiscoveryCandidates(t *testing.T) {
 	}
 }
 
+func TestAppHandlerGetsDiscoveryCandidateOverview(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	security := discovery.Security{CIK: "0000001235", CompanyName: "Overview", CatalogStatus: discovery.SecurityCatalogPublished}
+	if err := discoveryDB.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	securityBatch := discovery.UniverseBatch{BatchID: "overview-security", Kind: discovery.BatchKindSecurity, Status: discovery.BatchStatusPublished, StartedAt: time.Now().Add(-time.Minute)}
+	batch := discovery.UniverseBatch{BatchID: "overview-current", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
+	if err := discoveryDB.Create(&[]discovery.UniverseBatch{securityBatch, batch}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CurrentBatchPointer{Kind: discovery.BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "OVRV", Grade: discovery.CandidateGradeB, EligibleB: true, TotalScore: 72, MarketCapUSD: 200_000_000, RevenueGrowthPct: 55, CashRunwayMonths: 18}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.SecurityBatchIdentity{BatchID: securityBatch.BatchID, SecurityID: security.ID, Ticker: "OVRV", SIC: 7372, CompanyName: "Overview"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.FinancialMetricSnapshot{BatchID: securityBatch.BatchID, SecurityID: security.ID, RevenueGrowthAvailable: true, RunwayAvailable: true, QuarterlyRevenueYoYPct: 55, AnnualRevenueYoYPct: 40, LatestQuarterRevenueUSD: 10_000_000}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &AppHandler{DiscoveryDB: discoveryDB}
+	r := gin.New()
+	r.GET("/discovery/candidates/overview", h.GetDiscoveryCandidateOverview)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/discovery/candidates/overview", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":1`) || !strings.Contains(rec.Body.String(), `"strong_b":1`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAppHandlerGetsDiscoveryCandidateDetail(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
