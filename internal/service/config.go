@@ -124,7 +124,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "discovery.twelve_data_request_interval_ms", Value: "8000", ValueType: "int", Category: "discovery"},
 		{Key: "discovery.yahoo_base_url", Value: "https://query1.finance.yahoo.com", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.yahoo_request_budget", Value: "45", ValueType: "int", Category: "discovery"},
-		{Key: "discovery.min_publish_coverage_pct", Value: "20", ValueType: "float", Category: "discovery"},
+		{Key: "discovery.min_publish_coverage_pct", Value: "85", ValueType: "float", Category: "discovery"},
 		{Key: "discovery.research_mode", Value: "true", ValueType: "bool", Category: "discovery"},
 		{Key: "social_heat.enabled", Value: "false", ValueType: "bool", Category: "social_heat"},
 		{Key: "social_heat.provider", Value: "manual", ValueType: "string", Category: "social_heat"},

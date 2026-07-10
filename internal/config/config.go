@@ -103,7 +103,7 @@ func Load() Config {
 			YahooRequestBudget:          intOrDefault("SMALL_CAP_YAHOO_REQUEST_BUDGET", 45),
 			YahooRequestIntervalMS:      positiveIntOrDefault("SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS", 1000),
 			ResearchMode:                boolOrDefault("SMALL_CAP_RESEARCH_MODE", true),
-			MinPublishCoveragePct:       floatOrDefault("SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT", 20),
+			MinPublishCoveragePct:       floatOrDefault("SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT", 85),
 			TaskTimeoutMin:              positiveIntOrDefault("SMALL_CAP_TASK_TIMEOUT_MINUTES", 60),
 		},
 		SEC: SECConfig{

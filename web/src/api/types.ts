@@ -264,6 +264,8 @@ export interface DiscoveryFinancialMetric {
   annual_revenue_yoy_pct: number
   annual_revenue_qoq_pct: number
   cash_runway_months: number
+  gross_margin_available: boolean
+  gross_margin_pct: number
   revenue_growth_available: boolean
   runway_available: boolean
   quality_flags_json: string
@@ -372,6 +374,9 @@ export interface CandidateHealth {
   total_candidates: number
   missing_financials: number
   missing_insiders: number
+  insider_data_status: 'available' | 'missing' | string
+  qualified_insider_candidates: number
+  no_qualified_insider_candidates: number
   missing_market_cap: number
   active_risk_events: number
   issues: string[]

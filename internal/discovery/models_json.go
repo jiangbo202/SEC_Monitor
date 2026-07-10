@@ -87,6 +87,7 @@ func (row FinancialMetricSnapshot) MarshalJSON() ([]byte, error) {
 	out.QuarterlyRevenueQoQPct = finiteFloat(out.QuarterlyRevenueQoQPct, 0)
 	out.AnnualRevenueYoYPct = finiteFloat(out.AnnualRevenueYoYPct, 0)
 	out.AnnualRevenueQoQPct = finiteFloat(out.AnnualRevenueQoQPct, 0)
+	out.GrossMarginPct = finiteFloat(out.GrossMarginPct, 0)
 	out.AvailableCashUSD = finiteFloat(out.AvailableCashUSD, 0)
 	out.TTMOperatingCashFlowUSD = finiteFloat(out.TTMOperatingCashFlowUSD, 0)
 	out.TTMCapitalExpenditureUSD = finiteFloat(out.TTMCapitalExpenditureUSD, 0)

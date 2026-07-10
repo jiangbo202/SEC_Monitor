@@ -42,6 +42,7 @@ type FinancialFactSource interface {
 type FinancialSummary struct {
 	RevenueGrowthAvailable bool
 	RunwayAvailable        bool
+	GrossMarginAvailable   bool
 	QualityFlags           []string
 
 	LatestQuarterRevenueUSD    int64
@@ -53,6 +54,7 @@ type FinancialSummary struct {
 	PriorAnnualRevenueUSD      int64
 	AnnualRevenueYoYPct        float64
 	AnnualRevenueQoQPct        float64
+	GrossMarginPct             float64
 
 	AvailableCashUSD         float64
 	TTMOperatingCashFlowUSD  float64
@@ -226,6 +228,7 @@ func BuildFinancialSummary(facts []FinancialFact, asOf time.Time) FinancialSumma
 	out := FinancialSummary{}
 	latestQ, okLatestQ := latestDurationFact(facts, FinancialMetricRevenue, 75, 105)
 	if okLatestQ {
+		out.setQuarterlyGrossMargin(facts, latestQ)
 		priorQ, okPriorQ := matchingYearAgoFact(facts, latestQ, FinancialMetricRevenue, 75, 105)
 		if okPriorQ && priorQ.AmountMicros > 0 {
 			out.LatestQuarterRevenueUSD = latestQ.AmountMicros / 1_000_000
@@ -277,6 +280,29 @@ func BuildFinancialSummary(facts []FinancialFact, asOf time.Time) FinancialSumma
 		}
 	}
 	return out
+}
+
+func (out *FinancialSummary) setQuarterlyGrossMargin(facts []FinancialFact, revenue FinancialFact) {
+	if revenue.AmountMicros <= 0 {
+		return
+	}
+	grossProfit, hasGrossProfit := matchingDurationFact(facts, revenue, FinancialMetricGrossProfit, 75, 105)
+	margin := 0.0
+	switch {
+	case hasGrossProfit:
+		margin = float64(grossProfit.AmountMicros) / float64(revenue.AmountMicros) * 100
+	default:
+		cost, hasCost := matchingDurationFact(facts, revenue, FinancialMetricCostOfRevenue, 75, 105)
+		if !hasCost {
+			return
+		}
+		margin = float64(revenue.AmountMicros-cost.AmountMicros) / float64(revenue.AmountMicros) * 100
+	}
+	if margin < 0 || margin > 100 {
+		return
+	}
+	out.GrossMarginAvailable = true
+	out.GrossMarginPct = margin
 }
 
 func financialSpecsByConcept() map[string]financialConceptSpec {
@@ -354,6 +380,24 @@ func matchingPreviousDurationFact(facts []FinancialFact, target FinancialFact, m
 		}
 		days := int(fact.PeriodEnd.Sub(fact.PeriodStart).Hours()/24) + 1
 		if days < minDays || days > maxDays || absDurationDays(fact.PeriodEnd.Sub(wantEnd)) > 7 {
+			continue
+		}
+		if !ok || factFiledAfter(fact, selected) {
+			selected, ok = fact, true
+		}
+	}
+	return selected, ok
+}
+
+func matchingDurationFact(facts []FinancialFact, target FinancialFact, metric string, minDays, maxDays int) (FinancialFact, bool) {
+	var selected FinancialFact
+	ok := false
+	for _, fact := range facts {
+		if fact.Metric != metric || fact.PeriodStart.IsZero() {
+			continue
+		}
+		days := int(fact.PeriodEnd.Sub(fact.PeriodStart).Hours()/24) + 1
+		if days < minDays || days > maxDays || absDurationDays(fact.PeriodEnd.Sub(target.PeriodEnd)) > 7 {
 			continue
 		}
 		if !ok || factFiledAfter(fact, selected) {

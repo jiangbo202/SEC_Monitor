@@ -16,7 +16,7 @@ func TestBuildCandidateHealthSummarizesMissingData(t *testing.T) {
 	if err := db.Create(&missing).Error; err != nil {
 		t.Fatal(err)
 	}
-	batch := UniverseBatch{BatchID: "health-current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now()}
+	batch := UniverseBatch{BatchID: "health-current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, SourceVersionsJSON: `[{"source":"insiders:sec-form4","version":"v1"}]`, StartedAt: time.Now()}
 	if err := db.Create(&batch).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestBuildCandidateHealthSummarizesMissingData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if health.BatchID != batch.BatchID || health.TotalCandidates != 2 || health.MissingFinancials != 1 || health.MissingInsiders != 1 || health.MissingMarketCap != 1 {
+	if health.BatchID != batch.BatchID || health.TotalCandidates != 2 || health.MissingFinancials != 1 || health.MissingInsiders != 0 || health.NoQualifiedInsiderCandidates != 1 || health.QualifiedInsiderCandidates != 1 || health.MissingMarketCap != 1 {
 		t.Fatalf("health = %#v", health)
 	}
 	if health.Status != CandidateHealthDegraded || len(health.Issues) == 0 {
@@ -54,7 +54,7 @@ func TestBuildCandidateHealthReadsFinancialsFromSecurityBatch(t *testing.T) {
 	if err := db.Create(&security).Error; err != nil {
 		t.Fatal(err)
 	}
-	securityBatch := UniverseBatch{BatchID: "security-health", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Minute)}
+	securityBatch := UniverseBatch{BatchID: "security-health", Kind: BatchKindSecurity, Status: BatchStatusPublished, SourceVersionsJSON: `[{"source":"insiders:sec-form4","version":"v1"}]`, StartedAt: time.Now().Add(-time.Minute)}
 	marketBatch := UniverseBatch{BatchID: "market-health", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
 	if err := db.Create(&[]UniverseBatch{securityBatch, marketBatch}).Error; err != nil {
 		t.Fatal(err)
@@ -76,7 +76,62 @@ func TestBuildCandidateHealthReadsFinancialsFromSecurityBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if health.MissingFinancials != 0 || health.MissingInsiders != 0 || health.Status != CandidateHealthOK {
+	if health.MissingFinancials != 0 || health.MissingInsiders != 0 || health.QualifiedInsiderCandidates != 1 || health.NoQualifiedInsiderCandidates != 0 || health.InsiderDataStatus != "available" || health.Status != CandidateHealthOK {
 		t.Fatalf("health = %#v", health)
+	}
+}
+
+func TestBuildCandidateHealthDistinguishesInsiderDataFromNoSignal(t *testing.T) {
+	tests := []struct {
+		name                 string
+		sourceVersionsJSON   string
+		qualified            bool
+		wantDataStatus       string
+		wantMissing          int
+		wantQualified        int
+		wantWithoutQualified int
+		wantStatus           string
+	}{
+		{name: "source available without qualified purchase", sourceVersionsJSON: `[{"source":"insiders:sec-form4","version":"v1"}]`, wantDataStatus: "available", wantWithoutQualified: 1, wantStatus: CandidateHealthOK},
+		{name: "source missing", sourceVersionsJSON: `[]`, wantDataStatus: "missing", wantMissing: 1, wantStatus: CandidateHealthDegraded},
+		{name: "source available with qualified purchase", sourceVersionsJSON: `[{"source":"insiders:sec-form4","version":"v1"}]`, qualified: true, wantDataStatus: "available", wantQualified: 1, wantStatus: CandidateHealthOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openMigratedTestDatabase(t)
+			now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+			security := Security{CIK: "0000008811", CompanyName: "Health Signal Co", CatalogStatus: SecurityCatalogPublished}
+			if err := db.Create(&security).Error; err != nil {
+				t.Fatal(err)
+			}
+			securityBatch := UniverseBatch{BatchID: "security-health-signal", Kind: BatchKindSecurity, Status: BatchStatusPublished, SourceVersionsJSON: tt.sourceVersionsJSON, StartedAt: now.Add(-time.Minute)}
+			marketBatch := UniverseBatch{BatchID: "market-health-signal", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: now}
+			if err := db.Create(&[]UniverseBatch{securityBatch, marketBatch}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: marketBatch.BatchID}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&CandidateScoreSnapshot{BatchID: marketBatch.BatchID, SecurityID: security.ID, Ticker: "SIG", Grade: CandidateGradeB, EligibleB: true, MarketCapUSD: 120_000_000}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&FinancialMetricSnapshot{BatchID: securityBatch.BatchID, SecurityID: security.ID, RevenueGrowthAvailable: true, RunwayAvailable: true}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if tt.qualified {
+				if err := db.Create(&InsiderTransactionSnapshot{SecurityID: security.ID, Accession: "signal", TransactionDate: now, TransactionCode: "P", Qualified: true}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			health, err := BuildCandidateHealth(context.Background(), db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if health.InsiderDataStatus != tt.wantDataStatus || health.MissingInsiders != tt.wantMissing || health.QualifiedInsiderCandidates != tt.wantQualified || health.NoQualifiedInsiderCandidates != tt.wantWithoutQualified || health.Status != tt.wantStatus {
+				t.Fatalf("health = %#v", health)
+			}
+		})
 	}
 }

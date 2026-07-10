@@ -386,7 +386,7 @@ const discoveryForm = reactive({
   twelve_data_base_url: 'https://api.twelvedata.com',
   yahoo_request_budget: 45,
   yahoo_base_url: 'https://query1.finance.yahoo.com',
-  min_publish_coverage_pct: 20
+  min_publish_coverage_pct: 85
 })
 const ipoForm = reactive({
   enabled: true,
@@ -516,7 +516,7 @@ async function load() {
     discoveryForm.twelve_data_base_url = configValue(configs, 'discovery.twelve_data_base_url', 'https://api.twelvedata.com')
     discoveryForm.yahoo_request_budget = Number(configValue(configs, 'discovery.yahoo_request_budget', '45'))
     discoveryForm.yahoo_base_url = configValue(configs, 'discovery.yahoo_base_url', 'https://query1.finance.yahoo.com')
-    discoveryForm.min_publish_coverage_pct = Number(configValue(configs, 'discovery.min_publish_coverage_pct', '20'))
+    discoveryForm.min_publish_coverage_pct = Number(configValue(configs, 'discovery.min_publish_coverage_pct', '85'))
     ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
     ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,S-1MEF')
     ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))

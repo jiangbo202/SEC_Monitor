@@ -279,23 +279,94 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	}
 }
 
+func TestCandidateScoreQueryDefaultsToActiveCandidatesAndAllowsExcludedPool(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	securities := []Security{
+		{CIK: "0000007001", CompanyName: "Alpha", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000007002", CompanyName: "Beta", CatalogStatus: SecurityCatalogPublished},
+		{CIK: "0000007003", CompanyName: "Excluded", CatalogStatus: SecurityCatalogPublished},
+	}
+	if err := db.Create(&securities).Error; err != nil {
+		t.Fatal(err)
+	}
+	securityBatch := UniverseBatch{BatchID: "security-candidate-scope", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: now.Add(-time.Minute)}
+	marketBatch := UniverseBatch{BatchID: "market-candidate-scope", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: now}
+	if err := db.Create(&[]UniverseBatch{securityBatch, marketBatch}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: marketBatch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	identities := make([]SecurityBatchIdentity, 0, len(securities))
+	for index, security := range securities {
+		identities = append(identities, SecurityBatchIdentity{
+			BatchID: securityBatch.BatchID, SecurityID: security.ID, CIK: security.CIK,
+			Ticker: []string{"AAA", "BBB", "XXX"}[index], SIC: 7372, MappingStatus: MappingStatusCurrent,
+		})
+	}
+	if err := db.Create(&identities).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]CandidateScoreSnapshot{
+		{BatchID: marketBatch.BatchID, SecurityID: securities[0].ID, Ticker: "AAA", Grade: CandidateGradeA, EligibleA: true, TotalScore: 85, MarketCapUSD: 100_000_000},
+		{BatchID: marketBatch.BatchID, SecurityID: securities[1].ID, Ticker: "BBB", Grade: CandidateGradeB, EligibleB: true, TotalScore: 70, MarketCapUSD: 200_000_000},
+		{BatchID: marketBatch.BatchID, SecurityID: securities[2].ID, Ticker: "XXX", Grade: CandidateGradeExcluded, TotalScore: 75, MarketCapUSD: 2_000_000_000},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	active, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.Total != 2 || len(active.Items) != 2 {
+		t.Fatalf("active candidates = %#v", active)
+	}
+	for _, item := range active.Items {
+		if item.Grade == CandidateGradeExcluded {
+			t.Fatalf("excluded item leaked into active candidates: %#v", item)
+		}
+	}
+
+	excluded, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{Grade: CandidateGradeExcluded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if excluded.Total != 1 || len(excluded.Items) != 1 || excluded.Items[0].Ticker != "XXX" || excluded.Items[0].QualityTier != CandidateGradeExcluded {
+		t.Fatalf("excluded pool = %#v", excluded)
+	}
+
+	overview, err := BuildCandidateOverview(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.Total != 2 || overview.GradeCounts[CandidateGradeExcluded] != 0 || overview.QualityTierCounts[CandidateGradeExcluded] != 0 {
+		t.Fatalf("overview = %#v", overview)
+	}
+}
+
 func TestCandidateScoreQueryIncludesForwardPerformance(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	security := Security{CIK: "0000006151", CompanyName: "Perf Co", CatalogStatus: SecurityCatalogPublished}
 	if err := db.Create(&security).Error; err != nil {
 		t.Fatal(err)
 	}
-	current := UniverseBatch{BatchID: "current-perf", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now()}
-	if err := db.Create(&current).Error; err != nil {
+	baseDate := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	first := UniverseBatch{BatchID: "first-perf", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: baseDate}
+	current := UniverseBatch{BatchID: "current-perf", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: baseDate.AddDate(0, 0, 5)}
+	if err := db.Create(&[]UniverseBatch{first, current}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: current.BatchID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&CandidateScoreSnapshot{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "PERF", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72, MarketCapUSD: 100_000_000, RevenueGrowthPct: 50, CashRunwayMonths: 18}).Error; err != nil {
+	if err := db.Create(&[]CandidateScoreSnapshot{
+		{BatchID: first.BatchID, SecurityID: security.ID, Ticker: "PERF", Grade: CandidateGradeB, EligibleB: true, TotalScore: 70, MarketCapUSD: 100_000_000, RevenueGrowthPct: 50, CashRunwayMonths: 18},
+		{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "PERF", Grade: CandidateGradeB, EligibleB: true, TotalScore: 72, MarketCapUSD: 100_000_000, RevenueGrowthPct: 50, CashRunwayMonths: 18},
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
-	baseDate := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	prices := []PriceSnapshot{
 		{Source: "tiingo", SourceVersion: "v1", Symbol: "PERF", TradeDate: baseDate, CloseMicros: 1_000_000, Volume: 200_000, Currency: "USD", QualityStatus: QualityStatusValid},
 		{Source: "tiingo", SourceVersion: "v2", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 1), CloseMicros: 1_100_000, Volume: 210_000, Currency: "USD", QualityStatus: QualityStatusValid},
@@ -307,7 +378,10 @@ func TestCandidateScoreQueryIncludesForwardPerformance(t *testing.T) {
 	if err := db.Create(&prices).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&UniverseSnapshot{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "PERF", MarketCapUSD: 100_000_000, PriceSnapshotID: &prices[0].ID, QualityStatus: QualityStatusValid}).Error; err != nil {
+	if err := db.Create(&[]UniverseSnapshot{
+		{BatchID: first.BatchID, SecurityID: security.ID, Ticker: "PERF", MarketCapUSD: 100_000_000, PriceSnapshotID: &prices[0].ID, QualityStatus: QualityStatusValid},
+		{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "PERF", MarketCapUSD: 100_000_000, PriceSnapshotID: &prices[5].ID, QualityStatus: QualityStatusValid},
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -315,7 +389,7 @@ func TestCandidateScoreQueryIncludesForwardPerformance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Items) != 1 || page.Items[0].Performance.Return1D == nil || page.Items[0].Performance.Return5D == nil {
+	if len(page.Items) != 1 || page.Items[0].Performance.BaseDate != baseDate.Format(time.DateOnly) || page.Items[0].Performance.BaseClose != 1 || page.Items[0].Performance.Return1D == nil || page.Items[0].Performance.Return5D == nil {
 		t.Fatalf("performance = %#v", page.Items)
 	}
 	if got := *page.Items[0].Performance.Return1D; got < 9.9 || got > 10.1 {

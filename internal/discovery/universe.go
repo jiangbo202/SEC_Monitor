@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	BatchKindSecurity  = "security-universe"
-	BatchKindPrescreen = "market-prescreen"
-	universeChunkSize  = 1000
+	BatchKindSecurity          = "security-universe"
+	BatchKindPrescreen         = "market-prescreen"
+	universeChunkSize          = 1000
+	maxResearchCoverageDropPct = 15.0
 )
 
 const (
@@ -366,6 +367,11 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	if c.ResearchMode && c.MinPublishCoveragePct > 0 && result.Expected > 0 && result.CoveragePct < c.MinPublishCoveragePct {
 		return c.failBatch(ctx, batch, fmt.Errorf("market price coverage %.1f%% is below publish threshold %.1f%%", result.CoveragePct, c.MinPublishCoveragePct))
 	}
+	if c.ResearchMode && result.Expected > 0 {
+		if err := c.rejectResearchCoverageDrop(ctx, batch, result); err != nil {
+			return c.failBatch(ctx, batch, err)
+		}
+	}
 	snapshots, stageErr := c.buildUniverseSnapshots(ctx, securityBatch.BatchID, batch.BatchID, records, result, now)
 	if stageErr == nil {
 		stageErr = c.persistUniverseSnapshots(ctx, snapshots)
@@ -380,6 +386,27 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 		return c.failBatch(ctx, batch, stageErr)
 	}
 	return c.publish(ctx, batch, len(snapshots))
+}
+
+func (c *Coordinator) rejectResearchCoverageDrop(ctx context.Context, batch UniverseBatch, result ProviderResult) error {
+	var previous ProviderRun
+	err := c.DB.WithContext(ctx).
+		Table("provider_runs AS run").
+		Select("run.*").
+		Joins("JOIN universe_batches AS previous_batch ON previous_batch.batch_id = run.batch_id").
+		Where("previous_batch.kind = ? AND previous_batch.status = ? AND previous_batch.started_at < ? AND run.provider = ?", BatchKindPrescreen, BatchStatusPublished, batch.StartedAt, result.Provider).
+		Order("previous_batch.started_at DESC, run.id DESC").
+		First(&previous).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load previous market coverage: %w", err)
+	}
+	if previous.ExpectedCount <= 0 || previous.CoveragePct-result.CoveragePct <= maxResearchCoverageDropPct {
+		return nil
+	}
+	return fmt.Errorf("market price coverage dropped from %.1f%% to %.1f%% (maximum decline %.1f%%)", previous.CoveragePct, result.CoveragePct, maxResearchCoverageDropPct)
 }
 
 func (c *Coordinator) validateBase(ctx context.Context) error {
@@ -1083,7 +1110,7 @@ func financialFactSnapshot(securityID uint, fact FinancialFact, now time.Time) F
 func financialMetricSnapshot(batchID string, securityID uint, summary FinancialSummary, flags string, now time.Time) FinancialMetricSnapshot {
 	return FinancialMetricSnapshot{
 		BatchID: batchID, SecurityID: securityID, ParserVersion: FinancialParserVersion,
-		RevenueGrowthAvailable: summary.RevenueGrowthAvailable, RunwayAvailable: summary.RunwayAvailable,
+		RevenueGrowthAvailable: summary.RevenueGrowthAvailable, RunwayAvailable: summary.RunwayAvailable, GrossMarginAvailable: summary.GrossMarginAvailable,
 		LatestQuarterRevenueUSD: summary.LatestQuarterRevenueUSD, PriorYearQuarterRevenueUSD: summary.PriorYearQuarterRevenueUSD,
 		PreviousQuarterRevenueUSD: summary.PreviousQuarterRevenueUSD, QuarterlyRevenueYoYPct: summary.QuarterlyRevenueYoYPct,
 		QuarterlyRevenueQoQPct: summary.QuarterlyRevenueQoQPct, LatestAnnualRevenueUSD: summary.LatestAnnualRevenueUSD,
@@ -1091,7 +1118,7 @@ func financialMetricSnapshot(batchID string, securityID uint, summary FinancialS
 		AnnualRevenueQoQPct: summary.AnnualRevenueQoQPct,
 		AvailableCashUSD:    summary.AvailableCashUSD, TTMOperatingCashFlowUSD: summary.TTMOperatingCashFlowUSD,
 		TTMCapitalExpenditureUSD: summary.TTMCapitalExpenditureUSD, CFOBurnMonthlyUSD: summary.CFOBurnMonthlyUSD,
-		FCFBurnMonthlyUSD: summary.FCFBurnMonthlyUSD, CashRunwayMonths: summary.CashRunwayMonths,
+		FCFBurnMonthlyUSD: summary.FCFBurnMonthlyUSD, CashRunwayMonths: summary.CashRunwayMonths, GrossMarginPct: summary.GrossMarginPct,
 		QualityFlagsJSON: flags, CreatedAt: now,
 	}
 }
@@ -1622,7 +1649,7 @@ func (c *Coordinator) persistCandidateScoreSnapshots(ctx context.Context, securi
 		score := ScoreDiscoveryCandidate(DiscoveryScoreInput{
 			SecurityID: snapshot.SecurityID, Ticker: snapshot.Ticker, MarketCapUSD: snapshot.MarketCapUSD,
 			Financial: metricBySecurity[snapshot.SecurityID], Insiders: insidersBySecurity[snapshot.SecurityID],
-			Risks: risksBySecurity[snapshot.SecurityID], SectorScore: sectorScore, AsOf: now,
+			Risks: risksBySecurity[snapshot.SecurityID], GrossMarginPct: metricBySecurity[snapshot.SecurityID].GrossMarginPct, SectorScore: sectorScore, AsOf: now,
 		})
 		rows = append(rows, CandidateScoreToSnapshot(marketBatchID, score, now))
 	}

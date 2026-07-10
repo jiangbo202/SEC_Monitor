@@ -89,7 +89,7 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 	if !cfg.Discovery.ResearchMode {
 		t.Fatalf("research mode should default to true")
 	}
-	if cfg.Discovery.MinPublishCoveragePct != 20 {
+	if cfg.Discovery.MinPublishCoveragePct != 85 {
 		t.Fatalf("min publish coverage = %f", cfg.Discovery.MinPublishCoveragePct)
 	}
 	if cfg.Discovery.TaskTimeoutMin != 60 {

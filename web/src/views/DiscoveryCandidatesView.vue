@@ -21,7 +21,7 @@
       :closable="false"
       show-icon
       class="health-alert"
-      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜财务指标不可用 ${health.missing_financials}｜无合格内幕增持 ${health.missing_insiders}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
+      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜财务指标不可用 ${health.missing_financials}｜内幕来源 ${healthInsiderDataLabel(health.insider_data_status)}｜合格买入 ${health.qualified_insider_candidates}｜暂无合格买入 ${health.no_qualified_insider_candidates}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
       :description="health.issues.length ? health.issues.map(formatHealthIssue).join('；') : '当前候选证据链完整度正常。'"
     />
 
@@ -74,7 +74,7 @@
           <el-select v-model="filters.grade" clearable style="width: 120px">
             <el-option label="A级" value="A" />
             <el-option label="B级" value="B" />
-            <el-option label="排除" value="excluded" />
+            <el-option label="排除池" value="excluded" />
           </el-select>
         </el-form-item>
         <el-form-item label="Ticker">
@@ -469,6 +469,7 @@
             <el-descriptions-item label="年度收入 YoY">{{ formatPct(candidateDetail.financial.annual_revenue_yoy_pct) }}</el-descriptions-item>
             <el-descriptions-item label="年度收入环比">{{ formatPct(candidateDetail.financial.annual_revenue_qoq_pct) }}</el-descriptions-item>
             <el-descriptions-item label="现金 Runway">{{ formatMonths(candidateDetail.financial.cash_runway_months) }}</el-descriptions-item>
+            <el-descriptions-item label="毛利率">{{ candidateDetail.financial.gross_margin_available ? formatPct(candidateDetail.financial.gross_margin_pct) : '-' }}</el-descriptions-item>
             <el-descriptions-item label="质量标记">{{ candidateDetail.financial.quality_flags_json || '-' }}</el-descriptions-item>
           </el-descriptions>
           <el-empty v-else description="暂无财务证据" />
@@ -934,6 +935,7 @@ function qualityTierLabel(tier?: string) {
   if (tier === 'strong_b') return '强B'
   if (tier === 'standard_b') return '普通B'
   if (tier === 'watch_b') return '观察B'
+  if (tier === 'excluded') return '已排除'
   return '-'
 }
 
@@ -998,10 +1000,16 @@ function healthStatusLabel(status: string) {
 function formatHealthIssue(issue: string) {
   const [code, count] = issue.split(':')
   if (code === 'missing_financials') return `财务指标不可用：${count || 0}`
-  if (code === 'missing_insiders') return `无合格内幕增持：${count || 0}`
+  if (code === 'missing_insider_data' || code === 'missing_insiders') return `内幕来源缺失：${count || 0}`
   if (code === 'missing_market_cap') return `缺市值：${count || 0}`
   if (code === 'no_current_published_prescreen_batch') return '暂无已发布的小盘候选批次'
   return issue
+}
+
+function healthInsiderDataLabel(status?: string) {
+  if (status === 'available') return '已同步'
+  if (status === 'missing') return '缺失'
+  return status || '-'
 }
 
 function formatUSD(value: number) {
@@ -1170,6 +1178,7 @@ function candidateRiskSignals(detail: CandidateDetail) {
 }
 
 function formatMonths(value: number) {
+  if (Number(value) >= 999) return '经营现金流为正'
   return Number.isFinite(value) && value > 0 ? `${value.toFixed(1)} 月` : '-'
 }
 

@@ -237,7 +237,8 @@ func TestPersistCandidateScoreSnapshotsUsesSecuritySICForSectorScore(t *testing.
 	metric := FinancialMetricSnapshot{
 		BatchID: securityBatch.BatchID, SecurityID: security.ID,
 		RevenueGrowthAvailable: true, QuarterlyRevenueYoYPct: 35,
-		RunwayAvailable: true, CashRunwayMonths: 18, CreatedAt: now,
+		RunwayAvailable: true, CashRunwayMonths: 18,
+		GrossMarginAvailable: true, GrossMarginPct: 50, CreatedAt: now,
 	}
 	if err := db.Create(&metric).Error; err != nil {
 		t.Fatal(err)
@@ -256,7 +257,7 @@ func TestPersistCandidateScoreSnapshotsUsesSecuritySICForSectorScore(t *testing.
 	if err := db.First(&score, "batch_id = ? AND security_id = ?", marketBatch.BatchID, security.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if score.SectorScore != 9 || score.Grade != CandidateGradeB || !score.EligibleB {
+	if score.SectorScore != 9 || score.GrossMarginScore != 10 || score.TotalScore != 69 || score.Grade != CandidateGradeB || !score.EligibleB {
 		t.Fatalf("score = %#v", score)
 	}
 }
@@ -320,6 +321,7 @@ func TestCoordinatorStagesFinancialMetricSnapshots(t *testing.T) {
 	financials := []FinancialFact{
 		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-03-31", 10_000_000),
 		financialDuration(FinancialMetricRevenue, "2026-01-01", "2026-03-31", 15_000_000),
+		financialDuration(FinancialMetricGrossProfit, "2026-01-01", "2026-03-31", 9_000_000),
 		financialDuration(FinancialMetricRevenue, "2024-01-01", "2024-12-31", 40_000_000),
 		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-12-31", 55_000_000),
 		financialInstant(FinancialMetricCash, "2026-03-31", 24_000_000),
@@ -350,7 +352,7 @@ func TestCoordinatorStagesFinancialMetricSnapshots(t *testing.T) {
 	if err := db.First(&metric, "batch_id = ?", batch.BatchID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !metric.RevenueGrowthAvailable || !metric.RunwayAvailable || metric.LatestQuarterRevenueUSD != 15_000_000 || metric.CashRunwayMonths != 15 {
+	if !metric.RevenueGrowthAvailable || !metric.RunwayAvailable || !metric.GrossMarginAvailable || metric.LatestQuarterRevenueUSD != 15_000_000 || metric.CashRunwayMonths != 15 || metric.GrossMarginPct != 60 {
 		t.Fatalf("metric snapshot = %#v", metric)
 	}
 	var factCount int64
@@ -620,6 +622,48 @@ func TestCoordinatorResearchModeRejectsLowCoverageWithoutPublishing(t *testing.T
 	}
 	if !strings.Contains(batch.ErrorMessage, "coverage") {
 		t.Fatalf("error message = %q, want coverage reason", batch.ErrorMessage)
+	}
+	var pointer CurrentBatchPointer
+	if err := db.First(&pointer, "kind = ?", BatchKindPrescreen).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pointer.BatchID != old.BatchID {
+		t.Fatalf("pointer changed to %s", pointer.BatchID)
+	}
+}
+
+func TestCoordinatorResearchModeRejectsCoverageDropFromCurrentBatch(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ny, _ := time.LoadLocation("America/New_York")
+	now := time.Date(2026, 6, 23, 10, 0, 0, 0, ny)
+	seedSecurityBatchForMarketTest(t, db, now, []marketSeedSecurity{
+		{CIK: "0000000021", Ticker: "DROP1", Growth: 45, Runway: 18, Shares: 10_000_000},
+		{CIK: "0000000022", Ticker: "DROP2", Growth: 45, Runway: 18, Shares: 10_000_000},
+	})
+	old := UniverseBatch{BatchID: strings.Repeat("e", 64), Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-06-20", StartedAt: now.Add(-time.Hour)}
+	if err := db.Create(&old).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: old.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&ProviderRun{BatchID: old.BatchID, Provider: "tiingo", Status: ProviderStatusValidation, SourceVersion: "tiingo:healthy", EffectiveDate: now.AddDate(0, 0, -1), ExpectedCount: 2, RecordCount: 2, CoveragePct: 95, Timely: true, CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	priceSHA := sha256.Sum256([]byte("coverage-drop-prices"))
+	provider := &fakePriceProvider{
+		name:    "tiingo",
+		records: []PriceRecord{{Symbol: "DROP1", Source: "tiingo", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:dropped", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 2, CoveragePct: 70, Timely: true},
+	}
+	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }, ResearchMode: true, MinPublishCoveragePct: 20}
+	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
+		return ProviderDayResult{TradeDate: result.EffectiveDate, coveragePct: result.CoveragePct, timely: true, validationOK: true, goldReady: false, goldSHA256: strings.Repeat("c", 64)}, nil
+	}
+
+	batch, err := c.SyncMarketPrices(context.Background())
+	if err == nil || batch.Status != BatchStatusFailed || !strings.Contains(batch.ErrorMessage, "dropped") {
+		t.Fatalf("batch=%#v err=%v", batch, err)
 	}
 	var pointer CurrentBatchPointer
 	if err := db.First(&pointer, "kind = ?", BatchKindPrescreen).Error; err != nil {

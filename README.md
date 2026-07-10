@@ -246,7 +246,7 @@ IPO 页面说明：
 - `discovery.twelve_data_request_budget`：单次 market sync 最多发起的 Twelve Data 请求数，默认 `700`。
 - `discovery.twelve_data_request_interval_ms`：Twelve Data 请求间隔，默认 `8000ms`，用于控制免费层 `8 API credits/minute` 的分钟额度。
 - `discovery.yahoo_request_budget`：单次 market sync 最多发起的 Yahoo chart 请求数；Yahoo 不需要 token，但仍建议控制请求量。
-- `discovery.min_publish_coverage_pct`：研究模式最低发布覆盖率，默认 `20`。低于该值时不会覆盖当前已发布候选列表。
+- `discovery.min_publish_coverage_pct`：研究模式最低发布覆盖率，默认 `85`。低于该值，或相对上一已发布批次下降超过 15 个百分点时，不会覆盖当前候选列表。
 - `discovery.cache_dir`：小盘候选 SEC bulk/cache 目录。Docker 推荐使用持久化路径 `/app/data/.cache/discovery`。
 
 Docker 运行小盘候选：
@@ -299,7 +299,7 @@ TWELVE_DATA_API_KEY="your-twelve-data-key"
 SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET=700
 SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS=8000
 SMALL_CAP_YAHOO_REQUEST_BUDGET=200
-SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT=20
+SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT=85
 SMALL_CAP_CACHE_DIR=/app/data/.cache/discovery
 ```
 

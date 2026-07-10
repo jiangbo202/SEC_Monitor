@@ -133,6 +133,7 @@ func TestBuildFinancialSummaryComputesRevenueGrowthAndRunway(t *testing.T) {
 		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-03-31", 10_000_000),
 		financialDuration(FinancialMetricRevenue, "2025-10-01", "2025-12-31", 12_000_000),
 		financialDuration(FinancialMetricRevenue, "2026-01-01", "2026-03-31", 15_000_000),
+		financialDuration(FinancialMetricGrossProfit, "2026-01-01", "2026-03-31", 9_000_000),
 		financialDuration(FinancialMetricRevenue, "2024-01-01", "2024-12-31", 40_000_000),
 		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-12-31", 55_000_000),
 		financialInstant(FinancialMetricCash, "2026-03-31", 24_000_000),
@@ -163,6 +164,48 @@ func TestBuildFinancialSummaryComputesRevenueGrowthAndRunway(t *testing.T) {
 	assertFloatNear(t, summary.CashRunwayMonths, 15, 0.001)
 	if summary.AvailableCashUSD != 30_000_000 {
 		t.Fatalf("available cash = %v, want 30000000", summary.AvailableCashUSD)
+	}
+	if !summary.GrossMarginAvailable {
+		t.Fatalf("gross margin should be available: %#v", summary)
+	}
+	assertFloatNear(t, summary.GrossMarginPct, 60, 0.001)
+}
+
+func TestBuildFinancialSummaryUsesCostOfRevenueForGrossMargin(t *testing.T) {
+	tests := []struct {
+		name       string
+		grossFacts []FinancialFact
+		wantMargin float64
+	}{
+		{
+			name: "uses cost of revenue when gross profit is unavailable",
+			grossFacts: []FinancialFact{
+				financialDuration(FinancialMetricCostOfRevenue, "2026-01-01", "2026-03-31", 3_500_000),
+			},
+			wantMargin: 65,
+		},
+		{
+			name: "prefers gross profit when both values exist",
+			grossFacts: []FinancialFact{
+				financialDuration(FinancialMetricGrossProfit, "2026-01-01", "2026-03-31", 7_000_000),
+				financialDuration(FinancialMetricCostOfRevenue, "2026-01-01", "2026-03-31", 3_500_000),
+			},
+			wantMargin: 70,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			facts := append([]FinancialFact{
+				financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-03-31", 8_000_000),
+				financialDuration(FinancialMetricRevenue, "2026-01-01", "2026-03-31", 10_000_000),
+			}, tt.grossFacts...)
+			summary := BuildFinancialSummary(facts, time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC))
+			if !summary.GrossMarginAvailable {
+				t.Fatalf("gross margin should be available: %#v", summary)
+			}
+			assertFloatNear(t, summary.GrossMarginPct, tt.wantMargin, 0.001)
+		})
 	}
 }
 

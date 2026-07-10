@@ -243,8 +243,10 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if ticker := strings.ToUpper(strings.TrimSpace(filter.Ticker)); ticker != "" {
 		query = query.Where("ticker = ?", ticker)
 	}
-	if grade := strings.ToUpper(strings.TrimSpace(filter.Grade)); grade != "" {
+	if grade := normalizeCandidateGradeFilter(filter.Grade); grade != "" {
 		query = query.Where("grade = ?", grade)
+	} else {
+		query = query.Where("grade IN ?", []string{CandidateGradeA, CandidateGradeB})
 	}
 	if filter.EligibleA != nil {
 		query = query.Where("eligible_a = ?", *filter.EligibleA)
@@ -718,6 +720,9 @@ func candidateQualityAdjustedScore(item CandidateScoreResult) int {
 }
 
 func candidateQualityTier(item CandidateScoreResult) string {
+	if item.Grade == CandidateGradeExcluded {
+		return CandidateGradeExcluded
+	}
 	if item.Grade == CandidateGradeA {
 		return "a"
 	}
@@ -728,6 +733,14 @@ func candidateQualityTier(item CandidateScoreResult) string {
 		return "strong_b"
 	}
 	return "standard_b"
+}
+
+func normalizeCandidateGradeFilter(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, CandidateGradeExcluded) {
+		return CandidateGradeExcluded
+	}
+	return strings.ToUpper(value)
 }
 
 func candidateQualityTags(item CandidateScoreResult) []string {
@@ -1010,13 +1023,52 @@ func hydrateCandidatePerformance(ctx context.Context, db *gorm.DB, items []Candi
 		if items[i].PriceTradeDate == nil || items[i].PriceCloseUSD <= 0 || strings.TrimSpace(items[i].Ticker) == "" {
 			continue
 		}
-		performance, err := buildCandidatePerformance(ctx, db, items[i].Ticker, *items[i].PriceTradeDate, items[i].PriceCloseUSD)
+		baseDate, baseClose, ok, err := candidatePerformanceBaseline(ctx, db, items[i])
+		if err != nil {
+			return err
+		}
+		if !ok {
+			baseDate, baseClose = *items[i].PriceTradeDate, items[i].PriceCloseUSD
+		}
+		performance, err := buildCandidatePerformance(ctx, db, items[i].Ticker, baseDate, baseClose)
 		if err != nil {
 			return err
 		}
 		items[i].Performance = performance
 	}
 	return nil
+}
+
+func candidatePerformanceBaseline(ctx context.Context, db *gorm.DB, item CandidateScoreResult) (time.Time, float64, bool, error) {
+	var priceID uint
+	err := db.WithContext(ctx).
+		Table("candidate_score_snapshots AS score").
+		Select("universe.price_snapshot_id").
+		Joins("JOIN universe_batches AS batch ON batch.batch_id = score.batch_id").
+		Joins("JOIN universe_snapshots AS universe ON universe.batch_id = score.batch_id AND universe.security_id = score.security_id").
+		Where("score.security_id = ? AND score.grade IN ?", item.SecurityID, []string{CandidateGradeA, CandidateGradeB}).
+		Where("batch.kind = ? AND batch.status = ? AND universe.price_snapshot_id IS NOT NULL", BatchKindPrescreen, BatchStatusPublished).
+		Order("batch.started_at ASC, score.id ASC").
+		Limit(1).
+		Scan(&priceID).Error
+	if err != nil {
+		return time.Time{}, 0, false, err
+	}
+	if priceID == 0 {
+		return time.Time{}, 0, false, nil
+	}
+	var price PriceSnapshot
+	if err := db.WithContext(ctx).First(&price, "id = ? AND quality_status = ?", priceID, QualityStatusValid).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return time.Time{}, 0, false, nil
+		}
+		return time.Time{}, 0, false, err
+	}
+	baseClose := float64(price.CloseMicros) / 1_000_000
+	if price.TradeDate.IsZero() || baseClose <= 0 {
+		return time.Time{}, 0, false, nil
+	}
+	return price.TradeDate, baseClose, true, nil
 }
 
 func buildCandidatePerformance(ctx context.Context, db *gorm.DB, ticker string, baseDate time.Time, baseClose float64) (CandidatePerformance, error) {

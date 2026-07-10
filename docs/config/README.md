@@ -26,7 +26,7 @@ The local control script reads environment variables before starting services.
 | `SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS` | `8000` | Delay between Twelve Data requests. Keeps the free tier near 8 API credits/minute. |
 | `SMALL_CAP_YAHOO_BASE_URL` | `https://query1.finance.yahoo.com` | Yahoo chart API base URL. |
 | `SMALL_CAP_YAHOO_REQUEST_BUDGET` | `45` | Max Yahoo chart requests for one market sync. |
-| `SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT` | `20` | Minimum market price coverage required to publish a research candidate batch. Lower coverage keeps the previous published list. |
+| `SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT` | `85` | Minimum market price coverage required to publish a research candidate batch. A batch also cannot fall more than 15 percentage points below the previous published batch for the same provider. |
 | `SMALL_CAP_STOOQ_URLS` | empty | Comma-separated Stooq CSV/ZIP URLs when using the Stooq provider. |
 
 The same small-cap data-source settings can be managed from the System Settings page:

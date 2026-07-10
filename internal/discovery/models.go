@@ -217,6 +217,7 @@ type FinancialMetricSnapshot struct {
 	ParserVersion              string    `json:"parser_version" gorm:"size:64"`
 	RevenueGrowthAvailable     bool      `json:"revenue_growth_available"`
 	RunwayAvailable            bool      `json:"runway_available"`
+	GrossMarginAvailable       bool      `json:"gross_margin_available"`
 	LatestQuarterRevenueUSD    int64     `json:"latest_quarter_revenue_usd"`
 	PriorYearQuarterRevenueUSD int64     `json:"prior_year_quarter_revenue_usd"`
 	PreviousQuarterRevenueUSD  int64     `json:"previous_quarter_revenue_usd"`
@@ -232,6 +233,7 @@ type FinancialMetricSnapshot struct {
 	CFOBurnMonthlyUSD          float64   `json:"cfo_burn_monthly_usd"`
 	FCFBurnMonthlyUSD          float64   `json:"fcf_burn_monthly_usd"`
 	CashRunwayMonths           float64   `json:"cash_runway_months"`
+	GrossMarginPct             float64   `json:"gross_margin_pct"`
 	QualityFlagsJSON           string    `json:"quality_flags_json" gorm:"type:text"`
 	CreatedAt                  time.Time `json:"created_at"`
 	Security                   Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
