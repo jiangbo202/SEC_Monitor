@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,6 +112,43 @@ func (f *captureNotifier) Send(ctx context.Context, message telegram.Message) er
 	return nil
 }
 
+type reliabilitySECClient struct {
+	currentFilings  []sec.CurrentFilingResult
+	listedCompanies []sec.ListedCompany
+}
+
+func (f reliabilitySECClient) LookupCIK(ctx context.Context, ticker string) (string, string, error) {
+	return "", "", nil
+}
+
+func (f reliabilitySECClient) ListFilings(ctx context.Context, query sec.FilingQuery) ([]sec.FilingResult, error) {
+	return nil, nil
+}
+
+func (f reliabilitySECClient) ListCurrentFilings(ctx context.Context, query sec.CurrentFilingQuery) ([]sec.CurrentFilingResult, error) {
+	return f.currentFilings, nil
+}
+
+func (f reliabilitySECClient) ListListedCompanies(ctx context.Context) ([]sec.ListedCompany, error) {
+	return f.listedCompanies, nil
+}
+
+func (f reliabilitySECClient) FetchFilingDocument(ctx context.Context, filingURL string) (string, error) {
+	return "We are offering 1,000,000 shares at $12.00 per share.", nil
+}
+
+type failThenSucceedNotifier struct {
+	failedAttempts int
+}
+
+func (f *failThenSucceedNotifier) Send(ctx context.Context, message telegram.Message) error {
+	if f.failedAttempts > 0 {
+		f.failedAttempts--
+		return errors.New("temporary delivery failure")
+	}
+	return nil
+}
+
 type fakeScheduler struct {
 	reloadCalls int
 	runCalls    int
@@ -192,6 +230,78 @@ func TestAppHandlerGetsIPOHealth(t *testing.T) {
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"pending_listing":1`) || !strings.Contains(rec.Body.String(), `"latest_sync":null`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestIPOReliabilityWorkflow(t *testing.T) {
+	t.Setenv("CONFIG_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)))
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&model.WatchTarget{}, &model.SystemConfig{}, &model.OperationLog{}, &model.NotificationBatch{}, &model.NotificationBatchItem{},
+		&model.IPOFiling{}, &model.IPOCompanyOverride{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{}, &model.SyncRun{},
+	); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit, config.Load().System)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("default configs: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []service.ConfigInput{
+		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+		{Key: "telegram.bot_token", Value: "test-only-bot-token", ValueType: "string", Category: "telegram", Encrypted: true},
+		{Key: "telegram.chat_id", Value: "test-chat", ValueType: "string", Category: "telegram"},
+	}, "test"); err != nil {
+		t.Fatalf("configure telegram: %v", err)
+	}
+	var stored model.SystemConfig
+	if err := db.Where("config_key = ?", "telegram.bot_token").First(&stored).Error; err != nil {
+		t.Fatalf("load encrypted config: %v", err)
+	}
+	if !strings.HasPrefix(stored.ConfigValue, "enc:v1:") {
+		t.Fatal("telegram token was not encrypted at rest")
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := db.Create(&model.IPOFiling{FilingID: "baseline-s1", CIK: "0000000001", CompanyName: "Acme IPO, Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -1), FilingURL: "https://sec.test/baseline-s1"}).Error; err != nil {
+		t.Fatalf("seed baseline: %v", err)
+	}
+	secClient := reliabilitySECClient{
+		currentFilings:  []sec.CurrentFilingResult{{FilingID: "acme-424b4", CIK: "0000000001", CompanyName: "Acme IPO, Inc.", FilingType: "424B4", FilingDate: now, FilingURL: "https://sec.test/acme-424b4"}},
+		listedCompanies: []sec.ListedCompany{{CIK: "0000000001", Name: "Acme IPO, Inc.", Ticker: "ACME"}},
+	}
+	notifier := &failThenSucceedNotifier{failedAttempts: 3}
+	ipo := service.NewIPORadarService(db, secClient, notifier, configs)
+	if _, err := ipo.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh ipo radar: %v", err)
+	}
+	companies, err := ipo.ListCompanies(context.Background(), service.IPOCompanyFilter{Attention: "listing_pending", Page: 1, PageSize: 10}, now)
+	if err != nil || companies.Total != 1 || len(companies.Items) != 1 || companies.Items[0].CIK != "0000000001" {
+		t.Fatalf("listing-pending companies=%+v err=%v", companies, err)
+	}
+	var batch model.NotificationBatch
+	if err := db.Where("source = ?", "ipo").First(&batch).Error; err != nil {
+		t.Fatalf("load failed batch: %v", err)
+	}
+	if batch.Status != "failed" || batch.NextRetryAt == nil {
+		t.Fatalf("expected failed batch scheduled for retry")
+	}
+	retries := service.NewNotificationBatchService(db, notifier, configs)
+	result, err := retries.RetryDue(context.Background(), *batch.NextRetryAt)
+	if err != nil || result.Sent != 1 || result.Attempted != 1 {
+		t.Fatalf("retry result sent=%d attempted=%d err=%v", result.Sent, result.Attempted, err)
+	}
+
+	h := &AppHandler{IPO: ipo}
+	r := gin.New()
+	r.GET("/ipo-health", h.GetIPORadarHealth)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ipo-health", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"failed_notification_batches":0`) {
+		t.Fatalf("ipo health status=%d", rec.Code)
 	}
 }
 

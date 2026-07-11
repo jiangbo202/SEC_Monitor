@@ -72,10 +72,26 @@ openssl rand -base64 32
 For Docker Compose, add the output to a local `.env` file:
 
 ```env
-CONFIG_ENCRYPTION_KEY=<openssl 输出>
+CONFIG_ENCRYPTION_KEY=<output of openssl rand -base64 32>
 ```
 
-Restart the service after setting the key. Existing plaintext sensitive settings are migrated transactionally on startup. Do not rotate or discard the key while existing encrypted values must remain readable. Without a valid key, existing legacy plaintext values remain readable for recovery, but new non-empty sensitive values are rejected and health reports a critical configuration issue.
+After creating or changing `.env`, restart Docker with `make docker-up`; a plain container restart does not load a changed Compose environment reliably. Existing plaintext sensitive settings are migrated transactionally on startup. Do not rotate or discard the key while existing encrypted values must remain readable. Without a valid key, existing legacy plaintext values remain readable for recovery, but new non-empty sensitive values are rejected and health reports a critical configuration issue.
+
+## IPO Lifecycle And Notification Operations
+
+The following persisted system settings are available in the System Settings page:
+
+| Key | Default | Operator effect |
+|---|---:|---|
+| `ipo.lifecycle_sweep_enabled` | `true` | Enables the lifecycle sweep during each IPO sync. |
+| `ipo.lifecycle_max_ciks` | `25` | Maximum active CIKs swept per sync; valid range is 1–200. The oldest checks are selected first. |
+| `ipo.lifecycle_recheck_hours` | `24` | A lifecycle check is stale after this many hours; valid range is 1–168. |
+
+The sweep always includes required lifecycle forms (`EFFECT`, `424B4`, and `RW`) even when they are absent from `ipo.form_types`. It skips companies manually finalized as `listed` or `withdrawn`, and lifecycle backfills are stored without Telegram notifications.
+
+`notification_retry_sync` is a default enabled scheduler task with cron `*/10 * * * *`. It sends only due `failed` notification batches. A failed initial delivery is retried after 5 minutes, then 15 minutes, 45 minutes, 2 hours, and 6 hours; a later failure becomes `dead_letter`. Keep this task enabled unless notification recovery is intentionally paused.
+
+After deployment, verify `GET /api/ipo-health`. The endpoint reports pending listings, missing market mappings, stale lifecycle checks, unsupported offering parses, failed/due/dead-letter notification batches, and the latest IPO sync. Use the Notification Logs page to inspect a batch; `failed` and `dead_letter` batches can be manually requeued, which resets their retry cycle for immediate delivery. A batch with an active retry lease cannot be requeued.
 
 Example Tiingo local run:
 

@@ -66,6 +66,8 @@ Common filing query params:
 - `PUT /task-configs/:id`
 - `POST /task-configs/:id/run`
 
+Default tasks include `notification_retry_sync` (`*/10 * * * *`, enabled), which retries due failed notification batches. Do not disable it unless notification recovery is intentionally paused.
+
 ## Configuration
 
 - `GET /system-configs`
@@ -90,6 +92,26 @@ Important config groups:
 
 - `GET /operation-logs`
 - `GET /notification-logs`
+- `GET /notification-batches?source=&status=&trigger=&date_from=&date_to=&page=&page_size=`
+- `GET /notification-batches/:id/items?page=&page_size=`
+- `POST /notification-batches/:id/retry`
+
+Notification batch statuses are `pending`, `sent`, `suppressed`, `failed`, and `dead_letter`. The retry endpoint accepts only `failed` or `dead_letter` batches, resets their retry cycle, and makes them immediately due. It returns a validation error while a retry lease is active.
+
+## IPO Monitoring
+
+- `GET /ipo-health`
+- `GET /ipo-companies?company_name=&cik=&status=&attention=&sort_by=&sort_order=&page=&page_size=`
+- `GET /ipo-companies/:cik/offerings?page=&page_size=`
+- `PUT /ipo-companies/:cik/override`
+- `GET /ipo-filings?company_name=&cik=&filing_type=&notified=&sort=&page=&page_size=`
+- `POST /ipo-filings/refresh`
+
+`GET /ipo-health` returns `pending_listing`, `missing_market_mapping`, `stale_lifecycle_checks`, `unsupported_offering_events`, `failed_notification_batches`, `due_retry_batches`, `dead_letter_batches`, and `latest_sync`. Operators should use these counts after setup or a restart to verify the IPO monitor.
+
+Company `status` values are `new`, `updating`, `effective`, `priced`, `listing_pending`, `listed`, `withdrawn`, and `stale`. Valid company `attention` filters are `listing_pending`, `parse_failed`, `lifecycle_stale`, and `notification_failed`.
+
+`listing_pending` means SEC has supplied a ticker but exchange confirmation is still missing. `parse_failed` selects companies with unsupported 424B4 offering events; `lifecycle_stale` selects active companies overdue under `ipo.lifecycle_recheck_hours`; `notification_failed` selects companies with failed or dead-letter IPO notification batches.
 
 ## System Health
 

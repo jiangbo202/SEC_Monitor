@@ -152,10 +152,10 @@ openssl rand -base64 32
 ```
 
 ```env
-CONFIG_ENCRYPTION_KEY=<openssl 输出>
+CONFIG_ENCRYPTION_KEY=<output of openssl rand -base64 32>
 ```
 
-未设置或密钥无效时，已有旧版敏感配置仍可读取，但系统会报告严重健康问题，且不会保存新的非空敏感值。
+不要轮换或丢失已在用的密钥，否则已有加密的 Telegram 与数据源配置将无法解密。未设置或密钥无效时，已有旧版明文敏感配置仍可读取用于恢复，但系统会报告严重健康问题，且不会保存新的非空敏感值。设置或更换 `.env` 后必须再次执行 `make docker-up`，再访问 `http://127.0.0.1:9090/api/ipo-health` 确认 IPO 运行状态。
 
 升级或重建：
 
@@ -224,6 +224,18 @@ IPO 页面说明：
 - 每份 424B4 都记录为发行事件：最早可解析文件为首次定价，后续文件区分重复条款、定价修正和后续发行；只有首次定价和定价修正会更新 IPO 摘要并发送独立定价通知，后续发行不会覆盖原 IPO 发行价。
 - `公司详情`中的`发行事件`表可查看事件分类、发行条款、SEC 文件和通知状态。
 - 手动状态、Ticker、交易所、发行价、发行数量和实际上市日期优先于自动数据。
+
+IPO 运营状态：
+
+- `new`：发现初始 S-1/F-1 注册文件；`updating`：发现修订文件；`effective`：发现 EFFECT；`priced`：发现 424B4 定价文件。
+- `listing_pending`：SEC 映射已有 Ticker、但尚未确认交易所；`listed`：Ticker 与交易所已确认；`withdrawn`：发现 RW；`stale`：超过 60 天没有新的 IPO 文件。
+- `listing_pending`、`parse_failed`、`lifecycle_stale` 和 `notification_failed` 是公司列表的运营关注筛选。健康卡还会单独显示 `missing_market_mapping`、到期重试和死信数量。
+
+IPO 生命周期与通知运营：
+
+- `ipo.lifecycle_sweep_enabled` 默认开启。每次 IPO 同步会按最久未检查优先补查仍在进行中的公司；`ipo.lifecycle_max_ciks`（默认 `25`，范围 `1`–`200`）限制单次补查量，`ipo.lifecycle_recheck_hours`（默认 `24`，范围 `1`–`168`）定义过期检查窗口。已手动标记为 `listed` 或 `withdrawn` 的公司不会参加补查；生命周期补齐只入库，不发送通知。
+- `notification_retry_sync` 默认启用、每 10 分钟运行一次。它只重投到期的失败批次；重试延迟依次为 5 分钟、15 分钟、45 分钟、2 小时和 6 小时，仍失败后进入 `dead_letter`。
+- 打开“通知日志”的“通知批次”页查看 `pending`、`sent`、`suppressed`、`failed` 与 `dead_letter`。对 `failed` 或 `dead_letter` 批次点击“重新投递”，会重置重试周期并立即加入队列；正在重试的批次不能手动重新投递。
 
 小盘候选研究功能：
 
