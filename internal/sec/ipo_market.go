@@ -27,6 +27,7 @@ type IPOOffering struct {
 	OfferingType  string `json:"offering_type"`
 	Source        string `json:"source"`
 	Confidence    string `json:"confidence"`
+	ParseMessage  string `json:"parse_message"`
 }
 
 type listedCompaniesResponse struct {
@@ -109,16 +110,19 @@ func (c *HTTPClient) FetchFilingDocument(ctx context.Context, filingURL string) 
 
 var (
 	tagsPattern        = regexp.MustCompile(`(?s)<[^>]+>`)
+	tableCellPattern   = regexp.MustCompile(`(?is)</?(?:td|th|tr)[^>]*>`)
 	spacePattern       = regexp.MustCompile(`\s+`)
 	offerPricePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(?:public\s+offering\s+price|offering\s+price)\s+(?:is|of|at)\s+\$\s*([0-9]+(?:\.[0-9]{1,4})?)\s+per\s+share`),
 		regexp.MustCompile(`(?i)(?:initial\s+)?public\s+offering\s+price\s+per\s+share\s+(?:is|of|at)\s+\$\s*([0-9]+(?:\.[0-9]{1,4})?)`),
 	}
-	offerSharesPattern = regexp.MustCompile(`(?i)(?:we\s+are\s+offering|offering\s+of)\s+([0-9][0-9,]*)\s+(?:ordinary\s+|common\s+)?shares`)
+	offerSharesPattern      = regexp.MustCompile(`(?i)(?:we\s+are\s+offering|offering\s+of)\s+([0-9][0-9,]*)\s+(?:ordinary\s+|common\s+)?shares`)
+	tableOfferPricePattern  = regexp.MustCompile(`(?i)public\s+offering\s+price\s+\$\s*([0-9]+(?:\.[0-9]{1,4})?)`)
+	tableOfferSharesPattern = regexp.MustCompile(`(?i)shares\s+offered\s+([0-9][0-9,]*)`)
 )
 
 func Parse424B4Offering(document string) (IPOOffering, bool) {
-	text := html.UnescapeString(tagsPattern.ReplaceAllString(document, " "))
+	text := normalize424B4Document(document)
 	text = strings.NewReplacer("\u00a0", " ", "\u202f", " ", "\u2007", " ").Replace(text)
 	text = spacePattern.ReplaceAllString(text, " ")
 	var priceMatch []string
@@ -127,18 +131,30 @@ func Parse424B4Offering(document string) (IPOOffering, bool) {
 			break
 		}
 	}
+	if len(priceMatch) != 2 {
+		priceMatch = tableOfferPricePattern.FindStringSubmatch(text)
+	}
 	sharesMatch := offerSharesPattern.FindStringSubmatch(text)
-	if len(priceMatch) != 2 || len(sharesMatch) != 2 {
-		return IPOOffering{}, false
+	if len(sharesMatch) != 2 {
+		sharesMatch = tableOfferSharesPattern.FindStringSubmatch(text)
+	}
+	if len(priceMatch) != 2 {
+		return IPOOffering{ParseMessage: "offer_price_not_found"}, false
+	}
+	if len(sharesMatch) != 2 {
+		return IPOOffering{ParseMessage: "shares_offered_not_found"}, false
 	}
 	shares, err := strconv.ParseInt(strings.ReplaceAll(sharesMatch[1], ",", ""), 10, 64)
 	price, errPrice := strconv.ParseFloat(priceMatch[1], 64)
-	if err != nil || errPrice != nil || shares <= 0 || price <= 0 {
-		return IPOOffering{}, false
+	if err != nil || shares <= 0 {
+		return IPOOffering{ParseMessage: "shares_offered_invalid"}, false
+	}
+	if errPrice != nil || price <= 0 {
+		return IPOOffering{ParseMessage: "offer_price_invalid"}, false
 	}
 	priceValue, ok := new(big.Rat).SetString(priceMatch[1])
 	if !ok {
-		return IPOOffering{}, false
+		return IPOOffering{ParseMessage: "offer_price_invalid"}, false
 	}
 	gross := new(big.Rat).Mul(priceValue, new(big.Rat).SetInt64(shares))
 	offeringType := "follow_on"
@@ -146,4 +162,9 @@ func Parse424B4Offering(document string) (IPOOffering, bool) {
 		offeringType = "initial"
 	}
 	return IPOOffering{OfferPrice: priceMatch[1], SharesOffered: shares, GrossProceeds: gross.FloatString(2), OfferingType: offeringType, Confidence: "medium"}, true
+}
+
+func normalize424B4Document(document string) string {
+	withTableBoundaries := tableCellPattern.ReplaceAllString(document, " ")
+	return html.UnescapeString(tagsPattern.ReplaceAllString(withTableBoundaries, " "))
 }

@@ -130,6 +130,55 @@ func TestIPORadarBackfillsHistorical424B4Offering(t *testing.T) {
 	}
 }
 
+func TestIPORadarRecordsFetchFailureOfferingDiagnostic(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC)
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "acme-s1", CIK: "0000000001", CompanyName: "Acme Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -1), FilingURL: "https://sec.test/acme-s1"},
+		{FilingID: "acme-424b4", CIK: "0000000001", CompanyName: "Acme Inc.", FilingType: "424B4", FilingDate: now, FilingURL: "https://sec.test/acme-424b4"},
+	}).Error; err != nil {
+		t.Fatalf("seed filings: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{documentErr: errors.New("unavailable")}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+
+	_, _ = svc.enrichIPOMarketData(context.Background(), nil, false)
+
+	var event model.IPOOfferingEvent
+	if err := db.Where("filing_id = ?", "acme-424b4").First(&event).Error; err != nil {
+		t.Fatalf("load offering event: %v", err)
+	}
+	if event.ParseStatus != "unsupported" || event.ParseMessage != "fetch_failed" {
+		t.Fatalf("offering event = %+v", event)
+	}
+}
+
+func TestIPORadarReprocessesOlderOfferingParserVersion(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC)
+	const filingID = "acme-424b4"
+	const filingURL = "https://sec.test/acme-424b4"
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "acme-s1", CIK: "0000000001", CompanyName: "Acme Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -1), FilingURL: "https://sec.test/acme-s1"},
+		{FilingID: filingID, CIK: "0000000001", CompanyName: "Acme Inc.", FilingType: "424B4", FilingDate: now, FilingURL: filingURL},
+	}).Error; err != nil {
+		t.Fatalf("seed filings: %v", err)
+	}
+	if err := db.Create(&model.IPOOfferingEvent{FilingID: filingID, CIK: "0000000001", CompanyName: "Acme Inc.", OfferingType: "unknown", ParseStatus: "unsupported", ParseMessage: "shares_offered_not_found", FilingDate: now, ParserVersion: ipoOfferingParserVersion - 1}).Error; err != nil {
+		t.Fatalf("seed offering event: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{documents: map[string]string{filingURL: `We are offering 10,000,000 shares. The public offering price is $15.00 per share.`}}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+
+	_, _ = svc.enrichIPOMarketData(context.Background(), nil, false)
+
+	var event model.IPOOfferingEvent
+	if err := db.Where("filing_id = ?", filingID).First(&event).Error; err != nil {
+		t.Fatalf("load offering event: %v", err)
+	}
+	if event.ParserVersion != ipoOfferingParserVersion || event.ParseStatus != "parsed" || event.OfferPrice != "15.00" || event.SharesOffered != 10000000 || event.GrossProceeds != "150000000.00" || event.ParseMessage != "" {
+		t.Fatalf("reprocessed offering event = %+v", event)
+	}
+}
+
 func TestIPORadarNew424B4SendsSeparateOfferingNotification(t *testing.T) {
 	now := time.Date(2026, 6, 22, 9, 0, 0, 0, time.UTC)
 	db := testDB(t)

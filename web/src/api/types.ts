@@ -76,6 +76,7 @@ export interface IPOOfferingEvent {
   company_name: string
   offering_type: 'initial' | 'duplicate' | 'correction' | 'follow_on' | 'unknown'
   parse_status: 'parsed' | 'unsupported'
+  parse_message?: string
   offer_price?: string
   shares_offered?: number
   gross_proceeds?: string

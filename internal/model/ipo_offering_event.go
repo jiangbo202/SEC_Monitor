@@ -9,6 +9,7 @@ type IPOOfferingEvent struct {
 	CompanyName   string     `gorm:"size:255" json:"company_name"`
 	OfferingType  string     `gorm:"size:32;index;not null" json:"offering_type"`
 	ParseStatus   string     `gorm:"size:32;index;not null" json:"parse_status"`
+	ParseMessage  string     `gorm:"size:128" json:"parse_message,omitempty"`
 	OfferPrice    string     `gorm:"size:64" json:"offer_price"`
 	SharesOffered int64      `json:"shares_offered"`
 	GrossProceeds string     `gorm:"size:64" json:"gross_proceeds"`

@@ -104,3 +104,31 @@ func TestParse424B4OfferingTableDriven(t *testing.T) {
 		})
 	}
 }
+
+func TestParse424B4OfferingReadsLabeledTableValues(t *testing.T) {
+	document := `<table>
+		<tr><td>Public offering price</td><td>$15.00</td></tr>
+		<tr><td>Shares offered</td><td>10,000,000</td></tr>
+		<tr><td>Over-allotment option</td><td>1,500,000</td></tr>
+	</table>`
+
+	got, ok := Parse424B4Offering(document)
+
+	if !ok {
+		t.Fatalf("Parse424B4Offering() ok = false; offering = %+v", got)
+	}
+	if got.OfferPrice != "15.00" || got.SharesOffered != 10000000 || got.GrossProceeds != "150000000.00" {
+		t.Fatalf("offering = %+v", got)
+	}
+}
+
+func TestParse424B4OfferingReportsMissingShareCount(t *testing.T) {
+	got, ok := Parse424B4Offering(`The public offering price is $15.00 per share.`)
+
+	if ok {
+		t.Fatalf("Parse424B4Offering() ok = true; offering = %+v", got)
+	}
+	if got.ParseMessage != "shares_offered_not_found" {
+		t.Fatalf("parse message = %q, want shares_offered_not_found", got.ParseMessage)
+	}
+}

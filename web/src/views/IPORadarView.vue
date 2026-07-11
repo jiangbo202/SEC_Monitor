@@ -203,6 +203,9 @@
           <el-table-column prop="gross_proceeds" :label="t('pages.ipoRadar.grossProceeds')" min-width="160" align="right">
             <template #default="{ row }">{{ formatMoney(row.gross_proceeds) }}</template>
           </el-table-column>
+          <el-table-column prop="parse_message" :label="t('pages.ipoRadar.parseMessage')" min-width="180">
+            <template #default="{ row }">{{ row.parse_message || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="filing_date" :label="t('common.filingDate')" width="120">
             <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ formatDate(row.filing_date) }}</el-link></template>
           </el-table-column>

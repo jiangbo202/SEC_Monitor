@@ -828,7 +828,7 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 	return item
 }
 
-const ipoOfferingParserVersion = 4
+const ipoOfferingParserVersion = 5
 
 func (s *IPORadarService) enrichIPOMarketData(ctx context.Context, newFilings []model.IPOFiling, initialBaseline bool) (string, []NotificationCandidate) {
 	client, ok := s.sec.(sec.IPOMarketClient)
@@ -857,12 +857,15 @@ func (s *IPORadarService) enrichIPOMarketData(ctx context.Context, newFilings []
 	for _, filing := range pending {
 		document, err := client.FetchFilingDocument(ctx, filing.FilingURL)
 		if err != nil {
+			if recordErr := s.recordUnsupportedIPOOffering(ctx, filing, "fetch_failed"); recordErr != nil {
+				warnings = append(warnings, "424B4 "+filing.FilingID+": "+recordErr.Error())
+			}
 			warnings = append(warnings, "424B4 "+filing.FilingID+": "+err.Error())
 			continue
 		}
 		offering, ok := sec.Parse424B4Offering(document)
 		if !ok {
-			if err := s.recordUnsupportedIPOOffering(ctx, filing); err != nil {
+			if err := s.recordUnsupportedIPOOffering(ctx, filing, offering.ParseMessage); err != nil {
 				warnings = append(warnings, "424B4 "+filing.FilingID+": "+err.Error())
 			}
 			continue
@@ -943,7 +946,7 @@ func (s *IPORadarService) recordIPOOffering(ctx context.Context, filing model.IP
 	event := model.IPOOfferingEvent{
 		FilingID: filing.FilingID, CIK: filing.CIK, CompanyName: filing.CompanyName,
 		ParseStatus: "parsed", OfferPrice: offering.OfferPrice, SharesOffered: offering.SharesOffered,
-		GrossProceeds: offering.GrossProceeds, Fingerprint: ipoOfferingFingerprint(offering),
+		GrossProceeds: offering.GrossProceeds, ParseMessage: offering.ParseMessage, Fingerprint: ipoOfferingFingerprint(offering),
 		FilingURL: filing.FilingURL, FilingDate: filing.FilingDate, AcceptedAt: filing.AcceptedAt,
 		ParserVersion: ipoOfferingParserVersion,
 	}
@@ -986,10 +989,10 @@ func (s *IPORadarService) recordIPOOffering(ctx context.Context, filing model.IP
 	return event, updateSummary, notify, err
 }
 
-func (s *IPORadarService) recordUnsupportedIPOOffering(ctx context.Context, filing model.IPOFiling) error {
+func (s *IPORadarService) recordUnsupportedIPOOffering(ctx context.Context, filing model.IPOFiling, parseMessage string) error {
 	event := model.IPOOfferingEvent{
 		FilingID: filing.FilingID, CIK: filing.CIK, CompanyName: filing.CompanyName,
-		OfferingType: "unknown", ParseStatus: "unsupported", FilingURL: filing.FilingURL,
+		OfferingType: "unknown", ParseStatus: "unsupported", ParseMessage: parseMessage, FilingURL: filing.FilingURL,
 		FilingDate: filing.FilingDate, AcceptedAt: filing.AcceptedAt, ParserVersion: ipoOfferingParserVersion,
 	}
 	return s.db.WithContext(ctx).Where("filing_id = ?", filing.FilingID).Assign(event).FirstOrCreate(&event).Error
