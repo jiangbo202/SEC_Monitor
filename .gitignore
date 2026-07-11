@@ -4,6 +4,7 @@
 AGENTS.md
 .codex/
 .agents/
+.superpowers/
 
 # Local build/test/runtime artifacts
 .cache/
