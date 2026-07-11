@@ -67,6 +67,38 @@ func TestCandidateNotificationPreviewSuppressesWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestCandidateNotificationPreviewIncludesRecentMajorWatchFiling(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "candidate_notification.enabled", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_a", Value: "false", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
+	}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.CandidateWatch{Ticker: "WATCH", Status: discovery.CandidateWatchStatusActive, ResearchStatus: discovery.CandidateResearchStatusInbox}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.Filing{FilingID: "watch-8k", Ticker: "WATCH", CompanyName: "Watch Co", FilingType: "8-K", Title: "Material event", PulledAt: time.Now().UTC()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.Filing{FilingID: "watch-old", Ticker: "WATCH", CompanyName: "Watch Co", FilingType: "8-K", PulledAt: time.Now().UTC().Add(-25 * time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewCandidateNotificationService(db, discoveryDB, nil, configs).Preview(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.WatchEvents) != 1 || result.WatchEvents[0].FilingID != "watch-8k" {
+		t.Fatalf("events=%#v", result.WatchEvents)
+	}
+}
+
 func TestCandidateNotificationSendRequiresConfirmation(t *testing.T) {
 	db := testDB(t)
 	discoveryDB := testDiscoveryDB(t)

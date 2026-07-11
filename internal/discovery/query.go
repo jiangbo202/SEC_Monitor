@@ -81,6 +81,7 @@ type CandidateScoreResult struct {
 	SectorRatingScore     int                      `json:"sector_rating_score"`
 	RevenueGrowthInfo     RevenueGrowthExplanation `json:"revenue_growth_explanation"`
 	CapitalRiskSummaries  []CapitalRiskSummary     `json:"capital_risk_summaries"`
+	MarketQuality         CandidateMarketQuality   `json:"market_quality"`
 }
 
 type ReviewPriorityReason struct {
@@ -287,6 +288,9 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	}
 	items, err = hydrateCandidatePriceEvidence(ctx, db, batch.BatchID, items)
 	if err != nil {
+		return result, err
+	}
+	if err = hydrateCandidateMarketQuality(ctx, db, items); err != nil {
 		return result, err
 	}
 	riskBatchID := strings.TrimSpace(batch.UniverseSourceVersion)
@@ -816,6 +820,28 @@ func candidateQualityTags(item CandidateScoreResult) []string {
 	if item.PriceQualityStatus != "" && item.PriceQualityStatus != QualityStatusValid {
 		add("price_quality_" + item.PriceQualityStatus)
 	}
+	if item.MarketQuality.Status == "risk" {
+		if item.MarketQuality.AverageDollarVolume < 500_000 {
+			add("low_dollar_volume")
+		}
+		if item.MarketQuality.VolatilityPct >= 10 {
+			add("high_volatility")
+		}
+		if item.MarketQuality.MomentumPct <= -20 {
+			add("negative_momentum")
+		}
+	}
+	for _, risk := range item.CapitalRiskSummaries {
+		if risk.Kind == CapitalEventReverseSplit {
+			add("reverse_split_risk")
+		}
+		if risk.Kind == CapitalEventGoingConcern {
+			add("going_concern_risk")
+		}
+		if risk.Kind == CapitalEventWarrants {
+			add("warrant_risk")
+		}
+	}
 	if item.RevenueGrowthInfo.RevenueGrowthAvailable && item.RevenueGrowthInfo.QuarterlyRevenueYoYPct < 0 && item.RevenueGrowthInfo.AnnualRevenueYoYPct >= 20 {
 		add("quarterly_growth_conflicts_with_annual")
 	}
@@ -887,6 +913,9 @@ func candidateReviewPriorityReasons(item CandidateScoreResult) []ReviewPriorityR
 	}
 	if penalty := countPenaltyQualityTags(item.QualityTags); penalty > 0 {
 		add("质量风险标签", -2*penalty)
+	}
+	if item.MarketQuality.Status == "risk" {
+		add("市场质量风险", -8)
 	}
 	return reasons
 }

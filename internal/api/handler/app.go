@@ -222,6 +222,22 @@ func (h *AppHandler) GetDiscoveryCandidateEffectiveness(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) ExportDiscoveryCandidatesCSV(c *gin.Context) {
+	items, err := discovery.ListCandidateScores(c.Request.Context(), h.DiscoveryDB, discovery.CandidateScoreQuery{Page: 1, PageSize: 200, Ticker: c.Query("ticker"), Grade: c.Query("grade"), QualityTier: c.Query("quality_tier"), ChangeStatus: c.Query("change_status")})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="sec-monitor-candidates.csv"`)
+	w := csv.NewWriter(c.Writer)
+	defer w.Flush()
+	_ = w.Write([]string{"ticker", "grade", "total_score", "priority", "change", "market_cap_usd", "revenue_growth_pct", "cash_runway_months", "average_dollar_volume_usd", "volatility_pct", "momentum_pct", "max_drawdown_pct", "quality_tags"})
+	for _, item := range items.Items {
+		_ = w.Write([]string{item.Ticker, item.Grade, strconv.Itoa(item.TotalScore), strconv.Itoa(item.ReviewPriorityScore), item.ChangeStatus, strconv.FormatInt(item.MarketCapUSD, 10), fmt.Sprintf("%.2f", item.RevenueGrowthPct), fmt.Sprintf("%.2f", item.CashRunwayMonths), fmt.Sprintf("%.2f", item.MarketQuality.AverageDollarVolume), fmt.Sprintf("%.2f", item.MarketQuality.VolatilityPct), fmt.Sprintf("%.2f", item.MarketQuality.MomentumPct), fmt.Sprintf("%.2f", item.MarketQuality.MaxDrawdownPct), strings.Join(item.QualityTags, "|")})
+	}
+}
+
 func (h *AppHandler) PreviewDiscoveryCandidateSummary(c *gin.Context) {
 	limit := 0
 	if value := strings.TrimSpace(c.Query("limit")); value != "" {

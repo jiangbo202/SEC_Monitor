@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-var candidateEffectivenessHorizons = []int{1, 5, 20}
+var candidateEffectivenessHorizons = []int{1, 5, 20, 60}
 
 type CandidateEffectivenessReport struct {
 	GeneratedAt        time.Time                      `json:"generated_at"`

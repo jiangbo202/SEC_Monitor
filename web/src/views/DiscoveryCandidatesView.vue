@@ -9,6 +9,7 @@
         <el-button :loading="workflowLoading" type="primary" plain @click="runWorkflow">刷新候选工作流</el-button>
         <el-button :loading="watchLoading" @click="openWatchList">关注列表</el-button>
         <el-button :loading="effectivenessLoading" @click="openEffectiveness">效果评估</el-button>
+        <el-button @click="exportCandidates">导出 CSV</el-button>
         <el-button @click="sectorDialogVisible = true">赛道分布</el-button>
         <el-button :loading="reportLoading" @click="openReport">查看日报</el-button>
         <el-button :loading="summaryLoading" @click="previewSummary">预检通知摘要</el-button>
@@ -165,6 +166,21 @@
       </el-table-column>
       <el-table-column prop="price_volume" label="成交量" width="120" align="right" sortable="custom">
         <template #default="{ row }">{{ formatVolume(row.price_volume) }}</template>
+      </el-table-column>
+      <el-table-column label="市场质量" width="120" align="right">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <div>平均成交额：{{ formatUSD(row.market_quality?.average_dollar_volume_usd) }}</div>
+                <div>波动率：{{ formatPct(row.market_quality?.volatility_pct) }}</div>
+                <div>20日动量：{{ formatPerformance(row.market_quality?.momentum_pct) }}</div>
+                <div>最大回撤：{{ formatPerformance(row.market_quality?.max_drawdown_pct) }}</div>
+              </div>
+            </template>
+            <el-tag :type="row.market_quality?.status === 'risk' ? 'warning' : 'success'" effect="plain">{{ row.market_quality?.status === 'risk' ? '需复核' : '正常' }}</el-tag>
+          </el-tooltip>
+        </template>
       </el-table-column>
       <el-table-column prop="price_trade_date" label="价格日期" width="110" sortable="custom">
         <template #default="{ row }">{{ formatDate(row.price_trade_date) }}</template>
@@ -619,7 +635,7 @@
       <el-table :data="effectiveness?.cohorts || []" border empty-text="暂无可评估候选">
         <el-table-column prop="grade" label="Cohort" width="100"><template #default="{ row }">{{ effectivenessCohortLabel(row.grade) }}</template></el-table-column>
         <el-table-column prop="candidate_count" label="首次入选数" width="110" align="right" />
-        <el-table-column v-for="horizon in [1, 5, 20]" :key="horizon" :label="`${horizon}日表现`" min-width="180">
+        <el-table-column v-for="horizon in [1, 5, 20, 60]" :key="horizon" :label="`${horizon}日表现`" min-width="180">
           <template #default="{ row }">
             <template v-if="effectivenessWindow(row, horizon)?.sample_count">
               {{ formatPerformance(effectivenessWindow(row, horizon)?.average_return_pct) }}｜胜率 {{ formatPct(effectivenessWindow(row, horizon)?.win_rate_pct) }}｜回撤 {{ formatPerformance(effectivenessWindow(row, horizon)?.max_drawdown_pct) }}
@@ -829,6 +845,12 @@ async function openEffectiveness() {
   } finally {
     effectivenessLoading.value = false
   }
+}
+
+function exportCandidates() {
+  const query = new URLSearchParams()
+  Object.entries(requestParams()).forEach(([key, value]) => query.set(key, String(value)))
+  window.open(`/api/exports/candidates.csv?${query.toString()}`, '_blank', 'noopener')
 }
 
 async function openDetail(row: CandidateScore) {

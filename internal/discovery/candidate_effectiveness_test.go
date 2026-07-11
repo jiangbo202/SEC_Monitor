@@ -53,7 +53,7 @@ func TestBuildCandidateEffectivenessCalculatesCohortsAndOptionalBenchmark(t *tes
 		t.Fatalf("report metadata = %#v", report)
 	}
 	all := report.Cohorts[0]
-	if all.Grade != "all" || all.CandidateCount != 2 || len(all.Windows) != 3 {
+	if all.Grade != "all" || all.CandidateCount != 2 || len(all.Windows) != 4 || all.Windows[3].HorizonDays != 60 || all.Windows[3].SampleCount != 0 {
 		t.Fatalf("all cohort = %#v", all)
 	}
 	window20 := all.Windows[2]
@@ -68,7 +68,7 @@ func TestBuildCandidateEffectivenessMarksBenchmarkUnavailableWithoutIWM(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.BenchmarkAvailable || len(report.Cohorts) != 3 {
+	if report.BenchmarkAvailable || len(report.Cohorts) != 3 || len(report.Cohorts[0].Windows) != 4 {
 		t.Fatalf("empty report = %#v", report)
 	}
 }

@@ -43,6 +43,7 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		SectorRatingScore     int                      `json:"sector_rating_score"`
 		RevenueGrowthInfo     RevenueGrowthExplanation `json:"revenue_growth_explanation"`
 		CapitalRiskSummaries  []CapitalRiskSummary     `json:"capital_risk_summaries"`
+		MarketQuality         CandidateMarketQuality   `json:"market_quality"`
 	}
 	return json.Marshal(alias{
 		scoreAlias:            score,
@@ -68,6 +69,7 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		SectorRatingScore:     row.SectorRatingScore,
 		RevenueGrowthInfo:     row.RevenueGrowthInfo,
 		CapitalRiskSummaries:  row.CapitalRiskSummaries,
+		MarketQuality:         row.MarketQuality,
 	})
 }
 

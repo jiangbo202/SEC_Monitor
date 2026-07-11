@@ -177,6 +177,16 @@ export interface CandidateScore {
   sector_rating_score?: number
   revenue_growth_explanation?: RevenueGrowthExplanation
   capital_risk_summaries?: CapitalRiskSummary[]
+  market_quality?: CandidateMarketQuality
+}
+
+export interface CandidateMarketQuality {
+  sample_days: number
+  average_dollar_volume_usd: number
+  volatility_pct: number
+  momentum_pct: number
+  max_drawdown_pct: number
+  status: string
 }
 
 export interface ReviewPriorityReason {

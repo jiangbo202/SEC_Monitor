@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"sec_monitor/internal/discovery"
@@ -25,6 +26,12 @@ type CandidateNotificationPreview struct {
 	SuppressedReason string                        `json:"suppressed_reason"`
 	Settings         CandidateNotificationSettings `json:"settings"`
 	Summary          discovery.CandidateSummary    `json:"summary"`
+	WatchEvents      []CandidateWatchFiling        `json:"watch_events"`
+}
+
+type CandidateWatchFiling struct {
+	FilingID, Ticker, CompanyName, FilingType, Title, FilingURL string
+	EventAt                                                     time.Time
 }
 
 type CandidateNotificationSendInput struct {
@@ -70,6 +77,10 @@ func (s *CandidateNotificationService) Preview(ctx context.Context) (CandidateNo
 		return CandidateNotificationPreview{}, err
 	}
 	result.Summary = summary
+	result.WatchEvents, err = s.listCandidateWatchFilings(ctx, time.Now().UTC())
+	if err != nil {
+		return CandidateNotificationPreview{}, err
+	}
 	if !settings.NotifyA && !settings.NotifyB {
 		result.SuppressedReason = "candidate_notification_grades_disabled"
 	}
@@ -98,11 +109,12 @@ func (s *CandidateNotificationService) Send(ctx context.Context, input Candidate
 		}
 	}
 	candidates := notificationCandidatesFromCandidateSummary(preview.Summary)
+	candidates = append(candidates, notificationCandidatesFromWatchFilings(preview.WatchEvents)...)
 	if len(candidates) == 0 {
 		return CandidateNotificationSendResult{}, fmt.Errorf("%w: no candidate notification items", ErrValidation)
 	}
 	batch, err := NewNotificationBatchService(s.db, s.notifier, s.configs).Deliver(ctx, NotificationBatchInput{
-		Source: "candidate", Trigger: "manual", Candidates: candidates, SummaryText: preview.Summary.Message,
+		Source: "candidate", Trigger: "manual", Candidates: candidates, SummaryText: renderCandidateNotificationMessage(preview),
 	})
 	if err != nil {
 		return CandidateNotificationSendResult{}, err
@@ -122,9 +134,64 @@ func (s *CandidateNotificationService) sentCandidateBatchToday(ctx context.Conte
 		Joins("JOIN notification_batches ON notification_batches.id = notification_batch_items.batch_id").
 		Where("notification_batches.source = ? AND notification_batches.status = ?", "candidate", "sent").
 		Where("notification_batches.created_at >= ? AND notification_batches.created_at < ?", start, end).
-		Where("notification_batch_items.filing_id LIKE ?", batchID+":%").
 		Count(&count).Error
 	return count > 0, err
+}
+
+func (s *CandidateNotificationService) listCandidateWatchFilings(ctx context.Context, now time.Time) ([]CandidateWatchFiling, error) {
+	if s.db == nil || s.discoveryDB == nil {
+		return []CandidateWatchFiling{}, nil
+	}
+	var watches []discovery.CandidateWatch
+	if err := s.discoveryDB.WithContext(ctx).Where("status = ?", discovery.CandidateWatchStatusActive).Find(&watches).Error; err != nil {
+		return nil, err
+	}
+	tickers := []string{}
+	for _, watch := range watches {
+		if watch.Ticker != "" {
+			tickers = append(tickers, watch.Ticker)
+		}
+	}
+	if len(tickers) == 0 {
+		return []CandidateWatchFiling{}, nil
+	}
+	var filings []model.Filing
+	if err := s.db.WithContext(ctx).Where("ticker IN ? AND pulled_at >= ?", tickers, now.Add(-24*time.Hour)).Order("pulled_at DESC").Find(&filings).Error; err != nil {
+		return nil, err
+	}
+	out := []CandidateWatchFiling{}
+	for _, filing := range filings {
+		if !candidateWatchMajorFiling(filing.FilingType) {
+			continue
+		}
+		out = append(out, CandidateWatchFiling{FilingID: filing.FilingID, Ticker: filing.Ticker, CompanyName: filing.CompanyName, FilingType: filing.FilingType, Title: filing.Title, FilingURL: filing.FilingURL, EventAt: filing.PulledAt})
+	}
+	return out, nil
+}
+
+func candidateWatchMajorFiling(value string) bool {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	return value == "8-K" || value == "10-K" || value == "10-Q" || value == "4" || value == "EFFECT" || value == "RW" || strings.HasPrefix(value, "S-1") || strings.HasPrefix(value, "S-3") || strings.HasPrefix(value, "424B")
+}
+
+func notificationCandidatesFromWatchFilings(events []CandidateWatchFiling) []NotificationCandidate {
+	out := make([]NotificationCandidate, 0, len(events))
+	for _, event := range events {
+		out = append(out, NotificationCandidate{EntityKind: "candidate_watch_filing", FilingID: event.FilingID, Ticker: event.Ticker, CompanyName: event.CompanyName, FilingType: event.FilingType, Title: event.Title, FilingURL: event.FilingURL, Reason: "eligible", EventAt: event.EventAt})
+	}
+	return out
+}
+
+func renderCandidateNotificationMessage(preview CandidateNotificationPreview) string {
+	message := preview.Summary.Message
+	if len(preview.WatchEvents) == 0 {
+		return message
+	}
+	lines := []string{"", "关注候选重大公告："}
+	for _, event := range preview.WatchEvents {
+		lines = append(lines, fmt.Sprintf("- %s｜%s｜%s", event.Ticker, event.FilingType, event.Title))
+	}
+	return message + "\n" + strings.Join(lines, "\n")
 }
 
 func notificationCandidatesFromCandidateSummary(summary discovery.CandidateSummary) []NotificationCandidate {

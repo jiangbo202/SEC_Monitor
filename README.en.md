@@ -23,6 +23,7 @@ SEC Monitor is a local-first SEC intelligence monitoring system for tracking US 
 - IPO Monitor scans the SEC current feed and backfills lifecycle filings by CIK; it verifies final ticker and exchange against the official SEC mapping, best-effort extracts offer price and offered shares from 424B4 filings, and supports manual market-field and status correction.
 - Insider Trading page for Form 3/4/5 ownership-change disclosures.
 - Small-cap candidate research using SEC fundamentals, capital events, Form 4 activity, and local price evidence. It includes explainable A/B scores, structured research tracking, event-aware Telegram summaries, and historical cohort effectiveness metrics.
+- Candidate market quality derives dollar-volume, volatility, momentum, and drawdown from local price snapshots; candidate cohorts include 60-trading-day metrics and filtered CSV export.
 - Sync history and scheduling with built-in `sec_filing_sync` and `ipo_radar_sync` jobs, manual run, enable/disable, and cron editing.
 - Dashboard overview with separate Watch Target and IPO Monitor KPI sections, including sync health, recent filings, in-progress IPO companies, IPO status distribution, and notification status.
 - Telegram settings, test sending, and retries; initial/history/lifecycle backfills are silent, each sync sends at most one grouped summary, and notification batches expose delivery or suppression reasons.
