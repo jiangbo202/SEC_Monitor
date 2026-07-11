@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -12,10 +14,11 @@ import (
 	"sec_monitor/internal/telegram"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 var notificationRetryDelays = []time.Duration{5 * time.Minute, 15 * time.Minute, 45 * time.Minute, 2 * time.Hour, 6 * time.Hour}
+
+const notificationRetryLeaseDuration = 30 * time.Minute
 
 type NotificationCandidate struct {
 	EntityKind  string
@@ -219,6 +222,7 @@ func batchResultUpdates(batch model.NotificationBatch) map[string]any {
 		"retry_count": batch.RetryCount, "suppression_summary": batch.SuppressionSummary,
 		"error_message": SanitizeSensitiveError(batch.ErrorMessage), "sent_at": sentAt,
 		"next_retry_at": nextRetryAt, "last_attempt_at": lastAttemptAt, "updated_at": time.Now().UTC(),
+		"retry_lease_until": nullableNotificationTime(batch.RetryLeaseUntil), "retry_lease_token": batch.RetryLeaseToken,
 	}
 }
 
@@ -243,6 +247,7 @@ func (s *NotificationBatchService) RetryDue(ctx context.Context, now time.Time) 
 	var ids []uint
 	if err := s.db.WithContext(ctx).Model(&model.NotificationBatch{}).
 		Where("status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", "failed", now).
+		Where("retry_lease_until IS NULL OR retry_lease_until <= ?", now).
 		Order("next_retry_at ASC, id ASC").Pluck("id", &ids).Error; err != nil {
 		return NotificationRetryResult{}, sanitizeNotificationBatchError(err)
 	}
@@ -269,63 +274,106 @@ func (s *NotificationBatchService) RetryDue(ctx context.Context, now time.Time) 
 }
 
 func (s *NotificationBatchService) retryBatch(ctx context.Context, batchID uint, now time.Time) (string, bool, error) {
-	outcome := ""
-	attempted := false
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var batch model.NotificationBatch
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", batchID, "failed", now).
-			First(&batch).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil
+	batch, items, leaseToken, claimed, err := s.claimDueBatch(ctx, batchID, now)
+	if err != nil || !claimed {
+		return "", false, err
+	}
+	candidates := notificationCandidatesFromBatchItems(items)
+	message := telegram.Message{Text: truncateTelegramMessage(renderNotificationBatchSummary(batch.Source, candidates), 4000)}
+	batch.LastAttemptAt = &now
+	batch.RetryCount++
+	batch.RetryLeaseUntil = nil
+	batch.RetryLeaseToken = ""
+	if err := sendWithRetry(ctx, s.notifier, message, 3); err != nil {
+		batch.ErrorMessage = SanitizeSensitiveError(err.Error())
+		batch.FailedCount = len(items)
+		if batch.RetryCount > len(notificationRetryDelays) {
+			batch.Status = "dead_letter"
+			batch.NextRetryAt = nil
+			if err := s.finishClaimedRetry(ctx, batch, candidates, leaseToken, false); err != nil {
+				return "", true, err
 			}
+			return "dead_letter", true, nil
+		}
+		batch.Status = "failed"
+		batch.NextRetryAt = nextNotificationRetryAt(batch.RetryCount, now)
+		if err := s.finishClaimedRetry(ctx, batch, candidates, leaseToken, false); err != nil {
+			return "", true, err
+		}
+		return "failed", true, nil
+	}
+	batch.Status = "sent"
+	batch.SentCount = len(items)
+	batch.FailedCount = 0
+	batch.ErrorMessage = ""
+	batch.NextRetryAt = nil
+	batch.SentAt = &now
+	if err := s.finishClaimedRetry(ctx, batch, candidates, leaseToken, true); err != nil {
+		return "", true, err
+	}
+	return "sent", true, nil
+}
+
+// claimDueBatch takes durable ownership before a notification is sent. SQLite
+// ignores FOR UPDATE, so an UPDATE with the due and lease predicates is used as
+// the compare-and-swap instead.
+func (s *NotificationBatchService) claimDueBatch(ctx context.Context, batchID uint, now time.Time) (model.NotificationBatch, []model.NotificationBatchItem, string, bool, error) {
+	leaseToken, err := notificationRetryLeaseToken()
+	if err != nil {
+		return model.NotificationBatch{}, nil, "", false, err
+	}
+	leaseUntil := now.Add(notificationRetryLeaseDuration)
+	claim := s.db.WithContext(ctx).Model(&model.NotificationBatch{}).
+		Where("id = ? AND status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", batchID, "failed", now).
+		Where("retry_lease_until IS NULL OR retry_lease_until <= ?", now).
+		Updates(map[string]any{"retry_lease_until": leaseUntil, "retry_lease_token": leaseToken, "updated_at": time.Now().UTC()})
+	if claim.Error != nil {
+		return model.NotificationBatch{}, nil, "", false, claim.Error
+	}
+	if claim.RowsAffected == 0 {
+		return model.NotificationBatch{}, nil, "", false, nil
+	}
+	var batch model.NotificationBatch
+	if err := s.db.WithContext(ctx).Where("id = ? AND retry_lease_token = ?", batchID, leaseToken).First(&batch).Error; err != nil {
+		return model.NotificationBatch{}, nil, "", false, err
+	}
+	var items []model.NotificationBatchItem
+	if err := s.db.WithContext(ctx).Where("batch_id = ? AND status = ?", batch.ID, "failed").Order("id ASC").Find(&items).Error; err != nil {
+		return model.NotificationBatch{}, nil, "", false, err
+	}
+	if len(items) == 0 {
+		return model.NotificationBatch{}, nil, "", false, fmt.Errorf("notification batch %d has no failed items", batch.ID)
+	}
+	return batch, items, leaseToken, true, nil
+}
+
+func notificationRetryLeaseToken() (string, error) {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func (s *NotificationBatchService) finishClaimedRetry(ctx context.Context, batch model.NotificationBatch, candidates []NotificationCandidate, leaseToken string, sent bool) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.NotificationBatch{}).
+			Where("id = ? AND status = ? AND retry_lease_token = ?", batch.ID, "failed", leaseToken).
+			Updates(batchResultUpdates(batch))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("notification batch %d retry lease was lost", batch.ID)
+		}
+		if !sent {
+			return nil
+		}
+		if err := tx.Model(&model.NotificationBatchItem{}).Where("batch_id = ? AND status = ?", batch.ID, "failed").Updates(map[string]any{"status": "sent", "reason": "eligible", "updated_at": batch.LastAttemptAt}).Error; err != nil {
 			return err
 		}
-		var items []model.NotificationBatchItem
-		if err := tx.Where("batch_id = ? AND status = ?", batch.ID, "failed").Order("id ASC").Find(&items).Error; err != nil {
-			return err
-		}
-		if len(items) == 0 {
-			return fmt.Errorf("notification batch %d has no failed items", batch.ID)
-		}
-		attempted = true
-		candidates := notificationCandidatesFromBatchItems(items)
-		message := telegram.Message{Text: truncateTelegramMessage(renderNotificationBatchSummary(batch.Source, candidates), 4000)}
-		batch.LastAttemptAt = &now
-		batch.RetryCount++
-		if err := sendWithRetry(ctx, s.notifier, message, 3); err != nil {
-			batch.ErrorMessage = SanitizeSensitiveError(err.Error())
-			batch.FailedCount = len(items)
-			if batch.RetryCount >= len(notificationRetryDelays) {
-				batch.Status = "dead_letter"
-				batch.NextRetryAt = nil
-				outcome = "dead_letter"
-			} else {
-				batch.Status = "failed"
-				batch.NextRetryAt = nextNotificationRetryAt(batch.RetryCount, now)
-				outcome = "failed"
-			}
-			return tx.Model(&model.NotificationBatch{}).Where("id = ?", batch.ID).Updates(batchResultUpdates(batch)).Error
-		}
-		batch.Status = "sent"
-		batch.SentCount = len(items)
-		batch.FailedCount = 0
-		batch.ErrorMessage = ""
-		batch.NextRetryAt = nil
-		batch.SentAt = &now
-		if err := tx.Model(&model.NotificationBatch{}).Where("id = ?", batch.ID).Updates(batchResultUpdates(batch)).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&model.NotificationBatchItem{}).Where("batch_id = ? AND status = ?", batch.ID, "failed").Updates(map[string]any{"status": "sent", "reason": "eligible", "updated_at": now}).Error; err != nil {
-			return err
-		}
-		if err := markNotificationCandidatesNotified(tx, candidates, &now); err != nil {
-			return err
-		}
-		outcome = "sent"
-		return nil
+		return markNotificationCandidatesNotified(tx, candidates, batch.SentAt)
 	})
-	return outcome, attempted, err
 }
 
 func notificationCandidatesFromBatchItems(items []model.NotificationBatchItem) []NotificationCandidate {
@@ -364,23 +412,33 @@ func markNotificationCandidatesNotified(tx *gorm.DB, candidates []NotificationCa
 func (s *NotificationBatchService) Requeue(ctx context.Context, batchID uint, now time.Time) (model.NotificationBatch, error) {
 	now = now.UTC()
 	var batch model.NotificationBatch
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&batch, batchID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("%w: notification batch not found", ErrNotFound)
-			}
-			return err
+	if err := s.db.WithContext(ctx).First(&batch, batchID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.NotificationBatch{}, fmt.Errorf("%w: notification batch not found", ErrNotFound)
 		}
-		if batch.Status != "failed" && batch.Status != "dead_letter" {
-			return fmt.Errorf("%w: only failed or dead-letter notification batches can be requeued", ErrValidation)
-		}
-		batch.Status = "failed"
-		batch.RetryCount = 0
-		batch.NextRetryAt = &now
-		batch.LastAttemptAt = nil
-		batch.ErrorMessage = ""
-		return tx.Model(&model.NotificationBatch{}).Where("id = ?", batch.ID).Updates(batchResultUpdates(batch)).Error
-	})
+		return model.NotificationBatch{}, sanitizeNotificationBatchError(err)
+	}
+	if batch.Status != "failed" && batch.Status != "dead_letter" {
+		return model.NotificationBatch{}, fmt.Errorf("%w: only failed or dead-letter notification batches can be requeued", ErrValidation)
+	}
+	if batch.RetryLeaseUntil != nil && batch.RetryLeaseUntil.After(now) {
+		return model.NotificationBatch{}, fmt.Errorf("%w: notification batch is currently being retried", ErrValidation)
+	}
+	batch.Status = "failed"
+	batch.RetryCount = 0
+	batch.NextRetryAt = &now
+	batch.LastAttemptAt = nil
+	batch.RetryLeaseUntil = nil
+	batch.RetryLeaseToken = ""
+	batch.ErrorMessage = ""
+	result := s.db.WithContext(ctx).Model(&model.NotificationBatch{}).
+		Where("id = ? AND status IN ?", batch.ID, []string{"failed", "dead_letter"}).
+		Where("retry_lease_until IS NULL OR retry_lease_until <= ?", now).
+		Updates(batchResultUpdates(batch))
+	err := result.Error
+	if err == nil && result.RowsAffected == 0 {
+		err = fmt.Errorf("%w: notification batch is currently being retried", ErrValidation)
+	}
 	if err != nil {
 		return model.NotificationBatch{}, sanitizeNotificationBatchError(err)
 	}

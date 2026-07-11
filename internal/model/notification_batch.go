@@ -20,6 +20,8 @@ type NotificationBatch struct {
 	SentAt             *time.Time `json:"sent_at"`
 	NextRetryAt        *time.Time `gorm:"index" json:"next_retry_at"`
 	LastAttemptAt      *time.Time `json:"last_attempt_at"`
+	RetryLeaseUntil    *time.Time `gorm:"index" json:"retry_lease_until"`
+	RetryLeaseToken    string     `gorm:"size:64;index" json:"-"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }

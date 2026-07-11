@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"sec_monitor/internal/model"
+	"sec_monitor/internal/telegram"
 
 	"gorm.io/gorm"
 )
@@ -44,21 +46,28 @@ func TestNotificationBatchFailureSchedulesExponentialRetry(t *testing.T) {
 	}
 }
 
-func TestRetryDueSendsAndDeadLettersAfterFiveRounds(t *testing.T) {
+func TestRetryDueSchedulesFiveRetryRoundsAfterInitialDeliveryFailure(t *testing.T) {
 	db := testDB(t)
 	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
-	batch := model.NotificationBatch{Source: "filing", Trigger: "scheduler", Channel: "telegram", Status: "failed", ItemCount: 1, FailedCount: 1, NextRetryAt: &now, CreatedAt: now, UpdatedAt: now}
-	if err := db.Create(&batch).Error; err != nil {
-		t.Fatalf("seed batch: %v", err)
+	if err := db.Create(&model.Filing{FilingID: "retry-filing", Ticker: "TSLA", CompanyName: "Tesla", FilingType: "8-K", FilingDate: now, PulledAt: now}).Error; err != nil {
+		t.Fatalf("seed filing: %v", err)
 	}
-	if err := db.Create(&model.NotificationBatchItem{BatchID: batch.ID, EntityKind: "filing", FilingID: "retry-filing", Ticker: "TSLA", CompanyName: "Tesla", FilingType: "8-K", Title: "Retry", FilingURL: "https://sec.test/retry", EventAt: now, Status: "failed", Reason: "delivery_failed"}).Error; err != nil {
-		t.Fatalf("seed batch item: %v", err)
-	}
-	notifier := &fakeNotifier{errs: make([]error, 15)}
+	seedNotificationTelegramConfig(t, db)
+	notifier := &fakeNotifier{errs: make([]error, 18)}
 	for i := range notifier.errs {
 		notifier.errs[i] = context.DeadlineExceeded
 	}
 	svc := NewNotificationBatchService(db, notifier, NewConfigService(db, NewAuditService(db)))
+	batch, err := svc.Deliver(context.Background(), NotificationBatchInput{Source: "filing", Trigger: "scheduler", Candidates: []NotificationCandidate{{
+		EntityKind: "filing", FilingID: "retry-filing", Ticker: "TSLA", CompanyName: "Tesla", FilingType: "8-K", Reason: "eligible", EventAt: now,
+	}}})
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if batch.Status != "failed" || batch.RetryCount != 1 || batch.NextRetryAt == nil || batch.NextRetryAt.Sub(*batch.LastAttemptAt) != 5*time.Minute {
+		t.Fatalf("initial delivery batch = %+v, want first retry at 5m", batch)
+	}
+	now = *batch.NextRetryAt
 	delays := []time.Duration{5 * time.Minute, 15 * time.Minute, 45 * time.Minute, 2 * time.Hour, 6 * time.Hour}
 	for round := range delays {
 		result, err := svc.RetryDue(context.Background(), now)
@@ -73,7 +82,7 @@ func TestRetryDueSendsAndDeadLettersAfterFiveRounds(t *testing.T) {
 		if err := db.First(&batch, batchID).Error; err != nil {
 			t.Fatalf("load batch round %d: %v", round+1, err)
 		}
-		if batch.RetryCount != round+1 {
+		if batch.RetryCount != round+2 {
 			t.Fatalf("retry_count round %d = %d", round+1, batch.RetryCount)
 		}
 		if round == len(delays)-1 {
@@ -82,14 +91,83 @@ func TestRetryDueSendsAndDeadLettersAfterFiveRounds(t *testing.T) {
 			}
 			continue
 		}
-		if batch.Status != "failed" || batch.NextRetryAt == nil || !batch.NextRetryAt.Equal(now.Add(delays[round])) || result.Failed != 1 {
+		if batch.Status != "failed" || batch.NextRetryAt == nil || !batch.NextRetryAt.Equal(now.Add(delays[round+1])) || result.Failed != 1 {
 			t.Fatalf("round %d batch = %+v, result = %+v", round+1, batch, result)
 		}
 		now = *batch.NextRetryAt
 	}
-	if notifier.calls != 15 {
-		t.Fatalf("notifier calls = %d, want 15", notifier.calls)
+	if notifier.calls != 18 {
+		t.Fatalf("notifier calls = %d, want 18", notifier.calls)
 	}
+}
+
+func TestRetryDueClaimsBatchBeforeExternalSend(t *testing.T) {
+	db := testDB(t)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("database connection: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	batch := model.NotificationBatch{Source: "filing", Trigger: "scheduler", Channel: "telegram", Status: "failed", ItemCount: 1, FailedCount: 1, RetryCount: 1, NextRetryAt: &now, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatalf("seed batch: %v", err)
+	}
+	if err := db.Create(&model.NotificationBatchItem{BatchID: batch.ID, EntityKind: "filing", FilingID: "retry-filing", Ticker: "TSLA", CompanyName: "Tesla", FilingType: "8-K", EventAt: now, Status: "failed", Reason: "delivery_failed"}).Error; err != nil {
+		t.Fatalf("seed batch item: %v", err)
+	}
+	notifier := &blockingNotifier{started: make(chan struct{}), release: make(chan struct{})}
+	svc := NewNotificationBatchService(db, notifier, NewConfigService(db, NewAuditService(db)))
+	firstResult := make(chan NotificationRetryResult, 1)
+	firstErr := make(chan error, 1)
+	go func() {
+		result, err := svc.RetryDue(context.Background(), now)
+		firstResult <- result
+		firstErr <- err
+	}()
+	<-notifier.started
+
+	second, err := svc.RetryDue(context.Background(), now)
+	if err != nil {
+		t.Fatalf("competing RetryDue: %v", err)
+	}
+	if second.Attempted != 0 || notifier.callCount() != 1 {
+		t.Fatalf("competing RetryDue = %+v, notifier calls = %d, want no second send", second, notifier.callCount())
+	}
+	close(notifier.release)
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first RetryDue: %v", err)
+	}
+	if result := <-firstResult; result.Attempted != 1 || result.Sent != 1 {
+		t.Fatalf("first RetryDue = %+v", result)
+	}
+}
+
+type blockingNotifier struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	calls   int
+}
+
+func (n *blockingNotifier) Send(ctx context.Context, _ telegram.Message) error {
+	n.mu.Lock()
+	n.calls++
+	n.mu.Unlock()
+	n.once.Do(func() { close(n.started) })
+	select {
+	case <-n.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (n *blockingNotifier) callCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.calls
 }
 
 func TestRequeueOnlyAcceptsFailedOrDeadLetter(t *testing.T) {
