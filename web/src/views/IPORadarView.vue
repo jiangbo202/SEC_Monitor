@@ -160,6 +160,7 @@
       <div v-if="selectedCompany" class="detail-drawer-body">
         <el-descriptions :column="1" border>
           <el-descriptions-item label="CIK">{{ selectedCompany.cik }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.firstFiling')">{{ formatDate(selectedCompany.first_filing_date) }}</el-descriptions-item>
           <el-descriptions-item :label="t('common.status')">
             <el-tag :type="ipoStatusType(selectedCompany.status)" effect="plain">{{ ipoStatusLabel(selectedCompany.status) }}</el-tag>
           </el-descriptions-item>
