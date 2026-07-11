@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"reflect"
@@ -395,6 +397,89 @@ func TestConfigServicePersistsAndMasksTelegramToken(t *testing.T) {
 		if cfg.ConfigKey == "telegram.bot_token" && cfg.ConfigValue == "123456:secret-token" {
 			t.Fatalf("bot token was not masked")
 		}
+	}
+}
+
+func TestConfigServiceEncryptsMigratesAndMasksSecrets(t *testing.T) {
+	db := testDB(t)
+	t.Setenv("CONFIG_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)))
+	if err := db.Create(&model.SystemConfig{
+		ConfigKey: "telegram.bot_token", ConfigValue: "legacy-telegram-token", ValueType: "string", Category: "telegram", Encrypted: true,
+	}).Error; err != nil {
+		t.Fatalf("seed plaintext encrypted config: %v", err)
+	}
+
+	svc := NewConfigService(db, NewAuditService(db), config.Load().System)
+	if err := svc.MigrateEncryptedValues(context.Background()); err != nil {
+		t.Fatalf("migrate encrypted values: %v", err)
+	}
+
+	var stored model.SystemConfig
+	if err := db.Where("config_key = ?", "telegram.bot_token").First(&stored).Error; err != nil {
+		t.Fatalf("load encrypted config: %v", err)
+	}
+	if !strings.HasPrefix(stored.ConfigValue, "enc:v1:") {
+		t.Fatalf("stored value is not encrypted")
+	}
+	value, ok, err := svc.GetValue(context.Background(), "telegram.bot_token")
+	if err != nil || !ok || value != "legacy-telegram-token" {
+		t.Fatalf("GetValue ok=%v err=%v", ok, err)
+	}
+	configs, err := svc.List(context.Background(), "telegram", true)
+	if err != nil {
+		t.Fatalf("list encrypted configs: %v", err)
+	}
+	if len(configs) != 1 || !strings.Contains(configs[0].ConfigValue, maskedSecretMarker) {
+		t.Fatalf("masked configs = %#v", configs)
+	}
+}
+
+func TestConfigServiceRejectsNewEncryptedValueWithoutKey(t *testing.T) {
+	db := testDB(t)
+	t.Setenv("CONFIG_ENCRYPTION_KEY", "")
+	svc := NewConfigService(db, NewAuditService(db), config.Load().System)
+
+	err := svc.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "telegram.bot_token", Value: "new-telegram-token", ValueType: "string", Category: "telegram", Encrypted: true},
+	}, "tester")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("UpsertMany error = %v", err)
+	}
+	if svc.EncryptionHealth().Status != "critical" {
+		t.Fatal("expected critical encryption health")
+	}
+}
+
+func TestMigrateEncryptedValuesSanitizesNotificationErrors(t *testing.T) {
+	db := testDB(t)
+	message := `Post "https://api.telegram.org/bot123:secret/sendMessage": timeout`
+	if err := db.Create(&model.NotificationBatch{SyncRunID: 1, Source: "filing", Trigger: "manual", Channel: "telegram", Status: "failed", ErrorMessage: message}).Error; err != nil {
+		t.Fatalf("seed notification batch: %v", err)
+	}
+	if err := db.Create(&model.NotificationLog{FilingID: "f1", Channel: "telegram", Status: "failed", ErrorMessage: message}).Error; err != nil {
+		t.Fatalf("seed notification log: %v", err)
+	}
+
+	if err := NewConfigService(db, NewAuditService(db)).MigrateEncryptedValues(context.Background()); err != nil {
+		t.Fatalf("migrate encrypted values: %v", err)
+	}
+	var batch model.NotificationBatch
+	var log model.NotificationLog
+	if err := db.First(&batch).Error; err != nil {
+		t.Fatalf("load batch: %v", err)
+	}
+	if err := db.First(&log).Error; err != nil {
+		t.Fatalf("load log: %v", err)
+	}
+	if strings.Contains(batch.ErrorMessage, "123:secret") || strings.Contains(log.ErrorMessage, "123:secret") {
+		t.Fatal("stored notification error leaked telegram token")
+	}
+}
+
+func TestSanitizeSensitiveErrorMasksTelegramURL(t *testing.T) {
+	got := SanitizeSensitiveError(`Post "https://api.telegram.org/bot123:secret/sendMessage": timeout`)
+	if strings.Contains(got, "123:secret") {
+		t.Fatal("telegram token leaked")
 	}
 }
 

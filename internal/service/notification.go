@@ -40,5 +40,8 @@ func (s *NotificationService) List(ctx context.Context, filter NotificationLogFi
 
 	var logs []model.NotificationLog
 	err := query.Order("created_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&logs).Error
+	for i := range logs {
+		logs[i].ErrorMessage = SanitizeSensitiveError(logs[i].ErrorMessage)
+	}
 	return newPageResult(logs, total, page, pageSize), err
 }

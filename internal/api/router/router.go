@@ -34,8 +34,9 @@ func New(deps Dependencies) *gin.Engine {
 	r.Use(gin.Logger(), gin.Recovery())
 
 	audit := service.NewAuditService(deps.DB)
-	configs := service.NewConfigService(deps.DB, audit)
+	configs := service.NewConfigService(deps.DB, audit, deps.Config.System)
 	_ = configs.EnsureDefaults(context.Background())
+	_ = configs.MigrateEncryptedValues(context.Background())
 	tasks := service.NewTaskConfigService(deps.DB, audit)
 	_ = tasks.EnsureDefault(context.Background())
 	secClient := deps.SEC

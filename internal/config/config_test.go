@@ -250,3 +250,11 @@ func TestLoadFallsBackForInvalidTypedValues(t *testing.T) {
 		t.Fatalf("storage by day should fall back to false")
 	}
 }
+
+func TestConfigLoadReportsInvalidEncryptionKey(t *testing.T) {
+	t.Setenv("CONFIG_ENCRYPTION_KEY", "invalid")
+
+	if Load().System.EncryptionKeyError == "" {
+		t.Fatal("expected invalid key error")
+	}
+}

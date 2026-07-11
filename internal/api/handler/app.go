@@ -795,7 +795,7 @@ func (h *AppHandler) TestTelegram(c *gin.Context) {
 	}
 	err = telegram.NewHTTPNotifier(cfg.BotToken, cfg.ChatID, 10*time.Second).Send(c.Request.Context(), telegram.Message{Text: "SEC Monitor test message"})
 	if err != nil {
-		Error(c, err)
+		Error(c, fmt.Errorf("%s", service.SanitizeSensitiveError(err.Error())))
 		return
 	}
 	OK(c, gin.H{"sent": true})
@@ -968,6 +968,10 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 	if notificationFailures > 0 {
 		issues = append(issues, gin.H{"level": "warning", "message": "存在失败的通知记录"})
 	}
+	encryptionHealth := h.Configs.EncryptionHealth()
+	if encryptionHealth.Status == "critical" {
+		issues = append(issues, gin.H{"level": "critical", "message": encryptionHealth.Message})
+	}
 
 	status := "ok"
 	if len(issues) > 0 {
@@ -986,6 +990,7 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 		"database_path":         dbPath,
 		"database_size_bytes":   dbSize,
 		"latest_sync":           latestSync,
+		"encryption":            encryptionHealth,
 	})
 }
 

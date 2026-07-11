@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,12 +61,15 @@ type SECConfig struct {
 }
 
 type SystemConfig struct {
-	LogLevel          string
-	DataRetentionDays int
-	StorageByDay      bool
+	LogLevel           string
+	DataRetentionDays  int
+	StorageByDay       bool
+	EncryptionKey      []byte
+	EncryptionKeyError string
 }
 
 func Load() Config {
+	encryptionKey, encryptionKeyError := encryptionKeyFromEnvironment()
 	database := DatabaseConfig{
 		Type: valueOrDefault("DB_TYPE", "sqlite"),
 		DSN:  valueOrDefault("DB_DSN", "data/sec_monitor.db"),
@@ -112,11 +116,25 @@ func Load() Config {
 			TimeoutMS: intOrDefault("SEC_TIMEOUT_MS", 10000),
 		},
 		System: SystemConfig{
-			LogLevel:          valueOrDefault("LOG_LEVEL", "info"),
-			DataRetentionDays: intOrDefault("DATA_RETENTION_DAYS", 30),
-			StorageByDay:      boolOrDefault("STORAGE_BY_DAY", false),
+			LogLevel:           valueOrDefault("LOG_LEVEL", "info"),
+			DataRetentionDays:  intOrDefault("DATA_RETENTION_DAYS", 30),
+			StorageByDay:       boolOrDefault("STORAGE_BY_DAY", false),
+			EncryptionKey:      encryptionKey,
+			EncryptionKeyError: encryptionKeyError,
 		},
 	}
+}
+
+func encryptionKeyFromEnvironment() ([]byte, string) {
+	encoded := strings.TrimSpace(os.Getenv("CONFIG_ENCRYPTION_KEY"))
+	if encoded == "" {
+		return nil, "CONFIG_ENCRYPTION_KEY is not configured"
+	}
+	key, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(key) != 32 {
+		return nil, "CONFIG_ENCRYPTION_KEY must be Base64-encoded 32 bytes"
+	}
+	return key, ""
 }
 
 func commaSeparatedValues(key string) []string {

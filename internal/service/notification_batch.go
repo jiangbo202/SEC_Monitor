@@ -127,7 +127,7 @@ func (s *NotificationBatchService) Deliver(ctx context.Context, input Notificati
 		batch.Status = "failed"
 		batch.FailedCount = len(eligible)
 		batch.RetryCount = 3
-		batch.ErrorMessage = err.Error()
+		batch.ErrorMessage = SanitizeSensitiveError(err.Error())
 		if dbErr := s.updateBatchResult(ctx, batch, eligible, "failed", nil); dbErr != nil {
 			return model.NotificationBatch{}, dbErr
 		}
@@ -200,7 +200,7 @@ func batchResultUpdates(batch model.NotificationBatch) map[string]any {
 		"target": batch.Target, "status": batch.Status, "sent_count": batch.SentCount,
 		"suppressed_count": batch.SuppressedCount, "failed_count": batch.FailedCount,
 		"retry_count": batch.RetryCount, "suppression_summary": batch.SuppressionSummary,
-		"error_message": batch.ErrorMessage, "sent_at": batch.SentAt, "updated_at": time.Now().UTC(),
+		"error_message": SanitizeSensitiveError(batch.ErrorMessage), "sent_at": batch.SentAt, "updated_at": time.Now().UTC(),
 	}
 }
 
@@ -297,6 +297,9 @@ func (s *NotificationBatchService) List(ctx context.Context, filter Notification
 	}
 	var items []model.NotificationBatch
 	err := query.Order("created_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error
+	for i := range items {
+		items[i].ErrorMessage = SanitizeSensitiveError(items[i].ErrorMessage)
+	}
 	return newPageResult(items, total, page, pageSize), err
 }
 

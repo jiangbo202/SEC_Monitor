@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -14,8 +15,11 @@ import (
 )
 
 type ConfigService struct {
-	db    *gorm.DB
-	audit *AuditService
+	db                 *gorm.DB
+	audit              *AuditService
+	encryptionKey      []byte
+	encryptionKeyError string
+	encryptionEnforced bool
 }
 
 type ConfigInput struct {
@@ -77,8 +81,83 @@ type SocialHeatSettings struct {
 
 const maskedSecretMarker = "******"
 
-func NewConfigService(db *gorm.DB, audit *AuditService) *ConfigService {
-	return &ConfigService{db: db, audit: audit}
+func NewConfigService(db *gorm.DB, audit *AuditService, system ...config.SystemConfig) *ConfigService {
+	service := &ConfigService{db: db, audit: audit}
+	if len(system) > 0 {
+		service.encryptionKey = append([]byte(nil), system[0].EncryptionKey...)
+		service.encryptionKeyError = system[0].EncryptionKeyError
+		service.encryptionEnforced = true
+	}
+	return service
+}
+
+func (s *ConfigService) EncryptionHealth() EncryptionHealth {
+	if len(s.encryptionKey) == 32 && s.encryptionKeyError == "" {
+		return EncryptionHealth{Status: "ok", Message: "configuration encryption is enabled", Configured: true}
+	}
+	message := s.encryptionKeyError
+	if message == "" {
+		message = "CONFIG_ENCRYPTION_KEY is not configured"
+	}
+	return EncryptionHealth{Status: "critical", Message: message, Configured: false}
+}
+
+func (s *ConfigService) MigrateEncryptedValues(ctx context.Context) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if s.EncryptionHealth().Status == "ok" {
+			var configs []model.SystemConfig
+			if err := tx.Where("encrypted = ? AND config_value <> ?", true, "").Find(&configs).Error; err != nil {
+				return err
+			}
+			for _, cfg := range configs {
+				if strings.HasPrefix(cfg.ConfigValue, encryptedSecretPrefix) {
+					continue
+				}
+				encrypted, err := s.encryptSecret(cfg.ConfigValue)
+				if err != nil {
+					return err
+				}
+				if err := tx.Model(&model.SystemConfig{}).Where("id = ?", cfg.ID).Update("config_value", encrypted).Error; err != nil {
+					return err
+				}
+			}
+		}
+		if err := sanitizeStoredNotificationErrors(tx); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func sanitizeStoredNotificationErrors(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.NotificationBatch{}) || !tx.Migrator().HasTable(&model.NotificationLog{}) {
+		return nil
+	}
+	var batches []model.NotificationBatch
+	if err := tx.Where("error_message <> ?", "").Find(&batches).Error; err != nil {
+		return err
+	}
+	for _, batch := range batches {
+		value := SanitizeSensitiveError(batch.ErrorMessage)
+		if value != batch.ErrorMessage {
+			if err := tx.Model(&model.NotificationBatch{}).Where("id = ?", batch.ID).Update("error_message", value).Error; err != nil {
+				return err
+			}
+		}
+	}
+	var logs []model.NotificationLog
+	if err := tx.Where("error_message <> ?", "").Find(&logs).Error; err != nil {
+		return err
+	}
+	for _, log := range logs {
+		value := SanitizeSensitiveError(log.ErrorMessage)
+		if value != log.ErrorMessage {
+			if err := tx.Model(&model.NotificationLog{}).Where("id = ?", log.ID).Update("error_message", value).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
@@ -137,9 +216,13 @@ func (s *ConfigService) UpsertMissing(ctx context.Context, inputs []ConfigInput,
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		inserted := int64(0)
 		for _, input := range inputs {
+			value, err := s.encryptConfigInput(input)
+			if err != nil {
+				return err
+			}
 			cfg := model.SystemConfig{
 				ConfigKey:   strings.TrimSpace(input.Key),
-				ConfigValue: input.Value,
+				ConfigValue: value,
 				ValueType:   valueOrDefault(input.ValueType, "string"),
 				Category:    strings.TrimSpace(input.Category),
 				Encrypted:   input.Encrypted,
@@ -180,9 +263,13 @@ func (s *ConfigService) UpsertMany(ctx context.Context, inputs []ConfigInput, op
 					return err
 				}
 			}
+			value, err := s.encryptConfigInput(input)
+			if err != nil {
+				return err
+			}
 			cfg := model.SystemConfig{
 				ConfigKey:   key,
-				ConfigValue: input.Value,
+				ConfigValue: value,
 				ValueType:   valueOrDefault(input.ValueType, "string"),
 				Category:    strings.TrimSpace(input.Category),
 				Encrypted:   input.Encrypted,
@@ -225,7 +312,7 @@ func (s *ConfigService) List(ctx context.Context, category string, maskSensitive
 	if maskSensitive {
 		for i := range configs {
 			if configs[i].Encrypted {
-				configs[i].ConfigValue = maskSecret(configs[i].ConfigValue)
+				configs[i].ConfigValue = maskedSecretMarker
 			}
 		}
 	}
@@ -241,7 +328,27 @@ func (s *ConfigService) GetValue(ctx context.Context, key string) (string, bool,
 	if err != nil {
 		return "", false, err
 	}
-	return cfg.ConfigValue, true, nil
+	if !cfg.Encrypted {
+		return cfg.ConfigValue, true, nil
+	}
+	value, err := s.decryptSecret(cfg.ConfigValue)
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
+func (s *ConfigService) encryptConfigInput(input ConfigInput) (string, error) {
+	if !input.Encrypted || input.Value == "" {
+		return input.Value, nil
+	}
+	if !s.encryptionEnforced {
+		return input.Value, nil
+	}
+	if s.encryptionEnforced && s.EncryptionHealth().Status != "ok" {
+		return "", fmt.Errorf("%w: %s", ErrValidation, s.EncryptionHealth().Message)
+	}
+	return s.encryptSecret(input.Value)
 }
 
 func (s *ConfigService) SchedulerTimezone(ctx context.Context) (*time.Location, string, error) {

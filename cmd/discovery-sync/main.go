@@ -54,9 +54,12 @@ func run(ctx context.Context, cfg config.Config, output io.Writer, deps syncDepe
 	if err := deps.migrateMainDB(mainDB); err != nil {
 		return fmt.Errorf("migrate main database: %w", err)
 	}
-	configs := service.NewConfigService(mainDB, service.NewAuditService(mainDB))
+	configs := service.NewConfigService(mainDB, service.NewAuditService(mainDB), cfg.System)
 	if err := configs.EnsureDefaults(ctx); err != nil {
 		return fmt.Errorf("ensure system config defaults: %w", err)
+	}
+	if err := configs.MigrateEncryptedValues(ctx); err != nil {
+		return fmt.Errorf("migrate encrypted system config values: %w", err)
 	}
 	db, err := deps.openDiscoveryDatabase(cfg.Discovery.Database)
 	if err != nil {

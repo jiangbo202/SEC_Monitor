@@ -15,6 +15,7 @@ The local control script reads environment variables before starting services.
 | `LOCAL_DATA_BY_DAY` | `0` | Store SQLite DB under `data/YYYY-MM-DD/`; disabled by default to keep one continuous local DB. |
 | `LOCAL_DATE` | current date | Override runtime date, useful for testing retention. |
 | `DB_DSN` | derived | SQLite database path. Defaults to `data/sec_monitor.db` or `data/YYYY-MM-DD/sec_monitor.db` when `LOCAL_DATA_BY_DAY=1`. |
+| `CONFIG_ENCRYPTION_KEY` | required for new sensitive values | Base64-encoded 32-byte AES-256-GCM key used for encrypted system settings. Generate with `openssl rand -base64 32`; keep it only in your local environment or Docker `.env`. |
 | `SMALL_CAP_PRICE_PROVIDER` | empty | Small-cap price provider. Supports `tiingo`, `twelvedata`, `yahoo`, `stooq`, or ordered chains such as `tiingo,twelvedata,yahoo`, `tiingo,yahoo`, and `stooq,tiingo,yahoo`. |
 | `TIINGO_API_TOKEN` | empty | Tiingo API token for the real small-cap price source. Keep it in your shell/profile or local process environment; do not commit it. |
 | `TIINGO_API_TOKENS` | empty | Comma-separated Tiingo tokens. Request budget is applied per token. |
@@ -59,6 +60,22 @@ Backend config also accepts:
 | `LOG_LEVEL` | `info` |
 | `DATA_RETENTION_DAYS` | `30` |
 | `STORAGE_BY_DAY` | `false` |
+
+## Sensitive Configuration Encryption
+
+Generate and retain one key before saving Telegram or other sensitive settings:
+
+```bash
+openssl rand -base64 32
+```
+
+For Docker Compose, add the output to a local `.env` file:
+
+```env
+CONFIG_ENCRYPTION_KEY=<openssl 输出>
+```
+
+Restart the service after setting the key. Existing plaintext sensitive settings are migrated transactionally on startup. Do not rotate or discard the key while existing encrypted values must remain readable. Without a valid key, existing legacy plaintext values remain readable for recovery, but new non-empty sensitive values are rejected and health reports a critical configuration issue.
 
 Example Tiingo local run:
 

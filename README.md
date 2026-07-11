@@ -145,6 +145,18 @@ make docker-up
 SEC_USER_AGENT="sec-monitor/0.1 your-email@example.com" docker compose up -d --build
 ```
 
+同时必须为系统配置中的敏感值设置 32 字节 Base64 加密密钥。生成后保存到部署目录的 `.env`（不要提交该文件），然后重新执行 `make docker-up`：
+
+```bash
+openssl rand -base64 32
+```
+
+```env
+CONFIG_ENCRYPTION_KEY=<openssl 输出>
+```
+
+未设置或密钥无效时，已有旧版敏感配置仍可读取，但系统会报告严重健康问题，且不会保存新的非空敏感值。
+
 升级或重建：
 
 ```bash

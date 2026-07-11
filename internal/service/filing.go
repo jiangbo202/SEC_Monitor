@@ -619,5 +619,8 @@ func sendWithRetry(ctx context.Context, notifier telegram.Notifier, message tele
 		}
 		time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
 	}
-	return err
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s", SanitizeSensitiveError(err.Error()))
 }
