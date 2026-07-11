@@ -627,6 +627,26 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	return r, db, sched
 }
 
+func TestAppHandlerMasksHistoricalEncryptedOperationLogValues(t *testing.T) {
+	r, db, _ := testApp(t)
+	const token = "123456:historical-secret"
+	if err := db.Create(&model.OperationLog{
+		Action: "update", ObjectType: "system_config", ObjectID: "batch",
+		AfterData: `[{"key":"telegram.bot_token","value":"` + token + `","encrypted":true}]`,
+	}).Error; err != nil {
+		t.Fatalf("seed operation log: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/operation-logs", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), token) || !strings.Contains(rec.Body.String(), "******") {
+		t.Fatalf("operation log response leaked secret: %s", rec.Body.String())
+	}
+}
+
 func TestAppHandlerListsDiscoveryRunDiagnostics(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})

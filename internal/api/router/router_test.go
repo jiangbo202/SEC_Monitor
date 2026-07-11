@@ -2,6 +2,7 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,10 +12,47 @@ import (
 
 	"sec_monitor/internal/config"
 	"sec_monitor/internal/model"
+	"sec_monitor/internal/service"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestRouterFailsStartupWhenConfigurationInitializationFails(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	_, err = New(Dependencies{Config: config.Config{}, DB: db})
+	if err == nil {
+		t.Fatal("router startup succeeded despite configuration initialization failure")
+	}
+}
+
+func TestRouterFailsStartupWhenEncryptedValueMigrationFails(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.SystemConfig{}, &model.TaskConfig{}, &model.OperationLog{}); err != nil {
+		t.Fatalf("migrate setup tables: %v", err)
+	}
+	if err := service.NewConfigService(db, service.NewAuditService(db)).EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("seed defaults: %v", err)
+	}
+	if err := db.Exec("DROP TABLE operation_logs").Error; err != nil {
+		t.Fatalf("drop operation logs: %v", err)
+	}
+	if err := db.Exec("CREATE TABLE operation_logs (id integer primary key)").Error; err != nil {
+		t.Fatalf("create malformed operation logs: %v", err)
+	}
+
+	_, err = New(Dependencies{Config: config.Config{}, DB: db})
+	if err == nil {
+		t.Fatal("router startup succeeded despite encrypted-value migration failure")
+	}
+}
 
 func TestRouterCreatesAndListsWatchTargets(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -29,7 +67,10 @@ func TestRouterCreatesAndListsWatchTargets(t *testing.T) {
 		t.Fatalf("migrate db: %v", err)
 	}
 
-	r := New(Dependencies{Config: config.Config{}, DB: db})
+	r, err := New(Dependencies{Config: config.Config{}, DB: db})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
 	body := bytes.NewBufferString(`{"ticker":"msft","company_name":"Microsoft Corp.","target_type":"stock","status":"enabled"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/watch-targets", body)
 	req.Header.Set("Content-Type", "application/json")
@@ -94,7 +135,10 @@ func TestRouterConstructsWithDiscoveryDatabase(t *testing.T) {
 		t.Fatalf("open discovery db: %v", err)
 	}
 
-	r := New(Dependencies{Config: config.Config{}, DB: db, DiscoveryDB: discoveryDB})
+	r, err := New(Dependencies{Config: config.Config{}, DB: db, DiscoveryDB: discoveryDB})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -127,7 +171,10 @@ func TestRouterServesWebAppFallback(t *testing.T) {
 		t.Fatalf("write asset: %v", err)
 	}
 
-	r := New(Dependencies{Config: config.Config{}, DB: db, WebDistDir: webDir})
+	r, err := New(Dependencies{Config: config.Config{}, DB: db, WebDistDir: webDir})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
 	tests := []struct {
 		name     string
 		path     string

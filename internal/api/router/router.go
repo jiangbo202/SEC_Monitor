@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -29,16 +30,22 @@ type Dependencies struct {
 	WebDistDir  string
 }
 
-func New(deps Dependencies) *gin.Engine {
+func New(deps Dependencies) (*gin.Engine, error) {
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 
 	audit := service.NewAuditService(deps.DB)
 	configs := service.NewConfigService(deps.DB, audit, deps.Config.System)
-	_ = configs.EnsureDefaults(context.Background())
-	_ = configs.MigrateEncryptedValues(context.Background())
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		return nil, fmt.Errorf("ensure system config defaults: %w", err)
+	}
+	if err := configs.MigrateEncryptedValues(context.Background()); err != nil {
+		return nil, fmt.Errorf("migrate encrypted configuration values: %w", err)
+	}
 	tasks := service.NewTaskConfigService(deps.DB, audit)
-	_ = tasks.EnsureDefault(context.Background())
+	if err := tasks.EnsureDefault(context.Background()); err != nil {
+		return nil, fmt.Errorf("ensure task defaults: %w", err)
+	}
 	secClient := deps.SEC
 	if secClient == nil {
 		secClient = sec.NewHTTPClient(deps.Config.SEC.BaseURL, deps.Config.SEC.UserAgent, time.Duration(deps.Config.SEC.TimeoutMS)*time.Millisecond)
@@ -57,7 +64,9 @@ func New(deps Dependencies) *gin.Engine {
 	}
 	ipoRadar := service.NewIPORadarService(deps.DB, currentFilingsClient, notifier, configs)
 	sched := scheduler.New(tasks, filings, configs, ipoRadar, candidateNotifications, discoverySync)
-	_ = sched.Start(context.Background())
+	if err := sched.Start(context.Background()); err != nil {
+		return nil, fmt.Errorf("start scheduler: %w", err)
+	}
 	app := &handler.AppHandler{
 		Runtime:               deps.Config,
 		DB:                    deps.DB,
@@ -148,7 +157,7 @@ func New(deps Dependencies) *gin.Engine {
 	}
 
 	configureWebApp(r, deps.WebDistDir)
-	return r
+	return r, nil
 }
 
 func configureWebApp(r *gin.Engine, webDistDir string) {

@@ -125,8 +125,35 @@ func (s *ConfigService) MigrateEncryptedValues(ctx context.Context) error {
 		if err := sanitizeStoredNotificationErrors(tx); err != nil {
 			return err
 		}
+		if err := sanitizeStoredOperationLogs(tx); err != nil {
+			return err
+		}
 		return nil
 	})
+}
+
+func sanitizeStoredOperationLogs(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.OperationLog{}) {
+		return nil
+	}
+	var logs []model.OperationLog
+	if err := tx.Where("object_type = ?", "system_config").Find(&logs).Error; err != nil {
+		return err
+	}
+	for _, entry := range logs {
+		beforeData := sanitizeOperationLogData(entry.BeforeData)
+		afterData := sanitizeOperationLogData(entry.AfterData)
+		if beforeData == entry.BeforeData && afterData == entry.AfterData {
+			continue
+		}
+		if err := tx.Model(&model.OperationLog{}).Where("id = ?", entry.ID).Updates(map[string]any{
+			"before_data": beforeData,
+			"after_data":  afterData,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func sanitizeStoredNotificationErrors(tx *gorm.DB) error {

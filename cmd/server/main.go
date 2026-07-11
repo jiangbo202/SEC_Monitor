@@ -18,7 +18,7 @@ type startupDependencies struct {
 	migrateMainDatabase   func(*gorm.DB) error
 	openDiscoveryDatabase func(config.DatabaseConfig) (*gorm.DB, error)
 	migrateDiscoveryDB    func(*gorm.DB) error
-	newRouter             func(router.Dependencies) *gin.Engine
+	newRouter             func(router.Dependencies) (*gin.Engine, error)
 }
 
 func main() {
@@ -57,11 +57,14 @@ func runWithDependencies(cfg config.Config, serve func(app *gin.Engine, address 
 		return fmt.Errorf("migrate discovery database: %w", err)
 	}
 
-	app := deps.newRouter(router.Dependencies{
+	app, err := deps.newRouter(router.Dependencies{
 		Config:      cfg,
 		DB:          db,
 		DiscoveryDB: discoveryDB,
 	})
+	if err != nil {
+		return fmt.Errorf("initialize router: %w", err)
+	}
 
 	if err := serve(app, cfg.Server.Address); err != nil {
 		return fmt.Errorf("run server: %w", err)

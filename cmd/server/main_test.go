@@ -101,7 +101,7 @@ func TestRunWithDependenciesKeepsDatabasesOpenUntilServeReturnsThenClosesThem(t 
 		migrateMainDatabase:   func(*gorm.DB) error { return nil },
 		openDiscoveryDatabase: func(config.DatabaseConfig) (*gorm.DB, error) { return discoveryDB, nil },
 		migrateDiscoveryDB:    func(*gorm.DB) error { return nil },
-		newRouter:             func(router.Dependencies) *gin.Engine { return gin.New() },
+		newRouter:             func(router.Dependencies) (*gin.Engine, error) { return gin.New(), nil },
 	})
 	if err != nil {
 		t.Fatalf("runWithDependencies: %v", err)
@@ -193,10 +193,10 @@ func TestRunWithDependenciesPassesBothDatabaseHandles(t *testing.T) {
 			calls = append(calls, "migrate discovery")
 			return nil
 		},
-		newRouter: func(deps router.Dependencies) *gin.Engine {
+		newRouter: func(deps router.Dependencies) (*gin.Engine, error) {
 			calls = append(calls, "router")
 			got = deps
-			return gin.New()
+			return gin.New(), nil
 		},
 	})
 	if err != nil {
@@ -209,6 +209,33 @@ func TestRunWithDependenciesPassesBothDatabaseHandles(t *testing.T) {
 	if strings.Join(calls, ",") != strings.Join(wantCalls, ",") {
 		t.Fatalf("calls = %v, want %v", calls, wantCalls)
 	}
+}
+
+func TestRunWithDependenciesPropagatesRouterInitializationFailure(t *testing.T) {
+	mainDB, mainSQL := openLifecycleTestDatabase(t)
+	discoveryDB, discoverySQL := openLifecycleTestDatabase(t)
+	served := false
+
+	err := runWithDependencies(config.Config{}, func(*gin.Engine, string) error {
+		served = true
+		return nil
+	}, startupDependencies{
+		openMainDatabase:      func(config.DatabaseConfig) (*gorm.DB, error) { return mainDB, nil },
+		migrateMainDatabase:   func(*gorm.DB) error { return nil },
+		openDiscoveryDatabase: func(config.DatabaseConfig) (*gorm.DB, error) { return discoveryDB, nil },
+		migrateDiscoveryDB:    func(*gorm.DB) error { return nil },
+		newRouter: func(router.Dependencies) (*gin.Engine, error) {
+			return nil, errors.New("configuration initialization failed")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "initialize router: configuration initialization failed") {
+		t.Fatalf("runWithDependencies error = %v", err)
+	}
+	if served {
+		t.Fatal("server was called after router initialization failed")
+	}
+	assertDatabaseClosed(t, mainSQL)
+	assertDatabaseClosed(t, discoverySQL)
 }
 
 func TestRunTableDriven(t *testing.T) {

@@ -400,6 +400,34 @@ func TestConfigServicePersistsAndMasksTelegramToken(t *testing.T) {
 	}
 }
 
+func TestConfigServiceRedactsEncryptedValuesInAuditPersistenceAndReads(t *testing.T) {
+	db := testDB(t)
+	svc := NewConfigService(db, NewAuditService(db))
+	const token = "123456:audit-secret"
+
+	if err := svc.UpsertMany(context.Background(), []ConfigInput{{
+		Key: "telegram.bot_token", Value: token, ValueType: "string", Category: "telegram", Encrypted: true,
+	}}, "tester"); err != nil {
+		t.Fatalf("upsert config: %v", err)
+	}
+
+	var persisted model.OperationLog
+	if err := db.Where("object_type = ?", "system_config").First(&persisted).Error; err != nil {
+		t.Fatalf("load operation log: %v", err)
+	}
+	if strings.Contains(persisted.AfterData, token) || !strings.Contains(persisted.AfterData, maskedSecretMarker) {
+		t.Fatalf("persisted audit after_data = %q", persisted.AfterData)
+	}
+
+	page, err := NewAuditService(db).List(context.Background(), AuditLogFilter{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("list operation logs: %v", err)
+	}
+	if len(page.Items) != 1 || strings.Contains(page.Items[0].AfterData, token) {
+		t.Fatalf("listed operation logs = %#v", page.Items)
+	}
+}
+
 func TestConfigServiceEncryptsMigratesAndMasksSecrets(t *testing.T) {
 	db := testDB(t)
 	t.Setenv("CONFIG_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)))
@@ -459,20 +487,30 @@ func TestMigrateEncryptedValuesSanitizesNotificationErrors(t *testing.T) {
 	if err := db.Create(&model.NotificationLog{FilingID: "f1", Channel: "telegram", Status: "failed", ErrorMessage: message}).Error; err != nil {
 		t.Fatalf("seed notification log: %v", err)
 	}
+	if err := db.Create(&model.OperationLog{
+		Action: "update", ObjectType: "system_config", ObjectID: "batch",
+		AfterData: `[{"key":"telegram.bot_token","value":"123:secret","value_type":"string","category":"telegram","encrypted":true}]`,
+	}).Error; err != nil {
+		t.Fatalf("seed operation log: %v", err)
+	}
 
 	if err := NewConfigService(db, NewAuditService(db)).MigrateEncryptedValues(context.Background()); err != nil {
 		t.Fatalf("migrate encrypted values: %v", err)
 	}
 	var batch model.NotificationBatch
 	var log model.NotificationLog
+	var operation model.OperationLog
 	if err := db.First(&batch).Error; err != nil {
 		t.Fatalf("load batch: %v", err)
 	}
 	if err := db.First(&log).Error; err != nil {
 		t.Fatalf("load log: %v", err)
 	}
-	if strings.Contains(batch.ErrorMessage, "123:secret") || strings.Contains(log.ErrorMessage, "123:secret") {
-		t.Fatal("stored notification error leaked telegram token")
+	if err := db.Where("object_type = ?", "system_config").First(&operation).Error; err != nil {
+		t.Fatalf("load operation log: %v", err)
+	}
+	if strings.Contains(batch.ErrorMessage, "123:secret") || strings.Contains(log.ErrorMessage, "123:secret") || strings.Contains(operation.AfterData, "123:secret") {
+		t.Fatal("stored error or operation log leaked telegram token")
 	}
 }
 

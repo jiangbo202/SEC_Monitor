@@ -34,6 +34,8 @@ func (s *AuditService) Record(ctx context.Context, operator string, action strin
 	if err != nil {
 		return err
 	}
+	beforeData = sanitizeOperationLogData(beforeData)
+	afterData = sanitizeOperationLogData(afterData)
 
 	log := model.OperationLog{
 		OperatedAt: time.Now().UTC(),
@@ -64,6 +66,10 @@ func (s *AuditService) List(ctx context.Context, filter AuditLogFilter) (PageRes
 
 	var logs []model.OperationLog
 	err := query.Order("operated_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&logs).Error
+	for i := range logs {
+		logs[i].BeforeData = sanitizeOperationLogData(logs[i].BeforeData)
+		logs[i].AfterData = sanitizeOperationLogData(logs[i].AfterData)
+	}
 	return newPageResult(logs, total, page, pageSize), err
 }
 
@@ -76,4 +82,48 @@ func marshalAuditData(value any) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// sanitizeOperationLogData masks encrypted configuration values in audit JSON.
+// It tolerates unrelated or invalid audit data so audit reads remain backwards compatible.
+func sanitizeOperationLogData(data string) string {
+	if data == "" {
+		return data
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(data), &payload); err != nil || !redactEncryptedConfigValues(payload) {
+		return data
+	}
+	sanitized, err := json.Marshal(payload)
+	if err != nil {
+		return data
+	}
+	return string(sanitized)
+}
+
+func redactEncryptedConfigValues(payload any) bool {
+	switch value := payload.(type) {
+	case []any:
+		changed := false
+		for _, item := range value {
+			changed = redactEncryptedConfigValues(item) || changed
+		}
+		return changed
+	case map[string]any:
+		changed := false
+		if encrypted, ok := value["encrypted"].(bool); ok && encrypted {
+			for _, key := range []string{"value", "config_value"} {
+				if _, ok := value[key].(string); ok {
+					value[key] = maskedSecretMarker
+					changed = true
+				}
+			}
+		}
+		for _, item := range value {
+			changed = redactEncryptedConfigValues(item) || changed
+		}
+		return changed
+	default:
+		return false
+	}
 }
