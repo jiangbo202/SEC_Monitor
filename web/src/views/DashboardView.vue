@@ -244,7 +244,7 @@ import { computed, onMounted, ref } from 'vue'
 import { Aim, Bell, DataAnalysis, Document, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, Filing, IPOCompany, IPOFiling, IPORadarRefreshResult, NotificationBatch, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
+import type { ApiResponse, Filing, IPOCompany, IPOFiling, IPORadarHealth, IPORadarRefreshResult, NotificationBatch, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -262,6 +262,7 @@ const recentFilings = ref<Filing[]>([])
 const recentIpoFilings = ref<IPOFiling[]>([])
 const dashboardFilings = ref<Filing[]>([])
 const recentNotifications = ref<NotificationBatch[]>([])
+const ipoHealth = ref<IPORadarHealth | null>(null)
 
 function notificationSourceLabel(value: string) {
   if (value === 'ipo') return t('pages.notificationLogs.sources.ipo')
@@ -321,6 +322,13 @@ const healthAlerts = computed(() => {
       type: 'error'
     })
   }
+  if ((ipoHealth.value?.failed_notification_batches || 0) > 0 || (ipoHealth.value?.dead_letter_batches || 0) > 0) {
+    alerts.push({
+      title: t('pages.dashboard.ipoNotificationFailedAlertTitle', { failed: ipoHealth.value?.failed_notification_batches || 0, dead: ipoHealth.value?.dead_letter_batches || 0 }),
+      description: t('pages.dashboard.ipoNotificationFailedAlertDescription'),
+      type: 'error'
+    })
+  }
   if (!latestFilingSync.value) {
     alerts.push({ title: t('pages.dashboard.noSyncAlertTitle'), description: t('pages.dashboard.noSyncAlertDescription'), type: 'warning' })
   } else if (latestSyncAgeHours.value >= 6) {
@@ -377,12 +385,13 @@ const notificationRateType = computed(() => {
 async function load() {
   loading.value = true
   try {
-    const [targets, enabledTargets, filings, ipoFilings, ipoCompanyRes, syncRuns, notifications, telegramConfigs, taskConfigs, uiConfigs] = await Promise.all([
+    const [targets, enabledTargets, filings, ipoFilings, ipoCompanyRes, ipoHealthRes, syncRuns, notifications, telegramConfigs, taskConfigs, uiConfigs] = await Promise.all([
       apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { page: 1, page_size: 10 } }),
       apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { status: 'enabled', page: 1, page_size: 200 } }),
       apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { page: 1, page_size: 100, sort_by: 'pulled_at', sort_order: 'desc' } }),
       apiClient.get<ApiResponse<PageResult<IPOFiling>>>('/ipo-filings', { params: { page: 1, page_size: 6 } }),
       apiClient.get<ApiResponse<PageResult<IPOCompany>>>('/ipo-companies', { params: { page: 1, page_size: 500 } }),
+      apiClient.get<ApiResponse<IPORadarHealth>>('/ipo-health'),
       apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { page: 1, page_size: 20 } }),
       apiClient.get<ApiResponse<PageResult<NotificationBatch>>>('/notification-batches', { params: { page: 1, page_size: 5 } }),
       apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config'),
@@ -394,6 +403,7 @@ async function load() {
     filingTotal.value = filings.data.data.total
     ipoFilingTotal.value = ipoFilings.data.data.total
     ipoCompanies.value = ipoCompanyRes.data.data.items
+    ipoHealth.value = ipoHealthRes.data.data
     syncTotal.value = syncRuns.data.data.total
     notificationTotal.value = notifications.data.data.total
     dashboardFilings.value = filings.data.data.items

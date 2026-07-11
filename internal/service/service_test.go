@@ -332,6 +332,125 @@ func testDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+func TestIPORadarHealthCountsOperatorAttention(t *testing.T) {
+	now := time.Date(2026, 7, 12, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("ensure defaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{{Key: "ipo.lifecycle_recheck_hours", Value: "24", ValueType: "int", Category: "ipo"}}, "tester"); err != nil {
+		t.Fatalf("configure lifecycle threshold: %v", err)
+	}
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "pending-s1", CIK: "0000000001", CompanyName: "Pending Listing", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -2)},
+		{FilingID: "pending-424b4", CIK: "0000000001", CompanyName: "Pending Listing", FilingType: "424B4", FilingDate: now.AddDate(0, 0, -1)},
+		{FilingID: "stale-s1", CIK: "0000000002", CompanyName: "Stale Lifecycle", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -1)},
+	}).Error; err != nil {
+		t.Fatalf("seed IPO filings: %v", err)
+	}
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0000000001", Ticker: "PEND", LifecycleCheckedAt: ptrTime(now)}).Error; err != nil {
+		t.Fatalf("seed pending listing mapping: %v", err)
+	}
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0000000002", LifecycleCheckedAt: ptrTime(now.Add(-25 * time.Hour))}).Error; err != nil {
+		t.Fatalf("seed stale lifecycle mapping: %v", err)
+	}
+	if err := db.Create(&model.IPOOfferingEvent{FilingID: "unsupported-424b4", CIK: "0000000002", CompanyName: "Stale Lifecycle", OfferingType: "unknown", ParseStatus: "unsupported", FilingDate: now}).Error; err != nil {
+		t.Fatalf("seed unsupported offering: %v", err)
+	}
+	if err := db.Create(&[]model.NotificationBatch{
+		{Source: "ipo", Trigger: "ipo_scheduler", Channel: "telegram", Status: "failed", ItemCount: 1, FailedCount: 1, NextRetryAt: ptrTime(now.Add(-time.Minute))},
+		{Source: "ipo", Trigger: "ipo_scheduler", Channel: "telegram", Status: "dead_letter", ItemCount: 1, FailedCount: 1},
+	}).Error; err != nil {
+		t.Fatalf("seed notification batches: %v", err)
+	}
+	if err := db.Create(&model.SyncRun{StartedAt: now, Status: "success", Trigger: "ipo_scheduler", NewFilings: 2}).Error; err != nil {
+		t.Fatalf("seed IPO sync run: %v", err)
+	}
+
+	health, err := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, configs).Health(context.Background(), now)
+	if err != nil {
+		t.Fatalf("IPO health: %v", err)
+	}
+	if health.PendingListing != 1 || health.MissingMarketMapping != 1 || health.StaleLifecycleChecks != 1 || health.UnsupportedOfferingEvents != 1 || health.DueRetryBatches != 1 || health.DeadLetterBatches != 1 {
+		t.Fatalf("health = %+v", health)
+	}
+	if health.LatestSync == nil || health.LatestSync.Status != "success" || !health.LatestSync.StartedAt.Equal(now) || health.LatestSync.NewFilings != 2 {
+		t.Fatalf("latest IPO sync = %+v", health.LatestSync)
+	}
+}
+
+func TestIPOCompanyAttentionFilterReturnsPendingListing(t *testing.T) {
+	now := time.Date(2026, 7, 12, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "pending-s1", CIK: "0000000001", CompanyName: "Pending Listing", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -1)},
+		{FilingID: "pending-424b4", CIK: "0000000001", CompanyName: "Pending Listing", FilingType: "424B4", FilingDate: now},
+		{FilingID: "new-s1", CIK: "0000000002", CompanyName: "New Registration", FilingType: "S-1", FilingDate: now},
+	}).Error; err != nil {
+		t.Fatalf("seed IPO filings: %v", err)
+	}
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0000000001", Ticker: "PEND"}).Error; err != nil {
+		t.Fatalf("seed pending listing mapping: %v", err)
+	}
+
+	page, err := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db))).ListCompanies(context.Background(), IPOCompanyFilter{Attention: "listing_pending", Page: 1, PageSize: 10}, now)
+	if err != nil {
+		t.Fatalf("list attention queue: %v", err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].CIK != "0000000001" || page.Items[0].Status != "listing_pending" {
+		t.Fatalf("attention results = %+v", page)
+	}
+}
+
+func TestIPOCompanyAttentionFiltersUseExactSignals(t *testing.T) {
+	now := time.Date(2026, 7, 12, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("ensure defaults: %v", err)
+	}
+	filings := []model.IPOFiling{
+		{FilingID: "pending-s1", CIK: "0000000001", CompanyName: "Pending", FilingType: "S-1", FilingDate: now.Add(-time.Hour)},
+		{FilingID: "pending-424b4", CIK: "0000000001", CompanyName: "Pending", FilingType: "424B4", FilingDate: now},
+		{FilingID: "parse-s1", CIK: "0000000002", CompanyName: "Parse", FilingType: "S-1", FilingDate: now},
+		{FilingID: "stale-s1", CIK: "0000000003", CompanyName: "Stale", FilingType: "S-1", FilingDate: now},
+		{FilingID: "notify-s1", CIK: "0000000004", CompanyName: "Notify", FilingType: "S-1", FilingDate: now},
+	}
+	if err := db.Create(&filings).Error; err != nil {
+		t.Fatalf("seed IPO filings: %v", err)
+	}
+	if err := db.Create(&[]model.IPOCompanyMarketData{
+		{CIK: "0000000001", Ticker: "PEND", LifecycleCheckedAt: ptrTime(now)},
+		{CIK: "0000000002", Ticker: "PARSE", Exchange: "Nasdaq", ListedVerifiedAt: ptrTime(now), LifecycleCheckedAt: ptrTime(now)},
+		{CIK: "0000000004", Ticker: "NOTIFY", Exchange: "Nasdaq", ListedVerifiedAt: ptrTime(now), LifecycleCheckedAt: ptrTime(now)},
+	}).Error; err != nil {
+		t.Fatalf("seed market data: %v", err)
+	}
+	if err := db.Create(&model.IPOOfferingEvent{FilingID: "parse-424b4", CIK: "0000000002", CompanyName: "Parse", OfferingType: "unknown", ParseStatus: "unsupported", FilingDate: now}).Error; err != nil {
+		t.Fatalf("seed unsupported offering: %v", err)
+	}
+	batch := model.NotificationBatch{Source: "ipo", Trigger: "ipo_scheduler", Channel: "telegram", Status: "dead_letter", ItemCount: 1, FailedCount: 1}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatalf("seed dead-letter batch: %v", err)
+	}
+	if err := db.Create(&model.NotificationBatchItem{BatchID: batch.ID, EntityKind: "ipo_filing", FilingID: "notify-s1", CIK: "0000000004", CompanyName: "Notify", FilingType: "S-1", EventAt: now, Status: "failed", Reason: "delivery_failed"}).Error; err != nil {
+		t.Fatalf("seed dead-letter item: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, configs)
+	for attention, wantCIK := range map[string]string{
+		"listing_pending":     "0000000001",
+		"parse_failed":        "0000000002",
+		"lifecycle_stale":     "0000000003",
+		"notification_failed": "0000000004",
+	} {
+		page, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Attention: attention, Page: 1, PageSize: 10}, now)
+		if err != nil || page.Total != 1 || len(page.Items) != 1 || page.Items[0].CIK != wantCIK {
+			t.Fatalf("attention=%s page=%+v err=%v", attention, page, err)
+		}
+	}
+}
+
 func ptrTime(value time.Time) *time.Time {
 	return &value
 }

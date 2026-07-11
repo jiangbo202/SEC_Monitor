@@ -16,6 +16,15 @@
       </div>
     </div>
 
+    <div v-if="health" class="ipo-health-tags">
+      <el-tag class="health-tag-action" type="warning" effect="plain" @click="applyAttention('listing_pending')">{{ t('pages.ipoRadar.attention.listingPending', { count: health.pending_listing }) }}</el-tag>
+      <el-tag class="health-tag-action" type="warning" effect="plain" @click="applyAttention('parse_failed')">{{ t('pages.ipoRadar.attention.parseFailed', { count: health.unsupported_offering_events }) }}</el-tag>
+      <el-tag class="health-tag-action" type="warning" effect="plain" @click="applyAttention('lifecycle_stale')">{{ t('pages.ipoRadar.attention.lifecycleStale', { count: health.stale_lifecycle_checks }) }}</el-tag>
+      <el-tag class="health-tag-action" :type="health.failed_notification_batches || health.dead_letter_batches ? 'danger' : 'info'" effect="plain" @click="applyAttention('notification_failed')">{{ t('pages.ipoRadar.attention.notificationFailed', { count: health.failed_notification_batches + health.dead_letter_batches }) }}</el-tag>
+      <el-tag type="info" effect="plain">{{ t('pages.ipoRadar.attention.missingMarketMapping', { count: health.missing_market_mapping }) }}</el-tag>
+      <el-tag v-if="health.due_retry_batches || health.dead_letter_batches" type="danger" effect="plain">{{ t('pages.ipoRadar.attention.retryQueue', { due: health.due_retry_batches, dead: health.dead_letter_batches }) }}</el-tag>
+    </div>
+
     <el-tabs v-model="activeTab" class="content-tabs" @tab-change="handleTabChange">
       <el-tab-pane :label="t('pages.ipoRadar.tabs.companies')" name="companies">
         <el-form :inline="true" :model="companyFilters" class="toolbar">
@@ -24,6 +33,14 @@
           <el-form-item :label="t('common.status')">
             <el-select v-model="companyFilters.status" clearable style="width: 160px">
               <el-option v-for="item in ipoStatuses" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="t('pages.ipoRadar.attention.label')">
+            <el-select v-model="companyFilters.attention" clearable style="width: 170px">
+              <el-option :label="t('pages.ipoRadar.attention.listingPendingOption')" value="listing_pending" />
+              <el-option :label="t('pages.ipoRadar.attention.parseFailedOption')" value="parse_failed" />
+              <el-option :label="t('pages.ipoRadar.attention.lifecycleStaleOption')" value="lifecycle_stale" />
+              <el-option :label="t('pages.ipoRadar.attention.notificationFailedOption')" value="notification_failed" />
             </el-select>
           </el-form-item>
           <el-form-item><el-button :loading="companiesLoading" @click="loadCompanies">{{ t('common.query') }}</el-button></el-form-item>
@@ -65,45 +82,21 @@
               </el-table>
             </template>
           </el-table-column>
-          <el-table-column prop="status" :label="t('common.status')" width="130" sortable="custom">
+          <el-table-column prop="status" :label="t('common.status')" width="130" fixed="left" sortable="custom">
             <template #default="{ row }">
               <el-tooltip :content="statusReasonText(row)" placement="top">
                 <el-tag :type="ipoStatusType(row.status)" effect="plain">{{ ipoStatusLabel(row.status) }}</el-tag>
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column prop="company_name" :label="t('common.companyName')" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="company_name" :label="t('common.companyName')" min-width="220" fixed="left" show-overflow-tooltip />
           <el-table-column prop="final_ticker" :label="t('pages.ipoRadar.finalTicker')" width="100"><template #default="{ row }">{{ row.final_ticker || row.matched_ticker || '-' }}</template></el-table-column>
-          <el-table-column prop="exchange" :label="t('pages.ipoRadar.exchange')" width="100"><template #default="{ row }">{{ row.exchange || '-' }}</template></el-table-column>
-          <el-table-column prop="offer_price" :label="t('pages.ipoRadar.offerPrice')" width="105" align="right">
-            <template #default="{ row }">
-              <el-tooltip v-if="row.offer_price" placement="top">
-                <template #content>
-                  <div>{{ t('pages.ipoRadar.sharesOffered') }}：{{ formatNumber(row.shares_offered) }}</div>
-                  <div>{{ t('pages.ipoRadar.grossProceeds') }}：{{ formatMoney(row.gross_proceeds) }}</div>
-                </template>
-                <span class="offer-price-trigger">${{ row.offer_price }}</span>
-              </el-tooltip>
-              <span v-else>-</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="cik" label="CIK" width="130" />
           <el-table-column prop="latest_filing_type" :label="t('pages.ipoRadar.latestType')" width="120">
             <template #default="{ row }"><el-tag effect="plain">{{ row.latest_filing_type }}</el-tag></template>
           </el-table-column>
           <el-table-column prop="filing_count" :label="t('pages.ipoRadar.filingCount')" width="90" align="right" />
-          <el-table-column prop="first_filing_date" :label="t('pages.ipoRadar.firstFiling')" width="130">
-            <template #default="{ row }">{{ formatDate(row.first_filing_date) }}</template>
-          </el-table-column>
           <el-table-column prop="latest_update" :label="t('pages.ipoRadar.latestUpdate')" width="170" sortable="custom">
             <template #default="{ row }">{{ formatDateTime(row.latest_accepted_at || row.latest_filing_date) }}</template>
-          </el-table-column>
-          <el-table-column prop="latest_title" :label="t('common.title')" min-width="260">
-            <template #default="{ row }">
-              <el-link class="filing-title-link" :href="row.latest_filing_url" target="_blank" type="primary">
-                {{ row.latest_title || `${row.company_name} ${row.latest_filing_type}` }}
-              </el-link>
-            </template>
           </el-table-column>
           <el-table-column prop="notified" :label="t('pages.filings.notification')" width="110" align="center">
             <template #default="{ row }">
@@ -268,7 +261,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, IPOCompany, IPOFiling, IPOOfferingEvent, IPORadarRefreshResult, PageResult } from '@/api/types'
+import type { ApiResponse, IPOCompany, IPOFiling, IPOOfferingEvent, IPORadarHealth, IPORadarRefreshResult, PageResult } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -289,13 +282,14 @@ const filingsLoading = ref(false)
 const companiesLoading = ref(false)
 const filings = ref<IPOFiling[]>([])
 const companies = ref<IPOCompany[]>([])
+const health = ref<IPORadarHealth | null>(null)
 const filingsTotal = ref(0)
 const companiesTotal = ref(0)
 const filingsPage = ref(1)
 const companiesPage = ref(1)
 const pageSize = 20
 const filingFilters = reactive({ company_name: '', cik: '', filing_type: '', notified: '' })
-const companyFilters = reactive({ company_name: '', cik: '', status: '' })
+const companyFilters = reactive({ company_name: '', cik: '', status: '', attention: '' })
 const companySort = reactive({ sort_by: '', sort_order: '' })
 const filingDetails = ref<Record<string, IPOFiling[]>>({})
 const offeringEvents = ref<Record<string, IPOOfferingEvent[]>>({})
@@ -329,6 +323,18 @@ async function loadCompanies() {
   } finally {
     companiesLoading.value = false
   }
+}
+
+async function loadHealth() {
+  const res = await apiClient.get<ApiResponse<IPORadarHealth>>('/ipo-health')
+  health.value = res.data.data
+}
+
+async function applyAttention(attention: string) {
+  activeTab.value = 'companies'
+  companyFilters.attention = attention
+  companiesPage.value = 1
+  await loadCompanies()
 }
 
 function onCompanySortChange({ prop, order }: { prop?: string, order?: string | null }) {
@@ -466,6 +472,7 @@ async function refresh() {
     } else {
       await loadFilings()
     }
+    await loadHealth()
   } finally {
     refreshing.value = false
   }
@@ -485,12 +492,20 @@ function formatDateTime(value?: string | null) {
   return date.toLocaleString()
 }
 
-onMounted(loadCompanies)
+onMounted(async () => {
+  await Promise.all([loadCompanies(), loadHealth()])
+})
 </script>
 
 <style scoped>
-.offer-price-trigger {
-  cursor: help;
-  border-bottom: 1px dotted var(--el-text-color-secondary);
+.ipo-health-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.health-tag-action {
+  cursor: pointer;
 }
 </style>

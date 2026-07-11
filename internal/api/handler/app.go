@@ -489,6 +489,19 @@ func (h *AppHandler) RefreshFilings(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) GetIPORadarHealth(c *gin.Context) {
+	if h.IPO == nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := h.IPO.Health(c.Request.Context(), time.Now().UTC())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) ListIPORadarFilings(c *gin.Context) {
 	if h.IPO == nil {
 		Error(c, service.ErrValidation)
@@ -521,6 +534,7 @@ func (h *AppHandler) ListIPOCompanies(c *gin.Context) {
 		CompanyName: c.Query("company_name"),
 		CIK:         c.Query("cik"),
 		Status:      c.Query("status"),
+		Attention:   c.Query("attention"),
 		SortBy:      c.Query("sort_by"),
 		SortOrder:   c.Query("sort_order"),
 		Page:        page,

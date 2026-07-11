@@ -133,6 +133,24 @@ export interface IPORadarRefreshResult {
   notified: number
 }
 
+export interface IPORadarHealthSync {
+  started_at: string
+  finished_at?: string | null
+  status: string
+  new_filings: number
+}
+
+export interface IPORadarHealth {
+  pending_listing: number
+  missing_market_mapping: number
+  stale_lifecycle_checks: number
+  unsupported_offering_events: number
+  failed_notification_batches: number
+  due_retry_batches: number
+  dead_letter_batches: number
+  latest_sync?: IPORadarHealthSync | null
+}
+
 export interface CandidateScore {
   id: number
   batch_id: string

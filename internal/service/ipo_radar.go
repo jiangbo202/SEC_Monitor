@@ -39,10 +39,29 @@ type IPOCompanyFilter struct {
 	CompanyName string
 	CIK         string
 	Status      string
+	Attention   string
 	SortBy      string
 	SortOrder   string
 	Page        int
 	PageSize    int
+}
+
+type IPORadarHealth struct {
+	PendingListing            int                 `json:"pending_listing"`
+	MissingMarketMapping      int                 `json:"missing_market_mapping"`
+	StaleLifecycleChecks      int                 `json:"stale_lifecycle_checks"`
+	UnsupportedOfferingEvents int                 `json:"unsupported_offering_events"`
+	FailedNotificationBatches int                 `json:"failed_notification_batches"`
+	DueRetryBatches           int                 `json:"due_retry_batches"`
+	DeadLetterBatches         int                 `json:"dead_letter_batches"`
+	LatestSync                *IPORadarSyncHealth `json:"latest_sync"`
+}
+
+type IPORadarSyncHealth struct {
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+	Status     string     `json:"status"`
+	NewFilings int        `json:"new_filings"`
 }
 
 type IPOCompanyItem struct {
@@ -107,6 +126,64 @@ func NewIPORadarService(db *gorm.DB, secClient sec.CurrentFilingsClient, notifie
 	return &IPORadarService{db: db, sec: secClient, notifier: notifier, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
 }
 
+// Health summarizes operator-visible IPO work. All timestamps remain UTC so
+// API clients can present them in their configured local timezone.
+func (s *IPORadarService) Health(ctx context.Context, now time.Time) (IPORadarHealth, error) {
+	now = now.UTC()
+	settings, err := s.configs.IPORadarSettings(ctx)
+	if err != nil {
+		return IPORadarHealth{}, err
+	}
+	companies, err := s.allCompanies(ctx, now)
+	if err != nil {
+		return IPORadarHealth{}, err
+	}
+	health := IPORadarHealth{}
+	staleBefore := now.Add(-time.Duration(settings.LifecycleRecheckHours) * time.Hour)
+	for _, company := range companies {
+		if company.Status == "listing_pending" {
+			health.PendingListing++
+		}
+		if activeIPOCompanyStatus(company.Status) && strings.TrimSpace(company.AutomaticTicker) == "" {
+			health.MissingMarketMapping++
+		}
+		if ipoLifecycleCheckStale(company, staleBefore) {
+			health.StaleLifecycleChecks++
+		}
+	}
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&model.IPOOfferingEvent{}).Where("parse_status = ?", "unsupported").Count(&count).Error; err != nil {
+		return IPORadarHealth{}, err
+	}
+	health.UnsupportedOfferingEvents = int(count)
+	batchCount := func(query *gorm.DB, target *int) error {
+		count = 0
+		if err := query.Count(&count).Error; err != nil {
+			return err
+		}
+		*target = int(count)
+		return nil
+	}
+	if err := batchCount(s.db.WithContext(ctx).Model(&model.NotificationBatch{}).Where("source IN ? AND status = ?", ipoNotificationSources, "failed"), &health.FailedNotificationBatches); err != nil {
+		return IPORadarHealth{}, err
+	}
+	if err := batchCount(s.db.WithContext(ctx).Model(&model.NotificationBatch{}).Where("source IN ? AND status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", ipoNotificationSources, "failed", now), &health.DueRetryBatches); err != nil {
+		return IPORadarHealth{}, err
+	}
+	if err := batchCount(s.db.WithContext(ctx).Model(&model.NotificationBatch{}).Where("source IN ? AND status = ?", ipoNotificationSources, "dead_letter"), &health.DeadLetterBatches); err != nil {
+		return IPORadarHealth{}, err
+	}
+	var latest model.SyncRun
+	if err := s.db.WithContext(ctx).Where("trigger IN ?", []string{"ipo_manual", "ipo_scheduler"}).Order("started_at DESC, id DESC").First(&latest).Error; err != nil && err != gorm.ErrRecordNotFound {
+		return IPORadarHealth{}, err
+	} else if err == nil {
+		health.LatestSync = &IPORadarSyncHealth{StartedAt: latest.StartedAt, FinishedAt: latest.FinishedAt, Status: latest.Status, NewFilings: latest.NewFilings}
+	}
+	return health, nil
+}
+
+var ipoNotificationSources = []string{"ipo", "ipo_offering"}
+
 func (s *IPORadarService) List(ctx context.Context, filter IPOFilingFilter) (PageResult[model.IPOFiling], error) {
 	page, pageSize := normalizePage(filter.Page, filter.PageSize)
 	query := scopeIPOCandidateFilings(s.db.WithContext(ctx).Model(&model.IPOFiling{}), s.db.WithContext(ctx))
@@ -152,6 +229,10 @@ func (s *IPORadarService) ListOfferingEvents(ctx context.Context, cik string, pa
 
 func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFilter, now time.Time) (PageResult[IPOCompanyItem], error) {
 	page, pageSize := normalizePage(filter.Page, filter.PageSize)
+	attention := strings.ToLower(strings.TrimSpace(filter.Attention))
+	if !validIPOCompanyAttention(attention) {
+		return PageResult[IPOCompanyItem]{}, fmt.Errorf("%w: invalid IPO attention filter", ErrValidation)
+	}
 	query := scopeIPOCandidateFilings(s.db.WithContext(ctx).Model(&model.IPOFiling{}), s.db.WithContext(ctx))
 	if filter.CompanyName != "" {
 		query = query.Where("company_name LIKE ?", "%"+strings.TrimSpace(filter.CompanyName)+"%")
@@ -208,6 +289,10 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 	for _, row := range marketRows {
 		marketByCIK[row.CIK] = row
 	}
+	attentionCIKs, staleBefore, err := s.attentionCompanyCIKs(ctx, attention, ciks, now)
+	if err != nil {
+		return PageResult[IPOCompanyItem]{}, err
+	}
 
 	grouped := map[string][]model.IPOFiling{}
 	for _, filing := range filings {
@@ -219,6 +304,9 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 	for _, group := range grouped {
 		item := buildIPOCompanyItem(group, tickerByCIK, marketByCIK, overrideByCIK, now)
 		if status := strings.TrimSpace(filter.Status); status != "" && item.Status != status {
+			continue
+		}
+		if !matchesIPOCompanyAttention(item, attention, attentionCIKs, staleBefore) {
 			continue
 		}
 		items = append(items, item)
@@ -235,6 +323,88 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 		end = len(items)
 	}
 	return newPageResult(items[start:end], total, page, pageSize), nil
+}
+
+func (s *IPORadarService) allCompanies(ctx context.Context, now time.Time) ([]IPOCompanyItem, error) {
+	items := make([]IPOCompanyItem, 0)
+	for page := 1; ; page++ {
+		result, err := s.ListCompanies(ctx, IPOCompanyFilter{Page: page, PageSize: 200}, now)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, result.Items...)
+		if len(items) >= int(result.Total) {
+			return items, nil
+		}
+	}
+}
+
+func validIPOCompanyAttention(attention string) bool {
+	switch attention {
+	case "", "listing_pending", "parse_failed", "lifecycle_stale", "notification_failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *IPORadarService) attentionCompanyCIKs(ctx context.Context, attention string, ciks []string, now time.Time) (map[string]bool, time.Time, error) {
+	matched := map[string]bool{}
+	if attention == "" || attention == "listing_pending" || attention == "lifecycle_stale" {
+		if attention != "lifecycle_stale" {
+			return matched, time.Time{}, nil
+		}
+		settings, err := s.configs.IPORadarSettings(ctx)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+		return matched, now.UTC().Add(-time.Duration(settings.LifecycleRecheckHours) * time.Hour), nil
+	}
+	if len(ciks) == 0 {
+		return matched, time.Time{}, nil
+	}
+	if attention == "parse_failed" {
+		var values []string
+		if err := s.db.WithContext(ctx).Model(&model.IPOOfferingEvent{}).Where("cik IN ? AND parse_status = ?", ciks, "unsupported").Distinct("cik").Pluck("cik", &values).Error; err != nil {
+			return nil, time.Time{}, err
+		}
+		for _, cik := range values {
+			matched[cik] = true
+		}
+		return matched, time.Time{}, nil
+	}
+	var values []string
+	err := s.db.WithContext(ctx).Table("notification_batch_items").
+		Select("DISTINCT notification_batch_items.cik").
+		Joins("JOIN notification_batches ON notification_batches.id = notification_batch_items.batch_id").
+		Where("notification_batch_items.cik IN ? AND notification_batches.source IN ? AND notification_batches.status IN ?", ciks, ipoNotificationSources, []string{"failed", "dead_letter"}).
+		Pluck("notification_batch_items.cik", &values).Error
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	for _, cik := range values {
+		matched[cik] = true
+	}
+	return matched, time.Time{}, nil
+}
+
+func matchesIPOCompanyAttention(item IPOCompanyItem, attention string, matchedCIKs map[string]bool, staleBefore time.Time) bool {
+	switch attention {
+	case "":
+		return true
+	case "listing_pending":
+		return item.Status == "listing_pending"
+	case "parse_failed", "notification_failed":
+		return matchedCIKs[item.CIK]
+	case "lifecycle_stale":
+		return ipoLifecycleCheckStale(item, staleBefore)
+	default:
+		return false
+	}
+}
+
+func ipoLifecycleCheckStale(item IPOCompanyItem, staleBefore time.Time) bool {
+	return activeIPOCompanyStatus(item.Status) && (item.LifecycleCheckedAt == nil || item.LifecycleCheckedAt.Before(staleBefore))
 }
 
 func (s *IPORadarService) UpsertCompanyOverride(ctx context.Context, cik string, input IPOCompanyOverrideInput) (model.IPOCompanyOverride, error) {

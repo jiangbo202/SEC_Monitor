@@ -119,6 +119,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 
 		api.GET("/filings", app.ListFilings)
 		api.POST("/filings/refresh", app.RefreshFilings)
+		api.GET("/ipo-health", app.GetIPORadarHealth)
 		api.GET("/ipo-companies", app.ListIPOCompanies)
 		api.GET("/ipo-companies/:cik/offerings", app.ListIPOOfferingEvents)
 		api.PUT("/ipo-companies/:cik/override", app.UpdateIPOCompanyOverride)

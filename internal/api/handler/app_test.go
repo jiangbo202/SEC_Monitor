@@ -174,6 +174,27 @@ func TestAppHandlerListsDiscoveryCandidates(t *testing.T) {
 	}
 }
 
+func TestAppHandlerGetsIPOHealth(t *testing.T) {
+	r, db, _ := testApp(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "pending-s1", CIK: "0000000001", CompanyName: "Pending Listing", FilingType: "S-1", FilingDate: now.Add(-time.Hour)},
+		{FilingID: "pending-424b4", CIK: "0000000001", CompanyName: "Pending Listing", FilingType: "424B4", FilingDate: now},
+	}).Error; err != nil {
+		t.Fatalf("seed IPO filing: %v", err)
+	}
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0000000001", Ticker: "PEND", LifecycleCheckedAt: &now}).Error; err != nil {
+		t.Fatalf("seed IPO market data: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ipo-health", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"pending_listing":1`) || !strings.Contains(rec.Body.String(), `"latest_sync":null`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAppHandlerGetsDiscoveryCandidateOverview(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -618,6 +639,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.GET("/targets/:id/sync-details", h.ListWatchTargetSyncDetails)
 	r.GET("/filings", h.ListFilings)
 	r.POST("/filings/refresh", h.RefreshFilings)
+	r.GET("/ipo-health", h.GetIPORadarHealth)
 	r.GET("/ipo-companies", h.ListIPOCompanies)
 	r.GET("/ipo-companies/:cik/offerings", h.ListIPOOfferingEvents)
 	r.PUT("/ipo-companies/:cik/override", h.UpdateIPOCompanyOverride)
