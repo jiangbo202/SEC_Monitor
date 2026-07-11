@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -533,6 +534,30 @@ func TestAppHandlerSendsDiscoveryCandidateNotification(t *testing.T) {
 	}
 }
 
+func TestAppHandlerRequeuesNotificationBatch(t *testing.T) {
+	r, db, _ := testApp(t)
+	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	batch := model.NotificationBatch{Source: "filing", Trigger: "manual", Channel: "telegram", Status: "failed", ItemCount: 1, FailedCount: 1, RetryCount: 2, NextRetryAt: &future}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatalf("seed batch: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/notification-batches/%d/retry", batch.ID), nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"failed"`) || !strings.Contains(rec.Body.String(), `"next_retry_at"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var persisted model.NotificationBatch
+	if err := db.First(&persisted, batch.ID).Error; err != nil {
+		t.Fatalf("load batch: %v", err)
+	}
+	if persisted.NextRetryAt == nil || !persisted.NextRetryAt.Before(time.Now().UTC().Add(time.Minute)) {
+		t.Fatalf("persisted batch = %+v, want immediate requeue", persisted)
+	}
+}
+
 func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -613,6 +638,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.GET("/notification-logs", h.ListNotificationLogs)
 	r.GET("/notification-batches", h.ListNotificationBatches)
 	r.GET("/notification-batches/:id/items", h.ListNotificationBatchItems)
+	r.POST("/notification-batches/:id/retry", h.RequeueNotificationBatch)
 	r.GET("/tasks", h.ListTaskConfigs)
 	r.PUT("/tasks/:id", h.UpdateTaskConfig)
 	r.POST("/tasks/:id/run", h.RunTask)

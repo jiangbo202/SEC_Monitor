@@ -2,13 +2,136 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"sec_monitor/internal/model"
+
+	"gorm.io/gorm"
 )
+
+func TestNotificationBatchFailureSchedulesExponentialRetry(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().UTC()
+	if err := db.Create(&model.Filing{FilingID: "retry-filing", Ticker: "TSLA", CompanyName: "Tesla", FilingType: "8-K", FilingDate: now, PulledAt: now}).Error; err != nil {
+		t.Fatalf("seed filing: %v", err)
+	}
+	seedNotificationTelegramConfig(t, db)
+	notifier := &fakeNotifier{errs: []error{
+		context.DeadlineExceeded,
+		context.DeadlineExceeded,
+		fmt.Errorf(`Post "https://api.telegram.org/bot123456:secret-token/sendMessage": timeout`),
+	}}
+	batch, err := NewNotificationBatchService(db, notifier, NewConfigService(db, NewAuditService(db))).Deliver(context.Background(), NotificationBatchInput{
+		Source: "filing", Trigger: "manual", Candidates: []NotificationCandidate{{
+			EntityKind: "filing", FilingID: "retry-filing", Ticker: "TSLA", CompanyName: "Tesla", FilingType: "8-K", Reason: "eligible", EventAt: now,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if batch.Status != "failed" || batch.RetryCount != 1 || batch.LastAttemptAt == nil || batch.NextRetryAt == nil {
+		t.Fatalf("batch = %+v, want first failed retry state", batch)
+	}
+	if got := batch.NextRetryAt.Sub(*batch.LastAttemptAt); got != 5*time.Minute {
+		t.Fatalf("next retry delay = %s, want 5m", got)
+	}
+	if strings.Contains(batch.ErrorMessage, "secret-token") || !strings.Contains(batch.ErrorMessage, "******") {
+		t.Fatalf("error_message was not sanitized: %q", batch.ErrorMessage)
+	}
+}
+
+func TestRetryDueSendsAndDeadLettersAfterFiveRounds(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	batch := model.NotificationBatch{Source: "filing", Trigger: "scheduler", Channel: "telegram", Status: "failed", ItemCount: 1, FailedCount: 1, NextRetryAt: &now, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatalf("seed batch: %v", err)
+	}
+	if err := db.Create(&model.NotificationBatchItem{BatchID: batch.ID, EntityKind: "filing", FilingID: "retry-filing", Ticker: "TSLA", CompanyName: "Tesla", FilingType: "8-K", Title: "Retry", FilingURL: "https://sec.test/retry", EventAt: now, Status: "failed", Reason: "delivery_failed"}).Error; err != nil {
+		t.Fatalf("seed batch item: %v", err)
+	}
+	notifier := &fakeNotifier{errs: make([]error, 15)}
+	for i := range notifier.errs {
+		notifier.errs[i] = context.DeadlineExceeded
+	}
+	svc := NewNotificationBatchService(db, notifier, NewConfigService(db, NewAuditService(db)))
+	delays := []time.Duration{5 * time.Minute, 15 * time.Minute, 45 * time.Minute, 2 * time.Hour, 6 * time.Hour}
+	for round := range delays {
+		result, err := svc.RetryDue(context.Background(), now)
+		if err != nil {
+			t.Fatalf("RetryDue round %d: %v", round+1, err)
+		}
+		if result.Attempted != 1 {
+			t.Fatalf("RetryDue round %d result = %+v", round+1, result)
+		}
+		batchID := batch.ID
+		batch = model.NotificationBatch{}
+		if err := db.First(&batch, batchID).Error; err != nil {
+			t.Fatalf("load batch round %d: %v", round+1, err)
+		}
+		if batch.RetryCount != round+1 {
+			t.Fatalf("retry_count round %d = %d", round+1, batch.RetryCount)
+		}
+		if round == len(delays)-1 {
+			if batch.Status != "dead_letter" || batch.NextRetryAt != nil || result.DeadLetter != 1 {
+				t.Fatalf("final batch = %+v, result = %+v", batch, result)
+			}
+			continue
+		}
+		if batch.Status != "failed" || batch.NextRetryAt == nil || !batch.NextRetryAt.Equal(now.Add(delays[round])) || result.Failed != 1 {
+			t.Fatalf("round %d batch = %+v, result = %+v", round+1, batch, result)
+		}
+		now = *batch.NextRetryAt
+	}
+	if notifier.calls != 15 {
+		t.Fatalf("notifier calls = %d, want 15", notifier.calls)
+	}
+}
+
+func TestRequeueOnlyAcceptsFailedOrDeadLetter(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	batches := []model.NotificationBatch{
+		{Source: "filing", Trigger: "manual", Channel: "telegram", Status: "sent", NextRetryAt: &future},
+		{Source: "filing", Trigger: "manual", Channel: "telegram", Status: "suppressed", NextRetryAt: &future},
+		{Source: "filing", Trigger: "manual", Channel: "telegram", Status: "failed", RetryCount: 2, NextRetryAt: &future},
+		{Source: "filing", Trigger: "manual", Channel: "telegram", Status: "dead_letter", RetryCount: 5},
+	}
+	if err := db.Create(&batches).Error; err != nil {
+		t.Fatalf("seed batches: %v", err)
+	}
+	svc := NewNotificationBatchService(db, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	for _, batch := range batches[:2] {
+		if _, err := svc.Requeue(context.Background(), batch.ID, now); !errors.Is(err, ErrValidation) {
+			t.Fatalf("Requeue %s error = %v, want validation error", batch.Status, err)
+		}
+	}
+	for _, batch := range batches[2:] {
+		got, err := svc.Requeue(context.Background(), batch.ID, now)
+		if err != nil {
+			t.Fatalf("Requeue %s: %v", batch.Status, err)
+		}
+		if got.Status != "failed" || got.NextRetryAt == nil || !got.NextRetryAt.Equal(now) {
+			t.Fatalf("requeued %s batch = %+v", batch.Status, got)
+		}
+	}
+}
+
+func seedNotificationTelegramConfig(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Create(&[]model.SystemConfig{
+		{ConfigKey: "telegram.enabled", ConfigValue: "true", ValueType: "bool", Category: "telegram"},
+		{ConfigKey: "telegram.bot_token", ConfigValue: "token", ValueType: "string", Category: "telegram"},
+		{ConfigKey: "telegram.chat_id", ConfigValue: "chat", ValueType: "string", Category: "telegram"},
+	}).Error; err != nil {
+		t.Fatalf("seed telegram config: %v", err)
+	}
+}
 
 func TestNotificationBatchDeliverTableDriven(t *testing.T) {
 	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)

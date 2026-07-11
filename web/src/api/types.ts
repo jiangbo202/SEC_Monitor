@@ -582,6 +582,8 @@ export interface NotificationBatch {
   suppression_summary?: string
   error_message?: string
   sent_at?: string | null
+  next_retry_at?: string | null
+  last_attempt_at?: string | null
   created_at: string
 }
 

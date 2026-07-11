@@ -865,6 +865,15 @@ func (h *AppHandler) ListNotificationBatchItems(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) RequeueNotificationBatch(c *gin.Context) {
+	batch, err := h.NotificationBatch.Requeue(c.Request.Context(), uintParam(c, "id"), time.Now().UTC())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, batch)
+}
+
 func (h *AppHandler) ListTaskConfigs(c *gin.Context) {
 	tasks, err := h.Tasks.List(c.Request.Context())
 	if err != nil {

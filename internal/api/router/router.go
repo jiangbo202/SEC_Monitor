@@ -146,6 +146,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.GET("/notification-logs", app.ListNotificationLogs)
 		api.GET("/notification-batches", app.ListNotificationBatches)
 		api.GET("/notification-batches/:id/items", app.ListNotificationBatchItems)
+		api.POST("/notification-batches/:id/retry", app.RequeueNotificationBatch)
 
 		api.GET("/system-health", app.ListHealth)
 		api.GET("/exports/filings.csv", app.ExportFilingsCSV)

@@ -18,6 +18,8 @@ type NotificationBatch struct {
 	SuppressionSummary string     `gorm:"type:text" json:"suppression_summary,omitempty"`
 	ErrorMessage       string     `gorm:"type:text" json:"error_message,omitempty"`
 	SentAt             *time.Time `json:"sent_at"`
+	NextRetryAt        *time.Time `gorm:"index" json:"next_retry_at"`
+	LastAttemptAt      *time.Time `json:"last_attempt_at"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }

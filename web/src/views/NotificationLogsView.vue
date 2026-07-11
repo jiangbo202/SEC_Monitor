@@ -21,6 +21,7 @@
               <el-option :label="t('pages.notificationLogs.statuses.sent')" value="sent" />
               <el-option :label="t('pages.notificationLogs.statuses.suppressed')" value="suppressed" />
               <el-option :label="t('pages.notificationLogs.statuses.failed')" value="failed" />
+              <el-option :label="t('pages.notificationLogs.statuses.deadLetter')" value="dead_letter" />
             </el-select>
           </el-form-item>
           <el-form-item><el-button @click="queryBatches">{{ t('common.query') }}</el-button></el-form-item>
@@ -52,8 +53,15 @@
           <el-table-column prop="sent_count" :label="t('pages.notificationLogs.sentCount')" width="85" align="right" />
           <el-table-column prop="suppressed_count" :label="t('pages.notificationLogs.suppressedCount')" width="90" align="right" />
           <el-table-column prop="status" :label="t('common.status')" width="120"><template #default="{ row }"><el-tag :type="batchStatusType(row.status)" effect="plain">{{ batchStatusLabel(row.status) }}</el-tag></template></el-table-column>
+          <el-table-column prop="retry_count" :label="t('common.retryCount')" width="85" align="right" />
+          <el-table-column prop="next_retry_at" :label="t('pages.notificationLogs.nextRetryAt')" width="170"><template #default="{ row }">{{ formatDateTime(row.next_retry_at) }}</template></el-table-column>
           <el-table-column prop="suppression_summary" :label="t('pages.notificationLogs.summary')" min-width="190" show-overflow-tooltip />
           <el-table-column prop="error_message" :label="t('common.error')" min-width="180" show-overflow-tooltip />
+          <el-table-column :label="t('common.actions')" width="105" fixed="right">
+            <template #default="{ row }">
+              <el-button v-if="row.status === 'failed' || row.status === 'dead_letter'" type="primary" link @click="requeue(row)">{{ t('pages.notificationLogs.requeue') }}</el-button>
+            </template>
+          </el-table-column>
         </el-table>
         <el-pagination class="pagination" layout="total, prev, pager, next" :total="batchesTotal" :page-size="pageSize" v-model:current-page="batchesPage" @current-change="loadBatches" />
       </el-tab-pane>
@@ -117,6 +125,14 @@ async function loadBatchItems(row: NotificationBatch) {
   batchItems.value = { ...batchItems.value, [row.id]: res.data.data.items }
 }
 
+async function requeue(row: NotificationBatch) {
+  loading.value = true
+  try {
+    await apiClient.post<ApiResponse<NotificationBatch>>(`/notification-batches/${row.id}/retry`)
+    await loadBatches()
+  } finally { loading.value = false }
+}
+
 function loadActive() { return activeTab.value === 'batches' ? loadBatches() : loadLegacy() }
 function queryBatches() { batchesPage.value = 1; return loadBatches() }
 function sourceLabel(value: string) {
@@ -130,8 +146,8 @@ function sourceTagType(value: string) {
   if (value === 'ipo' || value === 'ipo_offering') return 'warning'
   return 'info'
 }
-function batchStatusLabel(value: string) { return t(`pages.notificationLogs.statuses.${value}`) }
-function batchStatusType(value: string) { return value === 'sent' ? 'success' : value === 'failed' ? 'danger' : 'warning' }
+function batchStatusLabel(value: string) { return t(`pages.notificationLogs.statuses.${value === 'dead_letter' ? 'deadLetter' : value}`) }
+function batchStatusType(value: string) { return value === 'sent' ? 'success' : value === 'failed' || value === 'dead_letter' ? 'danger' : 'warning' }
 function reasonLabel(value: string) { return t(`pages.notificationLogs.reasons.${value}`) }
 function reasonType(value: string) { return value === 'eligible' ? 'success' : value === 'delivery_failed' ? 'danger' : 'warning' }
 function entityKindLabel(value: string) {
