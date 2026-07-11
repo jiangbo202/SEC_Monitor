@@ -12,6 +12,7 @@ type IPOCompanyMarketData struct {
 	GrossProceeds         string     `gorm:"size:64" json:"gross_proceeds,omitempty"`
 	OfferingCheckedAt     *time.Time `json:"offering_checked_at,omitempty"`
 	OfferingParserVersion int        `json:"offering_parser_version,omitempty"`
+	LifecycleCheckedAt    *time.Time `json:"lifecycle_checked_at,omitempty"`
 	ListedVerifiedAt      *time.Time `json:"listed_verified_at,omitempty"`
 	TickerSource          string     `gorm:"type:text" json:"ticker_source,omitempty"`
 	OfferingSource        string     `gorm:"type:text" json:"offering_source,omitempty"`

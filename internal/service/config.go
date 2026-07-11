@@ -53,13 +53,16 @@ type NotificationSettings struct {
 }
 
 type IPORadarSettings struct {
-	Enabled         bool
-	FormTypes       []string
-	LookbackDays    int
-	MaxResults      int
-	NotifyEnabled   bool
-	NotifyFormTypes []string
-	Keywords        []string
+	Enabled               bool
+	FormTypes             []string
+	LookbackDays          int
+	MaxResults            int
+	NotifyEnabled         bool
+	NotifyFormTypes       []string
+	Keywords              []string
+	LifecycleSweepEnabled bool
+	LifecycleMaxCIKs      int
+	LifecycleRecheckHours int
 }
 
 type CandidateNotificationSettings struct {
@@ -211,6 +214,9 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "ipo.notify_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
 		{Key: "ipo.notify_form_types", Value: "", ValueType: "string", Category: "ipo"},
 		{Key: "ipo.keywords", Value: "", ValueType: "string", Category: "ipo"},
+		{Key: "ipo.lifecycle_sweep_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
+		{Key: "ipo.lifecycle_max_ciks", Value: "25", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.lifecycle_recheck_hours", Value: "24", ValueType: "int", Category: "ipo"},
 		{Key: "candidate_notification.enabled", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.notify_a", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
@@ -322,6 +328,16 @@ func validateConfigInput(key string, value string) error {
 	case "scheduler.timezone":
 		if _, err := schedulerLocationFromValue(value); err != nil {
 			return err
+		}
+	case "ipo.lifecycle_max_ciks":
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 1 || parsed > 200 {
+			return ErrValidation
+		}
+	case "ipo.lifecycle_recheck_hours":
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 1 || parsed > 168 {
+			return ErrValidation
 		}
 	}
 	return nil
@@ -517,28 +533,52 @@ func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings,
 	if err != nil {
 		return IPORadarSettings{}, err
 	}
+	lifecycleSweepRaw, _, err := s.GetValue(ctx, "ipo.lifecycle_sweep_enabled")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	lifecycleMaxRaw, _, err := s.GetValue(ctx, "ipo.lifecycle_max_ciks")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	lifecycleRecheckRaw, _, err := s.GetValue(ctx, "ipo.lifecycle_recheck_hours")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
 	enabled, _ := strconv.ParseBool(enabledRaw)
 	notify, _ := strconv.ParseBool(notifyRaw)
 	lookback, _ := strconv.Atoi(lookbackRaw)
 	maxResults, _ := strconv.Atoi(maxRaw)
+	lifecycleSweepEnabled, _ := strconv.ParseBool(lifecycleSweepRaw)
+	lifecycleMaxCIKs, _ := strconv.Atoi(lifecycleMaxRaw)
+	lifecycleRecheckHours, _ := strconv.Atoi(lifecycleRecheckRaw)
 	if lookback <= 0 {
 		lookback = 7
 	}
 	if maxResults <= 0 || maxResults > 200 {
 		maxResults = 100
 	}
+	if lifecycleMaxCIKs < 1 || lifecycleMaxCIKs > 200 {
+		lifecycleMaxCIKs = 25
+	}
+	if lifecycleRecheckHours < 1 || lifecycleRecheckHours > 168 {
+		lifecycleRecheckHours = 24
+	}
 	formTypes := splitConfigList(formTypesRaw)
 	if len(formTypes) == 0 {
 		formTypes = []string{"S-1", "S-1/A", "F-1", "F-1/A", "S-1MEF"}
 	}
 	return IPORadarSettings{
-		Enabled:         enabled,
-		FormTypes:       formTypes,
-		LookbackDays:    lookback,
-		MaxResults:      maxResults,
-		NotifyEnabled:   notify,
-		NotifyFormTypes: splitConfigList(notifyFormTypesRaw),
-		Keywords:        splitConfigList(keywordsRaw),
+		Enabled:               enabled,
+		FormTypes:             formTypes,
+		LookbackDays:          lookback,
+		MaxResults:            maxResults,
+		NotifyEnabled:         notify,
+		NotifyFormTypes:       splitConfigList(notifyFormTypesRaw),
+		Keywords:              splitConfigList(keywordsRaw),
+		LifecycleSweepEnabled: lifecycleSweepEnabled,
+		LifecycleMaxCIKs:      lifecycleMaxCIKs,
+		LifecycleRecheckHours: lifecycleRecheckHours,
 	}, nil
 }
 

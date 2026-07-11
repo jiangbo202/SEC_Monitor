@@ -182,6 +182,7 @@
           <el-descriptions-item :label="t('pages.ipoRadar.offerPrice')">{{ selectedCompany.offer_price ? `$${selectedCompany.offer_price}` : '-' }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.sharesOffered')">{{ formatNumber(selectedCompany.shares_offered) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.grossProceeds')">{{ formatMoney(selectedCompany.gross_proceeds) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.ipoRadar.lifecycleCheckedAt')">{{ formatDateTime(selectedCompany.lifecycle_checked_at) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.listedVerifiedAt')">{{ formatDateTime(selectedCompany.listed_verified_at) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.listingDate')">{{ formatDate(selectedCompany.listing_date) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.marketDataSource')">{{ marketSourceLabel(selectedCompany) }}</el-descriptions-item>
@@ -273,6 +274,7 @@ const ipoStatuses = [
   { value: 'updating', label: t('pages.ipoRadar.statuses.updating') },
   { value: 'effective', label: t('pages.ipoRadar.statuses.effective') },
   { value: 'priced', label: t('pages.ipoRadar.statuses.priced') },
+  { value: 'listing_pending', label: t('pages.ipoRadar.statuses.listing_pending') },
   { value: 'listed', label: t('pages.ipoRadar.statuses.listed') },
   { value: 'withdrawn', label: t('pages.ipoRadar.statuses.withdrawn') },
   { value: 'stale', label: t('pages.ipoRadar.statuses.stale') }
@@ -417,6 +419,7 @@ function ipoStatusType(status: string) {
   if (status === 'updating') return 'primary'
   if (status === 'effective') return 'warning'
   if (status === 'priced') return 'warning'
+  if (status === 'listing_pending') return 'warning'
   if (status === 'listed') return 'success'
   if (status === 'withdrawn') return 'danger'
   return 'info'

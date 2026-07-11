@@ -1130,9 +1130,9 @@ func TestIPORadarListingConfirmationTableDriven(t *testing.T) {
 		wantVerified    bool
 	}{
 		{
-			name:            "ticker without exchange remains updating",
+			name:            "ticker without exchange is listing pending",
 			listedCompanies: []sec.ListedCompany{{CIK: "0002112466", Name: "Silentium Ltd.", Ticker: "SIAI"}},
-			wantStatus:      "updating", wantTicker: "SIAI",
+			wantStatus:      "listing_pending", wantTicker: "SIAI",
 		},
 		{
 			name:       "missing SEC mapping clears stale listing confirmation",
@@ -1165,6 +1165,229 @@ func TestIPORadarListingConfirmationTableDriven(t *testing.T) {
 				t.Fatalf("item = %+v, want status=%s ticker=%q verified=%v", item, tt.wantStatus, tt.wantTicker, tt.wantVerified)
 			}
 		})
+	}
+}
+
+func TestIPORadarTickerWithoutExchangeIsListingPending(t *testing.T) {
+	now := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	if err := db.Create(&[]model.IPOFiling{{
+		FilingID: "pending-s1a", CIK: "0002112466", CompanyName: "Silentium Ltd.", FilingType: "F-1/A", FilingDate: now, FilingURL: "https://sec.test/pending-s1a",
+	}}).Error; err != nil {
+		t.Fatalf("seed filing: %v", err)
+	}
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0002112466", Ticker: "SIAI", TickerSource: "sec", TickerConfidence: "high"}).Error; err != nil {
+		t.Fatalf("seed market data: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	page, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 10}, now)
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("ListCompanies page=%+v err=%v", page, err)
+	}
+	if item := page.Items[0]; item.Status != "listing_pending" || item.StatusConfidence != "medium" {
+		t.Fatalf("company = %+v, want listing_pending with medium confidence", item)
+	}
+}
+
+func TestIPORadarWithdrawalOverridesListingMapping(t *testing.T) {
+	now := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "withdrawn-s1", CIK: "0002112467", CompanyName: "Withdrawn Co.", FilingType: "S-1", FilingDate: now.Add(-time.Hour), FilingURL: "https://sec.test/withdrawn-s1"},
+		{FilingID: "withdrawn-rw", CIK: "0002112467", CompanyName: "Withdrawn Co.", FilingType: "RW", FilingDate: now, FilingURL: "https://sec.test/withdrawn-rw"},
+	}).Error; err != nil {
+		t.Fatalf("seed filings: %v", err)
+	}
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0002112467", Ticker: "WDN", Exchange: "Nasdaq", ListedVerifiedAt: &now, TickerSource: "sec", TickerConfidence: "high"}).Error; err != nil {
+		t.Fatalf("seed market data: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	page, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 10}, now)
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("ListCompanies page=%+v err=%v", page, err)
+	}
+	if item := page.Items[0]; item.Status != "withdrawn" {
+		t.Fatalf("company = %+v, want withdrawn", item)
+	}
+}
+
+func TestIPORadarLifecycleSweepRotatesOldestActiveCIKs(t *testing.T) {
+	now := time.Now().UTC()
+	db := testDB(t)
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "sweep-s1-1", CIK: "0000000001", CompanyName: "One Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/sweep-1"},
+		{FilingID: "sweep-s1-2", CIK: "0000000002", CompanyName: "Two Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/sweep-2"},
+		{FilingID: "sweep-s1-3", CIK: "0000000003", CompanyName: "Three Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/sweep-3"},
+	}).Error; err != nil {
+		t.Fatalf("seed filings: %v", err)
+	}
+	oldest := now.Add(-3 * time.Hour)
+	newer := now.Add(-2 * time.Hour)
+	if err := db.Create(&[]model.IPOCompanyMarketData{
+		{CIK: "0000000001", LifecycleCheckedAt: &oldest},
+		{CIK: "0000000002"},
+		{CIK: "0000000003", LifecycleCheckedAt: &newer},
+	}).Error; err != nil {
+		t.Fatalf("seed lifecycle data: %v", err)
+	}
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "ipo.lifecycle_sweep_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
+		{Key: "ipo.lifecycle_max_ciks", Value: "2", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.lifecycle_recheck_hours", Value: "1", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.notify_enabled", Value: "false", ValueType: "bool", Category: "ipo"},
+	}, "tester"); err != nil {
+		t.Fatalf("configure lifecycle sweep: %v", err)
+	}
+	secClient := &fakeSECClient{}
+	svc := NewIPORadarService(db, secClient, &fakeNotifier{}, configs)
+	if _, err := svc.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	checked := map[string]bool{}
+	for _, query := range secClient.queries {
+		checked[query.CIK] = true
+	}
+	if !checked["0000000001"] || !checked["0000000002"] || checked["0000000003"] {
+		t.Fatalf("lifecycle checks = %+v, want oldest CIKs 0000000001 and 0000000002", checked)
+	}
+	var rows []model.IPOCompanyMarketData
+	if err := db.Order("cik ASC").Find(&rows).Error; err != nil {
+		t.Fatalf("load lifecycle data: %v", err)
+	}
+	for _, row := range rows[:2] {
+		if row.LifecycleCheckedAt == nil || !row.LifecycleCheckedAt.After(oldest) {
+			t.Fatalf("lifecycle timestamp for %s = %v, want advanced", row.CIK, row.LifecycleCheckedAt)
+		}
+	}
+	if rows[2].LifecycleCheckedAt == nil || !rows[2].LifecycleCheckedAt.Equal(newer) {
+		t.Fatalf("lifecycle timestamp for unselected CIK = %v, want %v", rows[2].LifecycleCheckedAt, newer)
+	}
+}
+
+func TestIPORadarLifecycleSweepExcludesTerminalManualOverrides(t *testing.T) {
+	now := time.Now().UTC()
+	db := testDB(t)
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "terminal-s1-withdrawn", CIK: "0000000001", CompanyName: "Withdrawn Override Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/terminal-withdrawn"},
+		{FilingID: "terminal-s1-listed", CIK: "0000000002", CompanyName: "Listed Override Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/terminal-listed"},
+		{FilingID: "terminal-s1-active", CIK: "0000000003", CompanyName: "Active Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/terminal-active"},
+	}).Error; err != nil {
+		t.Fatalf("seed filings: %v", err)
+	}
+	if err := db.Create(&[]model.IPOCompanyOverride{
+		{CIK: "0000000001", StatusOverride: "withdrawn"},
+		{CIK: "0000000002", StatusOverride: "listed"},
+	}).Error; err != nil {
+		t.Fatalf("seed overrides: %v", err)
+	}
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "ipo.lifecycle_sweep_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
+		{Key: "ipo.lifecycle_max_ciks", Value: "1", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.lifecycle_recheck_hours", Value: "1", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.notify_enabled", Value: "false", ValueType: "bool", Category: "ipo"},
+	}, "tester"); err != nil {
+		t.Fatalf("configure lifecycle sweep: %v", err)
+	}
+	secClient := &fakeSECClient{}
+	svc := NewIPORadarService(db, secClient, &fakeNotifier{}, configs)
+	if _, err := svc.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if len(secClient.queries) != 1 || secClient.queries[0].CIK != "0000000003" {
+		t.Fatalf("lifecycle sweep queries = %+v, want only active CIK 0000000003", secClient.queries)
+	}
+}
+
+func TestIPORadarLifecycleSweepSkipsCurrentFeedBackfillsBeforeLimit(t *testing.T) {
+	now := time.Now().UTC()
+	db := testDB(t)
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "current-sweep-s1-2", CIK: "0000000002", CompanyName: "Second Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/current-sweep-2"},
+		{FilingID: "current-sweep-s1-3", CIK: "0000000003", CompanyName: "Third Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/current-sweep-3"},
+	}).Error; err != nil {
+		t.Fatalf("seed filings: %v", err)
+	}
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "ipo.lifecycle_sweep_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
+		{Key: "ipo.lifecycle_max_ciks", Value: "2", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.lifecycle_recheck_hours", Value: "1", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.notify_enabled", Value: "false", ValueType: "bool", Category: "ipo"},
+	}, "tester"); err != nil {
+		t.Fatalf("configure lifecycle sweep: %v", err)
+	}
+	secClient := &fakeSECClient{currentFilings: []sec.CurrentFilingResult{{
+		FilingID: "current-sweep-s1-1", CIK: "0000000001", CompanyName: "First Inc.", FilingType: "S-1", FilingDate: now, FilingURL: "https://sec.test/current-sweep-1",
+	}}}
+	svc := NewIPORadarService(db, secClient, &fakeNotifier{}, configs)
+	if _, err := svc.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	checked := map[string]bool{}
+	for _, query := range secClient.queries {
+		checked[query.CIK] = true
+	}
+	for _, cik := range []string{"0000000001", "0000000002", "0000000003"} {
+		if !checked[cik] {
+			t.Fatalf("lifecycle queries = %+v, missing %s", secClient.queries, cik)
+		}
+	}
+	if len(checked) != 3 {
+		t.Fatalf("lifecycle queries = %+v, want one current-feed backfill plus two sweep CIKs", secClient.queries)
+	}
+}
+
+func TestIPORadarCurrentLifecycleFormsAreIngested(t *testing.T) {
+	now := time.Now().UTC()
+	db := testDB(t)
+	if err := db.Create(&model.IPOFiling{FilingID: "lifecycle-s1", CIK: "0002112468", CompanyName: "Lifecycle Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -10), FilingURL: "https://sec.test/lifecycle-s1"}).Error; err != nil {
+		t.Fatalf("seed registration filing: %v", err)
+	}
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{{Key: "ipo.notify_enabled", Value: "false", ValueType: "bool", Category: "ipo"}}, "tester"); err != nil {
+		t.Fatalf("disable notifications: %v", err)
+	}
+	secClient := &fakeSECClient{currentFilings: []sec.CurrentFilingResult{
+		{FilingID: "lifecycle-effect", CIK: "0002112468", CompanyName: "Lifecycle Inc.", FilingType: "EFFECT", FilingDate: now, FilingURL: "https://sec.test/lifecycle-effect"},
+		{FilingID: "lifecycle-424b4", CIK: "0002112468", CompanyName: "Lifecycle Inc.", FilingType: "424B4", FilingDate: now, FilingURL: "https://sec.test/lifecycle-424b4"},
+		{FilingID: "lifecycle-rw", CIK: "0002112468", CompanyName: "Lifecycle Inc.", FilingType: "RW", FilingDate: now, FilingURL: "https://sec.test/lifecycle-rw"},
+	}}
+	svc := NewIPORadarService(db, secClient, &fakeNotifier{}, configs)
+	if _, err := svc.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if len(secClient.currentQueries) != 1 {
+		t.Fatalf("current queries = %d, want 1", len(secClient.currentQueries))
+	}
+	forms := map[string]bool{}
+	for _, form := range secClient.currentQueries[0].FormTypes {
+		forms[form] = true
+	}
+	for _, required := range []string{"EFFECT", "424B4", "RW"} {
+		if !forms[required] {
+			t.Fatalf("current forms = %+v, missing %s", forms, required)
+		}
+	}
+	var filings []model.IPOFiling
+	if err := db.Where("cik = ?", "0002112468").Order("filing_type ASC").Find(&filings).Error; err != nil {
+		t.Fatalf("load lifecycle filings: %v", err)
+	}
+	if len(filings) != 4 {
+		t.Fatalf("lifecycle filings = %+v, want S-1 plus EFFECT/424B4/RW", filings)
 	}
 }
 

@@ -76,6 +76,7 @@ type IPOCompanyItem struct {
 	AutomaticOfferPrice  string     `json:"automatic_offer_price,omitempty"`
 	AutomaticShares      int64      `json:"automatic_shares_offered,omitempty"`
 	AutomaticGross       string     `json:"automatic_gross_proceeds,omitempty"`
+	LifecycleCheckedAt   *time.Time `json:"lifecycle_checked_at,omitempty"`
 	OverrideFinalTicker  string     `json:"override_final_ticker,omitempty"`
 	OverrideExchange     string     `json:"override_exchange,omitempty"`
 	OverrideOfferPrice   string     `json:"override_offer_price,omitempty"`
@@ -324,7 +325,7 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		return out, err
 	}
 	initialBaseline := existingFilings == 0
-	results, err := s.sec.ListCurrentFilings(ctx, sec.CurrentFilingQuery{FormTypes: settings.FormTypes, Count: settings.MaxResults})
+	results, err := s.sec.ListCurrentFilings(ctx, sec.CurrentFilingQuery{FormTypes: currentIPOFilingFormTypes(settings.FormTypes), Count: settings.MaxResults})
 	if err != nil {
 		s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
 		return out, err
@@ -332,13 +333,21 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 	cutoff := time.Now().UTC().AddDate(0, 0, -settings.LookbackDays)
 	out.Checked = len(results)
 	backfilledCIK := map[string]bool{}
+	candidateCIKs, err := s.ipoCandidateCIKSet(ctx)
+	if err != nil {
+		s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
+		return out, err
+	}
 	notificationCandidates := make([]NotificationCandidate, 0)
 	newFilings := make([]model.IPOFiling, 0)
 	for _, item := range results {
 		if !item.FilingDate.IsZero() && item.FilingDate.Before(cutoff) {
 			continue
 		}
-		if !ipoKeywordMatch(item, settings.Keywords) {
+		form := strings.ToUpper(strings.TrimSpace(item.FilingType))
+		isRegistration := isIPORegistrationFilingType(form)
+		isLifecycle := isRequiredIPOLifecycleForm(form)
+		if (!isRegistration && !isLifecycle) || (isRegistration && !ipoKeywordMatch(item, settings.Keywords)) || (isLifecycle && !candidateCIKs[item.CIK]) {
 			continue
 		}
 		filing := currentFilingToIPOModel(item)
@@ -351,6 +360,9 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 			out.NewFilings++
 			newFilings = append(newFilings, filing)
 			notificationCandidates = append(notificationCandidates, ipoNotificationCandidate(filing, settings, initialBaseline, false))
+		}
+		if isRegistration {
+			candidateCIKs[item.CIK] = true
 		}
 		cik := strings.TrimSpace(item.CIK)
 		if cik == "" || backfilledCIK[cik] {
@@ -367,6 +379,16 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		for _, filing := range added {
 			notificationCandidates = append(notificationCandidates, ipoNotificationCandidate(filing, settings, initialBaseline, true))
 		}
+	}
+	sweepAdded, err := s.sweepCompanyLifecycleFilings(ctx, settings, backfilledCIK)
+	if err != nil {
+		s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
+		return out, err
+	}
+	out.NewFilings += len(sweepAdded)
+	newFilings = append(newFilings, sweepAdded...)
+	for _, filing := range sweepAdded {
+		notificationCandidates = append(notificationCandidates, ipoNotificationCandidate(filing, settings, initialBaseline, true))
 	}
 	if len(notificationCandidates) > 0 {
 		batch, err := s.batches.Deliver(ctx, NotificationBatchInput{SyncRunID: run.ID, Source: "ipo", Trigger: trigger, Candidates: notificationCandidates})
@@ -404,7 +426,7 @@ func (s *IPORadarService) backfillCompanyLifecycleFilings(ctx context.Context, s
 		if !isIPOLifecycleFilingType(result.FilingType, settings.FormTypes) {
 			continue
 		}
-		if !ipoKeywordMatch(filingResultToCurrent(result), settings.Keywords) {
+		if isIPORegistrationFilingType(result.FilingType) && !ipoKeywordMatch(filingResultToCurrent(result), settings.Keywords) {
 			continue
 		}
 		filing := filingResultToIPOModel(result, seed)
@@ -417,6 +439,142 @@ func (s *IPORadarService) backfillCompanyLifecycleFilings(ctx context.Context, s
 		}
 	}
 	return added, nil
+}
+
+func (s *IPORadarService) ipoCandidateCIKSet(ctx context.Context) (map[string]bool, error) {
+	var ciks []string
+	if err := s.db.WithContext(ctx).Model(&model.IPOFiling{}).
+		Where("cik <> '' AND UPPER(TRIM(filing_type)) IN ?", ipoRegistrationFilingTypes).
+		Distinct("cik").Pluck("cik", &ciks).Error; err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(ciks))
+	for _, cik := range ciks {
+		set[cik] = true
+	}
+	return set, nil
+}
+
+func (s *IPORadarService) sweepCompanyLifecycleFilings(ctx context.Context, settings IPORadarSettings, alreadyBackfilled map[string]bool) ([]model.IPOFiling, error) {
+	if !settings.LifecycleSweepEnabled || settings.LifecycleMaxCIKs <= 0 {
+		return nil, nil
+	}
+	recheckBefore := time.Now().UTC().Add(-time.Duration(settings.LifecycleRecheckHours) * time.Hour)
+	ciks, err := s.lifecycleSweepCandidateCIKs(ctx, recheckBefore, alreadyBackfilled, settings.LifecycleMaxCIKs)
+	if err != nil {
+		return nil, err
+	}
+	added := make([]model.IPOFiling, 0)
+	for _, cik := range ciks {
+		var seed model.IPOFiling
+		if err := s.db.WithContext(ctx).Where("cik = ?", cik).Order("filing_date DESC, accepted_at DESC, id DESC").First(&seed).Error; err != nil {
+			return added, err
+		}
+		newFilings, err := s.backfillCompanyLifecycleFilings(ctx, sec.CurrentFilingResult{
+			FilingID: seed.FilingID, AccessionNumber: seed.AccessionNumber, CIK: seed.CIK, CompanyName: seed.CompanyName,
+			FilingType: seed.FilingType, FilingDate: seed.FilingDate, AcceptedAt: seed.AcceptedAt, FilingURL: seed.FilingURL, Title: seed.Title,
+		}, settings)
+		if err != nil {
+			return added, err
+		}
+		checkedAt := time.Now().UTC()
+		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "cik"}},
+			DoUpdates: clause.Assignments(map[string]any{"lifecycle_checked_at": &checkedAt, "updated_at": checkedAt}),
+		}).Create(&model.IPOCompanyMarketData{CIK: cik, LifecycleCheckedAt: &checkedAt}).Error; err != nil {
+			return added, err
+		}
+		added = append(added, newFilings...)
+	}
+	return added, nil
+}
+
+func (s *IPORadarService) lifecycleSweepCandidateCIKs(ctx context.Context, recheckBefore time.Time, alreadyBackfilled map[string]bool, limit int) ([]string, error) {
+	query := scopeIPOCandidateFilings(s.db.WithContext(ctx).Model(&model.IPOFiling{}), s.db.WithContext(ctx))
+	var filings []model.IPOFiling
+	if err := query.Order("cik ASC, filing_date ASC, accepted_at ASC, id ASC").Find(&filings).Error; err != nil {
+		return nil, err
+	}
+	if len(filings) == 0 {
+		return nil, nil
+	}
+
+	grouped := make(map[string][]model.IPOFiling)
+	ciks := make([]string, 0)
+	seenCIK := make(map[string]bool)
+	for _, filing := range filings {
+		cik := strings.TrimSpace(filing.CIK)
+		if cik == "" {
+			continue
+		}
+		grouped[cik] = append(grouped[cik], filing)
+		if !seenCIK[cik] {
+			seenCIK[cik] = true
+			ciks = append(ciks, cik)
+		}
+	}
+
+	var marketRows []model.IPOCompanyMarketData
+	if err := s.db.WithContext(ctx).Where("cik IN ?", ciks).Find(&marketRows).Error; err != nil {
+		return nil, err
+	}
+	marketByCIK := make(map[string]model.IPOCompanyMarketData, len(marketRows))
+	for _, market := range marketRows {
+		marketByCIK[market.CIK] = market
+	}
+	var overrides []model.IPOCompanyOverride
+	if err := s.db.WithContext(ctx).Where("cik IN ?", ciks).Find(&overrides).Error; err != nil {
+		return nil, err
+	}
+	overrideByCIK := make(map[string]model.IPOCompanyOverride, len(overrides))
+	for _, override := range overrides {
+		overrideByCIK[override.CIK] = override
+	}
+
+	type candidate struct {
+		cik       string
+		checkedAt *time.Time
+	}
+	candidates := make([]candidate, 0, len(ciks))
+	now := time.Now().UTC()
+	for cik, companyFilings := range grouped {
+		if alreadyBackfilled[cik] {
+			continue
+		}
+		market := marketByCIK[cik]
+		if market.LifecycleCheckedAt != nil && market.LifecycleCheckedAt.After(recheckBefore) {
+			continue
+		}
+		item := buildIPOCompanyItem(companyFilings, nil, marketByCIK, overrideByCIK, now)
+		if !activeIPOCompanyStatus(item.Status) {
+			continue
+		}
+		candidates = append(candidates, candidate{cik: cik, checkedAt: market.LifecycleCheckedAt})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if left.checkedAt == nil || right.checkedAt == nil {
+			if left.checkedAt == nil && right.checkedAt != nil {
+				return true
+			}
+			if left.checkedAt != nil && right.checkedAt == nil {
+				return false
+			}
+			return left.cik < right.cik
+		}
+		if !left.checkedAt.Equal(*right.checkedAt) {
+			return left.checkedAt.Before(*right.checkedAt)
+		}
+		return left.cik < right.cik
+	})
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+	selected := make([]string, 0, limit)
+	for _, candidate := range candidates[:limit] {
+		selected = append(selected, candidate.cik)
+	}
+	return selected, nil
 }
 
 func (s *IPORadarService) finishSyncRun(ctx context.Context, id uint, result IPORadarRefreshResult, status string, errorMessage string) {
@@ -484,6 +642,35 @@ func filingResultToCurrent(item sec.FilingResult) sec.CurrentFilingResult {
 }
 
 var ipoRegistrationFilingTypes = []string{"S-1", "S-1/A", "F-1", "F-1/A", "S-1MEF"}
+var ipoRequiredLifecycleFilingTypes = []string{"EFFECT", "424B4", "RW"}
+
+func currentIPOFilingFormTypes(configured []string) []string {
+	forms := make([]string, 0, len(configured)+len(ipoRequiredLifecycleFilingTypes))
+	seen := map[string]bool{}
+	for _, form := range append(append([]string{}, configured...), ipoRequiredLifecycleFilingTypes...) {
+		form = strings.ToUpper(strings.TrimSpace(form))
+		if form != "" && !seen[form] {
+			seen[form] = true
+			forms = append(forms, form)
+		}
+	}
+	return forms
+}
+
+func isIPORegistrationFilingType(filingType string) bool {
+	form := strings.ToUpper(strings.TrimSpace(filingType))
+	for _, registrationType := range ipoRegistrationFilingTypes {
+		if form == registrationType {
+			return true
+		}
+	}
+	return false
+}
+
+func isRequiredIPOLifecycleForm(filingType string) bool {
+	form := strings.ToUpper(strings.TrimSpace(filingType))
+	return form == "EFFECT" || strings.HasPrefix(form, "424B4") || form == "RW" || strings.HasPrefix(form, "RW ")
+}
 
 func scopeIPOCandidateFilings(query *gorm.DB, db *gorm.DB) *gorm.DB {
 	candidateCIKs := db.Model(&model.IPOFiling{}).
@@ -505,16 +692,7 @@ func isIPOLifecycleFilingType(filingType string, configured []string) bool {
 			return true
 		}
 	}
-	if form == "EFFECT" {
-		return true
-	}
-	if strings.HasPrefix(form, "424B4") {
-		return true
-	}
-	if form == "RW" || strings.HasPrefix(form, "RW ") || form == "RW WD" {
-		return true
-	}
-	return false
+	return isRequiredIPOLifecycleForm(form)
 }
 
 func selectPrimaryListedCompany(candidates []sec.ListedCompany) (sec.ListedCompany, bool) {
@@ -583,6 +761,7 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 		item.AutomaticOfferPrice = market.OfferPrice
 		item.AutomaticShares = market.SharesOffered
 		item.AutomaticGross = market.GrossProceeds
+		item.LifecycleCheckedAt = market.LifecycleCheckedAt
 		item.FinalTicker = market.Ticker
 		item.Exchange = market.Exchange
 		item.OfferPrice = market.OfferPrice
@@ -602,7 +781,11 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 	if item.FinalTicker != "" && item.Exchange != "" && item.ListedVerifiedAt != nil {
 		statusTicker = item.FinalTicker
 	}
-	item.Status, item.StatusReason, item.StatusConfidence = inferIPOCompanyStatus(filings, statusTicker, item.LatestFilingDate, now)
+	pendingTicker := ""
+	if item.FinalTicker != "" && item.Exchange == "" {
+		pendingTicker = item.FinalTicker
+	}
+	item.Status, item.StatusReason, item.StatusConfidence = inferIPOCompanyStatus(filings, statusTicker, pendingTicker, item.LatestFilingDate, now)
 	item.StatusSource = "system"
 	if override, ok := overrideByCIK[item.CIK]; ok {
 		item.OverrideFinalTicker = override.FinalTicker
@@ -939,10 +1122,7 @@ func filingAfter(left model.IPOFiling, right model.IPOFiling) bool {
 	return false
 }
 
-func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, latestFilingDate time.Time, now time.Time) (string, string, string) {
-	if strings.TrimSpace(matchedTicker) != "" {
-		return "listed", "matched ticker " + strings.TrimSpace(matchedTicker), "high"
-	}
+func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, pendingTicker string, latestFilingDate time.Time, now time.Time) (string, string, string) {
 	hasAmendment := false
 	hasEffect := false
 	hasPriced := false
@@ -965,6 +1145,10 @@ func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, late
 	switch {
 	case hasWithdrawn:
 		return "withdrawn", "detected RW withdrawal filing", "high"
+	case strings.TrimSpace(matchedTicker) != "":
+		return "listed", "matched ticker " + strings.TrimSpace(matchedTicker), "high"
+	case strings.TrimSpace(pendingTicker) != "":
+		return "listing_pending", "SEC ticker " + strings.TrimSpace(pendingTicker) + " awaits exchange confirmation", "medium"
 	case hasPriced:
 		return "priced", "detected 424B pricing filing", "high"
 	case hasEffect:
@@ -980,7 +1164,7 @@ func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, late
 
 func validIPOStatus(status string) bool {
 	switch status {
-	case "new", "updating", "effective", "priced", "listed", "withdrawn", "stale":
+	case "new", "updating", "effective", "priced", "listing_pending", "listed", "withdrawn", "stale":
 		return true
 	default:
 		return false
@@ -989,13 +1173,14 @@ func validIPOStatus(status string) bool {
 
 func sortIPOCompanies(items []IPOCompanyItem, sortBy string, sortOrder string) {
 	statusRank := map[string]int{
-		"new":       0,
-		"updating":  1,
-		"effective": 2,
-		"priced":    3,
-		"listed":    4,
-		"withdrawn": 5,
-		"stale":     6,
+		"new":             0,
+		"updating":        1,
+		"effective":       2,
+		"priced":          3,
+		"listing_pending": 4,
+		"listed":          5,
+		"withdrawn":       6,
+		"stale":           7,
 	}
 	sortBy = strings.ToLower(strings.TrimSpace(sortBy))
 	defaultSort := sortBy == ""
@@ -1041,7 +1226,7 @@ func sortIPOCompanies(items []IPOCompanyItem, sortBy string, sortOrder string) {
 
 func activeIPOCompanyStatus(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "new", "updating", "effective":
+	case "new", "updating", "effective", "priced", "listing_pending":
 		return true
 	default:
 		return false

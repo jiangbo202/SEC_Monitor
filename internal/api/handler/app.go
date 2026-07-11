@@ -591,11 +591,15 @@ func (h *AppHandler) ExportIPOCompaniesCSV(c *gin.Context) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="sec-monitor-ipo-companies.csv"`)
 	writer := csv.NewWriter(c.Writer)
-	_ = writer.Write([]string{"cik", "company_name", "status", "status_reason", "status_confidence", "status_source", "matched_ticker", "final_ticker", "exchange", "offer_price", "shares_offered", "gross_proceeds", "listed_verified_at", "listing_date", "market_data_source", "market_data_confidence", "market_data_updated_at", "filing_count", "first_filing_date", "latest_filing_date", "latest_filing_type", "latest_title", "latest_filing_url"})
+	_ = writer.Write([]string{"cik", "company_name", "status", "status_reason", "status_confidence", "status_source", "matched_ticker", "final_ticker", "exchange", "offer_price", "shares_offered", "gross_proceeds", "lifecycle_checked_at", "listed_verified_at", "listing_date", "market_data_source", "market_data_confidence", "market_data_updated_at", "filing_count", "first_filing_date", "latest_filing_date", "latest_filing_type", "latest_title", "latest_filing_url"})
 	for _, item := range result.Items {
 		listedVerifiedAt := ""
 		if item.ListedVerifiedAt != nil {
 			listedVerifiedAt = item.ListedVerifiedAt.Format(time.RFC3339)
+		}
+		lifecycleCheckedAt := ""
+		if item.LifecycleCheckedAt != nil {
+			lifecycleCheckedAt = item.LifecycleCheckedAt.Format(time.RFC3339)
 		}
 		listingDate := ""
 		if item.ListingDate != nil {
@@ -618,6 +622,7 @@ func (h *AppHandler) ExportIPOCompaniesCSV(c *gin.Context) {
 			item.OfferPrice,
 			strconv.FormatInt(item.SharesOffered, 10),
 			item.GrossProceeds,
+			lifecycleCheckedAt,
 			listedVerifiedAt,
 			listingDate,
 			item.MarketDataSource,

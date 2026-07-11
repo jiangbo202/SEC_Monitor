@@ -116,6 +116,7 @@ export interface IPOCompany {
   automatic_offer_price?: string
   automatic_shares_offered?: number
   automatic_gross_proceeds?: string
+  lifecycle_checked_at?: string | null
   override_final_ticker?: string
   override_exchange?: string
   override_offer_price?: string

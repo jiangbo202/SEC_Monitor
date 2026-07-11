@@ -286,6 +286,7 @@ const messages = {
         offerPrice: '发行价',
         sharesOffered: '发行数量',
         grossProceeds: '预计募资总额',
+        lifecycleCheckedAt: '生命周期最后核查',
         listedVerifiedAt: 'SEC 首次确认上市',
         listingDate: '实际上市日期',
         marketDataSource: '市场数据来源',
@@ -327,6 +328,7 @@ const messages = {
           updating: '更新中',
           effective: '已生效',
           priced: '已定价',
+          listing_pending: '待确认上市',
           listed: '已上市',
           withdrawn: '撤回/终止',
           stale: '长期无更新'
@@ -822,6 +824,7 @@ const messages = {
         offerPrice: 'Offer Price',
         sharesOffered: 'Shares Offered',
         grossProceeds: 'Estimated Gross Proceeds',
+        lifecycleCheckedAt: 'Last Lifecycle Check',
         listedVerifiedAt: 'First SEC Listing Verification',
         listingDate: 'Actual Listing Date',
         marketDataSource: 'Market Data Source',
@@ -863,6 +866,7 @@ const messages = {
           updating: 'Updating',
           effective: 'Effective',
           priced: 'Priced',
+          listing_pending: 'Listing Pending',
           listed: 'Listed',
           withdrawn: 'Withdrawn',
           stale: 'Stale'
