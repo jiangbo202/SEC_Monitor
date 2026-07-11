@@ -37,6 +37,7 @@ func TestCandidateScoreResultMarshalJSONIncludesEnrichedEvidence(t *testing.T) {
 		ReviewPriorityScore:    91,
 		ReviewPriorityReasons:  []ReviewPriorityReason{{Label: "质量：强B", Points: 80, Kind: "positive"}},
 		ChangeStatus:           "improved",
+		ChangeReasons:          []CandidateChangeReason{{Field: "candidate", Label: "首次入选", Current: "B", Kind: "new"}},
 		PreviousTotalScore:     &previousScore,
 		PreviousGrade:          "B",
 		Performance: CandidatePerformance{
@@ -71,6 +72,7 @@ func TestCandidateScoreResultMarshalJSONIncludesEnrichedEvidence(t *testing.T) {
 		`"review_priority_score":91`,
 		`"review_priority_reasons":[{"label":"质量：强B","points":80,"kind":"positive"}]`,
 		`"change_status":"improved"`,
+		`"change_reasons":[{"field":"candidate","label":"首次入选","previous":"","current":"B","kind":"new"}]`,
 		`"previous_total_score":72`,
 		`"previous_grade":"B"`,
 		`"performance":{"base_date":"2026-06-30","base_close":12.34,"date_1d":"2026-07-01","close_1d":14.2,"return_1d":15.07`,

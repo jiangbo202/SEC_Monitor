@@ -8,6 +8,7 @@
       <el-space>
         <el-button :loading="workflowLoading" type="primary" plain @click="runWorkflow">刷新候选工作流</el-button>
         <el-button :loading="watchLoading" @click="openWatchList">关注列表</el-button>
+        <el-button :loading="effectivenessLoading" @click="openEffectiveness">效果评估</el-button>
         <el-button @click="sectorDialogVisible = true">赛道分布</el-button>
         <el-button :loading="reportLoading" @click="openReport">查看日报</el-button>
         <el-button :loading="summaryLoading" @click="previewSummary">预检通知摘要</el-button>
@@ -125,7 +126,7 @@
           <el-tooltip placement="top" effect="dark">
             <template #content>
               <div class="priority-tooltip">
-                <div class="priority-tooltip-title">优先级 = 质量、变化、流动性和风险的复核排序分</div>
+                <div class="priority-tooltip-title">优先级（0–100）= 质量、变化、流动性和风险的复核排序分</div>
                 <div v-for="reason in row.review_priority_reasons || []" :key="`${reason.label}-${reason.points}`" class="priority-reason">
                   <span>{{ reason.label }}</span>
                   <strong :class="reason.points >= 0 ? 'positive' : 'negative'">{{ formatSignedNumber(reason.points) }}</strong>
@@ -144,7 +145,16 @@
       </el-table-column>
       <el-table-column prop="change_status" label="变化" width="100">
         <template #default="{ row }">
-          <el-tag :type="changeStatusTagType(row.change_status)" effect="plain">{{ changeStatusLabel(row.change_status) }}</el-tag>
+          <el-tooltip placement="top" effect="dark" :disabled="!(row.change_reasons || []).length">
+            <template #content>
+              <div class="metric-tooltip">
+                <div v-for="reason in row.change_reasons || []" :key="`${reason.field}-${reason.current}`">
+                  {{ reason.label }}：{{ reason.previous || '-' }} → {{ reason.current || '-' }}
+                </div>
+              </div>
+            </template>
+            <el-tag :type="changeStatusTagType(row.change_status)" effect="plain">{{ changeStatusLabel(row.change_status) }}</el-tag>
+          </el-tooltip>
         </template>
       </el-table-column>
       <el-table-column prop="market_cap_usd" label="市值" width="130" align="right" sortable="custom">
@@ -554,6 +564,14 @@
           <template #default="{ row }">{{ formatPerformance(row.latest_score?.performance?.return_5d ?? row.latest_score?.performance?.return_1d) }}</template>
         </el-table-column>
         <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="research_status" label="研究状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="researchStatusTagType(row.research_status)" effect="plain">{{ researchStatusLabel(row.research_status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="next_review_at" label="下次复查" width="120">
+          <template #default="{ row }">{{ formatDate(row.next_review_at) }}</template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="90">
           <template #default="{ row }">
             <el-tag :type="row.status === 'archived' ? 'info' : 'success'" effect="plain">
@@ -567,10 +585,47 @@
         <el-table-column label="操作" width="190" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.latest_score" link type="primary" @click="openDetail(row.latest_score)">详情</el-button>
-            <el-button link type="primary" @click="editCandidateWatch(row)">备注</el-button>
+            <el-button link type="primary" @click="editCandidateWatch(row)">研究</el-button>
             <el-button v-if="row.status === 'archived'" link type="success" @click="restoreCandidateWatch(row)">恢复</el-button>
             <el-button v-else link type="warning" @click="archiveCandidateWatch(row)">归档</el-button>
             <el-button link type="danger" @click="deleteCandidateWatch(row.id)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
+
+    <el-dialog v-model="watchEditorVisible" :title="`${watchEditor.ticker || '候选'} 研究记录`" width="680px">
+      <el-form label-position="top">
+        <el-form-item label="研究状态">
+          <el-select v-model="watchEditor.research_status" style="width: 180px">
+            <el-option label="待研究" value="inbox" />
+            <el-option label="研究中" value="researching" />
+            <el-option label="重点关注" value="conviction" />
+            <el-option label="淘汰" value="rejected" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="研究备注"><el-input v-model="watchEditor.note" type="textarea" :rows="2" /></el-form-item>
+        <el-form-item label="研究论点"><el-input v-model="watchEditor.thesis" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="主要风险"><el-input v-model="watchEditor.risk_notes" type="textarea" :rows="2" /></el-form-item>
+        <el-form-item label="失效条件"><el-input v-model="watchEditor.invalidation" type="textarea" :rows="2" /></el-form-item>
+        <el-form-item label="下次复查"><el-date-picker v-model="watchEditor.next_review_at" type="date" value-format="YYYY-MM-DD" clearable /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="watchEditorVisible = false">取消</el-button><el-button type="primary" :loading="watchSaving" @click="saveCandidateResearch">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="effectivenessVisible" title="候选效果评估" width="920px">
+      <el-alert :type="effectiveness?.benchmark_available ? 'info' : 'warning'" :closable="false" show-icon class="summary-alert"
+        :title="effectiveness?.benchmark_available ? `收益相对 ${effectiveness.benchmark_ticker} 计算；只统计首次进入 A/B 后已有足够交易日的样本。` : `未找到 ${effectiveness?.benchmark_ticker || 'IWM'} 本地价格历史；当前仅展示候选自身表现。`" />
+      <el-table :data="effectiveness?.cohorts || []" border empty-text="暂无可评估候选">
+        <el-table-column prop="grade" label="Cohort" width="100"><template #default="{ row }">{{ effectivenessCohortLabel(row.grade) }}</template></el-table-column>
+        <el-table-column prop="candidate_count" label="首次入选数" width="110" align="right" />
+        <el-table-column v-for="horizon in [1, 5, 20]" :key="horizon" :label="`${horizon}日表现`" min-width="180">
+          <template #default="{ row }">
+            <template v-if="effectivenessWindow(row, horizon)?.sample_count">
+              {{ formatPerformance(effectivenessWindow(row, horizon)?.average_return_pct) }}｜胜率 {{ formatPct(effectivenessWindow(row, horizon)?.win_rate_pct) }}｜回撤 {{ formatPerformance(effectivenessWindow(row, horizon)?.max_drawdown_pct) }}
+              <small v-if="effectivenessWindow(row, horizon)?.excess_return_pct != null">｜相对 {{ formatPerformance(effectivenessWindow(row, horizon)?.excess_return_pct) }}</small>
+            </template>
+            <span v-else>-</span>
           </template>
         </el-table-column>
       </el-table>
@@ -597,6 +652,8 @@ import { apiClient } from '@/api/client'
 import type {
   ApiResponse,
   CandidateDetail,
+  CandidateEffectivenessCohort,
+  CandidateEffectivenessReport,
   CandidateHealth,
   CandidateNotificationPreview,
   CandidateNotificationSendInput,
@@ -620,8 +677,14 @@ const detailLoadingTicker = ref('')
 const watchingTicker = ref('')
 const watchLoading = ref(false)
 const watchDialogVisible = ref(false)
+const watchEditorVisible = ref(false)
+const watchSaving = ref(false)
 const watchRows = ref<CandidateWatch[]>([])
+const watchEditor = reactive({ ticker: '', note: '', research_status: 'inbox', thesis: '', risk_notes: '', invalidation: '', next_review_at: '' })
 const showArchivedWatches = ref(false)
+const effectivenessLoading = ref(false)
+const effectivenessVisible = ref(false)
+const effectiveness = ref<CandidateEffectivenessReport | null>(null)
 const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
 const health = ref<CandidateHealth | null>(null)
@@ -755,6 +818,19 @@ async function openReport() {
   }
 }
 
+async function openEffectiveness() {
+  effectivenessLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<CandidateEffectivenessReport>>('/discovery/candidates/effectiveness')
+    effectiveness.value = res.data.data
+    effectivenessVisible.value = true
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '加载候选效果评估失败')
+  } finally {
+    effectivenessLoading.value = false
+  }
+}
+
 async function openDetail(row: CandidateScore) {
   detailLoadingTicker.value = row.ticker
   try {
@@ -774,6 +850,7 @@ async function addToCandidateWatches(row: CandidateScore) {
     await apiClient.post('/discovery/candidate-watches', {
       ticker: row.ticker,
       note: qualityTierLabel(row.quality_tier),
+      research_status: 'inbox',
     })
     ElMessage.success(`${row.ticker} 已加入候选关注列表`)
   } catch (err: any) {
@@ -800,26 +877,52 @@ async function loadCandidateWatches() {
 }
 
 async function editCandidateWatch(row: CandidateWatch) {
-  const { value } = await ElMessageBox.prompt('更新关注备注', row.ticker, {
-    inputValue: row.note || '',
-    confirmButtonText: '保存',
-    cancelButtonText: '取消',
-  })
-  await saveCandidateWatch(row, String(value || ''), row.status || 'active')
+  watchEditor.ticker = row.ticker
+  watchEditor.note = row.note || ''
+  watchEditor.research_status = row.research_status || 'inbox'
+  watchEditor.thesis = row.thesis || ''
+  watchEditor.risk_notes = row.risk_notes || ''
+  watchEditor.invalidation = row.invalidation || ''
+  watchEditor.next_review_at = row.next_review_at ? row.next_review_at.slice(0, 10) : ''
+  watchEditorVisible.value = true
 }
 
 async function archiveCandidateWatch(row: CandidateWatch) {
-  await saveCandidateWatch(row, row.note || '', 'archived')
+  await saveCandidateWatch(row, { note: row.note || '', status: 'archived' })
 }
 
 async function restoreCandidateWatch(row: CandidateWatch) {
-  await saveCandidateWatch(row, row.note || '', 'active')
+  await saveCandidateWatch(row, { note: row.note || '', status: 'active' })
 }
 
-async function saveCandidateWatch(row: CandidateWatch, note: string, status: string) {
-  await apiClient.post('/discovery/candidate-watches', { ticker: row.ticker, note, status })
+async function saveCandidateWatch(row: CandidateWatch, payload: Record<string, unknown>) {
+  await apiClient.post('/discovery/candidate-watches', { ticker: row.ticker, ...payload })
   ElMessage.success('关注列表已更新')
   await loadCandidateWatches()
+}
+
+async function saveCandidateResearch() {
+  if (!watchEditor.ticker) return
+  watchSaving.value = true
+  try {
+    await apiClient.post('/discovery/candidate-watches', {
+      ticker: watchEditor.ticker,
+      note: watchEditor.note,
+      research_status: watchEditor.research_status,
+      thesis: watchEditor.thesis,
+      risk_notes: watchEditor.risk_notes,
+      invalidation: watchEditor.invalidation,
+      next_review_at: watchEditor.next_review_at ? `${watchEditor.next_review_at}T00:00:00Z` : undefined,
+	      clear_next_review_at: !watchEditor.next_review_at,
+    })
+    ElMessage.success('研究记录已保存')
+    watchEditorVisible.value = false
+    await loadCandidateWatches()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '保存研究记录失败')
+  } finally {
+    watchSaving.value = false
+  }
 }
 
 async function deleteCandidateWatch(id: number) {
@@ -895,7 +998,7 @@ function quickFilterActive(kind: string) {
 
 function toggleQuickFilter(kind: string) {
   if (kind === 'high_priority') {
-    filters.min_review_priority_score = filters.min_review_priority_score > 0 ? 0 : 900
+    filters.min_review_priority_score = filters.min_review_priority_score > 0 ? 0 : 70
   } else if (kind === 'strong_b') {
     filters.quality_tier = filters.quality_tier === 'strong_b' ? '' : 'strong_b'
   } else if (kind === 'improved') {
@@ -973,8 +1076,32 @@ function qualityTagLabel(tag: string) {
     financials_missing: '财务缺失',
     active_capital_risk: '融资风险',
     secondary_price_source: '补充价格源',
+    quarterly_growth_conflicts_with_annual: '季度增长转弱',
   }
   return labels[tag] || tag
+}
+
+function researchStatusLabel(status?: string) {
+  if (status === 'researching') return '研究中'
+  if (status === 'conviction') return '重点关注'
+  if (status === 'rejected') return '淘汰'
+  return '待研究'
+}
+
+function researchStatusTagType(status?: string) {
+  if (status === 'conviction') return 'success'
+  if (status === 'researching') return 'warning'
+  if (status === 'rejected') return 'info'
+  return 'primary'
+}
+
+function effectivenessCohortLabel(grade: string) {
+  if (grade === 'all') return '全部 A/B'
+  return `${grade}级`
+}
+
+function effectivenessWindow(cohort: CandidateEffectivenessCohort, horizon: number) {
+  return cohort.windows.find((item) => item.horizon_days === horizon)
 }
 
 function qualityTagType(tag: string) {
@@ -1047,8 +1174,8 @@ function sectorPercentage(count: number) {
   return Number(((count / totalCount) * 100).toFixed(1))
 }
 
-function formatPct(value: number) {
-	return Number.isFinite(value) ? `${value.toFixed(1)}%` : '-'
+function formatPct(value?: number | null) {
+	return Number.isFinite(value) ? `${Number(value).toFixed(1)}%` : '-'
 }
 
 function formatPlainUSD(value?: number) {

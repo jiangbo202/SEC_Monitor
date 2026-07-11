@@ -43,6 +43,7 @@ export const candidateSummaryTypecheck: CandidateSummary = {
   total_b: 0,
   items_a: [candidate],
   items_b: [],
+  event_notes: { ACME: '新增入选' },
   message: '小盘股研究候选摘要',
 }
 

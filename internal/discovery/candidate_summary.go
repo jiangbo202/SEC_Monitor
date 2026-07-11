@@ -13,12 +13,13 @@ const defaultCandidateSummaryLimit = 5
 const maxCandidateSummaryLimit = 20
 
 type CandidateSummary struct {
-	BatchID string                   `json:"batch_id"`
-	TotalA  int                      `json:"total_a"`
-	TotalB  int                      `json:"total_b"`
-	ItemsA  []CandidateScoreSnapshot `json:"items_a"`
-	ItemsB  []CandidateScoreSnapshot `json:"items_b"`
-	Message string                   `json:"message"`
+	BatchID    string                   `json:"batch_id"`
+	TotalA     int                      `json:"total_a"`
+	TotalB     int                      `json:"total_b"`
+	ItemsA     []CandidateScoreSnapshot `json:"items_a"`
+	ItemsB     []CandidateScoreSnapshot `json:"items_b"`
+	EventNotes map[string]string        `json:"event_notes"`
+	Message    string                   `json:"message"`
 }
 
 type CandidateSummaryOptions struct {
@@ -34,7 +35,7 @@ func BuildCandidateSummary(ctx context.Context, db *gorm.DB, limitPerGrade int) 
 }
 
 func BuildCandidateSummaryWithOptions(ctx context.Context, db *gorm.DB, options CandidateSummaryOptions) (CandidateSummary, error) {
-	result := CandidateSummary{ItemsA: []CandidateScoreSnapshot{}, ItemsB: []CandidateScoreSnapshot{}}
+	result := CandidateSummary{ItemsA: []CandidateScoreSnapshot{}, ItemsB: []CandidateScoreSnapshot{}, EventNotes: map[string]string{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -61,8 +62,41 @@ func BuildCandidateSummaryWithOptions(ctx context.Context, db *gorm.DB, options 
 			return result, err
 		}
 	}
+	if err := hydrateCandidateSummaryEventNotes(ctx, db, &result); err != nil {
+		return result, err
+	}
 	result.Message = renderCandidateSummaryMessage(result)
 	return result, nil
+}
+
+func hydrateCandidateSummaryEventNotes(ctx context.Context, db *gorm.DB, summary *CandidateSummary) error {
+	if summary == nil || summary.BatchID == "" || (len(summary.ItemsA) == 0 && len(summary.ItemsB) == 0) {
+		return nil
+	}
+	page, err := ListCandidateScores(ctx, db, CandidateScoreQuery{Page: 1, PageSize: maxDiscoveryPageSize})
+	if err != nil {
+		return err
+	}
+	for _, item := range page.Items {
+		if item.BatchID != summary.BatchID {
+			continue
+		}
+		summary.EventNotes[item.Ticker] = candidateSummaryEventNote(item)
+	}
+	return nil
+}
+
+func candidateSummaryEventNote(item CandidateScoreResult) string {
+	switch item.ChangeStatus {
+	case "new":
+		return "新增入选"
+	case "improved":
+		return "评分或等级改善"
+	case "weakened":
+		return "评分或风险转弱"
+	default:
+		return "持续跟踪"
+	}
 }
 
 func normalizeCandidateSummaryLimit(limit int) int {
@@ -158,19 +192,19 @@ func renderCandidateSummaryMessage(summary CandidateSummary) string {
 	if len(summary.ItemsA) > 0 {
 		lines = append(lines, "", "A级候选：")
 		for _, item := range summary.ItemsA {
-			lines = append(lines, formatCandidateSummaryLine(item))
+			lines = append(lines, formatCandidateSummaryLine(item, summary.EventNotes[item.Ticker]))
 		}
 	}
 	if len(summary.ItemsB) > 0 {
 		lines = append(lines, "", "B级候选：")
 		for _, item := range summary.ItemsB {
-			lines = append(lines, formatCandidateSummaryLine(item))
+			lines = append(lines, formatCandidateSummaryLine(item, summary.EventNotes[item.Ticker]))
 		}
 	}
 	return strings.Join(lines, "\n")
 }
 
-func formatCandidateSummaryLine(item CandidateScoreSnapshot) string {
+func formatCandidateSummaryLine(item CandidateScoreSnapshot, eventNote string) string {
 	flags := []string{}
 	if item.RecentQualifiedInsider {
 		flags = append(flags, "Form 4增持")
@@ -180,6 +214,9 @@ func formatCandidateSummaryLine(item CandidateScoreSnapshot) string {
 	}
 	if len(flags) == 0 {
 		flags = append(flags, "无关键风险标记")
+	}
+	if eventNote != "" {
+		flags = append(flags, eventNote)
 	}
 	return fmt.Sprintf("- %s｜%d分｜市值%s｜收入增长%s｜现金%s｜%s",
 		item.Ticker,

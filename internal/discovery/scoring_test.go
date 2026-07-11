@@ -108,6 +108,43 @@ func TestScoreDiscoveryCandidateExcludesWhenBBlocked(t *testing.T) {
 	}
 }
 
+func TestScoreDiscoveryCandidatePrefersQuarterlyRevenueGrowth(t *testing.T) {
+	cases := []struct {
+		name              string
+		financial         FinancialMetricSnapshot
+		wantGrowth        float64
+		wantGrowthScore   int
+		wantRevenueSignal bool
+	}{
+		{
+			name: "uses quarterly result even when annual is higher",
+			financial: FinancialMetricSnapshot{
+				RevenueGrowthAvailable: true, QuarterlyRevenueYoYPct: -12, AnnualRevenueYoYPct: 80,
+			},
+			wantGrowth: -12,
+		},
+		{
+			name: "falls back to annual when quarterly is unavailable",
+			financial: FinancialMetricSnapshot{
+				AnnualRevenueYoYPct: 45, LatestAnnualRevenueUSD: 145, PriorAnnualRevenueUSD: 100,
+			},
+			wantGrowth: 45, wantGrowthScore: 30, wantRevenueSignal: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			score := ScoreDiscoveryCandidate(DiscoveryScoreInput{Financial: tc.financial, AsOf: time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)})
+			if score.RevenueGrowthPct != tc.wantGrowth || score.RevenueGrowthScore != tc.wantGrowthScore {
+				t.Fatalf("score = %#v, want growth=%v score=%d", score, tc.wantGrowth, tc.wantGrowthScore)
+			}
+			if score.RevenueGrowthScore > 0 != tc.wantRevenueSignal {
+				t.Fatalf("revenue signal = %v, want %v", score.RevenueGrowthScore > 0, tc.wantRevenueSignal)
+			}
+		})
+	}
+}
+
 func TestCandidateScoreToSnapshotPreservesScoreEvidence(t *testing.T) {
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	score := DiscoveryScore{

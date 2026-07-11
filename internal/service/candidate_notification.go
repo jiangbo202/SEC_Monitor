@@ -131,22 +131,26 @@ func notificationCandidatesFromCandidateSummary(summary discovery.CandidateSumma
 	now := time.Now().UTC()
 	candidates := make([]NotificationCandidate, 0, len(summary.ItemsA)+len(summary.ItemsB))
 	for _, item := range summary.ItemsA {
-		candidates = append(candidates, notificationCandidateFromScore(summary.BatchID, item, "A", now))
+		candidates = append(candidates, notificationCandidateFromScore(summary.BatchID, item, "A", summary.EventNotes[item.Ticker], now))
 	}
 	for _, item := range summary.ItemsB {
-		candidates = append(candidates, notificationCandidateFromScore(summary.BatchID, item, "B", now))
+		candidates = append(candidates, notificationCandidateFromScore(summary.BatchID, item, "B", summary.EventNotes[item.Ticker], now))
 	}
 	return candidates
 }
 
-func notificationCandidateFromScore(batchID string, item discovery.CandidateScoreSnapshot, grade string, now time.Time) NotificationCandidate {
+func notificationCandidateFromScore(batchID string, item discovery.CandidateScoreSnapshot, grade, eventNote string, now time.Time) NotificationCandidate {
+	title := fmt.Sprintf("%s级候选，%d分", grade, item.TotalScore)
+	if eventNote != "" {
+		title += "｜" + eventNote
+	}
 	return NotificationCandidate{
 		EntityKind:  "candidate",
 		FilingID:    fmt.Sprintf("%s:%s:%d", batchID, item.Ticker, item.ID),
 		Ticker:      item.Ticker,
 		CompanyName: item.Ticker,
 		FilingType:  grade,
-		Title:       fmt.Sprintf("%s级候选，%d分", grade, item.TotalScore),
+		Title:       title,
 		Status:      item.Grade,
 		Reason:      "eligible",
 		EventAt:     now,

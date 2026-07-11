@@ -213,6 +213,15 @@ func (h *AppHandler) GetDiscoveryCandidateReport(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) GetDiscoveryCandidateEffectiveness(c *gin.Context) {
+	result, err := discovery.BuildCandidateEffectiveness(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) PreviewDiscoveryCandidateSummary(c *gin.Context) {
 	limit := 0
 	if value := strings.TrimSpace(c.Query("limit")); value != "" {

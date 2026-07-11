@@ -167,6 +167,7 @@ export interface CandidateScore {
   review_priority_score?: number
   review_priority_reasons?: ReviewPriorityReason[]
   change_status?: string
+  change_reasons?: CandidateChangeReason[]
   previous_total_score?: number | null
   previous_grade?: string
   performance?: CandidatePerformance
@@ -181,6 +182,14 @@ export interface CandidateScore {
 export interface ReviewPriorityReason {
   label: string
   points: number
+  kind: string
+}
+
+export interface CandidateChangeReason {
+  field: string
+  label: string
+  previous: string
+  current: string
   kind: string
 }
 
@@ -206,6 +215,11 @@ export interface CandidateWatch {
   company_name: string
   status: string
   note: string
+  research_status: 'inbox' | 'researching' | 'conviction' | 'rejected' | string
+  thesis: string
+  risk_notes: string
+  invalidation: string
+  next_review_at?: string | null
   source_batch_id: string
   latest_score?: CandidateScore
   created_at: string
@@ -338,6 +352,7 @@ export interface CandidateSummary {
   total_b: number
   items_a: CandidateScore[]
   items_b: CandidateScore[]
+  event_notes: Record<string, string>
   message: string
 }
 
@@ -474,6 +489,29 @@ export interface CandidateReport {
   summary: CandidateSummary
   health: CandidateHealth
   generated_at: string
+}
+
+export interface CandidateEffectivenessWindow {
+  horizon_days: number
+  sample_count: number
+  average_return_pct?: number | null
+  win_rate_pct?: number | null
+  max_drawdown_pct?: number | null
+  benchmark_return_pct?: number | null
+  excess_return_pct?: number | null
+}
+
+export interface CandidateEffectivenessCohort {
+  grade: string
+  candidate_count: number
+  windows: CandidateEffectivenessWindow[]
+}
+
+export interface CandidateEffectivenessReport {
+  generated_at: string
+  benchmark_ticker: string
+  benchmark_available: boolean
+  cohorts: CandidateEffectivenessCohort[]
 }
 
 export interface SystemConfig {

@@ -1,7 +1,6 @@
 package discovery
 
 import (
-	"math"
 	"time"
 )
 
@@ -55,7 +54,7 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 	if asOf.IsZero() {
 		asOf = time.Now().UTC()
 	}
-	growth := math.Max(input.Financial.QuarterlyRevenueYoYPct, input.Financial.AnnualRevenueYoYPct)
+	growth, growthAvailable, _ := selectRevenueGrowth(input.Financial)
 	recentInsider := hasRecentQualifiedInsider(input.Insiders, asOf)
 	blocksA, blocksB := activeRiskBlocks(input.Risks)
 
@@ -65,7 +64,7 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 		RecentQualifiedInsider: recentInsider, ActiveBlocksA: blocksA, ActiveBlocksB: blocksB,
 		ScoringVersion: DiscoveryScoringVersion,
 	}
-	if input.Financial.RevenueGrowthAvailable {
+	if growthAvailable {
 		switch {
 		case growth >= 40:
 			score.RevenueGrowthScore = 30
@@ -102,11 +101,11 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 	score.TotalScore = score.RevenueGrowthScore + score.CashRunwayScore + score.InsiderScore + score.GrossMarginScore + score.DilutionRiskScore + score.SectorScore
 
 	score.EligibleA = input.MarketCapUSD >= 30_000_000 && input.MarketCapUSD < 500_000_000 &&
-		input.Financial.RevenueGrowthAvailable && growth > 40 &&
+		growthAvailable && growth > 40 &&
 		input.Financial.RunwayAvailable && input.Financial.CashRunwayMonths >= 12 &&
 		recentInsider && !blocksA && !blocksB
 	score.EligibleB = input.MarketCapUSD >= 30_000_000 && input.MarketCapUSD < 1_000_000_000 &&
-		input.Financial.RevenueGrowthAvailable && growth > 20 && !blocksB &&
+		growthAvailable && growth > 20 && !blocksB &&
 		score.SectorScore >= 7
 	switch {
 	case score.EligibleA:
@@ -120,6 +119,18 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 		score.ReasonCode = "criteria_not_met"
 	}
 	return score
+}
+
+// selectRevenueGrowth deliberately favors the most recent comparable quarter.
+// Annual revenue is a fallback only when a quarterly year-over-year comparison is unavailable.
+func selectRevenueGrowth(financial FinancialMetricSnapshot) (float64, bool, string) {
+	if financial.RevenueGrowthAvailable {
+		return financial.QuarterlyRevenueYoYPct, true, "quarterly_revenue_yoy_pct"
+	}
+	if financial.LatestAnnualRevenueUSD > 0 && financial.PriorAnnualRevenueUSD > 0 {
+		return financial.AnnualRevenueYoYPct, true, "annual_revenue_yoy_pct"
+	}
+	return 0, false, "missing"
 }
 
 func CandidateScoreToSnapshot(batchID string, score DiscoveryScore, now time.Time) CandidateScoreSnapshot {

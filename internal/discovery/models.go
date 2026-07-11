@@ -346,16 +346,21 @@ type CandidateRecalcEvent struct {
 }
 
 type CandidateWatch struct {
-	ID            uint      `json:"id"`
-	Ticker        string    `json:"ticker" gorm:"size:32;uniqueIndex;index"`
-	SecurityID    uint      `json:"security_id" gorm:"index"`
-	CIK           string    `json:"cik" gorm:"size:10;index"`
-	CompanyName   string    `json:"company_name" gorm:"size:255"`
-	Status        string    `json:"status" gorm:"size:16;index"`
-	Note          string    `json:"note" gorm:"type:text"`
-	SourceBatchID string    `json:"source_batch_id" gorm:"size:64;index"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID             uint       `json:"id"`
+	Ticker         string     `json:"ticker" gorm:"size:32;uniqueIndex;index"`
+	SecurityID     uint       `json:"security_id" gorm:"index"`
+	CIK            string     `json:"cik" gorm:"size:10;index"`
+	CompanyName    string     `json:"company_name" gorm:"size:255"`
+	Status         string     `json:"status" gorm:"size:16;index"`
+	Note           string     `json:"note" gorm:"type:text"`
+	ResearchStatus string     `json:"research_status" gorm:"size:16;index"`
+	Thesis         string     `json:"thesis" gorm:"type:text"`
+	RiskNotes      string     `json:"risk_notes" gorm:"type:text"`
+	Invalidation   string     `json:"invalidation" gorm:"type:text"`
+	NextReviewAt   *time.Time `json:"next_review_at" gorm:"index"`
+	SourceBatchID  string     `json:"source_batch_id" gorm:"size:64;index"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 type UniverseBatch struct {

@@ -394,6 +394,7 @@ func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
 	r.GET("/discovery/candidates/health", h.GetDiscoveryCandidateHealth)
 	r.POST("/discovery/candidates/refresh", h.RefreshDiscoveryCandidates)
 	r.GET("/discovery/candidates/report", h.GetDiscoveryCandidateReport)
+	r.GET("/discovery/candidates/effectiveness", h.GetDiscoveryCandidateEffectiveness)
 
 	for _, tc := range []struct {
 		method string
@@ -403,6 +404,7 @@ func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
 		{method: http.MethodGet, path: "/discovery/candidates/health", want: `"total_candidates":1`},
 		{method: http.MethodPost, path: "/discovery/candidates/refresh", want: `"status":"published"`},
 		{method: http.MethodGet, path: "/discovery/candidates/report?date=2026-06-30", want: `"ticker":"OPS"`},
+		{method: http.MethodGet, path: "/discovery/candidates/effectiveness", want: `"benchmark_ticker":"IWM"`},
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(tc.method, tc.path, nil)

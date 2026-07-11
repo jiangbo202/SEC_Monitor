@@ -132,7 +132,7 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	if page.Items[0].SectorCategory != "软件与数据服务" || page.Items[0].SectorRatingScore != 9 || page.Items[0].SectorSIC != 7372 || page.Items[0].SectorLabel != "优秀赛道" {
 		t.Fatalf("sector evidence = %#v", page.Items[0])
 	}
-	if page.Items[0].RevenueGrowthInfo.SelectedRevenueGrowthBasis != "quarterly_revenue_yoy_pct" || page.Items[0].RevenueGrowthInfo.LatestQuarterRevenueUSD != 142 || !strings.Contains(page.Items[0].RevenueGrowthInfo.Method, "max") {
+	if page.Items[0].RevenueGrowthInfo.SelectedRevenueGrowthBasis != "quarterly_revenue_yoy_pct" || page.Items[0].RevenueGrowthInfo.LatestQuarterRevenueUSD != 142 || !strings.Contains(page.Items[0].RevenueGrowthInfo.Method, "preferred") {
 		t.Fatalf("revenue explanation = %#v", page.Items[0].RevenueGrowthInfo)
 	}
 	if page.Items[0].RevenueGrowthInfo.QuarterlyRevenueQoQPct != 10 || page.Items[0].RevenueGrowthInfo.PreviousQuarterRevenueUSD != 129 {
@@ -250,10 +250,10 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	if page.Items[0].Ticker != "STRB" || page.Items[0].QualityTier != "strong_b" || page.Items[0].ChangeStatus != "improved" {
 		t.Fatalf("strong candidate annotations = %#v", page.Items[0])
 	}
-	if page.Items[0].ReviewPriorityScore <= page.Items[1].ReviewPriorityScore {
+	if page.Items[0].ReviewPriorityScore <= page.Items[1].ReviewPriorityScore || page.Items[0].ReviewPriorityScore > 100 {
 		t.Fatalf("default priority order not applied: %#v", page.Items)
 	}
-	if !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "质量：强B", 80) || !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "变化：改善", 45) {
+	if !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "质量：强B", 12) || !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "变化：改善", 8) {
 		t.Fatalf("strong candidate priority reasons = %#v", page.Items[0].ReviewPriorityReasons)
 	}
 	if !containsString(page.Items[1].QualityTags, "low_revenue_base") || !containsString(page.Items[1].QualityTags, "low_liquidity") || page.Items[1].QualityTier != "watch_b" || page.Items[1].ChangeStatus != "new" {
@@ -268,7 +268,7 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	filtered, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{
 		QualityTier:            "strong_b",
 		ChangeStatus:           "improved",
-		MinReviewPriorityScore: 900,
+		MinReviewPriorityScore: 70,
 		ExcludeQualityTags:     []string{"low_liquidity"},
 	})
 	if err != nil {
@@ -276,6 +276,32 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	}
 	if filtered.Total != 1 || filtered.Items[0].Ticker != "STRB" {
 		t.Fatalf("filtered candidates = %#v", filtered)
+	}
+}
+
+func TestCandidateQualityTagsFlagQuarterlyAnnualGrowthConflict(t *testing.T) {
+	cases := []struct {
+		name string
+		item CandidateScoreResult
+		want bool
+	}{
+		{
+			name: "quarterly decline conflicts with annual growth",
+			item: CandidateScoreResult{RevenueGrowthInfo: RevenueGrowthExplanation{RevenueGrowthAvailable: true, QuarterlyRevenueYoYPct: -5, AnnualRevenueYoYPct: 35}},
+			want: true,
+		},
+		{
+			name: "positive quarterly growth has no conflict",
+			item: CandidateScoreResult{RevenueGrowthInfo: RevenueGrowthExplanation{RevenueGrowthAvailable: true, QuarterlyRevenueYoYPct: 5, AnnualRevenueYoYPct: 35}},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containsString(candidateQualityTags(tc.item), "quarterly_growth_conflicts_with_annual"); got != tc.want {
+				t.Fatalf("conflict tag = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -561,7 +587,7 @@ func TestBuildCandidateSummaryFiltersByMinimumPriority(t *testing.T) {
 	summary, err := BuildCandidateSummaryWithOptions(context.Background(), db, CandidateSummaryOptions{
 		LimitPerGrade:          5,
 		IncludeA:               true,
-		MinReviewPriorityScore: 950,
+		MinReviewPriorityScore: 70,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -637,6 +663,41 @@ func TestCandidateWatchLifecycle(t *testing.T) {
 	page, err = ListCandidateWatches(context.Background(), db, CandidateWatchQuery{Page: 1, PageSize: 10})
 	if err != nil || page.Total != 0 {
 		t.Fatalf("after delete page=%#v err=%v", page, err)
+	}
+}
+
+func TestCandidateWatchResearchFieldsSupportPartialUpdates(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	thesis := "收入增长可持续"
+	risk := "现金消耗加快"
+	nextReview := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
+	researching := CandidateResearchStatusResearching
+	watch, err := UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{
+		Ticker: "RSCH", ResearchStatus: &researching, Thesis: &thesis, RiskNotes: &risk, NextReviewAt: &nextReview,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watch.ResearchStatus != researching || watch.Thesis != thesis || watch.RiskNotes != risk || watch.NextReviewAt == nil || !watch.NextReviewAt.Equal(nextReview) {
+		t.Fatalf("created research watch = %#v", watch)
+	}
+
+	conviction := CandidateResearchStatusConviction
+	watch, err = UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "RSCH", ResearchStatus: &conviction, Note: "reviewed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watch.ResearchStatus != conviction || watch.Thesis != thesis || watch.RiskNotes != risk || watch.NextReviewAt == nil || !watch.NextReviewAt.Equal(nextReview) || watch.Note != "reviewed" {
+		t.Fatalf("partial update research watch = %#v", watch)
+	}
+
+	invalid := "unknown"
+	if _, err := UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "RSCH", ResearchStatus: &invalid}); err == nil {
+		t.Fatal("expected invalid research status error")
+	}
+	watch, err = UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "RSCH", ClearNextReviewAt: true})
+	if err != nil || watch.NextReviewAt != nil {
+		t.Fatalf("clear review date watch=%#v err=%v", watch, err)
 	}
 }
 

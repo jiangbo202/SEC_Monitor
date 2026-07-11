@@ -33,6 +33,7 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		ReviewPriorityScore   int                      `json:"review_priority_score"`
 		ReviewPriorityReasons []ReviewPriorityReason   `json:"review_priority_reasons"`
 		ChangeStatus          string                   `json:"change_status"`
+		ChangeReasons         []CandidateChangeReason  `json:"change_reasons"`
 		PreviousTotalScore    *int                     `json:"previous_total_score"`
 		PreviousGrade         string                   `json:"previous_grade"`
 		Performance           CandidatePerformance     `json:"performance"`
@@ -57,6 +58,7 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		ReviewPriorityScore:   row.ReviewPriorityScore,
 		ReviewPriorityReasons: row.ReviewPriorityReasons,
 		ChangeStatus:          row.ChangeStatus,
+		ChangeReasons:         row.ChangeReasons,
 		PreviousTotalScore:    row.PreviousTotalScore,
 		PreviousGrade:         row.PreviousGrade,
 		Performance:           sanitizeCandidatePerformance(row.Performance),

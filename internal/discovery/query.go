@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,7 @@ type CandidateScoreResult struct {
 	ReviewPriorityScore   int                      `json:"review_priority_score"`
 	ReviewPriorityReasons []ReviewPriorityReason   `json:"review_priority_reasons"`
 	ChangeStatus          string                   `json:"change_status"`
+	ChangeReasons         []CandidateChangeReason  `json:"change_reasons"`
 	PreviousTotalScore    *int                     `json:"previous_total_score"`
 	PreviousGrade         string                   `json:"previous_grade"`
 	Performance           CandidatePerformance     `json:"performance"`
@@ -85,6 +87,14 @@ type ReviewPriorityReason struct {
 	Label  string `json:"label"`
 	Points int    `json:"points"`
 	Kind   string `json:"kind"`
+}
+
+type CandidateChangeReason struct {
+	Field    string `json:"field"`
+	Label    string `json:"label"`
+	Previous string `json:"previous"`
+	Current  string `json:"current"`
+	Kind     string `json:"kind"`
 }
 
 type CapitalRiskSummary struct {
@@ -433,7 +443,7 @@ func hydrateCandidateRevenueGrowthEvidence(ctx context.Context, db *gorm.DB, sec
 	}
 	for i := range items {
 		items[i].RevenueGrowthInfo = RevenueGrowthExplanation{
-			Method:                   "selected = max(quarterly_revenue_yoy_pct, annual_revenue_yoy_pct)",
+			Method:                   "quarterly_revenue_yoy_pct preferred; annual_revenue_yoy_pct fallback",
 			Source:                   "SEC companyfacts / financial_metric_snapshots",
 			SelectedRevenueGrowthPct: items[i].RevenueGrowthPct,
 		}
@@ -458,16 +468,9 @@ func hydrateCandidateRevenueGrowthEvidence(ctx context.Context, db *gorm.DB, sec
 		if !ok {
 			continue
 		}
-		basis := "missing"
-		if metric.RevenueGrowthAvailable {
-			if metric.QuarterlyRevenueYoYPct >= metric.AnnualRevenueYoYPct {
-				basis = "quarterly_revenue_yoy_pct"
-			} else {
-				basis = "annual_revenue_yoy_pct"
-			}
-		}
+		_, _, basis := selectRevenueGrowth(metric)
 		items[i].RevenueGrowthInfo = RevenueGrowthExplanation{
-			Method:                     "selected = max(quarterly_revenue_yoy_pct, annual_revenue_yoy_pct)",
+			Method:                     "quarterly_revenue_yoy_pct preferred; annual_revenue_yoy_pct fallback",
 			Source:                     "SEC companyfacts / financial_metric_snapshots",
 			RevenueGrowthAvailable:     metric.RevenueGrowthAvailable,
 			QuarterlyRevenueYoYPct:     metric.QuarterlyRevenueYoYPct,
@@ -597,6 +600,7 @@ func annotateCandidateChanges(ctx context.Context, db *gorm.DB, current Universe
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		for i := range items {
 			items[i].ChangeStatus = "new"
+			items[i].ChangeReasons = candidateChangeReasons(nil, items[i].CandidateScoreSnapshot)
 		}
 		return items, nil
 	}
@@ -619,14 +623,48 @@ func annotateCandidateChanges(ctx context.Context, db *gorm.DB, current Universe
 		previousScore, ok := bySecurity[items[i].SecurityID]
 		if !ok {
 			items[i].ChangeStatus = "new"
+			items[i].ChangeReasons = candidateChangeReasons(nil, items[i].CandidateScoreSnapshot)
 			continue
 		}
 		score := previousScore.TotalScore
 		items[i].PreviousTotalScore = &score
 		items[i].PreviousGrade = previousScore.Grade
 		items[i].ChangeStatus = candidateChangeStatus(previousScore, items[i].CandidateScoreSnapshot)
+		items[i].ChangeReasons = candidateChangeReasons(&previousScore, items[i].CandidateScoreSnapshot)
 	}
 	return items, nil
+}
+
+func candidateChangeReasons(previous *CandidateScoreSnapshot, current CandidateScoreSnapshot) []CandidateChangeReason {
+	if previous == nil {
+		return []CandidateChangeReason{{Field: "candidate", Label: "首次入选", Current: current.Grade, Kind: "new"}}
+	}
+	reasons := []CandidateChangeReason{}
+	add := func(field, label, previousValue, currentValue, kind string) {
+		if previousValue != currentValue {
+			reasons = append(reasons, CandidateChangeReason{Field: field, Label: label, Previous: previousValue, Current: currentValue, Kind: kind})
+		}
+	}
+	add("grade", "等级变化", previous.Grade, current.Grade, "grade")
+	add("total_score", "总分变化", formatCandidateNumber(float64(previous.TotalScore)), formatCandidateNumber(float64(current.TotalScore)), "score")
+	add("revenue_growth_pct", "收入增长变化", formatCandidateNumber(previous.RevenueGrowthPct), formatCandidateNumber(current.RevenueGrowthPct), "growth")
+	add("cash_runway_months", "现金 runway 变化", formatCandidateNumber(previous.CashRunwayMonths), formatCandidateNumber(current.CashRunwayMonths), "runway")
+	add("risk_blocks", "融资/稀释风险变化", formatCandidateRiskBlocks(*previous), formatCandidateRiskBlocks(current), "risk")
+	return reasons
+}
+
+func formatCandidateNumber(value float64) string {
+	return strconv.FormatFloat(value, 'f', 1, 64)
+}
+
+func formatCandidateRiskBlocks(score CandidateScoreSnapshot) string {
+	if score.ActiveBlocksB {
+		return "阻断B"
+	}
+	if score.ActiveBlocksA {
+		return "阻断A"
+	}
+	return "无阻断"
 }
 
 func candidateChangeStatus(previous, current CandidateScoreSnapshot) string {
@@ -778,6 +816,9 @@ func candidateQualityTags(item CandidateScoreResult) []string {
 	if item.PriceQualityStatus != "" && item.PriceQualityStatus != QualityStatusValid {
 		add("price_quality_" + item.PriceQualityStatus)
 	}
+	if item.RevenueGrowthInfo.RevenueGrowthAvailable && item.RevenueGrowthInfo.QuarterlyRevenueYoYPct < 0 && item.RevenueGrowthInfo.AnnualRevenueYoYPct >= 20 {
+		add("quarterly_growth_conflicts_with_annual")
+	}
 	return tags
 }
 
@@ -785,6 +826,12 @@ func candidateReviewPriorityScore(item CandidateScoreResult) int {
 	score := 0
 	for _, reason := range candidateReviewPriorityReasons(item) {
 		score += reason.Points
+	}
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
 	}
 	return score
 }
@@ -804,42 +851,42 @@ func candidateReviewPriorityReasons(item CandidateScoreResult) []ReviewPriorityR
 		}
 		reasons = append(reasons, ReviewPriorityReason{Label: label, Points: points, Kind: kind})
 	}
-	add("质量调整分", item.QualityAdjustedScore*10)
+	add("质量调整分", item.QualityAdjustedScore*60/100)
 	switch item.QualityTier {
 	case "a":
-		add("质量：A级", 120)
+		add("质量：A级", 20)
 	case "strong_b":
-		add("质量：强B", 80)
+		add("质量：强B", 12)
 	case "standard_b":
-		add("质量：普通B", 30)
+		add("质量：普通B", 5)
 	case "watch_b":
-		add("质量：观察B", -30)
+		add("质量：观察B", -10)
 	}
 	if item.ChangeStatus == "new" {
-		add("变化：新增", 35)
+		add("变化：新增", 5)
 	}
 	if item.ChangeStatus == "improved" {
-		add("变化：改善", 45)
+		add("变化：改善", 8)
 	}
 	if item.RecentQualifiedInsider {
-		add("近期合格内幕买入", 50)
+		add("近期合格内幕买入", 8)
 	}
 	if item.PriceSource == "tiingo" {
-		add("价格源：Tiingo", 20)
+		add("价格源：Tiingo", 2)
 	}
 	if item.PriceVolume >= 500_000 {
-		add("成交量：50万以上", 25)
+		add("成交量：50万以上", 3)
 	} else if item.PriceVolume >= 100_000 {
-		add("成交量：10万以上", 10)
+		add("成交量：10万以上", 1)
 	}
 	if item.MarketCapUSD > 0 && item.MarketCapUSD <= 500_000_000 {
-		add("市值：5亿美元以内", 20)
+		add("市值：5亿美元以内", 2)
 	}
 	if item.ActiveBlocksA || item.ActiveBlocksB {
-		add("存在阻断风险", -80)
+		add("存在阻断风险", -15)
 	}
 	if penalty := countPenaltyQualityTags(item.QualityTags); penalty > 0 {
-		add("质量风险标签", -10*penalty)
+		add("质量风险标签", -2*penalty)
 	}
 	return reasons
 }

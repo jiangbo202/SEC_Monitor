@@ -12,10 +12,23 @@ import (
 const CandidateWatchStatusActive = "active"
 const CandidateWatchStatusArchived = "archived"
 
+const (
+	CandidateResearchStatusInbox       = "inbox"
+	CandidateResearchStatusResearching = "researching"
+	CandidateResearchStatusConviction  = "conviction"
+	CandidateResearchStatusRejected    = "rejected"
+)
+
 type CandidateWatchInput struct {
-	Ticker string `json:"ticker"`
-	Note   string `json:"note"`
-	Status string `json:"status"`
+	Ticker            string     `json:"ticker"`
+	Note              string     `json:"note"`
+	Status            string     `json:"status"`
+	ResearchStatus    *string    `json:"research_status"`
+	Thesis            *string    `json:"thesis"`
+	RiskNotes         *string    `json:"risk_notes"`
+	Invalidation      *string    `json:"invalidation"`
+	NextReviewAt      *time.Time `json:"next_review_at"`
+	ClearNextReviewAt bool       `json:"clear_next_review_at"`
 }
 
 type CandidateWatchQuery struct {
@@ -136,14 +149,16 @@ func UpsertCandidateWatch(ctx context.Context, db *gorm.DB, input CandidateWatch
 	if ticker == "" {
 		return CandidateWatch{}, errors.New("ticker is required")
 	}
-	status := normalizeCandidateWatchStatus(input.Status)
-	if status == "" {
-		status = CandidateWatchStatusActive
+	status, err := validatedCandidateWatchStatus(input.Status, CandidateWatchStatusActive)
+	if err != nil {
+		return CandidateWatch{}, err
 	}
-	if status != CandidateWatchStatusActive && status != CandidateWatchStatusArchived {
-		return CandidateWatch{}, errors.New("invalid watch status")
+	researchStatus, err := validatedCandidateResearchStatus(input.ResearchStatus, CandidateResearchStatusInbox)
+	if err != nil {
+		return CandidateWatch{}, err
 	}
-	watch := CandidateWatch{Ticker: ticker, Status: status, Note: strings.TrimSpace(input.Note), UpdatedAt: time.Now().UTC()}
+	watch := CandidateWatch{Ticker: ticker, Status: status, Note: strings.TrimSpace(input.Note), ResearchStatus: researchStatus, UpdatedAt: time.Now().UTC()}
+	applyCandidateWatchResearchInput(&watch, input)
 	if score, ok, err := currentCandidateScoreByTicker(ctx, db, ticker); err != nil {
 		return CandidateWatch{}, err
 	} else if ok {
@@ -158,7 +173,7 @@ func UpsertCandidateWatch(ctx context.Context, db *gorm.DB, input CandidateWatch
 		}
 	}
 	var existing CandidateWatch
-	err := db.WithContext(ctx).First(&existing, "ticker = ?", ticker).Error
+	err = db.WithContext(ctx).First(&existing, "ticker = ?", ticker).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		if err := db.WithContext(ctx).Create(&watch).Error; err != nil {
 			return CandidateWatch{}, err
@@ -170,7 +185,27 @@ func UpsertCandidateWatch(ctx context.Context, db *gorm.DB, input CandidateWatch
 	}
 	updates := map[string]any{
 		"security_id": watch.SecurityID, "cik": watch.CIK, "company_name": watch.CompanyName,
-		"status": watch.Status, "note": watch.Note, "source_batch_id": watch.SourceBatchID, "updated_at": watch.UpdatedAt,
+		"note": watch.Note, "source_batch_id": watch.SourceBatchID, "updated_at": watch.UpdatedAt,
+	}
+	if strings.TrimSpace(input.Status) != "" {
+		updates["status"] = watch.Status
+	}
+	if input.ResearchStatus != nil {
+		updates["research_status"] = watch.ResearchStatus
+	}
+	if input.Thesis != nil {
+		updates["thesis"] = watch.Thesis
+	}
+	if input.RiskNotes != nil {
+		updates["risk_notes"] = watch.RiskNotes
+	}
+	if input.Invalidation != nil {
+		updates["invalidation"] = watch.Invalidation
+	}
+	if input.ClearNextReviewAt {
+		updates["next_review_at"] = nil
+	} else if input.NextReviewAt != nil {
+		updates["next_review_at"] = watch.NextReviewAt
 	}
 	if err := db.WithContext(ctx).Model(&existing).Updates(updates).Error; err != nil {
 		return CandidateWatch{}, err
@@ -213,4 +248,49 @@ func normalizeTicker(ticker string) string {
 
 func normalizeCandidateWatchStatus(status string) string {
 	return strings.ToLower(strings.TrimSpace(status))
+}
+
+func validatedCandidateWatchStatus(input, fallback string) (string, error) {
+	status := normalizeCandidateWatchStatus(input)
+	if status == "" {
+		return fallback, nil
+	}
+	if status != CandidateWatchStatusActive && status != CandidateWatchStatusArchived {
+		return "", errors.New("invalid watch status")
+	}
+	return status, nil
+}
+
+func validatedCandidateResearchStatus(input *string, fallback string) (string, error) {
+	if input == nil {
+		return fallback, nil
+	}
+	status := strings.ToLower(strings.TrimSpace(*input))
+	if status == "" {
+		return fallback, nil
+	}
+	switch status {
+	case CandidateResearchStatusInbox, CandidateResearchStatusResearching, CandidateResearchStatusConviction, CandidateResearchStatusRejected:
+		return status, nil
+	default:
+		return "", errors.New("invalid research status")
+	}
+}
+
+func applyCandidateWatchResearchInput(watch *CandidateWatch, input CandidateWatchInput) {
+	if input.Thesis != nil {
+		watch.Thesis = strings.TrimSpace(*input.Thesis)
+	}
+	if input.RiskNotes != nil {
+		watch.RiskNotes = strings.TrimSpace(*input.RiskNotes)
+	}
+	if input.Invalidation != nil {
+		watch.Invalidation = strings.TrimSpace(*input.Invalidation)
+	}
+	if input.ClearNextReviewAt {
+		watch.NextReviewAt = nil
+	} else if input.NextReviewAt != nil {
+		nextReview := input.NextReviewAt.UTC()
+		watch.NextReviewAt = &nextReview
+	}
 }
