@@ -63,7 +63,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		currentFilingsClient = sec.NewHTTPClient(deps.Config.SEC.BaseURL, deps.Config.SEC.UserAgent, time.Duration(deps.Config.SEC.TimeoutMS)*time.Millisecond)
 	}
 	ipoRadar := service.NewIPORadarService(deps.DB, currentFilingsClient, notifier, configs)
-	sched := scheduler.New(tasks, filings, configs, ipoRadar, candidateNotifications, discoverySync)
+	sched := scheduler.New(tasks, filings, configs, ipoRadar, candidateNotifications, discoverySync, notificationBatches)
 	if err := sched.Start(context.Background()); err != nil {
 		return nil, fmt.Errorf("start scheduler: %w", err)
 	}

@@ -15,6 +15,7 @@ const (
 	ipoRadarSyncTaskName              = "ipo_radar_sync"
 	smallCapDiscoverySyncTaskName     = "small_cap_discovery_sync"
 	secFilingSyncTaskName             = "sec_filing_sync"
+	notificationRetrySyncTaskName     = "notification_retry_sync"
 )
 
 type Scheduler struct {
@@ -25,8 +26,9 @@ type Scheduler struct {
 	ipo                    *service.IPORadarService
 	candidateNotifications *service.CandidateNotificationService
 	discoverySync          *service.DiscoverySyncService
+	notificationBatches    *service.NotificationBatchService
 	mu                     sync.Mutex
-	running                bool
+	runningTasks           map[string]bool
 	started                bool
 }
 
@@ -34,6 +36,7 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 	var ipoService *service.IPORadarService
 	var candidateNotifications *service.CandidateNotificationService
 	var discoverySync *service.DiscoverySyncService
+	var notificationBatches *service.NotificationBatchService
 	var configs *service.ConfigService
 	for _, svc := range services {
 		switch typed := svc.(type) {
@@ -45,6 +48,8 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 			candidateNotifications = typed
 		case *service.DiscoverySyncService:
 			discoverySync = typed
+		case *service.NotificationBatchService:
+			notificationBatches = typed
 		}
 	}
 	return &Scheduler{
@@ -55,6 +60,8 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 		ipo:                    ipoService,
 		candidateNotifications: candidateNotifications,
 		discoverySync:          discoverySync,
+		notificationBatches:    notificationBatches,
+		runningTasks:           make(map[string]bool),
 	}
 }
 
@@ -132,16 +139,16 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 
 func (s *Scheduler) RunTask(ctx context.Context, taskName string) error {
 	s.mu.Lock()
-	if s.running {
+	if s.runningTasks[taskName] {
 		s.mu.Unlock()
 		return nil
 	}
-	s.running = true
+	s.runningTasks[taskName] = true
 	s.mu.Unlock()
 
 	if err := s.tasks.MarkRunStarted(ctx, taskName); err != nil {
 		s.mu.Lock()
-		s.running = false
+		delete(s.runningTasks, taskName)
 		s.mu.Unlock()
 		return err
 	}
@@ -151,7 +158,7 @@ func (s *Scheduler) RunTask(ctx context.Context, taskName string) error {
 	finishErr := s.tasks.MarkRunFinished(ctx, taskName, finishedAt)
 
 	s.mu.Lock()
-	s.running = false
+	delete(s.runningTasks, taskName)
 	s.mu.Unlock()
 
 	if err != nil {
@@ -170,6 +177,8 @@ func (s *Scheduler) canRunTask(taskName string) bool {
 		return s.candidateNotifications != nil
 	case smallCapDiscoverySyncTaskName:
 		return s.discoverySync != nil
+	case notificationRetrySyncTaskName:
+		return s.notificationBatches != nil
 	default:
 		return false
 	}
@@ -188,6 +197,9 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 		return err
 	case smallCapDiscoverySyncTaskName:
 		_, err := s.discoverySync.Run(ctx)
+		return err
+	case notificationRetrySyncTaskName:
+		_, err := s.notificationBatches.RetryDue(ctx, time.Now().UTC())
 		return err
 	default:
 		return nil

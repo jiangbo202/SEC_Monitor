@@ -2,9 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
+	"sec_monitor/internal/config"
 	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
@@ -39,6 +41,54 @@ type fakeNotifier struct{}
 
 func (f fakeNotifier) Send(ctx context.Context, message telegram.Message) error {
 	return nil
+}
+
+type countingNotifier struct {
+	mu    sync.Mutex
+	sends int
+}
+
+func (n *countingNotifier) Send(ctx context.Context, message telegram.Message) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.sends++
+	return nil
+}
+
+func (n *countingNotifier) sendCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.sends
+}
+
+type blockingDiscoveryRunner struct {
+	started chan struct{}
+	unblock chan struct{}
+	mu      sync.Mutex
+	calls   int
+}
+
+func (r *blockingDiscoveryRunner) SyncSecurityUniverse(ctx context.Context) (discovery.UniverseBatch, error) {
+	r.mu.Lock()
+	r.calls++
+	r.mu.Unlock()
+	r.started <- struct{}{}
+	select {
+	case <-r.unblock:
+		return discovery.UniverseBatch{BatchID: "security"}, nil
+	case <-ctx.Done():
+		return discovery.UniverseBatch{}, ctx.Err()
+	}
+}
+
+func (r *blockingDiscoveryRunner) SyncMarketPrices(ctx context.Context) (discovery.UniverseBatch, error) {
+	return discovery.UniverseBatch{BatchID: "market"}, nil
+}
+
+func (r *blockingDiscoveryRunner) securityCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
 }
 
 func testDB(t *testing.T) *gorm.DB {
@@ -293,6 +343,137 @@ func TestSchedulerUsesConfiguredTimezone(t *testing.T) {
 	}
 	if location.String() != "Asia/Shanghai" {
 		t.Fatalf("location = %s, want Asia/Shanghai", location)
+	}
+}
+
+func TestSchedulerAllowsDifferentTasksConcurrently(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create([]model.TaskConfig{
+		{TaskName: smallCapDiscoverySyncTaskName, CronExpr: "0 8 * * 1-5", Enabled: true},
+		{TaskName: ipoRadarSyncTaskName, CronExpr: "*/30 * * * *", Enabled: true},
+	}).Error; err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	tasks := service.NewTaskConfigService(db, audit)
+	filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs)
+	ipo := service.NewIPORadarService(db, fakeSECClient{}, fakeNotifier{}, configs)
+	discoveryDB := testDiscoveryDB(t)
+	runner := &blockingDiscoveryRunner{started: make(chan struct{}, 2), unblock: make(chan struct{})}
+	discoverySync := service.NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithRunner(runner)
+	sched := New(tasks, filings, ipo, discoverySync)
+
+	discoveryDone := make(chan error, 1)
+	go func() { discoveryDone <- sched.RunTask(context.Background(), smallCapDiscoverySyncTaskName) }()
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("discovery task did not start")
+	}
+
+	ipoDone := make(chan error, 1)
+	go func() { ipoDone <- sched.RunTask(context.Background(), ipoRadarSyncTaskName) }()
+	select {
+	case err := <-ipoDone:
+		if err != nil {
+			t.Fatalf("ipo task: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ipo task was blocked by the running discovery task")
+	}
+	var ipoFilings int64
+	if err := db.Model(&model.IPOFiling{}).Count(&ipoFilings).Error; err != nil {
+		t.Fatalf("count ipo filings: %v", err)
+	}
+	if ipoFilings != 1 {
+		t.Fatalf("ipo filings = %d, want 1 before discovery unblocks", ipoFilings)
+	}
+
+	close(runner.unblock)
+	if err := <-discoveryDone; err != nil {
+		t.Fatalf("discovery task: %v", err)
+	}
+}
+
+func TestSchedulerSuppressesDuplicateTaskRun(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create(&model.TaskConfig{TaskName: smallCapDiscoverySyncTaskName, CronExpr: "0 8 * * 1-5", Enabled: true}).Error; err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	tasks := service.NewTaskConfigService(db, audit)
+	filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, nil)
+	discoveryDB := testDiscoveryDB(t)
+	runner := &blockingDiscoveryRunner{started: make(chan struct{}, 2), unblock: make(chan struct{})}
+	discoverySync := service.NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithRunner(runner)
+	sched := New(tasks, filings, discoverySync)
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- sched.RunTask(context.Background(), smallCapDiscoverySyncTaskName) }()
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("first discovery task did not start")
+	}
+
+	duplicateDone := make(chan error, 1)
+	go func() { duplicateDone <- sched.RunTask(context.Background(), smallCapDiscoverySyncTaskName) }()
+	select {
+	case err := <-duplicateDone:
+		if err != nil {
+			t.Fatalf("duplicate task: %v", err)
+		}
+	case <-time.After(time.Second):
+		close(runner.unblock)
+		<-firstDone
+		t.Fatal("duplicate task did not return while the first task was running")
+	}
+	if calls := runner.securityCalls(); calls != 1 {
+		t.Fatalf("discovery security calls = %d, want 1", calls)
+	}
+
+	close(runner.unblock)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first task: %v", err)
+	}
+}
+
+func TestSchedulerRunsDueNotificationRetries(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create(&model.TaskConfig{TaskName: "notification_retry_sync", CronExpr: "*/10 * * * *", Enabled: true}).Error; err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	dueAt := time.Now().UTC().Add(-time.Minute)
+	batch := model.NotificationBatch{Source: "filing", Channel: "telegram", Status: "failed", ItemCount: 1, FailedCount: 1, RetryCount: 1, NextRetryAt: &dueAt}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatalf("seed batch: %v", err)
+	}
+	if err := db.Create(&model.NotificationBatchItem{BatchID: batch.ID, EntityKind: "filing", FilingID: "retry-1", Ticker: "RETRY", Status: "failed", Reason: "delivery_failed"}).Error; err != nil {
+		t.Fatalf("seed batch item: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit)
+	notifier := &countingNotifier{}
+	tasks := service.NewTaskConfigService(db, audit)
+	filings := service.NewFilingService(db, fakeSECClient{}, notifier, configs)
+	batches := service.NewNotificationBatchService(db, notifier, configs)
+	sched := New(tasks, filings, batches)
+
+	if err := sched.RunTask(context.Background(), "notification_retry_sync"); err != nil {
+		t.Fatalf("run notification retry task: %v", err)
+	}
+	if notifier.sendCount() != 1 {
+		t.Fatalf("notification sends = %d, want 1", notifier.sendCount())
+	}
+	if err := db.First(&batch, batch.ID).Error; err != nil {
+		t.Fatalf("load batch: %v", err)
+	}
+	if batch.Status != "sent" || batch.SentCount != 1 {
+		t.Fatalf("batch after retry = %+v, want sent batch", batch)
 	}
 }
 

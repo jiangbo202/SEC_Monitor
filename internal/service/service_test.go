@@ -2019,15 +2019,15 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(tasks) != 4 {
-				t.Fatalf("tasks = %d, want 4", len(tasks))
+			if len(tasks) != 5 {
+				t.Fatalf("tasks = %d, want 5", len(tasks))
 			}
 			names := map[string]bool{}
 			for _, task := range tasks {
 				names[task.TaskName] = true
 			}
-			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] || !names["candidate_notification_sync"] || !names["small_cap_discovery_sync"] {
-				t.Fatalf("task names = %+v, want sec, ipo, candidate notification, and small-cap discovery tasks", names)
+			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] || !names["candidate_notification_sync"] || !names["small_cap_discovery_sync"] || !names["notification_retry_sync"] {
+				t.Fatalf("task names = %+v, want sec, ipo, candidate notification, small-cap discovery, and notification retry tasks", names)
 			}
 		}},
 		{name: "update task", run: func(t *testing.T, svc *TaskConfigService) {
@@ -2106,6 +2106,22 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			db := testDB(t)
 			tt.run(t, NewTaskConfigService(db, NewAuditService(db)))
 		})
+	}
+}
+
+func TestTaskConfigAddsNotificationRetryDefault(t *testing.T) {
+	db := testDB(t)
+	svc := NewTaskConfigService(db, NewAuditService(db))
+	if err := svc.EnsureDefault(context.Background()); err != nil {
+		t.Fatalf("EnsureDefault: %v", err)
+	}
+
+	var task model.TaskConfig
+	if err := db.Where("task_name = ?", "notification_retry_sync").First(&task).Error; err != nil {
+		t.Fatalf("load notification retry task: %v", err)
+	}
+	if !task.Enabled || task.CronExpr != "*/10 * * * *" {
+		t.Fatalf("notification retry task = %+v, want enabled every 10 minutes", task)
 	}
 }
 
