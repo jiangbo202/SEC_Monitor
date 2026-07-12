@@ -42,8 +42,14 @@ type fakeFundSECClient struct {
 	*fakeSECClient
 	matches      map[string]bool
 	matchReasons map[string]string
+	matchResults map[string]fakeFundMatchResult
 	matchErrs    map[string]error
 	matchCalls   map[string]int
+}
+
+type fakeFundMatchResult struct {
+	matched bool
+	reason  string
 }
 
 func (f *fakeFundSECClient) ResolveFundTicker(context.Context, string) (sec.FundResolution, error) {
@@ -57,6 +63,9 @@ func (f *fakeFundSECClient) MatchFundFiling(_ context.Context, _ sec.FundIdentit
 	f.matchCalls[filing.AccessionNumber]++
 	if err := f.matchErrs[filing.AccessionNumber]; err != nil {
 		return false, "", err
+	}
+	if result, ok := f.matchResults[filing.AccessionNumber]; ok {
+		return result.matched, result.reason, nil
 	}
 	matched := f.matches[filing.AccessionNumber]
 	reason := f.matchReasons[filing.AccessionNumber]
@@ -2275,6 +2284,62 @@ func TestFilingServiceSyncWarningExplainsFundFilterReasons(t *testing.T) {
 	want := "fund identity filtered 2 trust filings (class_not_found: 1, series_not_found: 1)"
 	if detail.WarningMessage != want {
 		t.Fatalf("warning=%q, want %q", detail.WarningMessage, want)
+	}
+}
+
+func TestFilingServiceRefreshTargetsFailsClosedOnInconsistentFundMatch(t *testing.T) {
+	target := model.WatchTarget{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	tests := []struct {
+		name   string
+		seed   func(*gorm.DB)
+		client *fakeFundSECClient
+	}{
+		{
+			name: "live matched with non-match reason",
+			client: &fakeFundSECClient{
+				fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{{FilingID: "live", AccessionNumber: "live", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}}},
+				matchResults:  map[string]fakeFundMatchResult{"live": {matched: true, reason: "class_not_found"}},
+			},
+		},
+		{
+			name: "cached matched with non-match reason",
+			seed: func(db *gorm.DB) {
+				if err := db.Create(&model.FundFilingIdentity{
+					CIK: target.CIK, AccessionNumber: "cached", SeriesIDsJSON: `["S000102337"]`, ClassIDsJSON: `["C000272806"]`,
+					ParseStatus: "matched", ParseMessage: "class_not_found", CheckedAt: time.Now().UTC(),
+				}).Error; err != nil {
+					t.Fatalf("seed fund identity cache: %v", err)
+				}
+			},
+			client: &fakeFundSECClient{fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{{FilingID: "cached", AccessionNumber: "cached", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			if tt.seed != nil {
+				tt.seed(db)
+			}
+			result, err := NewFilingService(db, tt.client, &fakeNotifier{}, NewConfigService(db, NewAuditService(db))).RefreshTargets(context.Background(), []model.WatchTarget{target})
+			if err != nil || result.FailedTargets != 1 || result.NewFilings != 0 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			var detail model.SyncRunDetail
+			if err := db.Where("sync_run_id = ?", result.SyncRunID).First(&detail).Error; err != nil {
+				t.Fatalf("load sync detail: %v", err)
+			}
+			if detail.Status != "failed" || !strings.Contains(detail.ErrorMessage, "fund identity unavailable") {
+				t.Fatalf("detail=%+v", detail)
+			}
+			var count int64
+			if err := db.Model(&model.Filing{}).Count(&count).Error; err != nil {
+				t.Fatalf("count filings: %v", err)
+			}
+			if count != 0 {
+				t.Fatalf("filings=%d, want 0", count)
+			}
+		})
 	}
 }
 

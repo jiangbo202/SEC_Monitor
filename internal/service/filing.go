@@ -498,9 +498,9 @@ func (s *FilingService) filterFundFilings(ctx context.Context, target model.Watc
 				_ = s.storeFundFilingMatch(ctx, identity, filing, "failed", reason)
 				return fundFilingFilterResult{}, err
 			}
-			if !fundFilingMatchReasonVerified(reason) {
+			if !fundFilingMatchIsConsistent(matched, reason) {
 				_ = s.storeFundFilingMatch(ctx, identity, filing, "failed", reason)
-				return fundFilingFilterResult{}, fmt.Errorf("filing %s identity cannot be verified: %s", filing.AccessionNumber, reason)
+				return fundFilingFilterResult{}, fmt.Errorf("filing %s identity result is inconsistent: matched=%t reason=%s", filing.AccessionNumber, matched, reason)
 			}
 			status := "unmatched"
 			if matched {
@@ -522,6 +522,13 @@ func (s *FilingService) filterFundFilings(ctx context.Context, target model.Watc
 
 func fundFilingMatchReasonVerified(reason string) bool {
 	return reason == "matched_class" || reason == "series_not_found" || reason == "class_not_found"
+}
+
+func fundFilingMatchIsConsistent(matched bool, reason string) bool {
+	if matched {
+		return reason == "matched_class"
+	}
+	return reason == "series_not_found" || reason == "class_not_found"
 }
 
 func summarizeFundFilingSkipReasons(reasonCounts map[string]int) string {
@@ -562,12 +569,15 @@ func (s *FilingService) cachedFundFilingMatch(ctx context.Context, identity sec.
 	}
 	switch cached.ParseStatus {
 	case "matched":
-		return true, cached.ParseMessage, true, nil
+		if fundFilingMatchIsConsistent(true, cached.ParseMessage) {
+			return true, cached.ParseMessage, true, nil
+		}
+		return false, "", true, fmt.Errorf("cached fund filing identity result is inconsistent")
 	case "unmatched":
-		if fundFilingMatchReasonVerified(cached.ParseMessage) {
+		if fundFilingMatchIsConsistent(false, cached.ParseMessage) {
 			return false, cached.ParseMessage, true, nil
 		}
-		return false, "", false, nil
+		return false, "", true, fmt.Errorf("cached fund filing identity result is inconsistent")
 	default:
 		return false, "", false, nil
 	}
