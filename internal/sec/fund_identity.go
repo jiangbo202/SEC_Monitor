@@ -161,5 +161,8 @@ func normalizeFundCIK(value string) string {
 			return ""
 		}
 	}
+	if len(value) > 10 {
+		return ""
+	}
 	return normalizeCIK(value)
 }

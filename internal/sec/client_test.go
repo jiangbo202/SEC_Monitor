@@ -65,6 +65,10 @@ func TestHTTPClientResolveFundTickerTableDriven(t *testing.T) {
 			body: `{"fields":["cik","seriesId","classId","symbol"],"data":[["","S000102337","C000272806","DRAM"]]}`,
 		},
 		{
+			name: "does not resolve identity with more than ten digit cik",
+			body: `{"fields":["cik","seriesId","classId","symbol"],"data":[[12345678901,"S000102337","C000272806","DRAM"]]}`,
+		},
+		{
 			name:           "returns candidates without auto resolving ambiguous ticker",
 			body:           `{"fields":["cik","seriesId","classId","symbol"],"data":[[1976517,"S000102337","C000272806","DRAM"],[1976518,"S000102338","C000272807","DRAM"]]}`,
 			wantCandidates: 2,
