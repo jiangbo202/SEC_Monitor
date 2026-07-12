@@ -52,6 +52,12 @@ type RefreshResult struct {
 	SyncRunID      uint `json:"sync_run_id"`
 }
 
+type fundFilingFilterResult struct {
+	filings       []sec.FilingResult
+	skipped       int
+	reasonSummary string
+}
+
 type SyncRunFilter struct {
 	Status   string
 	Trigger  string
@@ -220,7 +226,7 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 		}
 		filings = applyFetchSettings(filings, target.LastSyncAt == nil, settings, time.Now().UTC())
 		target.CIK = cik
-		filings, skipped, err := s.filterFundFilings(ctx, target, filings)
+		fundFilterResult, err := s.filterFundFilings(ctx, target, filings)
 		if err != nil {
 			result.FailedTargets++
 			errorMessage := "fund identity unavailable: " + err.Error()
@@ -228,9 +234,13 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 			s.finishSyncRunDetail(ctx, detail.ID, "failed", 0, detailStartedAt, errorMessage, "")
 			continue
 		}
+		filings = fundFilterResult.filings
 		warning := ""
-		if skipped > 0 {
-			warning = fmt.Sprintf("fund identity filtered %d trust filings", skipped)
+		if fundFilterResult.skipped > 0 {
+			warning = fmt.Sprintf("fund identity filtered %d trust filings", fundFilterResult.skipped)
+			if fundFilterResult.reasonSummary != "" {
+				warning += " (" + fundFilterResult.reasonSummary + ")"
+			}
 		}
 		for _, item := range filings {
 			filing := model.Filing{
@@ -457,18 +467,18 @@ func (s *FilingService) finishSyncRunDetail(ctx context.Context, id uint, status
 	}).Error
 }
 
-func (s *FilingService) filterFundFilings(ctx context.Context, target model.WatchTarget, filings []sec.FilingResult) ([]sec.FilingResult, int, error) {
+func (s *FilingService) filterFundFilings(ctx context.Context, target model.WatchTarget, filings []sec.FilingResult) (fundFilingFilterResult, error) {
 	seriesID := strings.TrimSpace(target.FundSeriesID)
 	classID := strings.TrimSpace(target.FundClassID)
 	if seriesID == "" && classID == "" {
-		return filings, 0, nil
+		return fundFilingFilterResult{filings: filings}, nil
 	}
 	if seriesID == "" || classID == "" {
-		return nil, 0, fmt.Errorf("fund identity is incomplete")
+		return fundFilingFilterResult{}, fmt.Errorf("fund identity is incomplete")
 	}
 	fundClient, ok := s.sec.(sec.FundIdentityClient)
 	if !ok {
-		return nil, 0, fmt.Errorf("SEC client does not support fund filing identity matching")
+		return fundFilingFilterResult{}, fmt.Errorf("SEC client does not support fund filing identity matching")
 	}
 
 	identity := sec.FundIdentity{
@@ -476,28 +486,28 @@ func (s *FilingService) filterFundFilings(ctx context.Context, target model.Watc
 	}
 	filtered := make([]sec.FilingResult, 0, len(filings))
 	skipped := 0
+	reasonCounts := map[string]int{}
 	for _, filing := range filings {
-		matched, cached, err := s.cachedFundFilingMatch(ctx, identity, filing)
+		matched, reason, cached, err := s.cachedFundFilingMatch(ctx, identity, filing)
 		if err != nil {
-			return nil, 0, err
+			return fundFilingFilterResult{}, err
 		}
 		if !cached {
-			var reason string
 			matched, reason, err = fundClient.MatchFundFiling(ctx, identity, filing)
 			if err != nil {
 				_ = s.storeFundFilingMatch(ctx, identity, filing, "failed", reason)
-				return nil, 0, err
+				return fundFilingFilterResult{}, err
 			}
 			if !fundFilingMatchReasonVerified(reason) {
 				_ = s.storeFundFilingMatch(ctx, identity, filing, "failed", reason)
-				return nil, 0, fmt.Errorf("filing %s identity cannot be verified: %s", filing.AccessionNumber, reason)
+				return fundFilingFilterResult{}, fmt.Errorf("filing %s identity cannot be verified: %s", filing.AccessionNumber, reason)
 			}
 			status := "unmatched"
 			if matched {
 				status = "matched"
 			}
 			if err := s.storeFundFilingMatch(ctx, identity, filing, status, reason); err != nil {
-				return nil, 0, err
+				return fundFilingFilterResult{}, err
 			}
 		}
 		if matched {
@@ -505,37 +515,61 @@ func (s *FilingService) filterFundFilings(ctx context.Context, target model.Watc
 			continue
 		}
 		skipped++
+		reasonCounts[reason]++
 	}
-	return filtered, skipped, nil
+	return fundFilingFilterResult{filings: filtered, skipped: skipped, reasonSummary: summarizeFundFilingSkipReasons(reasonCounts)}, nil
 }
 
 func fundFilingMatchReasonVerified(reason string) bool {
 	return reason == "matched_class" || reason == "series_not_found" || reason == "class_not_found"
 }
 
-func (s *FilingService) cachedFundFilingMatch(ctx context.Context, identity sec.FundIdentity, filing sec.FilingResult) (bool, bool, error) {
+func summarizeFundFilingSkipReasons(reasonCounts map[string]int) string {
+	const maxReasons = 4
+	reasons := make([]string, 0, len(reasonCounts))
+	for reason, count := range reasonCounts {
+		if count > 0 && fundFilingMatchReasonVerified(reason) {
+			reasons = append(reasons, reason)
+		}
+	}
+	sort.Strings(reasons)
+	parts := make([]string, 0, min(len(reasons), maxReasons))
+	for index, reason := range reasons {
+		if index == maxReasons {
+			parts = append(parts, fmt.Sprintf("+%d more", len(reasons)-maxReasons))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s: %d", reason, reasonCounts[reason]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (s *FilingService) cachedFundFilingMatch(ctx context.Context, identity sec.FundIdentity, filing sec.FilingResult) (bool, string, bool, error) {
 	if strings.TrimSpace(filing.AccessionNumber) == "" {
-		return false, false, nil
+		return false, "", false, nil
 	}
 	var cached model.FundFilingIdentity
 	err := s.db.WithContext(ctx).Where("cik = ? AND accession_number = ?", identity.CIK, filing.AccessionNumber).First(&cached).Error
 	if err == gorm.ErrRecordNotFound {
-		return false, false, nil
+		return false, "", false, nil
 	}
 	if err != nil {
-		return false, false, err
+		return false, "", false, err
 	}
 	var seriesIDs, classIDs []string
 	if json.Unmarshal([]byte(cached.SeriesIDsJSON), &seriesIDs) != nil || json.Unmarshal([]byte(cached.ClassIDsJSON), &classIDs) != nil || len(seriesIDs) != 1 || len(classIDs) != 1 || seriesIDs[0] != identity.SeriesID || classIDs[0] != identity.ClassID {
-		return false, false, nil
+		return false, "", false, nil
 	}
 	switch cached.ParseStatus {
 	case "matched":
-		return true, true, nil
+		return true, cached.ParseMessage, true, nil
 	case "unmatched":
-		return false, true, nil
+		if fundFilingMatchReasonVerified(cached.ParseMessage) {
+			return false, cached.ParseMessage, true, nil
+		}
+		return false, "", false, nil
 	default:
-		return false, false, nil
+		return false, "", false, nil
 	}
 }
 

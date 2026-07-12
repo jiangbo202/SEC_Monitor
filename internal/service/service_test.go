@@ -40,9 +40,10 @@ type fakeSECClient struct {
 
 type fakeFundSECClient struct {
 	*fakeSECClient
-	matches    map[string]bool
-	matchErrs  map[string]error
-	matchCalls map[string]int
+	matches      map[string]bool
+	matchReasons map[string]string
+	matchErrs    map[string]error
+	matchCalls   map[string]int
 }
 
 func (f *fakeFundSECClient) ResolveFundTicker(context.Context, string) (sec.FundResolution, error) {
@@ -58,10 +59,14 @@ func (f *fakeFundSECClient) MatchFundFiling(_ context.Context, _ sec.FundIdentit
 		return false, "", err
 	}
 	matched := f.matches[filing.AccessionNumber]
+	reason := f.matchReasons[filing.AccessionNumber]
+	if reason == "" {
+		reason = "class_not_found"
+	}
 	if matched {
 		return true, "matched_class", nil
 	}
-	return false, "class_not_found", nil
+	return false, reason, nil
 }
 
 func (f fakeSECClient) LookupCIK(ctx context.Context, ticker string) (string, string, error) {
@@ -2242,8 +2247,34 @@ func TestFilingServiceSyncFiltersFundClass(t *testing.T) {
 	if err := db.Where("sync_run_id = ?", result.SyncRunID).First(&detail).Error; err != nil {
 		t.Fatalf("load sync detail: %v", err)
 	}
-	if detail.WarningMessage != "fund identity filtered 1 trust filings" {
+	if detail.WarningMessage != "fund identity filtered 1 trust filings (class_not_found: 1)" {
 		t.Fatalf("warning=%q", detail.WarningMessage)
+	}
+}
+
+func TestFilingServiceSyncWarningExplainsFundFilterReasons(t *testing.T) {
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	target := model.WatchTarget{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	secClient := &fakeFundSECClient{
+		fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{
+			{FilingID: "series", AccessionNumber: "series", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()},
+			{FilingID: "class", AccessionNumber: "class", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()},
+		}},
+		matches:      map[string]bool{"series": false, "class": false},
+		matchReasons: map[string]string{"series": "series_not_found", "class": "class_not_found"},
+	}
+	result, err := NewFilingService(db, secClient, &fakeNotifier{}, configs).RefreshTargets(context.Background(), []model.WatchTarget{target})
+	if err != nil || result.NewFilings != 0 || result.FailedTargets != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var detail model.SyncRunDetail
+	if err := db.Where("sync_run_id = ?", result.SyncRunID).First(&detail).Error; err != nil {
+		t.Fatalf("load sync detail: %v", err)
+	}
+	want := "fund identity filtered 2 trust filings (class_not_found: 1, series_not_found: 1)"
+	if detail.WarningMessage != want {
+		t.Fatalf("warning=%q, want %q", detail.WarningMessage, want)
 	}
 }
 
