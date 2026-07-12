@@ -36,14 +36,15 @@ type IPOFilingFilter struct {
 }
 
 type IPOCompanyFilter struct {
-	CompanyName string
-	CIK         string
-	Status      string
-	Attention   string
-	SortBy      string
-	SortOrder   string
-	Page        int
-	PageSize    int
+	CompanyName  string
+	CIK          string
+	Status       string
+	Attention    string
+	IncludeEnded bool
+	SortBy       string
+	SortOrder    string
+	Page         int
+	PageSize     int
 }
 
 type IPORadarHealth struct {
@@ -306,6 +307,12 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 		if status := strings.TrimSpace(filter.Status); status != "" && item.Status != status {
 			continue
 		}
+		// The default company view is an active IPO work queue. A selected
+		// terminal status or attention filter remains inspectable without
+		// requiring callers to opt into the full historical archive.
+		if strings.TrimSpace(filter.Status) == "" && attention == "" && !filter.IncludeEnded && !activeIPOCompanyStatus(item.Status) {
+			continue
+		}
 		if !matchesIPOCompanyAttention(item, attention, attentionCIKs, staleBefore) {
 			continue
 		}
@@ -328,7 +335,7 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 func (s *IPORadarService) allCompanies(ctx context.Context, now time.Time) ([]IPOCompanyItem, error) {
 	items := make([]IPOCompanyItem, 0)
 	for page := 1; ; page++ {
-		result, err := s.ListCompanies(ctx, IPOCompanyFilter{Page: page, PageSize: 200}, now)
+		result, err := s.ListCompanies(ctx, IPOCompanyFilter{IncludeEnded: true, Page: page, PageSize: 200}, now)
 		if err != nil {
 			return nil, err
 		}
@@ -489,6 +496,7 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		s.finishSyncRun(ctx, run.ID, out, "success", "")
 		return out, nil
 	}
+	confirmedListedCIKs, listingWarning := s.refreshListedCompanyMappings(ctx)
 	var existingFilings int64
 	if err := s.db.WithContext(ctx).Model(&model.IPOFiling{}).Count(&existingFilings).Error; err != nil {
 		s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
@@ -520,6 +528,13 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		if (!isRegistration && !isLifecycle) || (isRegistration && !ipoKeywordMatch(item, settings.Keywords)) || (isLifecycle && !candidateCIKs[item.CIK]) {
 			continue
 		}
+		confirmedListed := confirmedListedCIKs[normalizedIPOCompanyCIK(item.CIK)]
+		// Current S-1/F-1 registration amendments from an SEC-confirmed listed
+		// company are not a new IPO opportunity. In particular, do not let one
+		// seed a full historical company backfill years after the actual listing.
+		if confirmedListed && isRegistration {
+			continue
+		}
 		filing := currentFilingToIPOModel(item)
 		created, err := s.createIfNew(ctx, filing)
 		if err != nil {
@@ -529,7 +544,12 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		if created {
 			out.NewFilings++
 			newFilings = append(newFilings, filing)
-			notificationCandidates = append(notificationCandidates, ipoNotificationCandidate(filing, settings, initialBaseline, false))
+			if !confirmedListed {
+				notificationCandidates = append(notificationCandidates, ipoNotificationCandidate(filing, settings, initialBaseline, false))
+			}
+		}
+		if confirmedListed {
+			continue
 		}
 		if isRegistration {
 			candidateCIKs[item.CIK] = true
@@ -568,9 +588,16 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		}
 		out.Notified = batch.SentCount
 	}
-	warning, offeringCandidates := s.enrichIPOMarketData(ctx, newFilings, initialBaseline)
+	warning, offeringCandidates := s.enrichIPOMarketDataWithListingMapping(ctx, newFilings, initialBaseline, true)
+	warnings := make([]string, 0, 2)
+	if listingWarning != "" {
+		warnings = append(warnings, listingWarning)
+	}
 	if warning != "" {
-		_ = s.db.WithContext(ctx).Model(&model.SyncRun{}).Where("id = ?", run.ID).Update("warning_message", warning).Error
+		warnings = append(warnings, warning)
+	}
+	if len(warnings) > 0 {
+		_ = s.db.WithContext(ctx).Model(&model.SyncRun{}).Where("id = ?", run.ID).Update("warning_message", strings.Join(warnings, "; ")).Error
 	}
 	if len(offeringCandidates) > 0 {
 		if _, err := s.batches.Deliver(ctx, NotificationBatchInput{SyncRunID: run.ID, Source: "ipo_offering", Trigger: trigger, Candidates: offeringCandidates}); err != nil {
@@ -1014,17 +1041,20 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 const ipoOfferingParserVersion = 5
 
 func (s *IPORadarService) enrichIPOMarketData(ctx context.Context, newFilings []model.IPOFiling, initialBaseline bool) (string, []NotificationCandidate) {
+	return s.enrichIPOMarketDataWithListingMapping(ctx, newFilings, initialBaseline, false)
+}
+
+func (s *IPORadarService) enrichIPOMarketDataWithListingMapping(ctx context.Context, newFilings []model.IPOFiling, initialBaseline bool, listingMappingAlreadyRefreshed bool) (string, []NotificationCandidate) {
 	client, ok := s.sec.(sec.IPOMarketClient)
 	if !ok {
 		return "", nil
 	}
 	warnings := make([]string, 0)
 	offeringCandidates := make([]NotificationCandidate, 0)
-	listed, err := client.ListListedCompanies(ctx)
-	if err != nil {
-		warnings = append(warnings, "listed company mapping: "+err.Error())
-	} else if err := s.upsertListedCompanies(ctx, listed); err != nil {
-		warnings = append(warnings, "listed company mapping: "+err.Error())
+	if !listingMappingAlreadyRefreshed {
+		if _, warning := s.refreshListedCompanyMappings(ctx); warning != "" {
+			warnings = append(warnings, warning)
+		}
 	}
 	pending, err := s.pending424B4Filings(ctx)
 	if err != nil {
@@ -1074,6 +1104,43 @@ func (s *IPORadarService) enrichIPOMarketData(ctx context.Context, newFilings []
 		}
 	}
 	return strings.Join(warnings, "; "), offeringCandidates
+}
+
+// refreshListedCompanyMappings refreshes the official SEC ticker/exchange
+// mapping before the current-feed scan. A ticker alone is not confirmation:
+// both ticker and exchange must be present before an issuer is treated as
+// already listed and excluded from registration-form backfills.
+func (s *IPORadarService) refreshListedCompanyMappings(ctx context.Context) (map[string]bool, string) {
+	client, ok := s.sec.(sec.IPOMarketClient)
+	if !ok {
+		return map[string]bool{}, ""
+	}
+	listed, err := client.ListListedCompanies(ctx)
+	if err != nil {
+		return map[string]bool{}, "listed company mapping: " + err.Error()
+	}
+	if err := s.upsertListedCompanies(ctx, listed); err != nil {
+		return map[string]bool{}, "listed company mapping: " + err.Error()
+	}
+	confirmed := make(map[string]bool, len(listed))
+	for _, company := range listed {
+		if strings.TrimSpace(company.Ticker) == "" || strings.TrimSpace(company.Exchange) == "" {
+			continue
+		}
+		if cik := normalizedIPOCompanyCIK(company.CIK); cik != "" {
+			confirmed[cik] = true
+		}
+	}
+	return confirmed, ""
+}
+
+func normalizedIPOCompanyCIK(cik string) string {
+	cik = strings.TrimSpace(cik)
+	cik = strings.TrimLeft(cik, "0")
+	if cik == "" {
+		return ""
+	}
+	return cik
 }
 
 func (s *IPORadarService) pending424B4Filings(ctx context.Context) ([]model.IPOFiling, error) {

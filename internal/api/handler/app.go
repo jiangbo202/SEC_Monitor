@@ -530,15 +530,25 @@ func (h *AppHandler) ListIPOCompanies(c *gin.Context) {
 		return
 	}
 	page, pageSize := pageParams(c)
+	includeEnded := false
+	if value := strings.TrimSpace(c.Query("include_ended")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			Error(c, service.ErrValidation)
+			return
+		}
+		includeEnded = parsed
+	}
 	result, err := h.IPO.ListCompanies(c.Request.Context(), service.IPOCompanyFilter{
-		CompanyName: c.Query("company_name"),
-		CIK:         c.Query("cik"),
-		Status:      c.Query("status"),
-		Attention:   c.Query("attention"),
-		SortBy:      c.Query("sort_by"),
-		SortOrder:   c.Query("sort_order"),
-		Page:        page,
-		PageSize:    pageSize,
+		CompanyName:  c.Query("company_name"),
+		CIK:          c.Query("cik"),
+		Status:       c.Query("status"),
+		Attention:    c.Query("attention"),
+		IncludeEnded: includeEnded,
+		SortBy:       c.Query("sort_by"),
+		SortOrder:    c.Query("sort_order"),
+		Page:         page,
+		PageSize:     pageSize,
 	}, time.Now().UTC())
 	if err != nil {
 		Error(c, err)
@@ -597,7 +607,7 @@ func (h *AppHandler) ExportIPOCompaniesCSV(c *gin.Context) {
 		Error(c, service.ErrValidation)
 		return
 	}
-	result, err := h.IPO.ListCompanies(c.Request.Context(), service.IPOCompanyFilter{Page: 1, PageSize: 10000}, time.Now().UTC())
+	result, err := h.IPO.ListCompanies(c.Request.Context(), service.IPOCompanyFilter{IncludeEnded: true, Page: 1, PageSize: 10000}, time.Now().UTC())
 	if err != nil {
 		Error(c, err)
 		return

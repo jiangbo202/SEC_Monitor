@@ -987,6 +987,7 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 				t.Fatalf("body = %s, want ipo company status", rec.Body.String())
 			}
 		}},
+		{name: "reject invalid ipo include ended filter", method: http.MethodGet, path: "/ipo-companies?include_ended=maybe", wantStatus: http.StatusBadRequest},
 		{name: "list ipo offering events", method: http.MethodGet, path: "/ipo-companies/0000000001/offerings?page=1&page_size=10", seed: seedIPOOfferingEvent, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if !strings.Contains(rec.Body.String(), `"offering_type":"initial"`) {
 				t.Fatalf("body = %s, want offering event", rec.Body.String())

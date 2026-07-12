@@ -43,6 +43,7 @@
               <el-option :label="t('pages.ipoRadar.attention.notificationFailedOption')" value="notification_failed" />
             </el-select>
           </el-form-item>
+          <el-form-item><el-checkbox v-model="companyFilters.include_ended">{{ t('pages.ipoRadar.showEnded') }}</el-checkbox></el-form-item>
           <el-form-item><el-button :loading="companiesLoading" @click="loadCompanies">{{ t('common.query') }}</el-button></el-form-item>
         </el-form>
 
@@ -290,7 +291,7 @@ const filingsPage = ref(1)
 const companiesPage = ref(1)
 const pageSize = 20
 const filingFilters = reactive({ company_name: '', cik: '', filing_type: '', notified: '' })
-const companyFilters = reactive({ company_name: '', cik: '', status: '', attention: '' })
+const companyFilters = reactive({ company_name: '', cik: '', status: '', attention: '', include_ended: false })
 const companySort = reactive({ sort_by: '', sort_order: '' })
 const filingDetails = ref<Record<string, IPOFiling[]>>({})
 const offeringEvents = ref<Record<string, IPOOfferingEvent[]>>({})

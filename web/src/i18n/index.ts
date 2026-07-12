@@ -323,6 +323,7 @@ const messages = {
           unknown: '未识别'
         },
         timeline: 'IPO 时间线',
+        showEnded: '显示已结束项目',
         exportCompanies: '导出 IPO 公司',
         exportFilings: '导出 IPO 文件',
         qualitySummary: '当前载入 {total} 个 IPO 项目，其中 {incomplete} 个为中等置信度状态；展开公司可查看完整时间线。',
@@ -877,6 +878,7 @@ const messages = {
           unknown: 'Unrecognized'
         },
         timeline: 'IPO Timeline',
+        showEnded: 'Show ended projects',
         exportCompanies: 'Export IPO Companies',
         exportFilings: 'Export IPO Filings',
         qualitySummary: '{total} IPO projects loaded. {incomplete} have medium-confidence status; expand a company to inspect its timeline.',
