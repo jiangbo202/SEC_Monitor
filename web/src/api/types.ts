@@ -28,12 +28,24 @@ export interface WatchTarget {
   updated_at: string
 }
 
-export interface TickerLookup {
+export interface FundIdentity {
   ticker: string
   cik: string
-  company_name: string
+  series_id: string
+  class_id: string
+  fund_name?: string
+  source: string
+  evidence_url?: string
+}
+
+export interface TickerLookup {
+  ticker: string
+  cik?: string
+  company_name?: string
   target_type: string
-  group?: string
+  fund_identity?: FundIdentity
+  fund_candidates?: FundIdentity[]
+  resolution_reason?: string
 }
 
 export interface Filing {

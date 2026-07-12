@@ -27,6 +27,8 @@ import (
 
 type fakeSECClient struct{}
 
+type fundOnlySECClient struct{ fakeSECClient }
+
 type fakeDiscoveryRunner struct{}
 
 func (fakeDiscoveryRunner) SyncSecurityUniverse(context.Context) (discovery.UniverseBatch, error) {
@@ -65,6 +67,38 @@ func TestSplitQueryValuesDeduplicatesCSVAndRepeatedParams(t *testing.T) {
 
 func (f fakeSECClient) LookupCIK(ctx context.Context, ticker string) (string, string, error) {
 	return "0000320193", "Apple Inc.", nil
+}
+
+func (f fundOnlySECClient) LookupCIK(ctx context.Context, ticker string) (string, string, error) {
+	return "", "", errors.New("stock ticker not found")
+}
+
+func (f fakeSECClient) ResolveFundTicker(ctx context.Context, ticker string) (sec.FundResolution, error) {
+	switch strings.ToUpper(strings.TrimSpace(ticker)) {
+	case "DRAM":
+		return sec.FundResolution{Identity: &sec.FundIdentity{
+			Ticker: "DRAM", CIK: "0001976517", SeriesID: "S000102337", ClassID: "C000272806",
+			FundName: "Roundhill Memory ETF", Source: "sec_company_tickers_mf",
+		}}, nil
+	case "AMBIG":
+		return sec.FundResolution{
+			Candidates: []sec.FundIdentity{
+				{Ticker: "AMBIG", CIK: "0000000001", SeriesID: "S000000001", ClassID: "C000000001", FundName: "First Fund", Source: "sec_filing_index"},
+				{Ticker: "AMBIG", CIK: "0000000002", SeriesID: "S000000002", ClassID: "C000000002", FundName: "Second Fund", Source: "sec_filing_index"},
+			},
+			Reason: "multiple SEC fund identities match ticker AMBIG",
+		}, nil
+	case "PARTIAL":
+		return sec.FundResolution{Identity: &sec.FundIdentity{
+			Ticker: "PARTIAL", CIK: "0000000003", SeriesID: "S000000003", Source: "sec_filing_index",
+		}}, nil
+	default:
+		return sec.FundResolution{Reason: "no exact SEC fund identity found"}, nil
+	}
+}
+
+func (f fakeSECClient) MatchFundFiling(ctx context.Context, identity sec.FundIdentity, filing sec.FilingResult) (bool, string, error) {
+	return false, "not used in handler tests", nil
 }
 
 func (f fakeSECClient) ListFilings(ctx context.Context, query sec.FilingQuery) ([]sec.FilingResult, error) {
@@ -171,6 +205,88 @@ func (f *fakeScheduler) RunTask(ctx context.Context, taskName string) error {
 	f.runCalls++
 	f.runTasks = append(f.runTasks, taskName)
 	return f.runErr
+}
+
+func TestLookupTickerReturnsExactFundIdentity(t *testing.T) {
+	r, _, _ := testApp(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sec/tickers/DRAM?target_type=etf", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"fund_series_id":"S000102337"`) || !strings.Contains(rec.Body.String(), `"fund_class_id":"C000272806"`) {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestLookupTickerReturnsFundCandidatesWithoutFabricatedCIK(t *testing.T) {
+	r, _, _ := testApp(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sec/tickers/AMBIG?target_type=etf", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Data struct {
+			CIK            string             `json:"cik"`
+			FundCandidates []sec.FundIdentity `json:"fund_candidates"`
+			Reason         string             `json:"resolution_reason"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Data.CIK != "" || len(response.Data.FundCandidates) != 2 || response.Data.Reason == "" {
+		t.Fatalf("data=%+v", response.Data)
+	}
+}
+
+func TestLookupTickerWithStockTargetTypeKeepsStockLookup(t *testing.T) {
+	r, _, _ := testApp(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sec/tickers/AAPL?target_type=stock", nil))
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"cik":"0000320193"`) || strings.Contains(rec.Body.String(), `"fund_identity"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLookupTickerFallsBackToFundResolutionAfterStockMiss(t *testing.T) {
+	h := &AppHandler{SEC: fundOnlySECClient{}}
+	r := gin.New()
+	r.GET("/sec/tickers/:ticker", h.LookupTicker)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sec/tickers/DRAM", nil))
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"fund_identity"`) || strings.Contains(rec.Body.String(), `"company_name":"Apple Inc."`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLookupTickerDoesNotReturnPartialFundIdentity(t *testing.T) {
+	r, _, _ := testApp(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sec/tickers/PARTIAL?target_type=etf", nil))
+
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"fund_identity"`) || !strings.Contains(rec.Body.String(), `"resolution_reason"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateWatchTargetRejectsPartialFundIdentity(t *testing.T) {
+	r, _, _ := testApp(t)
+	for _, body := range []string{
+		`{"ticker":"DRAM","company_name":"Roundhill Memory ETF","target_type":"etf","fund_series_id":"S000102337"}`,
+		`{"ticker":"DRAM","company_name":"Roundhill Memory ETF","target_type":"etf","fund_class_id":"C000272806"}`,
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/targets", strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body=%s status=%d response=%s", body, rec.Code, rec.Body.String())
+		}
+	}
 }
 
 func TestAppHandlerListsDiscoveryCandidates(t *testing.T) {

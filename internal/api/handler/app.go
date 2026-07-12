@@ -46,6 +46,28 @@ type SchedulerController interface {
 	RunTask(ctx context.Context, taskName string) error
 }
 
+type tickerLookupResponse struct {
+	Ticker           string                 `json:"ticker"`
+	CIK              string                 `json:"cik,omitempty"`
+	CompanyName      string                 `json:"company_name,omitempty"`
+	TargetType       string                 `json:"target_type"`
+	FundIdentity     *fundIdentityResponse  `json:"fund_identity,omitempty"`
+	FundCandidates   []fundIdentityResponse `json:"fund_candidates,omitempty"`
+	ResolutionReason string                 `json:"resolution_reason,omitempty"`
+}
+
+type fundIdentityResponse struct {
+	Ticker       string `json:"ticker"`
+	CIK          string `json:"cik"`
+	FundSeriesID string `json:"fund_series_id"`
+	FundClassID  string `json:"fund_class_id"`
+	SeriesID     string `json:"series_id"`
+	ClassID      string `json:"class_id"`
+	FundName     string `json:"fund_name,omitempty"`
+	Source       string `json:"source"`
+	EvidenceURL  string `json:"evidence_url,omitempty"`
+}
+
 func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 	page, pageSize := pageParams(c)
 	var eligibleA *bool
@@ -332,17 +354,80 @@ func (h *AppHandler) LookupTicker(c *gin.Context) {
 		Error(c, service.ErrValidation)
 		return
 	}
-	cik, companyName, err := h.SEC.LookupCIK(c.Request.Context(), ticker)
-	if err != nil {
-		Error(c, err)
+	if strings.EqualFold(strings.TrimSpace(c.Query("target_type")), "etf") {
+		result, err := h.lookupFundTicker(c.Request.Context(), ticker)
+		if err != nil {
+			Error(c, err)
+			return
+		}
+		OK(c, result)
 		return
 	}
-	OK(c, gin.H{
-		"ticker":       ticker,
-		"cik":          cik,
-		"company_name": companyName,
-		"target_type":  "stock",
-	})
+	cik, companyName, err := h.SEC.LookupCIK(c.Request.Context(), ticker)
+	if err == nil {
+		OK(c, tickerLookupResponse{
+			Ticker: ticker, CIK: cik, CompanyName: companyName, TargetType: "stock",
+		})
+		return
+	}
+
+	if _, ok := h.SEC.(sec.FundIdentityClient); ok {
+		result, fundErr := h.lookupFundTicker(c.Request.Context(), ticker)
+		if fundErr == nil && (result.FundIdentity != nil || len(result.FundCandidates) > 0 || result.ResolutionReason != "") {
+			OK(c, result)
+			return
+		}
+	}
+	Error(c, err)
+}
+
+func (h *AppHandler) lookupFundTicker(ctx context.Context, ticker string) (tickerLookupResponse, error) {
+	result := tickerLookupResponse{Ticker: ticker, TargetType: "etf"}
+	fundClient, ok := h.SEC.(sec.FundIdentityClient)
+	if !ok {
+		result.ResolutionReason = "SEC client does not support fund identity resolution"
+		return result, nil
+	}
+	resolution, err := fundClient.ResolveFundTicker(ctx, ticker)
+	if err != nil {
+		return tickerLookupResponse{}, err
+	}
+	if resolution.Identity != nil && completeFundIdentity(*resolution.Identity, ticker) {
+		identity := fundIdentityTransport(*resolution.Identity)
+		result.FundIdentity = &identity
+		return result, nil
+	}
+	for _, candidate := range resolution.Candidates {
+		if completeFundIdentity(candidate, ticker) {
+			result.FundCandidates = append(result.FundCandidates, fundIdentityTransport(candidate))
+		}
+	}
+	result.ResolutionReason = strings.TrimSpace(resolution.Reason)
+	if result.ResolutionReason == "" {
+		result.ResolutionReason = "no complete exact SEC fund identity found"
+	}
+	return result, nil
+}
+
+func completeFundIdentity(identity sec.FundIdentity, ticker string) bool {
+	return strings.EqualFold(strings.TrimSpace(identity.Ticker), ticker) &&
+		strings.TrimSpace(identity.CIK) != "" &&
+		strings.TrimSpace(identity.SeriesID) != "" &&
+		strings.TrimSpace(identity.ClassID) != ""
+}
+
+func fundIdentityTransport(identity sec.FundIdentity) fundIdentityResponse {
+	return fundIdentityResponse{
+		Ticker:       strings.ToUpper(strings.TrimSpace(identity.Ticker)),
+		CIK:          strings.TrimSpace(identity.CIK),
+		FundSeriesID: strings.TrimSpace(identity.SeriesID),
+		FundClassID:  strings.TrimSpace(identity.ClassID),
+		SeriesID:     strings.TrimSpace(identity.SeriesID),
+		ClassID:      strings.TrimSpace(identity.ClassID),
+		FundName:     strings.TrimSpace(identity.FundName),
+		Source:       strings.TrimSpace(identity.Source),
+		EvidenceURL:  strings.TrimSpace(identity.EvidenceURL),
+	}
 }
 
 func (h *AppHandler) ListWatchTargets(c *gin.Context) {
