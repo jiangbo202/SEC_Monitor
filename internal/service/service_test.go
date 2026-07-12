@@ -38,6 +38,32 @@ type fakeSECClient struct {
 	documentCalls   int
 }
 
+type fakeFundSECClient struct {
+	*fakeSECClient
+	matches    map[string]bool
+	matchErrs  map[string]error
+	matchCalls map[string]int
+}
+
+func (f *fakeFundSECClient) ResolveFundTicker(context.Context, string) (sec.FundResolution, error) {
+	return sec.FundResolution{}, nil
+}
+
+func (f *fakeFundSECClient) MatchFundFiling(_ context.Context, _ sec.FundIdentity, filing sec.FilingResult) (bool, string, error) {
+	if f.matchCalls == nil {
+		f.matchCalls = map[string]int{}
+	}
+	f.matchCalls[filing.AccessionNumber]++
+	if err := f.matchErrs[filing.AccessionNumber]; err != nil {
+		return false, "", err
+	}
+	matched := f.matches[filing.AccessionNumber]
+	if matched {
+		return true, "matched_class", nil
+	}
+	return false, "class_not_found", nil
+}
+
 func (f fakeSECClient) LookupCIK(ctx context.Context, ticker string) (string, string, error) {
 	return "0000320193", "Apple Inc.", nil
 }
@@ -322,6 +348,7 @@ func testDB(t *testing.T) *gorm.DB {
 		&model.NotificationLog{},
 		&model.NotificationBatch{},
 		&model.NotificationBatchItem{},
+		&model.FundFilingIdentity{},
 		&model.IPOFiling{},
 		&model.IPOCompanyOverride{},
 		&model.IPOCompanyMarketData{},
@@ -2186,6 +2213,150 @@ func TestFilingServiceRefreshesEnabledTargetsDeduplicatesAndSuppressesInitialNot
 	}
 	if runs.Total != 2 || runs.Items[0].Status != "success" {
 		t.Fatalf("sync runs = %+v", runs)
+	}
+}
+
+func TestFilingServiceSyncFiltersFundClass(t *testing.T) {
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	target := model.WatchTarget{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	secClient := &fakeFundSECClient{
+		fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{
+			{FilingID: "keep", AccessionNumber: "keep", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()},
+			{FilingID: "drop", AccessionNumber: "drop", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()},
+		}},
+		matches: map[string]bool{"keep": true, "drop": false},
+	}
+	result, err := NewFilingService(db, secClient, &fakeNotifier{}, configs).RefreshTargets(context.Background(), []model.WatchTarget{target})
+	if err != nil || result.NewFilings != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var filings []model.Filing
+	if err := db.Order("accession_number ASC").Find(&filings).Error; err != nil {
+		t.Fatalf("load filings: %v", err)
+	}
+	if len(filings) != 1 || filings[0].AccessionNumber != "keep" {
+		t.Fatalf("stored filings=%+v, want only keep", filings)
+	}
+	var detail model.SyncRunDetail
+	if err := db.Where("sync_run_id = ?", result.SyncRunID).First(&detail).Error; err != nil {
+		t.Fatalf("load sync detail: %v", err)
+	}
+	if detail.WarningMessage != "fund identity filtered 1 trust filings" {
+		t.Fatalf("warning=%q", detail.WarningMessage)
+	}
+}
+
+func TestFilingServiceRefreshTargetsLegacyETFKeepsAllFilings(t *testing.T) {
+	db := testDB(t)
+	target := model.WatchTarget{Ticker: "OLD", CompanyName: "Legacy ETF", CIK: "0001976517", TargetType: "etf", Status: "enabled"}
+	secClient := &fakeSECClient{filings: []sec.FilingResult{
+		{FilingID: "legacy-1", AccessionNumber: "legacy-1", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()},
+		{FilingID: "legacy-2", AccessionNumber: "legacy-2", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()},
+	}}
+	result, err := NewFilingService(db, secClient, &fakeNotifier{}, NewConfigService(db, NewAuditService(db))).RefreshTargets(context.Background(), []model.WatchTarget{target})
+	if err != nil || result.NewFilings != 2 || result.FailedTargets != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestFilingServiceRefreshTargetsFailsExactETFWhenIdentityUnavailable(t *testing.T) {
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	etf := model.WatchTarget{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	stock := model.WatchTarget{Ticker: "AAPL", CompanyName: "Apple Inc.", CIK: "0000320193", TargetType: "stock", Status: "enabled"}
+	secClient := &fakeSECClient{filingsByTicker: map[string][]sec.FilingResult{
+		"DRAM": {{FilingID: "dram-1", AccessionNumber: "dram-1", CIK: etf.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}},
+		"AAPL": {{FilingID: "aapl-1", AccessionNumber: "aapl-1", CIK: stock.CIK, FilingType: "8-K", FilingDate: time.Now().UTC()}},
+	}}
+	result, err := NewFilingService(db, secClient, &fakeNotifier{}, configs).RefreshTargets(context.Background(), []model.WatchTarget{etf, stock})
+	if err != nil || result.FailedTargets != 1 || result.NewFilings != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var detail model.SyncRunDetail
+	if err := db.Where("ticker = ?", "DRAM").First(&detail).Error; err != nil {
+		t.Fatalf("load ETF detail: %v", err)
+	}
+	if detail.Status != "failed" || !strings.Contains(detail.ErrorMessage, "fund identity unavailable") {
+		t.Fatalf("detail=%+v", detail)
+	}
+}
+
+func TestFilingServiceRefreshTargetsMarksIndexFailurePartial(t *testing.T) {
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	etf := model.WatchTarget{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	stock := model.WatchTarget{Ticker: "AAPL", CompanyName: "Apple Inc.", CIK: "0000320193", TargetType: "stock", Status: "enabled"}
+	secClient := &fakeFundSECClient{
+		fakeSECClient: &fakeSECClient{filingsByTicker: map[string][]sec.FilingResult{
+			"DRAM": {{FilingID: "dram-1", AccessionNumber: "dram-1", CIK: etf.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}},
+			"AAPL": {{FilingID: "aapl-1", AccessionNumber: "aapl-1", CIK: stock.CIK, FilingType: "8-K", FilingDate: time.Now().UTC()}},
+		}},
+		matchErrs: map[string]error{"dram-1": errors.New("index timeout")},
+	}
+	result, err := NewFilingService(db, secClient, &fakeNotifier{}, configs).RefreshTargets(context.Background(), []model.WatchTarget{etf, stock})
+	if err != nil || result.FailedTargets != 1 || result.NewFilings != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var run model.SyncRun
+	if err := db.First(&run, result.SyncRunID).Error; err != nil {
+		t.Fatalf("load sync run: %v", err)
+	}
+	if run.Status != "partial" {
+		t.Fatalf("run=%+v", run)
+	}
+	var count int64
+	if err := db.Model(&model.Filing{}).Where("ticker = ?", "DRAM").Count(&count).Error; err != nil {
+		t.Fatalf("count ETF filings: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("ETF filings=%d, want 0", count)
+	}
+}
+
+func TestFilingServiceRefreshTargetsCachesExactFundMatches(t *testing.T) {
+	db := testDB(t)
+	target := model.WatchTarget{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	secClient := &fakeFundSECClient{
+		fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{{FilingID: "keep", AccessionNumber: "keep", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}}},
+		matches:       map[string]bool{"keep": true},
+	}
+	svc := NewFilingService(db, secClient, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	if _, err := svc.RefreshTargets(context.Background(), []model.WatchTarget{target}); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	if _, err := svc.RefreshTargets(context.Background(), []model.WatchTarget{target}); err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+	if secClient.matchCalls["keep"] != 1 {
+		t.Fatalf("match calls=%d, want 1", secClient.matchCalls["keep"])
+	}
+	var cached model.FundFilingIdentity
+	if err := db.Where("cik = ? AND accession_number = ?", target.CIK, "keep").First(&cached).Error; err != nil {
+		t.Fatalf("load cached identity: %v", err)
+	}
+}
+
+func TestWatchTargetServiceValidatesFundIdentityPairs(t *testing.T) {
+	db := testDB(t)
+	svc := NewWatchTargetService(db, NewAuditService(db))
+	tests := []struct {
+		name  string
+		input WatchTargetInput
+		valid bool
+	}{
+		{name: "valid ETF identity", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}, valid: true},
+		{name: "partial identity", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", TargetType: "etf", FundSeriesID: "S000102337", Status: "enabled"}},
+		{name: "malformed identity", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", TargetType: "etf", FundSeriesID: "bad", FundClassID: "C000272806", Status: "enabled"}},
+		{name: "stock identity forbidden", input: WatchTargetInput{Ticker: "AAPL", CompanyName: "Apple Inc.", TargetType: "stock", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.Create(context.Background(), tt.input, "tester")
+			if (err == nil) != tt.valid {
+				t.Fatalf("Create err=%v, valid=%v", err, tt.valid)
+			}
+		})
 	}
 }
 

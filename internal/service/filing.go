@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -146,6 +147,12 @@ func (s *FilingService) RefreshTarget(ctx context.Context, targetID uint) (Refre
 	return s.refreshTargets(ctx, "target", []model.WatchTarget{target})
 }
 
+// RefreshTargets refreshes the supplied targets without loading the enabled-target list.
+// It is used by callers that have already selected an explicit set of targets.
+func (s *FilingService) RefreshTargets(ctx context.Context, targets []model.WatchTarget) (RefreshResult, error) {
+	return s.refreshTargets(ctx, "targets", targets)
+}
+
 func (s *FilingService) refreshTargets(ctx context.Context, trigger string, selected []model.WatchTarget) (RefreshResult, error) {
 	startedAt := time.Now().UTC()
 	if strings.TrimSpace(trigger) == "" {
@@ -194,7 +201,7 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 			if err != nil {
 				result.FailedTargets++
 				s.markTargetSync(ctx, target.ID, "failed", err.Error(), 0)
-				s.finishSyncRunDetail(ctx, detail.ID, "failed", 0, detailStartedAt, err.Error())
+				s.finishSyncRunDetail(ctx, detail.ID, "failed", 0, detailStartedAt, err.Error(), "")
 				continue
 			}
 			cik = foundCIK
@@ -208,10 +215,23 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 		if err != nil {
 			result.FailedTargets++
 			s.markTargetSync(ctx, target.ID, "failed", err.Error(), 0)
-			s.finishSyncRunDetail(ctx, detail.ID, "failed", 0, detailStartedAt, err.Error())
+			s.finishSyncRunDetail(ctx, detail.ID, "failed", 0, detailStartedAt, err.Error(), "")
 			continue
 		}
 		filings = applyFetchSettings(filings, target.LastSyncAt == nil, settings, time.Now().UTC())
+		target.CIK = cik
+		filings, skipped, err := s.filterFundFilings(ctx, target, filings)
+		if err != nil {
+			result.FailedTargets++
+			errorMessage := "fund identity unavailable: " + err.Error()
+			s.markTargetSync(ctx, target.ID, "failed", errorMessage, 0)
+			s.finishSyncRunDetail(ctx, detail.ID, "failed", 0, detailStartedAt, errorMessage, "")
+			continue
+		}
+		warning := ""
+		if skipped > 0 {
+			warning = fmt.Sprintf("fund identity filtered %d trust filings", skipped)
+		}
 		for _, item := range filings {
 			filing := model.Filing{
 				FilingID:        item.FilingID,
@@ -229,7 +249,7 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 			}
 			created, err := s.createFilingIfNew(ctx, filing)
 			if err != nil {
-				s.finishSyncRunDetail(ctx, detail.ID, "failed", targetNewFilings, detailStartedAt, err.Error())
+				s.finishSyncRunDetail(ctx, detail.ID, "failed", targetNewFilings, detailStartedAt, err.Error(), warning)
 				return result, err
 			}
 			if created {
@@ -240,7 +260,7 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 			}
 		}
 		s.markTargetSync(ctx, target.ID, "success", "", targetNewFilings)
-		s.finishSyncRunDetail(ctx, detail.ID, "success", targetNewFilings, detailStartedAt, "")
+		s.finishSyncRunDetail(ctx, detail.ID, "success", targetNewFilings, detailStartedAt, "", warning)
 	}
 
 	status := "success"
@@ -422,17 +442,129 @@ func (s *FilingService) finishSyncRun(ctx context.Context, id uint, result Refre
 	}).Error
 }
 
-func (s *FilingService) finishSyncRunDetail(ctx context.Context, id uint, status string, newFilings int, startedAt time.Time, errorMessage string) {
+func (s *FilingService) finishSyncRunDetail(ctx context.Context, id uint, status string, newFilings int, startedAt time.Time, errorMessage, warningMessage string) {
 	if id == 0 {
 		return
 	}
 	finishedAt := time.Now().UTC()
 	_ = s.db.WithContext(ctx).Model(&model.SyncRunDetail{}).Where("id = ?", id).Updates(map[string]any{
-		"finished_at":   &finishedAt,
-		"status":        status,
-		"new_filings":   newFilings,
-		"duration_ms":   finishedAt.Sub(startedAt).Milliseconds(),
-		"error_message": errorMessage,
+		"finished_at":     &finishedAt,
+		"status":          status,
+		"new_filings":     newFilings,
+		"duration_ms":     finishedAt.Sub(startedAt).Milliseconds(),
+		"error_message":   errorMessage,
+		"warning_message": warningMessage,
+	}).Error
+}
+
+func (s *FilingService) filterFundFilings(ctx context.Context, target model.WatchTarget, filings []sec.FilingResult) ([]sec.FilingResult, int, error) {
+	seriesID := strings.TrimSpace(target.FundSeriesID)
+	classID := strings.TrimSpace(target.FundClassID)
+	if seriesID == "" && classID == "" {
+		return filings, 0, nil
+	}
+	if seriesID == "" || classID == "" {
+		return nil, 0, fmt.Errorf("fund identity is incomplete")
+	}
+	fundClient, ok := s.sec.(sec.FundIdentityClient)
+	if !ok {
+		return nil, 0, fmt.Errorf("SEC client does not support fund filing identity matching")
+	}
+
+	identity := sec.FundIdentity{
+		Ticker: target.Ticker, CIK: target.CIK, SeriesID: seriesID, ClassID: classID,
+	}
+	filtered := make([]sec.FilingResult, 0, len(filings))
+	skipped := 0
+	for _, filing := range filings {
+		matched, cached, err := s.cachedFundFilingMatch(ctx, identity, filing)
+		if err != nil {
+			return nil, 0, err
+		}
+		if !cached {
+			var reason string
+			matched, reason, err = fundClient.MatchFundFiling(ctx, identity, filing)
+			if err != nil {
+				_ = s.storeFundFilingMatch(ctx, identity, filing, "failed", reason)
+				return nil, 0, err
+			}
+			if !fundFilingMatchReasonVerified(reason) {
+				_ = s.storeFundFilingMatch(ctx, identity, filing, "failed", reason)
+				return nil, 0, fmt.Errorf("filing %s identity cannot be verified: %s", filing.AccessionNumber, reason)
+			}
+			status := "unmatched"
+			if matched {
+				status = "matched"
+			}
+			if err := s.storeFundFilingMatch(ctx, identity, filing, status, reason); err != nil {
+				return nil, 0, err
+			}
+		}
+		if matched {
+			filtered = append(filtered, filing)
+			continue
+		}
+		skipped++
+	}
+	return filtered, skipped, nil
+}
+
+func fundFilingMatchReasonVerified(reason string) bool {
+	return reason == "matched_class" || reason == "series_not_found" || reason == "class_not_found"
+}
+
+func (s *FilingService) cachedFundFilingMatch(ctx context.Context, identity sec.FundIdentity, filing sec.FilingResult) (bool, bool, error) {
+	if strings.TrimSpace(filing.AccessionNumber) == "" {
+		return false, false, nil
+	}
+	var cached model.FundFilingIdentity
+	err := s.db.WithContext(ctx).Where("cik = ? AND accession_number = ?", identity.CIK, filing.AccessionNumber).First(&cached).Error
+	if err == gorm.ErrRecordNotFound {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	var seriesIDs, classIDs []string
+	if json.Unmarshal([]byte(cached.SeriesIDsJSON), &seriesIDs) != nil || json.Unmarshal([]byte(cached.ClassIDsJSON), &classIDs) != nil || len(seriesIDs) != 1 || len(classIDs) != 1 || seriesIDs[0] != identity.SeriesID || classIDs[0] != identity.ClassID {
+		return false, false, nil
+	}
+	switch cached.ParseStatus {
+	case "matched":
+		return true, true, nil
+	case "unmatched":
+		return false, true, nil
+	default:
+		return false, false, nil
+	}
+}
+
+func (s *FilingService) storeFundFilingMatch(ctx context.Context, identity sec.FundIdentity, filing sec.FilingResult, status, message string) error {
+	if strings.TrimSpace(filing.AccessionNumber) == "" {
+		return nil
+	}
+	seriesIDsJSON, err := json.Marshal([]string{identity.SeriesID})
+	if err != nil {
+		return err
+	}
+	classIDsJSON, err := json.Marshal([]string{identity.ClassID})
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "cik"}, {Name: "accession_number"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"series_ids_json": string(seriesIDsJSON),
+			"class_ids_json":  string(classIDsJSON),
+			"parse_status":    status,
+			"parse_message":   message,
+			"checked_at":      now,
+		}),
+	}).Create(&model.FundFilingIdentity{
+		CIK: identity.CIK, AccessionNumber: filing.AccessionNumber,
+		SeriesIDsJSON: string(seriesIDsJSON), ClassIDsJSON: string(classIDsJSON),
+		ParseStatus: status, ParseMessage: message, CheckedAt: now,
 	}).Error
 }
 

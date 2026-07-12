@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"sec_monitor/internal/model"
 
@@ -17,12 +19,17 @@ type WatchTargetService struct {
 }
 
 type WatchTargetInput struct {
-	Ticker      string `json:"ticker"`
-	CompanyName string `json:"company_name"`
-	CIK         string `json:"cik"`
-	TargetType  string `json:"target_type"`
-	Group       string `json:"group"`
-	Status      string `json:"status"`
+	Ticker             string     `json:"ticker"`
+	CompanyName        string     `json:"company_name"`
+	CIK                string     `json:"cik"`
+	TargetType         string     `json:"target_type"`
+	FundSeriesID       string     `json:"fund_series_id"`
+	FundClassID        string     `json:"fund_class_id"`
+	IdentitySource     string     `json:"identity_source"`
+	IdentityVerifiedAt *time.Time `json:"identity_verified_at"`
+	IdentityNote       string     `json:"identity_note"`
+	Group              string     `json:"group"`
+	Status             string     `json:"status"`
 }
 
 type WatchTargetFilter struct {
@@ -65,12 +72,17 @@ func (s *WatchTargetService) Update(ctx context.Context, id uint, input WatchTar
 		}
 		next.ID = before.ID
 		if err := tx.Model(&before).Updates(map[string]any{
-			"ticker":       next.Ticker,
-			"company_name": next.CompanyName,
-			"cik":          next.CIK,
-			"target_type":  next.TargetType,
-			"group":        next.Group,
-			"status":       next.Status,
+			"ticker":               next.Ticker,
+			"company_name":         next.CompanyName,
+			"cik":                  next.CIK,
+			"target_type":          next.TargetType,
+			"fund_series_id":       next.FundSeriesID,
+			"fund_class_id":        next.FundClassID,
+			"identity_source":      next.IdentitySource,
+			"identity_verified_at": next.IdentityVerifiedAt,
+			"identity_note":        next.IdentityNote,
+			"group":                next.Group,
+			"status":               next.Status,
 		}).Error; err != nil {
 			return err
 		}
@@ -157,6 +169,8 @@ func (input WatchTargetInput) toModel() (model.WatchTarget, error) {
 	companyName := strings.TrimSpace(input.CompanyName)
 	targetType := strings.ToLower(strings.TrimSpace(input.TargetType))
 	status := strings.ToLower(strings.TrimSpace(input.Status))
+	seriesID := strings.TrimSpace(input.FundSeriesID)
+	classID := strings.TrimSpace(input.FundClassID)
 	if status == "" {
 		status = "enabled"
 	}
@@ -172,15 +186,34 @@ func (input WatchTargetInput) toModel() (model.WatchTarget, error) {
 	if status != "enabled" && status != "disabled" {
 		return model.WatchTarget{}, fmt.Errorf("%w: status must be enabled or disabled", ErrValidation)
 	}
+	if targetType != "etf" && (seriesID != "" || classID != "") {
+		return model.WatchTarget{}, fmt.Errorf("%w: fund_series_id and fund_class_id require target_type etf", ErrValidation)
+	}
+	if (seriesID == "") != (classID == "") {
+		return model.WatchTarget{}, fmt.Errorf("%w: fund_series_id and fund_class_id must be supplied together", ErrValidation)
+	}
+	if seriesID != "" && (!fundSeriesIDPattern.MatchString(seriesID) || !fundClassIDPattern.MatchString(classID)) {
+		return model.WatchTarget{}, fmt.Errorf("%w: fund identity must use S[0-9]+ and C[0-9]+", ErrValidation)
+	}
 	return model.WatchTarget{
-		Ticker:      ticker,
-		CompanyName: companyName,
-		CIK:         strings.TrimSpace(input.CIK),
-		TargetType:  targetType,
-		Group:       strings.TrimSpace(input.Group),
-		Status:      status,
+		Ticker:             ticker,
+		CompanyName:        companyName,
+		CIK:                strings.TrimSpace(input.CIK),
+		TargetType:         targetType,
+		FundSeriesID:       seriesID,
+		FundClassID:        classID,
+		IdentitySource:     strings.TrimSpace(input.IdentitySource),
+		IdentityVerifiedAt: input.IdentityVerifiedAt,
+		IdentityNote:       strings.TrimSpace(input.IdentityNote),
+		Group:              strings.TrimSpace(input.Group),
+		Status:             status,
 	}, nil
 }
+
+var (
+	fundSeriesIDPattern = regexp.MustCompile(`^S[0-9]+$`)
+	fundClassIDPattern  = regexp.MustCompile(`^C[0-9]+$`)
+)
 
 func mapNotFound(err error) error {
 	if err == gorm.ErrRecordNotFound {
