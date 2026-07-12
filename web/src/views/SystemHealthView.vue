@@ -43,7 +43,7 @@
             v-for="item in health.issues"
             :key="item.message"
             :title="item.message"
-            :type="item.level === 'warning' ? 'warning' : 'info'"
+            :type="healthAlertType(item.level)"
             :closable="false"
             show-icon
           />
@@ -117,6 +117,12 @@ function formatDateTime(value?: string | null) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString()
+}
+
+function healthAlertType(level: string) {
+  if (level === 'critical') return 'error'
+  if (level === 'warning') return 'warning'
+  return 'info'
 }
 
 onMounted(load)

@@ -84,10 +84,10 @@ The following persisted system settings are available in the System Settings pag
 | Key | Default | Operator effect |
 |---|---:|---|
 | `ipo.lifecycle_sweep_enabled` | `true` | Enables the lifecycle sweep during each IPO sync. |
-| `ipo.lifecycle_max_ciks` | `25` | Maximum active CIKs swept per sync; valid range is 1–200. The oldest checks are selected first. |
-| `ipo.lifecycle_recheck_hours` | `24` | A lifecycle check is stale after this many hours; valid range is 1–168. |
+| `ipo.lifecycle_max_ciks` | `50` | Maximum active CIKs swept per sync; valid range is 1–200. The oldest checks are selected first. |
+| `ipo.lifecycle_recheck_hours` | `12` | A lifecycle check is stale after this many hours; valid range is 1–168. |
 
-The sweep always includes required lifecycle forms (`EFFECT`, `424B4`, and `RW`) even when they are absent from `ipo.form_types`. It skips companies manually finalized as `listed` or `withdrawn`, and lifecycle backfills are stored without Telegram notifications.
+The sweep always includes required lifecycle forms (`EFFECT`, `424B4`, and `RW`) even when they are absent from `ipo.form_types`. It selects only active companies with an IPO lifecycle filing in the last 180 days, skips companies manually finalized as `listed` or `withdrawn`, and stores lifecycle backfills without Telegram notifications.
 
 `notification_retry_sync` is a default enabled scheduler task with cron `*/10 * * * *`. It sends only due `failed` notification batches. A failed initial delivery is retried after 5 minutes, then 15 minutes, 45 minutes, 2 hours, and 6 hours; a later failure becomes `dead_letter`. Keep this task enabled unless notification recovery is intentionally paused.
 

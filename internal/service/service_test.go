@@ -646,6 +646,46 @@ func TestConfigServiceRejectsNewEncryptedValueWithoutKey(t *testing.T) {
 	}
 }
 
+func TestConfigServiceClassifiesKnownSecretsAndExistingEncryptedRowsServerSide(t *testing.T) {
+	db := testDB(t)
+	t.Setenv("CONFIG_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)))
+	svc := NewConfigService(db, NewAuditService(db), config.Load().System)
+
+	if err := db.Create(&model.SystemConfig{
+		ConfigKey: "custom.legacy_secret", ConfigValue: "old-value", ValueType: "string", Category: "custom", Encrypted: true,
+	}).Error; err != nil {
+		t.Fatalf("seed encrypted config: %v", err)
+	}
+	inputs := []ConfigInput{
+		{Key: "telegram.bot_token", Value: "telegram-token", ValueType: "string", Category: "telegram", Encrypted: false},
+		{Key: "discovery.tiingo_api_token", Value: "tiingo-token", ValueType: "string", Category: "discovery", Encrypted: false},
+		{Key: "custom.legacy_secret", Value: "updated-value", ValueType: "string", Category: "custom", Encrypted: false},
+	}
+	if err := svc.UpsertMany(context.Background(), inputs, "tester"); err != nil {
+		t.Fatalf("UpsertMany: %v", err)
+	}
+
+	for _, key := range []string{"telegram.bot_token", "discovery.tiingo_api_token", "custom.legacy_secret"} {
+		var stored model.SystemConfig
+		if err := db.Where("config_key = ?", key).First(&stored).Error; err != nil {
+			t.Fatalf("load %s: %v", key, err)
+		}
+		if !stored.Encrypted || !strings.HasPrefix(stored.ConfigValue, encryptedSecretPrefix) {
+			t.Fatalf("stored %s = %+v, want encrypted ciphertext", key, stored)
+		}
+	}
+
+	var audit model.OperationLog
+	if err := db.Where("object_type = ?", "system_config").Order("id DESC").First(&audit).Error; err != nil {
+		t.Fatalf("load audit record: %v", err)
+	}
+	for _, secret := range []string{"telegram-token", "tiingo-token", "updated-value"} {
+		if strings.Contains(audit.AfterData, secret) {
+			t.Fatalf("audit leaked %q: %s", secret, audit.AfterData)
+		}
+	}
+}
+
 func TestMigrateEncryptedValuesSanitizesNotificationErrors(t *testing.T) {
 	db := testDB(t)
 	message := `Post "https://api.telegram.org/bot123:secret/sendMessage": timeout`
@@ -887,7 +927,7 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("IPORadarSettings: %v", err)
 			}
-			if !settings.Enabled || !settings.NotifyEnabled || settings.LookbackDays != 7 || settings.MaxResults != 100 {
+			if !settings.Enabled || !settings.NotifyEnabled || settings.LookbackDays != 7 || settings.MaxResults != 100 || settings.LifecycleMaxCIKs != 50 || settings.LifecycleRecheckHours != 12 {
 				t.Fatalf("settings = %+v", settings)
 			}
 			if len(settings.FormTypes) == 0 || settings.FormTypes[0] != "S-1" {
@@ -1433,6 +1473,26 @@ func TestIPORadarLifecycleSweepRotatesOldestActiveCIKs(t *testing.T) {
 	}
 	if rows[2].LifecycleCheckedAt == nil || !rows[2].LifecycleCheckedAt.Equal(newer) {
 		t.Fatalf("lifecycle timestamp for unselected CIK = %v, want %v", rows[2].LifecycleCheckedAt, newer)
+	}
+}
+
+func TestIPORadarLifecycleSweepRequiresRecentLifecycleFiling(t *testing.T) {
+	now := time.Now().UTC()
+	db := testDB(t)
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "expired-s1", CIK: "0000000001", CompanyName: "Expired IPO", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -181), FilingURL: "https://sec.test/expired-s1"},
+		{FilingID: "expired-424b4", CIK: "0000000001", CompanyName: "Expired IPO", FilingType: "424B4", FilingDate: now.AddDate(0, 0, -181), FilingURL: "https://sec.test/expired-424b4"},
+		{FilingID: "recent-s1", CIK: "0000000002", CompanyName: "Recent IPO", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -1), FilingURL: "https://sec.test/recent-s1"},
+	}).Error; err != nil {
+		t.Fatalf("seed IPO filings: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	ciks, err := svc.lifecycleSweepCandidateCIKs(context.Background(), now.Add(-time.Hour), nil, 10)
+	if err != nil {
+		t.Fatalf("lifecycle sweep candidates: %v", err)
+	}
+	if len(ciks) != 1 || ciks[0] != "0000000002" {
+		t.Fatalf("lifecycle sweep candidates = %v, want only recent CIK", ciks)
 	}
 }
 

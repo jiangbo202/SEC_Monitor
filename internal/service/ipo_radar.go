@@ -711,6 +711,9 @@ func (s *IPORadarService) lifecycleSweepCandidateCIKs(ctx context.Context, reche
 		if alreadyBackfilled[cik] {
 			continue
 		}
+		if !hasRecentIPOLifecycleFiling(companyFilings, now) {
+			continue
+		}
 		market := marketByCIK[cik]
 		if market.LifecycleCheckedAt != nil && market.LifecycleCheckedAt.After(recheckBefore) {
 			continue
@@ -745,6 +748,16 @@ func (s *IPORadarService) lifecycleSweepCandidateCIKs(ctx context.Context, reche
 		selected = append(selected, candidate.cik)
 	}
 	return selected, nil
+}
+
+func hasRecentIPOLifecycleFiling(filings []model.IPOFiling, now time.Time) bool {
+	cutoff := now.UTC().AddDate(0, 0, -180)
+	for _, filing := range filings {
+		if !filing.FilingDate.Before(cutoff) && isIPOLifecycleFilingType(filing.FilingType, ipoRegistrationFilingTypes) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *IPORadarService) finishSyncRun(ctx context.Context, id uint, result IPORadarRefreshResult, status string, errorMessage string) {

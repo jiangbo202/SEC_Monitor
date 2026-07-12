@@ -1002,7 +1002,9 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 	}
 
 	status := "ok"
-	if len(issues) > 0 {
+	if encryptionHealth.Status == "critical" {
+		status = "critical"
+	} else if len(issues) > 0 {
 		status = "warning"
 	}
 	OK(c, gin.H{

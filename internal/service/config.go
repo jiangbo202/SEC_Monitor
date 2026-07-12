@@ -84,6 +84,13 @@ type SocialHeatSettings struct {
 
 const maskedSecretMarker = "******"
 
+var sensitiveConfigKeys = map[string]struct{}{
+	"telegram.bot_token":            {},
+	"discovery.tiingo_api_token":    {},
+	"discovery.tiingo_api_tokens":   {},
+	"discovery.twelve_data_api_key": {},
+}
+
 func NewConfigService(db *gorm.DB, audit *AuditService, system ...config.SystemConfig) *ConfigService {
 	service := &ConfigService{db: db, audit: audit}
 	if len(system) > 0 {
@@ -215,8 +222,8 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "ipo.notify_form_types", Value: "", ValueType: "string", Category: "ipo"},
 		{Key: "ipo.keywords", Value: "", ValueType: "string", Category: "ipo"},
 		{Key: "ipo.lifecycle_sweep_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
-		{Key: "ipo.lifecycle_max_ciks", Value: "25", ValueType: "int", Category: "ipo"},
-		{Key: "ipo.lifecycle_recheck_hours", Value: "24", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.lifecycle_max_ciks", Value: "50", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.lifecycle_recheck_hours", Value: "12", ValueType: "int", Category: "ipo"},
 		{Key: "candidate_notification.enabled", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.notify_a", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
@@ -281,20 +288,22 @@ func (s *ConfigService) UpsertMissing(ctx context.Context, inputs []ConfigInput,
 
 func (s *ConfigService) UpsertMany(ctx context.Context, inputs []ConfigInput, operator string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		effectiveInputs := make([]ConfigInput, 0, len(inputs))
 		for _, input := range inputs {
 			key := strings.TrimSpace(input.Key)
 			if err := validateConfigInput(key, input.Value); err != nil {
 				return err
 			}
-			if input.Encrypted && IsMaskedSecret(input.Value) {
-				var existing model.SystemConfig
-				err := tx.Where("config_key = ?", key).First(&existing).Error
-				if err == nil {
-					continue
-				}
-				if err != gorm.ErrRecordNotFound {
-					return err
-				}
+			var existing model.SystemConfig
+			err := tx.Where("config_key = ?", key).First(&existing).Error
+			if err != nil && err != gorm.ErrRecordNotFound {
+				return err
+			}
+			input.Key = key
+			input.Encrypted = input.Encrypted || isSensitiveConfigKey(key) || (err == nil && existing.Encrypted)
+			if input.Encrypted && IsMaskedSecret(input.Value) && err == nil {
+				effectiveInputs = append(effectiveInputs, input)
+				continue
 			}
 			value, err := s.encryptConfigInput(input)
 			if err != nil {
@@ -318,9 +327,15 @@ func (s *ConfigService) UpsertMany(ctx context.Context, inputs []ConfigInput, op
 			}).Create(&cfg).Error; err != nil {
 				return err
 			}
+			effectiveInputs = append(effectiveInputs, input)
 		}
-		return NewAuditService(tx).Record(ctx, operator, "update", "system_config", "batch", nil, inputs)
+		return NewAuditService(tx).Record(ctx, operator, "update", "system_config", "batch", nil, effectiveInputs)
 	})
+}
+
+func isSensitiveConfigKey(key string) bool {
+	_, ok := sensitiveConfigKeys[strings.TrimSpace(key)]
+	return ok
 }
 
 func validateConfigInput(key string, value string) error {
@@ -559,10 +574,10 @@ func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings,
 		maxResults = 100
 	}
 	if lifecycleMaxCIKs < 1 || lifecycleMaxCIKs > 200 {
-		lifecycleMaxCIKs = 25
+		lifecycleMaxCIKs = 50
 	}
 	if lifecycleRecheckHours < 1 || lifecycleRecheckHours > 168 {
-		lifecycleRecheckHours = 24
+		lifecycleRecheckHours = 12
 	}
 	formTypes := splitConfigList(formTypesRaw)
 	if len(formTypes) == 0 {

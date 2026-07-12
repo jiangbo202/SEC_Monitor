@@ -828,6 +828,35 @@ func TestAppHandlerMasksHistoricalEncryptedOperationLogValues(t *testing.T) {
 	}
 }
 
+func TestAppHandlerListHealthIsCriticalWhenEncryptionIsUnavailable(t *testing.T) {
+	r, _, _ := testApp(t)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/list-health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Status string `json:"status"`
+			Issues []struct {
+				Level string `json:"level"`
+			} `json:"issues"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Data.Status != "critical" {
+		t.Fatalf("health status = %q, want critical", response.Data.Status)
+	}
+	for _, issue := range response.Data.Issues {
+		if issue.Level == "critical" {
+			return
+		}
+	}
+	t.Fatalf("health issues = %+v, want critical encryption issue", response.Data.Issues)
+}
+
 func TestAppHandlerListsDiscoveryRunDiagnostics(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
