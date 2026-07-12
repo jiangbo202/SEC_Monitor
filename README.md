@@ -20,12 +20,12 @@ SEC Monitor 是一个本地优先的 SEC 情报监控系统，用于跟踪美股
 - SEC 公告列表：筛选、分页、Filing Date、发布时间、同步时间、Ticker、公告类型排序。
 - 保存筛选视图：常用公告筛选条件可保存在浏览器本地。
 - 重大事件雷达：聚合 8-K、S-1、S-3、424B、13D 等高关注公告。
-- IPO监控：扫描 SEC 当前申报流并按 CIK 补齐生命周期文件；通过 SEC 官方映射确认最终 Ticker 和交易所，从 424B4 尝试提取发行价与发行数量，并支持市场字段和状态手动校准。
+- IPO监控：扫描 SEC 当前申报流并按 CIK 补齐生命周期文件；覆盖 EFFECT、424B4 和 RW 等关键节点，区分“上市待确认”与正式上市；从 424B4 提取发行信息并展示解析失败原因，支持状态和市场字段手动校准。
 - Insider Trading：聚合 Form 3/4/5 内幕人持股变动披露。
 - 小盘候选研究：基于 SEC 公司事实、财务指标、资本事件、Form 4 内幕交易和价格数据，筛选 A/B 级小盘候选，并提供变化解释、研究工作台、事件化摘要与历史 cohort 效果评估。
-- 同步历史与调度：内置 `sec_filing_sync` 和 `ipo_radar_sync` 两类周期任务，可立即执行、启停和调整 Cron。
+- 同步历史与调度：内置 SEC、IPO、小盘研究和通知重试任务；同一任务防重，不同任务可并行，可立即执行、启停和调整 Cron。
 - 总览页面：分区展示标的监控和 IPO监控 KPI，包含同步健康度、最近公告、IPO进行中公司数、IPO 状态分布和通知状态。
-- Telegram：通知配置、测试发送和重试；首次同步及历史/生命周期补齐默认静默入库，每次同步最多发送一条分组摘要，通知批次可展开查看发送或抑制原因。
+- Telegram：通知配置、测试发送和持久化重试；首次同步及历史/生命周期补齐默认静默入库，每次同步最多发送一条分组摘要，通知批次可展开查看发送、抑制、待重试或死信原因，并支持手动重新投递。
 - 系统配置：SEC 拉取策略、通知规则、数据保留、默认语言。
 - 中英文切换：顶部可切换当前浏览器语言，系统配置可设置默认语言。
 - 首次启动向导：引导设置 SEC User-Agent、添加标的、配置通知和首次同步。
@@ -229,12 +229,12 @@ IPO 运营状态：
 
 - `new`：发现初始 S-1/F-1 注册文件；`updating`：发现修订文件；`effective`：发现 EFFECT；`priced`：发现 424B4 定价文件。
 - `listing_pending`：SEC 映射已有 Ticker、但尚未确认交易所；`listed`：Ticker 与交易所已确认；`withdrawn`：发现 RW；`stale`：超过 60 天没有新的 IPO 文件。
-- `listing_pending`、`parse_failed`、`lifecycle_stale` 和 `notification_failed` 是公司列表的运营关注筛选。健康卡还会单独显示 `missing_market_mapping`、到期重试和死信数量。
+- `listing_pending`、`parse_failed`、`lifecycle_stale` 和 `notification_failed` 是公司列表的运营关注筛选。健康卡还会单独显示 `missing_market_mapping`、到期重试和死信数量；加密密钥缺失或无效会显示为严重健康问题。
 
 IPO 生命周期与通知运营：
 
-- `ipo.lifecycle_sweep_enabled` 默认开启。每次 IPO 同步会按最久未检查优先补查仍在进行中的公司；`ipo.lifecycle_max_ciks`（默认 `25`，范围 `1`–`200`）限制单次补查量，`ipo.lifecycle_recheck_hours`（默认 `24`，范围 `1`–`168`）定义过期检查窗口。已手动标记为 `listed` 或 `withdrawn` 的公司不会参加补查；生命周期补齐只入库，不发送通知。
-- `notification_retry_sync` 默认启用、每 10 分钟运行一次。它只重投到期的失败批次；重试延迟依次为 5 分钟、15 分钟、45 分钟、2 小时和 6 小时，仍失败后进入 `dead_letter`。
+- `ipo.lifecycle_sweep_enabled` 默认开启。每次 IPO 同步会按最久未检查优先补查仍在进行中的公司；仅检查近 180 天有 IPO 生命周期文件的项目。`ipo.lifecycle_max_ciks`（默认 `50`，范围 `1`–`200`）限制单次补查量，`ipo.lifecycle_recheck_hours`（默认 `12`，范围 `1`–`168`）定义过期检查窗口。已手动标记为 `listed` 或 `withdrawn` 的公司不会参加补查；生命周期补齐只入库，不发送通知。
+- `notification_retry_sync` 默认启用、每 10 分钟运行一次。它只重投到期的失败批次；每个批次经历首次发送后，依次在 5 分钟、15 分钟、45 分钟、2 小时和 6 小时后重试。仍失败后进入 `dead_letter`（死信），不会丢失内容，可在“通知日志”筛选死信并点击“重新投递”。
 - 打开“通知日志”的“通知批次”页查看 `pending`、`sent`、`suppressed`、`failed` 与 `dead_letter`。对 `failed` 或 `dead_letter` 批次点击“重新投递”，会重置重试周期并立即加入队列；正在重试的批次不能手动重新投递。
 
 小盘候选研究功能：
