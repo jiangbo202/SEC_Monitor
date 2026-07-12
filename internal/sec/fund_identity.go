@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 const fundIdentitySource = "sec_company_tickers_mf"
@@ -145,9 +146,13 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 	}
 
 	candidates := make([]FundIdentity, 0)
+	exactCandidates := make([]FundIdentity, 0)
+	incompleteMetadata := false
+	fundNameMismatch := false
 	for _, hit := range payload.Hits.Hits {
 		accessionNumber := strings.TrimSpace(hit.Source.ADSH)
-		if !validAccessionNumber(accessionNumber) || !searchDisplayNamesContainTicker(rawStringSlice(hit.Source.DisplayNames), ticker) {
+		displayNames := rawStringSlice(hit.Source.DisplayNames)
+		if !validAccessionNumber(accessionNumber) || !searchDisplayNamesContainTicker(displayNames, ticker) {
 			continue
 		}
 		for _, rawCIK := range rawStringSlice(hit.Source.CIKs) {
@@ -160,6 +165,9 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 			if err != nil {
 				return FundResolution{}, err
 			}
+			if parsed.Incomplete {
+				incompleteMetadata = true
+			}
 			for _, identity := range parsed.Identities {
 				if identity.Ticker != ticker {
 					continue
@@ -168,12 +176,29 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 				identity.Source = fundFilingIndexSource
 				identity.EvidenceURL = indexURL
 				candidates = appendUniqueFundIdentity(candidates, identity)
+				if fundNameMatchesSearchDisplayName(identity.FundName, displayNames, ticker) {
+					exactCandidates = appendUniqueFundIdentity(exactCandidates, identity)
+				} else {
+					fundNameMismatch = true
+				}
 			}
 		}
 	}
 
-	if len(candidates) == 1 {
-		return FundResolution{Identity: &candidates[0]}, nil
+	if incompleteMetadata {
+		return FundResolution{
+			Candidates: candidates,
+			Reason:     fmt.Sprintf("SEC filing index metadata is incomplete for ticker %s", ticker),
+		}, nil
+	}
+	if fundNameMismatch {
+		return FundResolution{
+			Candidates: candidates,
+			Reason:     fmt.Sprintf("SEC filing series name does not exactly match search display name for ticker %s", ticker),
+		}, nil
+	}
+	if len(candidates) == 1 && len(exactCandidates) == 1 {
+		return FundResolution{Identity: &exactCandidates[0]}, nil
 	}
 	if len(candidates) > 1 {
 		return FundResolution{
@@ -247,32 +272,93 @@ func (c *HTTPClient) fetchFundIndex(ctx context.Context, indexURL string) (fundI
 
 func parseFundIndex(body string) fundIndexParseResult {
 	text := normalizeFundIndexText(body)
-	seriesNames := findFundIndexValues(text, `(?im)^\s*Series(?:\s+Name)?\s*:\s*(.+?)\s*$`)
-	seriesIDs := findFundIndexValues(text, `(?im)^\s*Series\s+(?:ID|Identifier)\s*:\s*(S[0-9]+)\s*$`)
-	classNames := findFundIndexValues(text, `(?im)^\s*Class/Contract(?:\s+Name)?\s*:\s*(.+?)\s*$`)
-	classIDs := findFundIndexValues(text, `(?im)^\s*Class/Contract\s+(?:ID|Identifier)\s*:\s*(C[0-9]+)\s*$`)
-	tickers := findFundIndexValues(text, `(?im)^\s*(?:Ticker(?:\s+Symbol)?|Symbol)\s*:\s*([A-Za-z0-9.\-]+)\s*$`)
-
 	result := fundIndexParseResult{}
-	count := len(seriesIDs)
-	if len(classIDs) > count {
-		count = len(classIDs)
-	}
-	if count == 0 || len(seriesNames) < count || len(classNames) < count || len(tickers) < count {
-		result.Incomplete = true
-	}
-	for i := 0; i < count; i++ {
-		if i >= len(seriesNames) || i >= len(seriesIDs) || i >= len(classNames) || i >= len(classIDs) || i >= len(tickers) {
+	var row fundIndexRow
+	for _, line := range strings.Split(text, "\n") {
+		kind, value := parseFundIndexField(line)
+		if kind == "" {
 			continue
 		}
-		result.Identities = appendUniqueFundIdentity(result.Identities, FundIdentity{
-			Ticker:   strings.ToUpper(strings.TrimSpace(tickers[i])),
-			SeriesID: strings.TrimSpace(seriesIDs[i]),
-			ClassID:  strings.TrimSpace(classIDs[i]),
-			FundName: strings.TrimSpace(seriesNames[i]),
-		})
+		switch kind {
+		case "series_name":
+			if !row.empty() {
+				result.Incomplete = true
+			}
+			row = fundIndexRow{seriesName: value}
+		case "series_id":
+			if row.seriesName == "" || row.seriesID != "" || row.className != "" || row.classID != "" || row.ticker != "" {
+				result.Incomplete = true
+				continue
+			}
+			row.seriesID = value
+		case "class_name":
+			if row.seriesName == "" || row.seriesID == "" || row.className != "" || row.classID != "" || row.ticker != "" {
+				result.Incomplete = true
+				continue
+			}
+			row.className = value
+		case "class_id":
+			if row.seriesName == "" || row.seriesID == "" || row.className == "" || row.classID != "" || row.ticker != "" {
+				result.Incomplete = true
+				continue
+			}
+			row.classID = value
+		case "ticker":
+			if !row.completeWithoutTicker() || row.ticker != "" {
+				result.Incomplete = true
+				continue
+			}
+			row.ticker = value
+			result.Identities = appendUniqueFundIdentity(result.Identities, FundIdentity{
+				Ticker:   strings.ToUpper(strings.TrimSpace(row.ticker)),
+				SeriesID: strings.TrimSpace(row.seriesID),
+				ClassID:  strings.TrimSpace(row.classID),
+				FundName: strings.TrimSpace(row.seriesName),
+			})
+			row = fundIndexRow{}
+		}
+	}
+	if !row.empty() {
+		result.Incomplete = true
 	}
 	return result
+}
+
+type fundIndexRow struct {
+	seriesName string
+	seriesID   string
+	className  string
+	classID    string
+	ticker     string
+}
+
+func (r fundIndexRow) empty() bool {
+	return r.seriesName == "" && r.seriesID == "" && r.className == "" && r.classID == "" && r.ticker == ""
+}
+
+func (r fundIndexRow) completeWithoutTicker() bool {
+	return r.seriesName != "" && r.seriesID != "" && r.className != "" && r.classID != ""
+}
+
+func parseFundIndexField(line string) (string, string) {
+	line = strings.TrimSpace(line)
+	patterns := []struct {
+		kind    string
+		pattern string
+	}{
+		{kind: "series_name", pattern: `(?i)^Series(?:\s+Name)?\s*:\s*(.+?)\s*$`},
+		{kind: "series_id", pattern: `(?i)^Series\s+(?:ID|Identifier)\s*:\s*(S[0-9]+)\s*$`},
+		{kind: "class_name", pattern: `(?i)^Class/Contract(?:\s+Name)?\s*:\s*(.+?)\s*$`},
+		{kind: "class_id", pattern: `(?i)^Class/Contract\s+(?:ID|Identifier)\s*:\s*(C[0-9]+)\s*$`},
+		{kind: "ticker", pattern: `(?i)^(?:Ticker(?:\s+Symbol)?|Symbol)\s*:\s*([A-Za-z0-9.\-]+)\s*$`},
+	}
+	for _, candidate := range patterns {
+		match := regexp.MustCompile(candidate.pattern).FindStringSubmatch(line)
+		if len(match) == 2 {
+			return candidate.kind, strings.TrimSpace(match[1])
+		}
+	}
+	return "", ""
 }
 
 func normalizeFundIndexText(body string) string {
@@ -280,17 +366,6 @@ func normalizeFundIndexText(body string) string {
 	body = regexp.MustCompile(`(?is)<[^>]+>`).ReplaceAllString(body, "")
 	body = strings.ReplaceAll(body, "&nbsp;", " ")
 	return body
-}
-
-func findFundIndexValues(text, pattern string) []string {
-	matches := regexp.MustCompile(pattern).FindAllStringSubmatch(text, -1)
-	values := make([]string, 0, len(matches))
-	for _, match := range matches {
-		if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
-			values = append(values, strings.TrimSpace(match[1]))
-		}
-	}
-	return values
 }
 
 func rawStringSlice(raw json.RawMessage) []string {
@@ -313,6 +388,41 @@ func searchDisplayNamesContainTicker(displayNames []string, ticker string) bool 
 		}
 	}
 	return false
+}
+
+func fundNameMatchesSearchDisplayName(fundName string, displayNames []string, ticker string) bool {
+	want := normalizeFundName(fundName)
+	if want == "" {
+		return false
+	}
+	tickerPattern := regexp.MustCompile(`(?i)\(\s*` + regexp.QuoteMeta(strings.TrimSpace(ticker)) + `\s*\)`)
+	for _, displayName := range displayNames {
+		match := tickerPattern.FindStringIndex(displayName)
+		if match == nil {
+			continue
+		}
+		if normalizeFundName(displayName[:match[0]]) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeFundName(value string) string {
+	var normalized strings.Builder
+	spacePending := false
+	for _, char := range strings.ToUpper(strings.TrimSpace(value)) {
+		if unicode.IsLetter(char) || unicode.IsDigit(char) {
+			if spacePending && normalized.Len() > 0 {
+				normalized.WriteByte(' ')
+			}
+			normalized.WriteRune(char)
+			spacePending = false
+			continue
+		}
+		spacePending = normalized.Len() > 0
+	}
+	return strings.TrimSpace(normalized.String())
 }
 
 func validAccessionNumber(value string) bool {

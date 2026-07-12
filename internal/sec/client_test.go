@@ -107,6 +107,57 @@ func TestHTTPClientResolveFundTickerFallbackKeepsAmbiguousCandidates(t *testing.
 	}
 }
 
+func TestHTTPClientResolveFundTickerFallbackDoesNotAutoResolveUnsafeIndexMetadata(t *testing.T) {
+	tests := []struct {
+		name        string
+		displayName string
+		indexBody   string
+	}{
+		{
+			name:        "mixed complete and incomplete index metadata",
+			displayName: "Roundhill Memory ETF (DRAM)",
+			indexBody:   fundIndex("Roundhill Memory ETF", "S1", "Roundhill Memory ETF", "C1", "DRAM") + "\nSeries: orphaned series",
+		},
+		{
+			name:        "series name does not exactly match search display name",
+			displayName: "Roundhill Memory ETF (DRAM)",
+			indexBody:   fundIndex("Different Memory ETF", "S1", "Different Memory ETF", "C1", "DRAM"),
+		},
+		{
+			name:        "surplus and misaligned index metadata",
+			displayName: "Roundhill Memory ETF (DRAM)",
+			indexBody:   fundIndex("Roundhill Memory ETF", "S1", "Roundhill Memory ETF", "C1", "DRAM") + "\nClass/Contract: orphaned class",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newFixtureHTTPClient(t, fixtureRoutes{
+				"/company_tickers_mf.json": fixtureBody(`{"fields":["cik","seriesId","classId","symbol"],"data":[]}`),
+				"/LATEST/search-index":     fixtureBody(searchHit("0001976517-26-000001", "0001976517", tt.displayName)),
+				"/Archives/edgar/data/1976517/000197651726000001/0001976517-26-000001-index.htm": fixtureBody(tt.indexBody),
+			})
+
+			got, err := client.ResolveFundTicker(context.Background(), "DRAM")
+			if err != nil {
+				t.Fatalf("ResolveFundTicker: %v", err)
+			}
+			if got.Identity != nil || len(got.Candidates) == 0 || strings.TrimSpace(got.Reason) == "" {
+				t.Fatalf("resolution=%+v, want candidates and a safe non-resolution reason", got)
+			}
+		})
+	}
+}
+
+func TestFundNameMatchesSearchDisplayNameNormalization(t *testing.T) {
+	if !fundNameMatchesSearchDisplayName("Roundhill Memory ETF Inc", []string{" roundhill-memory ETF, inc. (DRAM) "}, "DRAM") {
+		t.Fatal("punctuation and case normalization should retain an exact fund-name match")
+	}
+	if fundNameMatchesSearchDisplayName("Roundhill Memory ETF", []string{"Roundhill Memory ETF Trust (DRAM)"}, "DRAM") {
+		t.Fatal("substring-only fund-name matching must not be accepted")
+	}
+}
+
 func TestHTTPClientMatchFundFiling(t *testing.T) {
 	identity := FundIdentity{Ticker: "DRAM", CIK: "0001976517", SeriesID: "S1", ClassID: "C1"}
 	client := newFixtureHTTPClient(t, fixtureRoutes{
