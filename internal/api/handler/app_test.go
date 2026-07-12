@@ -134,7 +134,7 @@ func (f reliabilitySECClient) ListListedCompanies(ctx context.Context) ([]sec.Li
 }
 
 func (f reliabilitySECClient) FetchFilingDocument(ctx context.Context, filingURL string) (string, error) {
-	return "We are offering 1,000,000 shares at $12.00 per share.", nil
+	return "We are offering 1,000,000 shares of our common stock. The initial public offering price per share is $12.00.", nil
 }
 
 type failThenSucceedNotifier struct {
@@ -235,6 +235,7 @@ func TestAppHandlerGetsIPOHealth(t *testing.T) {
 
 func TestIPOReliabilityWorkflow(t *testing.T) {
 	t.Setenv("CONFIG_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)))
+	const testBotToken = "test-only-bot-token"
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -252,7 +253,7 @@ func TestIPOReliabilityWorkflow(t *testing.T) {
 	}
 	if err := configs.UpsertMany(context.Background(), []service.ConfigInput{
 		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
-		{Key: "telegram.bot_token", Value: "test-only-bot-token", ValueType: "string", Category: "telegram", Encrypted: true},
+		{Key: "telegram.bot_token", Value: testBotToken, ValueType: "string", Category: "telegram", Encrypted: true},
 		{Key: "telegram.chat_id", Value: "test-chat", ValueType: "string", Category: "telegram"},
 	}, "test"); err != nil {
 		t.Fatalf("configure telegram: %v", err)
@@ -261,8 +262,8 @@ func TestIPOReliabilityWorkflow(t *testing.T) {
 	if err := db.Where("config_key = ?", "telegram.bot_token").First(&stored).Error; err != nil {
 		t.Fatalf("load encrypted config: %v", err)
 	}
-	if !strings.HasPrefix(stored.ConfigValue, "enc:v1:") {
-		t.Fatal("telegram token was not encrypted at rest")
+	if !strings.HasPrefix(stored.ConfigValue, "enc:v1:") || stored.ConfigValue == testBotToken || strings.Contains(stored.ConfigValue, testBotToken) {
+		t.Fatalf("telegram token was not encrypted at rest: %q", stored.ConfigValue)
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -277,6 +278,20 @@ func TestIPOReliabilityWorkflow(t *testing.T) {
 	ipo := service.NewIPORadarService(db, secClient, notifier, configs)
 	if _, err := ipo.Refresh(context.Background()); err != nil {
 		t.Fatalf("refresh ipo radar: %v", err)
+	}
+	var persistedFiling model.IPOFiling
+	if err := db.Where("filing_id = ?", "acme-424b4").First(&persistedFiling).Error; err != nil {
+		t.Fatalf("load refreshed 424B4 filing: %v", err)
+	}
+	if persistedFiling.FilingID != "acme-424b4" || persistedFiling.FilingType != "424B4" {
+		t.Fatalf("persisted 424B4 filing = %+v", persistedFiling)
+	}
+	var offering model.IPOOfferingEvent
+	if err := db.Where("filing_id = ?", "acme-424b4").First(&offering).Error; err != nil {
+		t.Fatalf("load refreshed 424B4 offering event: %v", err)
+	}
+	if offering.FilingID != "acme-424b4" || offering.ParseStatus != "parsed" || offering.OfferingType != "initial" {
+		t.Fatalf("persisted 424B4 offering event = %+v", offering)
 	}
 	companies, err := ipo.ListCompanies(context.Background(), service.IPOCompanyFilter{Attention: "listing_pending", Page: 1, PageSize: 10}, now)
 	if err != nil || companies.Total != 1 || len(companies.Items) != 1 || companies.Items[0].CIK != "0000000001" {
@@ -294,14 +309,22 @@ func TestIPOReliabilityWorkflow(t *testing.T) {
 	if err != nil || result.Sent != 1 || result.Attempted != 1 {
 		t.Fatalf("retry result sent=%d attempted=%d err=%v", result.Sent, result.Attempted, err)
 	}
+	batchID := batch.ID
+	batch = model.NotificationBatch{}
+	if err := db.First(&batch, batchID).Error; err != nil {
+		t.Fatalf("reload retried batch: %v", err)
+	}
+	if batch.Status != "sent" || batch.NextRetryAt != nil {
+		t.Fatalf("retried batch = %+v", batch)
+	}
 
 	h := &AppHandler{IPO: ipo}
 	r := gin.New()
 	r.GET("/ipo-health", h.GetIPORadarHealth)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ipo-health", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"failed_notification_batches":0`) {
-		t.Fatalf("ipo health status=%d", rec.Code)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"failed_notification_batches":0`) || !strings.Contains(rec.Body.String(), `"due_retry_batches":0`) || !strings.Contains(rec.Body.String(), `"dead_letter_batches":0`) {
+		t.Fatalf("ipo health status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
