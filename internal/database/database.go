@@ -35,5 +35,6 @@ func Migrate(db *gorm.DB) error {
 		&model.NotificationLog{},
 		&model.NotificationBatch{},
 		&model.NotificationBatchItem{},
+		&model.FundFilingIdentity{},
 	)
 }

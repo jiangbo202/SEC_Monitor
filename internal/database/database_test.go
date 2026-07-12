@@ -35,7 +35,7 @@ func TestOpenTableDriven(t *testing.T) {
 			if !db.Migrator().HasTable(&model.WatchTarget{}) {
 				t.Fatalf("watch_targets table was not migrated")
 			}
-			for _, target := range []any{&model.NotificationBatch{}, &model.NotificationBatchItem{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{}} {
+			for _, target := range []any{&model.NotificationBatch{}, &model.NotificationBatchItem{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{}, &model.FundFilingIdentity{}} {
 				if !db.Migrator().HasTable(target) {
 					t.Fatalf("table for %T was not migrated", target)
 				}
@@ -53,6 +53,8 @@ func TestOpenTableDriven(t *testing.T) {
 				{model: &model.IPOCompanyMarketData{}, name: "gross_proceeds"},
 				{model: &model.IPOCompanyMarketData{}, name: "offering_checked_at"},
 				{model: &model.IPOCompanyMarketData{}, name: "offering_parser_version"},
+				{model: &model.FundFilingIdentity{}, name: "accession_number"},
+				{model: &model.FundFilingIdentity{}, name: "parse_status"},
 			} {
 				if !db.Migrator().HasColumn(column.model, column.name) {
 					t.Fatalf("column %s for %T was not migrated", column.name, column.model)

@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 )
 
 const fundIdentitySource = "sec_company_tickers_mf"
+
+const fundFilingIndexSource = "sec_filing_index"
 
 type FundIdentity struct {
 	Ticker      string
@@ -84,7 +89,7 @@ func (c *HTTPClient) ResolveFundTicker(ctx context.Context, ticker string) (Fund
 	}
 
 	if matchingRecords == 0 {
-		return FundResolution{Reason: fmt.Sprintf("no SEC fund ticker record found for %s", want)}, nil
+		return c.resolveFundTickerFromSearch(ctx, want)
 	}
 	if matchingRecords == 1 && incompleteRecords == 0 && len(candidates) == 1 {
 		return FundResolution{Identity: &candidates[0]}, nil
@@ -99,6 +104,237 @@ func (c *HTTPClient) ResolveFundTicker(ctx context.Context, ticker string) (Fund
 		Candidates: candidates,
 		Reason:     fmt.Sprintf("multiple SEC fund identities match ticker %s", want),
 	}, nil
+}
+
+type fundSearchPayload struct {
+	Hits struct {
+		Hits []struct {
+			Source struct {
+				ADSH         string          `json:"adsh"`
+				CIKs         json.RawMessage `json:"ciks"`
+				DisplayNames json.RawMessage `json:"display_names"`
+			} `json:"_source"`
+		} `json:"hits"`
+	} `json:"hits"`
+}
+
+type fundIndexParseResult struct {
+	Identities []FundIdentity
+	Incomplete bool
+}
+
+func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker string) (FundResolution, error) {
+	searchURL := "https://efts.sec.gov/LATEST/search-index?" + url.Values{"q": []string{ticker}}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return FundResolution{}, err
+	}
+	c.setHeaders(req)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return FundResolution{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return FundResolution{}, fmt.Errorf("sec fund search status: %d", resp.StatusCode)
+	}
+
+	var payload fundSearchPayload
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return FundResolution{}, err
+	}
+
+	candidates := make([]FundIdentity, 0)
+	for _, hit := range payload.Hits.Hits {
+		accessionNumber := strings.TrimSpace(hit.Source.ADSH)
+		if !validAccessionNumber(accessionNumber) || !searchDisplayNamesContainTicker(rawStringSlice(hit.Source.DisplayNames), ticker) {
+			continue
+		}
+		for _, rawCIK := range rawStringSlice(hit.Source.CIKs) {
+			cik := normalizeFundCIK(rawCIK)
+			if cik == "" {
+				continue
+			}
+			indexURL := fundFilingIndexURL(cik, accessionNumber)
+			parsed, err := c.fetchFundIndex(ctx, indexURL)
+			if err != nil {
+				return FundResolution{}, err
+			}
+			for _, identity := range parsed.Identities {
+				if identity.Ticker != ticker {
+					continue
+				}
+				identity.CIK = cik
+				identity.Source = fundFilingIndexSource
+				identity.EvidenceURL = indexURL
+				candidates = appendUniqueFundIdentity(candidates, identity)
+			}
+		}
+	}
+
+	if len(candidates) == 1 {
+		return FundResolution{Identity: &candidates[0]}, nil
+	}
+	if len(candidates) > 1 {
+		return FundResolution{
+			Candidates: candidates,
+			Reason:     fmt.Sprintf("multiple SEC filing identities match ticker %s", ticker),
+		}, nil
+	}
+	return FundResolution{Reason: fmt.Sprintf("no complete SEC filing identity found for %s", ticker)}, nil
+}
+
+func (c *HTTPClient) MatchFundFiling(ctx context.Context, identity FundIdentity, filing FilingResult) (bool, string, error) {
+	if normalizeFundCIK(identity.CIK) == "" || strings.TrimSpace(identity.SeriesID) == "" || strings.TrimSpace(identity.ClassID) == "" {
+		return false, "identity_incomplete", nil
+	}
+	cik := normalizeFundCIK(filing.CIK)
+	if cik == "" {
+		return false, "filing_cik_missing", nil
+	}
+	if cik != normalizeFundCIK(identity.CIK) {
+		return false, "cik_mismatch", nil
+	}
+	accessionNumber := strings.TrimSpace(filing.AccessionNumber)
+	if !validAccessionNumber(accessionNumber) {
+		return false, "accession_number_missing", nil
+	}
+
+	parsed, err := c.fetchFundIndex(ctx, fundFilingIndexURL(cik, accessionNumber))
+	if err != nil {
+		return false, "", err
+	}
+	if len(parsed.Identities) == 0 || parsed.Incomplete {
+		return false, "filing_identity_incomplete", nil
+	}
+	seriesFound := false
+	for _, candidate := range parsed.Identities {
+		if candidate.SeriesID != strings.TrimSpace(identity.SeriesID) {
+			continue
+		}
+		seriesFound = true
+		if candidate.ClassID == strings.TrimSpace(identity.ClassID) {
+			return true, "matched_class", nil
+		}
+	}
+	if !seriesFound {
+		return false, "series_not_found", nil
+	}
+	return false, "class_not_found", nil
+}
+
+func (c *HTTPClient) fetchFundIndex(ctx context.Context, indexURL string) (fundIndexParseResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, indexURL, nil)
+	if err != nil {
+		return fundIndexParseResult{}, err
+	}
+	c.setHeaders(req)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fundIndexParseResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fundIndexParseResult{}, fmt.Errorf("sec filing index status: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fundIndexParseResult{}, err
+	}
+	return parseFundIndex(string(body)), nil
+}
+
+func parseFundIndex(body string) fundIndexParseResult {
+	text := normalizeFundIndexText(body)
+	seriesNames := findFundIndexValues(text, `(?im)^\s*Series(?:\s+Name)?\s*:\s*(.+?)\s*$`)
+	seriesIDs := findFundIndexValues(text, `(?im)^\s*Series\s+(?:ID|Identifier)\s*:\s*(S[0-9]+)\s*$`)
+	classNames := findFundIndexValues(text, `(?im)^\s*Class/Contract(?:\s+Name)?\s*:\s*(.+?)\s*$`)
+	classIDs := findFundIndexValues(text, `(?im)^\s*Class/Contract\s+(?:ID|Identifier)\s*:\s*(C[0-9]+)\s*$`)
+	tickers := findFundIndexValues(text, `(?im)^\s*(?:Ticker(?:\s+Symbol)?|Symbol)\s*:\s*([A-Za-z0-9.\-]+)\s*$`)
+
+	result := fundIndexParseResult{}
+	count := len(seriesIDs)
+	if len(classIDs) > count {
+		count = len(classIDs)
+	}
+	if count == 0 || len(seriesNames) < count || len(classNames) < count || len(tickers) < count {
+		result.Incomplete = true
+	}
+	for i := 0; i < count; i++ {
+		if i >= len(seriesNames) || i >= len(seriesIDs) || i >= len(classNames) || i >= len(classIDs) || i >= len(tickers) {
+			continue
+		}
+		result.Identities = appendUniqueFundIdentity(result.Identities, FundIdentity{
+			Ticker:   strings.ToUpper(strings.TrimSpace(tickers[i])),
+			SeriesID: strings.TrimSpace(seriesIDs[i]),
+			ClassID:  strings.TrimSpace(classIDs[i]),
+			FundName: strings.TrimSpace(seriesNames[i]),
+		})
+	}
+	return result
+}
+
+func normalizeFundIndexText(body string) string {
+	body = regexp.MustCompile(`(?is)<(?:br|/p|/div|/tr|/li)\b[^>]*>`).ReplaceAllString(body, "\n")
+	body = regexp.MustCompile(`(?is)<[^>]+>`).ReplaceAllString(body, "")
+	body = strings.ReplaceAll(body, "&nbsp;", " ")
+	return body
+}
+
+func findFundIndexValues(text, pattern string) []string {
+	matches := regexp.MustCompile(pattern).FindAllStringSubmatch(text, -1)
+	values := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
+			values = append(values, strings.TrimSpace(match[1]))
+		}
+	}
+	return values
+}
+
+func rawStringSlice(raw json.RawMessage) []string {
+	var values []string
+	if err := json.Unmarshal(raw, &values); err == nil {
+		return values
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err == nil && strings.TrimSpace(value) != "" {
+		return []string{value}
+	}
+	return nil
+}
+
+func searchDisplayNamesContainTicker(displayNames []string, ticker string) bool {
+	pattern := regexp.MustCompile(`(?i)(?:^|[^A-Z0-9])` + regexp.QuoteMeta(ticker) + `(?:$|[^A-Z0-9])`)
+	for _, displayName := range displayNames {
+		if pattern.MatchString(strings.TrimSpace(displayName)) {
+			return true
+		}
+	}
+	return false
+}
+
+func validAccessionNumber(value string) bool {
+	return regexp.MustCompile(`^[0-9]{10}-[0-9]{2}-[0-9]{6}$`).MatchString(value)
+}
+
+func fundFilingIndexURL(cik, accessionNumber string) string {
+	archiveCIK := strings.TrimLeft(normalizeFundCIK(cik), "0")
+	if archiveCIK == "" {
+		archiveCIK = "0"
+	}
+	accessionPath := strings.ReplaceAll(accessionNumber, "-", "")
+	return fmt.Sprintf("https://www.sec.gov/Archives/edgar/data/%s/%s/%s-index.htm", archiveCIK, accessionPath, accessionNumber)
+}
+
+func appendUniqueFundIdentity(identities []FundIdentity, identity FundIdentity) []FundIdentity {
+	for _, existing := range identities {
+		if existing.CIK == identity.CIK && existing.SeriesID == identity.SeriesID && existing.ClassID == identity.ClassID && existing.Ticker == identity.Ticker {
+			return identities
+		}
+	}
+	return append(identities, identity)
 }
 
 func fundTickerFieldIndexes(fields []string) (map[string]int, []string) {

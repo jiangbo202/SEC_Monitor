@@ -15,22 +15,153 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func newTestHTTPClient(t *testing.T, responses map[string]string) *HTTPClient {
+type fixtureRoutes map[string]fixtureRoute
+
+type fixtureRoute struct {
+	statusCode int
+	body       string
+}
+
+func fixtureBody(body string) fixtureRoute {
+	return fixtureRoute{statusCode: http.StatusOK, body: body}
+}
+
+func newFixtureHTTPClient(t *testing.T, routes fixtureRoutes) *HTTPClient {
 	t.Helper()
 	client := NewHTTPClient("https://sec.test", "sec-monitor-test", time.Second)
 	client.CompanyTickersMFURL = "https://sec.test/company_tickers_mf.json"
 	client.Client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		body, ok := responses[r.URL.Path]
+		route, ok := routes[r.URL.Path]
 		if !ok {
 			t.Fatalf("unexpected request: %s", r.URL.String())
 		}
+		statusCode := route.statusCode
+		if statusCode == 0 {
+			statusCode = http.StatusOK
+		}
 		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(body)),
+			StatusCode: statusCode,
+			Body:       io.NopCloser(strings.NewReader(route.body)),
 			Header:     make(http.Header),
 		}, nil
 	})}
 	return client
+}
+
+func newTestHTTPClient(t *testing.T, responses map[string]string) *HTTPClient {
+	t.Helper()
+	routes := make(fixtureRoutes, len(responses))
+	for path, body := range responses {
+		routes[path] = fixtureBody(body)
+	}
+	return newFixtureHTTPClient(t, routes)
+}
+
+func searchHit(accessionNumber, cik, displayName string) string {
+	return `{"hits":{"hits":[{"_source":{"adsh":"` + accessionNumber + `","ciks":["` + cik + `"],"display_names":["` + displayName + `"]}}]}}`
+}
+
+func fundIndex(seriesName, seriesID, className, classID, ticker string) string {
+	return `<html><body>
+Series: ` + seriesName + `
+Series ID: ` + seriesID + `
+Class/Contract: ` + className + `
+Class/Contract ID: ` + classID + `
+Ticker Symbol: ` + ticker + `
+</body></html>`
+}
+
+func TestHTTPClientResolveFundTickerFallsBackToSECSearch(t *testing.T) {
+	client := newFixtureHTTPClient(t, fixtureRoutes{
+		"/company_tickers_mf.json": fixtureBody(`{"fields":["cik","seriesId","classId","symbol"],"data":[]}`),
+		"/LATEST/search-index":     fixtureBody(searchHit("0001976517-26-005961", "0001976517", "Roundhill Memory ETF (DRAM)")),
+		"/Archives/edgar/data/1976517/000197651726005961/0001976517-26-005961-index.htm": fixtureBody(fundIndex("Roundhill Memory ETF", "S000102337", "Roundhill Memory ETF", "C000272806", "DRAM")),
+	})
+
+	got, err := client.ResolveFundTicker(context.Background(), "DRAM")
+	if err != nil || got.Identity == nil || got.Identity.ClassID != "C000272806" {
+		t.Fatalf("resolution=%+v err=%v", got, err)
+	}
+	if got.Identity.Source != "sec_filing_index" || got.Identity.EvidenceURL == "" {
+		t.Fatalf("filing identity=%+v", *got.Identity)
+	}
+}
+
+func TestHTTPClientResolveFundTickerFallbackKeepsAmbiguousCandidates(t *testing.T) {
+	client := newFixtureHTTPClient(t, fixtureRoutes{
+		"/company_tickers_mf.json": fixtureBody(`{"fields":["cik","seriesId","classId","symbol"],"data":[]}`),
+		"/LATEST/search-index": fixtureBody(`{"hits":{"hits":[
+            {"_source":{"adsh":"0001976517-26-000001","ciks":["0001976517"],"display_names":["Roundhill Memory ETF (DRAM)"]}},
+            {"_source":{"adsh":"0001976518-26-000001","ciks":["0001976518"],"display_names":["Different Memory ETF (DRAM)"]}}
+        ]}}`),
+		"/Archives/edgar/data/1976517/000197651726000001/0001976517-26-000001-index.htm": fixtureBody(fundIndex("Roundhill Memory ETF", "S1", "Roundhill Memory ETF", "C1", "DRAM")),
+		"/Archives/edgar/data/1976518/000197651826000001/0001976518-26-000001-index.htm": fixtureBody(fundIndex("Different Memory ETF", "S2", "Different Memory ETF", "C2", "DRAM")),
+	})
+
+	got, err := client.ResolveFundTicker(context.Background(), "DRAM")
+	if err != nil {
+		t.Fatalf("ResolveFundTicker: %v", err)
+	}
+	if got.Identity != nil || len(got.Candidates) != 2 || got.Reason == "" {
+		t.Fatalf("resolution=%+v, want two candidates without auto resolution", got)
+	}
+}
+
+func TestHTTPClientMatchFundFiling(t *testing.T) {
+	identity := FundIdentity{Ticker: "DRAM", CIK: "0001976517", SeriesID: "S1", ClassID: "C1"}
+	client := newFixtureHTTPClient(t, fixtureRoutes{
+		"/Archives/edgar/data/1976517/000197651726000001/0001976517-26-000001-index.htm": fixtureBody(fundIndex("Roundhill Memory ETF", "S1", "Roundhill Memory ETF", "C1", "DRAM")),
+	})
+
+	matched, reason, err := client.MatchFundFiling(context.Background(), identity, FilingResult{CIK: identity.CIK, AccessionNumber: "0001976517-26-000001"})
+	if err != nil || !matched || reason != "matched_class" {
+		t.Fatalf("matched=%v reason=%q err=%v", matched, reason, err)
+	}
+}
+
+func TestHTTPClientMatchFundFilingTableDriven(t *testing.T) {
+	identity := FundIdentity{Ticker: "DRAM", CIK: "0001976517", SeriesID: "S1", ClassID: "C1"}
+	tests := []struct {
+		name        string
+		route       fixtureRoute
+		wantMatched bool
+		wantReason  string
+		wantErr     bool
+	}{
+		{
+			name:       "returns candidates reason when index has different series",
+			route:      fixtureBody(fundIndex("Other Fund", "S2", "Other Fund", "C2", "DRAM") + fundIndex("Another Fund", "S3", "Another Fund", "C3", "DRAM")),
+			wantReason: "series_not_found",
+		},
+		{
+			name:       "does not match incomplete index identity",
+			route:      fixtureBody(`<html><body>Series: Roundhill Memory ETF\nTicker Symbol: DRAM</body></html>`),
+			wantReason: "filing_identity_incomplete",
+		},
+		{
+			name:    "returns error for index http failure",
+			route:   fixtureRoute{statusCode: http.StatusServiceUnavailable, body: `busy`},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newFixtureHTTPClient(t, fixtureRoutes{
+				"/Archives/edgar/data/1976517/000197651726000001/0001976517-26-000001-index.htm": tt.route,
+			})
+			matched, reason, err := client.MatchFundFiling(context.Background(), identity, FilingResult{CIK: identity.CIK, AccessionNumber: "0001976517-26-000001"})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("MatchFundFiling expected error")
+				}
+				return
+			}
+			if err != nil || matched != tt.wantMatched || reason != tt.wantReason {
+				t.Fatalf("matched=%v reason=%q err=%v", matched, reason, err)
+			}
+		})
+	}
 }
 
 func TestHTTPClientResolveFundTicker(t *testing.T) {
