@@ -2345,6 +2345,8 @@ func TestFilingServiceRefreshTargetsFailsClosedOnInconsistentFundMatch(t *testin
 
 func TestFilingServiceRefreshTargetsLegacyETFKeepsAllFilings(t *testing.T) {
 	db := testDB(t)
+	// RefreshTargets receives persisted rows directly, so legacy ETFs are not
+	// revalidated through WatchTargetInput.toModel.
 	target := model.WatchTarget{Ticker: "OLD", CompanyName: "Legacy ETF", CIK: "0001976517", TargetType: "etf", Status: "enabled"}
 	secClient := &fakeSECClient{filings: []sec.FilingResult{
 		{FilingID: "legacy-1", AccessionNumber: "legacy-1", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()},
@@ -2441,7 +2443,9 @@ func TestWatchTargetServiceValidatesFundIdentityPairs(t *testing.T) {
 		input WatchTargetInput
 		valid bool
 	}{
-		{name: "valid ETF identity", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}, valid: true},
+		{name: "valid ETF identity", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}, valid: true},
+		{name: "missing ETF identity", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", Status: "enabled"}},
+		{name: "ETF identity missing CIK", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}},
 		{name: "partial identity", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", TargetType: "etf", FundSeriesID: "S000102337", Status: "enabled"}},
 		{name: "malformed identity", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", TargetType: "etf", FundSeriesID: "bad", FundClassID: "C000272806", Status: "enabled"}},
 		{name: "stock identity forbidden", input: WatchTargetInput{Ticker: "AAPL", CompanyName: "Apple Inc.", TargetType: "stock", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}},
@@ -2451,6 +2455,34 @@ func TestWatchTargetServiceValidatesFundIdentityPairs(t *testing.T) {
 			_, err := svc.Create(context.Background(), tt.input, "tester")
 			if (err == nil) != tt.valid {
 				t.Fatalf("Create err=%v, valid=%v", err, tt.valid)
+			}
+		})
+	}
+}
+
+func TestWatchTargetServiceRejectsImpreciseETFIdentityOnCreateAndUpdate(t *testing.T) {
+	tests := []struct {
+		name  string
+		input WatchTargetInput
+	}{
+		{name: "no identity", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", Status: "enabled"}},
+		{name: "series only", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", Status: "enabled"}},
+		{name: "class only", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", CIK: "0001976517", TargetType: "etf", FundClassID: "C000272806", Status: "enabled"}},
+		{name: "missing CIK", input: WatchTargetInput{Ticker: "DRAM", CompanyName: "DRAM ETF", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			svc := NewWatchTargetService(db, NewAuditService(db))
+			if _, err := svc.Create(context.Background(), tt.input, "tester"); !errors.Is(err, ErrValidation) {
+				t.Fatalf("Create error = %v, want validation", err)
+			}
+			legacy := model.WatchTarget{Ticker: "OLD", CompanyName: "Legacy ETF", CIK: "0001976517", TargetType: "etf", Status: "enabled"}
+			if err := db.Create(&legacy).Error; err != nil {
+				t.Fatalf("seed legacy ETF: %v", err)
+			}
+			if _, err := svc.Update(context.Background(), legacy.ID, tt.input, "tester"); !errors.Is(err, ErrValidation) {
+				t.Fatalf("Update error = %v, want validation", err)
 			}
 		})
 	}

@@ -40,8 +40,8 @@ export interface FundIdentity {
 
 export interface TickerLookup {
   ticker: string
-  cik?: string
-  company_name?: string
+  cik: string
+  company_name: string
   target_type: string
   fund_identity?: FundIdentity
   fund_candidates?: FundIdentity[]

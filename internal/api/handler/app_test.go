@@ -241,6 +241,9 @@ func TestLookupTickerReturnsFundCandidatesWithoutFabricatedCIK(t *testing.T) {
 	if response.Data.CIK != "" || len(response.Data.FundCandidates) != 2 || response.Data.Reason == "" {
 		t.Fatalf("data=%+v", response.Data)
 	}
+	if !strings.Contains(rec.Body.String(), `"cik":""`) || !strings.Contains(rec.Body.String(), `"company_name":""`) {
+		t.Fatalf("fund lookup must preserve empty stock fields: %s", rec.Body.String())
+	}
 }
 
 func TestLookupTickerWithStockTargetTypeKeepsStockLookup(t *testing.T) {
@@ -275,17 +278,36 @@ func TestLookupTickerDoesNotReturnPartialFundIdentity(t *testing.T) {
 	}
 }
 
-func TestCreateWatchTargetRejectsPartialFundIdentity(t *testing.T) {
-	r, _, _ := testApp(t)
-	for _, body := range []string{
-		`{"ticker":"DRAM","company_name":"Roundhill Memory ETF","target_type":"etf","fund_series_id":"S000102337"}`,
-		`{"ticker":"DRAM","company_name":"Roundhill Memory ETF","target_type":"etf","fund_class_id":"C000272806"}`,
-	} {
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/targets", strings.NewReader(body)))
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("body=%s status=%d response=%s", body, rec.Code, rec.Body.String())
-		}
+func TestWatchTargetAPIsRejectImpreciseETFIdentity(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		body   string
+	}{
+		{name: "create no identity", method: http.MethodPost, body: `{"ticker":"DRAM","company_name":"Roundhill Memory ETF","cik":"0001976517","target_type":"etf"}`},
+		{name: "create series only", method: http.MethodPost, body: `{"ticker":"DRAM","company_name":"Roundhill Memory ETF","cik":"0001976517","target_type":"etf","fund_series_id":"S000102337"}`},
+		{name: "create class only", method: http.MethodPost, body: `{"ticker":"DRAM","company_name":"Roundhill Memory ETF","cik":"0001976517","target_type":"etf","fund_class_id":"C000272806"}`},
+		{name: "create missing CIK", method: http.MethodPost, body: `{"ticker":"DRAM","company_name":"Roundhill Memory ETF","target_type":"etf","fund_series_id":"S000102337","fund_class_id":"C000272806"}`},
+		{name: "update no identity", method: http.MethodPut, body: `{"ticker":"DRAM","company_name":"Roundhill Memory ETF","cik":"0001976517","target_type":"etf"}`},
+		{name: "update missing CIK", method: http.MethodPut, body: `{"ticker":"DRAM","company_name":"Roundhill Memory ETF","target_type":"etf","fund_series_id":"S000102337","fund_class_id":"C000272806"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, db, _ := testApp(t)
+			path := "/targets"
+			if tt.method == http.MethodPut {
+				legacy := model.WatchTarget{Ticker: "OLD", CompanyName: "Legacy ETF", CIK: "0001976517", TargetType: "etf", Status: "enabled"}
+				if err := db.Create(&legacy).Error; err != nil {
+					t.Fatalf("seed legacy ETF: %v", err)
+				}
+				path = fmt.Sprintf("/targets/%d", legacy.ID)
+			}
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(tt.method, path, strings.NewReader(tt.body)))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("body=%s status=%d response=%s", tt.body, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

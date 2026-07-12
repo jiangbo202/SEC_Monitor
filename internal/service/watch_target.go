@@ -169,6 +169,7 @@ func (input WatchTargetInput) toModel() (model.WatchTarget, error) {
 	companyName := strings.TrimSpace(input.CompanyName)
 	targetType := strings.ToLower(strings.TrimSpace(input.TargetType))
 	status := strings.ToLower(strings.TrimSpace(input.Status))
+	cik := strings.TrimSpace(input.CIK)
 	seriesID := strings.TrimSpace(input.FundSeriesID)
 	classID := strings.TrimSpace(input.FundClassID)
 	if status == "" {
@@ -186,19 +187,23 @@ func (input WatchTargetInput) toModel() (model.WatchTarget, error) {
 	if status != "enabled" && status != "disabled" {
 		return model.WatchTarget{}, fmt.Errorf("%w: status must be enabled or disabled", ErrValidation)
 	}
-	if targetType != "etf" && (seriesID != "" || classID != "") {
+	if targetType == "etf" {
+		if cik == "" {
+			return model.WatchTarget{}, fmt.Errorf("%w: cik is required for etf targets", ErrValidation)
+		}
+		if seriesID == "" || classID == "" {
+			return model.WatchTarget{}, fmt.Errorf("%w: etf targets require both fund_series_id and fund_class_id", ErrValidation)
+		}
+		if !fundSeriesIDPattern.MatchString(seriesID) || !fundClassIDPattern.MatchString(classID) {
+			return model.WatchTarget{}, fmt.Errorf("%w: fund identity must use S[0-9]+ and C[0-9]+", ErrValidation)
+		}
+	} else if seriesID != "" || classID != "" {
 		return model.WatchTarget{}, fmt.Errorf("%w: fund_series_id and fund_class_id require target_type etf", ErrValidation)
-	}
-	if (seriesID == "") != (classID == "") {
-		return model.WatchTarget{}, fmt.Errorf("%w: fund_series_id and fund_class_id must be supplied together", ErrValidation)
-	}
-	if seriesID != "" && (!fundSeriesIDPattern.MatchString(seriesID) || !fundClassIDPattern.MatchString(classID)) {
-		return model.WatchTarget{}, fmt.Errorf("%w: fund identity must use S[0-9]+ and C[0-9]+", ErrValidation)
 	}
 	return model.WatchTarget{
 		Ticker:             ticker,
 		CompanyName:        companyName,
-		CIK:                strings.TrimSpace(input.CIK),
+		CIK:                cik,
 		TargetType:         targetType,
 		FundSeriesID:       seriesID,
 		FundClassID:        classID,

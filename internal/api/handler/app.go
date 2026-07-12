@@ -48,8 +48,8 @@ type SchedulerController interface {
 
 type tickerLookupResponse struct {
 	Ticker           string                 `json:"ticker"`
-	CIK              string                 `json:"cik,omitempty"`
-	CompanyName      string                 `json:"company_name,omitempty"`
+	CIK              string                 `json:"cik"`
+	CompanyName      string                 `json:"company_name"`
 	TargetType       string                 `json:"target_type"`
 	FundIdentity     *fundIdentityResponse  `json:"fund_identity,omitempty"`
 	FundCandidates   []fundIdentityResponse `json:"fund_candidates,omitempty"`
