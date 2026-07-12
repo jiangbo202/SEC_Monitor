@@ -345,7 +345,8 @@ function openEdit(row: WatchTarget) {
     fund_class_id: row.fund_class_id || '',
     identity_source: row.identity_source || ''
   })
-  clearFundResolution()
+  clearFundCandidates()
+  resolvedFundIdentity.value = resolvedIdentityFromStoredTarget(row)
   dialogVisible.value = true
 }
 
@@ -357,6 +358,20 @@ function hasStoredExactFundIdentity(target: WatchTarget) {
   return hasCompleteFundIdentity(target)
 }
 
+// Pure conversion helper: a complete stored ETF tuple is the verified baseline
+// for non-identity edits. It returns null for legacy Trust-level records.
+function resolvedIdentityFromStoredTarget(target: WatchTarget): FundIdentity | null {
+  if (!hasCompleteFundIdentity(target)) return null
+  return {
+    ticker: target.ticker,
+    cik: target.cik,
+    series_id: target.fund_series_id || '',
+    class_id: target.fund_class_id || '',
+    fund_name: target.company_name || target.identity_note || target.ticker,
+    source: target.identity_source || 'stored_watch_target'
+  }
+}
+
 function matchesResolvedFundIdentity(target: typeof form) {
   const identity = resolvedFundIdentity.value
   return Boolean(identity && hasCompleteFundIdentity(target) &&
@@ -366,9 +381,13 @@ function matchesResolvedFundIdentity(target: typeof form) {
 }
 
 function clearFundResolution() {
+  clearFundCandidates()
+  resolvedFundIdentity.value = null
+}
+
+function clearFundCandidates() {
   fundCandidates.value = []
   selectedFundCandidateKey.value = ''
-  resolvedFundIdentity.value = null
 }
 
 function invalidateFundIdentity() {
@@ -410,9 +429,9 @@ function applyFundIdentity(identity: FundIdentity) {
 }
 
 function markManualFundIdentity() {
-  // Keep the resolved tuple for comparison, but clear the displayed candidate
-  // selection as soon as any identity field is manually edited.
-  selectedFundCandidateKey.value = ''
+  // A manual CIK, Series ID, or Class ID edit requires a fresh lookup or
+  // candidate selection before this ETF can be saved again.
+  clearFundResolution()
 }
 
 async function save() {

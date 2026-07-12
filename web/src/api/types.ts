@@ -21,6 +21,7 @@ export interface WatchTarget {
   fund_series_id?: string
   fund_class_id?: string
   identity_source?: string
+  identity_note?: string
   group?: string
   status: string
   last_sync_at?: string | null
