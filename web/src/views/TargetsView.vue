@@ -28,6 +28,13 @@
           <el-tag :type="row.target_type === 'etf' ? 'warning' : 'info'" effect="plain">{{ row.target_type === 'etf' ? 'ETF' : 'Stock' }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column :label="t('pages.targets.fundFilter')" width="180">
+        <template #default="{ row }">
+          <el-tag v-if="hasExactFundIdentity(row)" type="success" effect="plain">{{ t('pages.targets.fundIdentityExactShort') }}</el-tag>
+          <el-tag v-else-if="row.target_type === 'etf'" type="warning" effect="plain">{{ t('pages.targets.fundIdentityLegacyShort') }}</el-tag>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="group" :label="t('common.targetGroup')" width="120">
         <template #default="{ row }">
           <el-tag v-if="row.group" effect="plain">{{ row.group }}</el-tag>
@@ -79,7 +86,7 @@
     <el-dialog v-model="dialogVisible" :title="editingId ? t('pages.targets.edit') : t('pages.targets.add')" width="520px">
       <el-form :model="form" label-width="110px">
         <el-form-item label="Ticker">
-          <el-input v-model="form.ticker" placeholder="TSLA" @blur="lookupTicker">
+          <el-input v-model="form.ticker" placeholder="TSLA" @input="invalidateFundIdentity" @blur="lookupTicker">
             <template #append>
               <el-button :loading="lookingUp" @click="lookupTicker">{{ t('pages.targets.lookup') }}</el-button>
             </template>
@@ -88,11 +95,36 @@
         <el-form-item :label="t('common.companyName')"><el-input v-model="form.company_name" /></el-form-item>
         <el-form-item label="CIK"><el-input v-model="form.cik" /></el-form-item>
         <el-form-item :label="t('common.type')">
-          <el-select v-model="form.target_type">
+          <el-select v-model="form.target_type" @change="handleTargetTypeChange">
             <el-option label="Stock" value="stock" />
             <el-option label="ETF" value="etf" />
           </el-select>
         </el-form-item>
+        <template v-if="form.target_type === 'etf'">
+          <el-form-item v-if="fundCandidates.length" :label="t('pages.targets.fundCandidate')">
+            <el-select v-model="selectedFundCandidateKey" :placeholder="t('pages.targets.fundCandidatePlaceholder')" @change="selectFundCandidate">
+              <el-option v-for="candidate in fundCandidates" :key="fundCandidateKey(candidate)" :label="fundCandidateLabel(candidate)" :value="fundCandidateKey(candidate)" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="t('pages.targets.fundSeriesId')">
+            <el-input v-model="form.fund_series_id" placeholder="S000102337" @input="markManualFundIdentity" />
+          </el-form-item>
+          <el-form-item :label="t('pages.targets.fundClassId')">
+            <el-input v-model="form.fund_class_id" placeholder="C000272806" @input="markManualFundIdentity" />
+          </el-form-item>
+          <el-form-item :label="t('pages.targets.identitySource')">
+            <el-input v-model="form.identity_source" readonly :placeholder="t('pages.targets.identitySourceManual')" />
+          </el-form-item>
+          <el-form-item label-width="0">
+            <el-alert
+              :title="formHasExactFundIdentity ? t('pages.targets.fundIdentityExact') : t('pages.targets.fundIdentityUnresolved')"
+              :description="fundIdentityFormDescription"
+              :type="formHasExactFundIdentity ? 'success' : 'warning'"
+              :closable="false"
+              show-icon
+            />
+          </el-form-item>
+        </template>
         <el-form-item :label="t('common.targetGroup')">
           <el-input v-model="form.group" :placeholder="t('pages.targets.groupPlaceholder')" />
         </el-form-item>
@@ -105,7 +137,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</el-button>
+        <el-button type="primary" :loading="saving" :disabled="saveDisabled" @click="save">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
 
@@ -120,10 +152,23 @@
           show-icon
         />
         <div class="target-detail-summary">
+          <el-alert
+            v-if="detailTarget.target_type === 'etf'"
+            :title="hasExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExact') : t('pages.targets.fundIdentityLegacy')"
+            :description="hasExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExactDetail') : t('pages.targets.fundIdentityLegacyDetail')"
+            :type="hasExactFundIdentity(detailTarget) ? 'success' : 'warning'"
+            :closable="false"
+            show-icon
+          />
           <el-descriptions :column="2" border>
             <el-descriptions-item :label="t('common.company')">{{ detailTarget.company_name }}</el-descriptions-item>
             <el-descriptions-item label="CIK">{{ detailTarget.cik || '-' }}</el-descriptions-item>
             <el-descriptions-item :label="t('common.type')">{{ detailTarget.target_type }}</el-descriptions-item>
+            <template v-if="detailTarget.target_type === 'etf'">
+              <el-descriptions-item :label="t('pages.targets.fundSeriesId')">{{ detailTarget.fund_series_id || '-' }}</el-descriptions-item>
+              <el-descriptions-item :label="t('pages.targets.fundClassId')">{{ detailTarget.fund_class_id || '-' }}</el-descriptions-item>
+              <el-descriptions-item :label="t('pages.targets.identitySource')">{{ detailTarget.identity_source || '-' }}</el-descriptions-item>
+            </template>
             <el-descriptions-item :label="t('common.targetGroup')">{{ detailTarget.group || '-' }}</el-descriptions-item>
             <el-descriptions-item :label="t('common.status')">
               <el-tag :type="detailTarget.status === 'enabled' ? 'success' : 'info'" effect="plain">{{ targetStatusLabel(detailTarget.status) }}</el-tag>
@@ -190,7 +235,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, Filing, PageResult, SyncRunDetail, SystemConfig, TickerLookup, WatchTarget } from '@/api/types'
+import type { ApiResponse, Filing, FundIdentity, PageResult, SyncRunDetail, SystemConfig, TickerLookup, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -212,7 +257,22 @@ const detailSyncDetails = ref<SyncRunDetail[]>([])
 const systemConfigs = ref<SystemConfig[]>([])
 const editingId = ref<number | null>(null)
 const filters = reactive({ ticker: '', status: '', group: '' })
-const form = reactive({ ticker: '', company_name: '', cik: '', target_type: 'stock', group: '', status: 'enabled' })
+const form = reactive({
+  ticker: '', company_name: '', cik: '', target_type: 'stock', fund_series_id: '', fund_class_id: '', identity_source: '', group: '', status: 'enabled'
+})
+const fundCandidates = ref<FundIdentity[]>([])
+const selectedFundCandidateKey = ref('')
+const identityState = ref<'idle' | 'exact' | 'candidates' | 'manual'>('idle')
+
+const formHasExactFundIdentity = computed(() => hasExactFundIdentity(form))
+const saveDisabled = computed(() => form.target_type === 'etf' && (!formHasExactFundIdentity.value || (fundCandidates.value.length > 0 && !selectedFundCandidateKey.value)))
+const fundIdentityFormDescription = computed(() => {
+  if (formHasExactFundIdentity.value) {
+    return t('pages.targets.fundIdentityExactForm', { source: form.identity_source || t('pages.targets.identitySourceManual') })
+  }
+  if (fundCandidates.value.length > 0) return t('pages.targets.fundCandidateRequired')
+  return t('pages.targets.fundIdentityUnresolvedDetail')
+})
 
 const policySummary = computed(() => {
   const days = configValue('sec.initial_fetch_days', '30')
@@ -242,7 +302,9 @@ function configValue(key: string, fallback: string) {
 
 function openCreate() {
   editingId.value = null
-  Object.assign(form, { ticker: '', company_name: '', cik: '', target_type: 'stock', group: '', status: 'enabled' })
+  Object.assign(form, { ticker: '', company_name: '', cik: '', target_type: 'stock', fund_series_id: '', fund_class_id: '', identity_source: '', group: '', status: 'enabled' })
+  clearFundResolution()
+  identityState.value = 'idle'
   dialogVisible.value = true
 }
 
@@ -252,11 +314,23 @@ async function lookupTicker() {
   form.ticker = ticker
   lookingUp.value = true
   try {
-    const res = await apiClient.get<ApiResponse<TickerLookup>>(`/sec/tickers/${encodeURIComponent(ticker)}`)
-    form.company_name = res.data.data.company_name
-    form.cik = res.data.data.cik
-    if (!form.target_type) {
-      form.target_type = res.data.data.target_type || 'stock'
+    const res = await apiClient.get<ApiResponse<TickerLookup>>(`/sec/tickers/${encodeURIComponent(ticker)}`, {
+      params: { target_type: form.target_type }
+    })
+    const lookup = res.data.data
+    form.company_name = lookup.company_name
+    form.cik = lookup.cik
+    form.target_type = lookup.target_type || form.target_type || 'stock'
+    clearFundResolution()
+    Object.assign(form, { fund_series_id: '', fund_class_id: '', identity_source: '' })
+    if (lookup.fund_identity) {
+      applyFundIdentity(lookup.fund_identity)
+      identityState.value = 'exact'
+    } else if (lookup.fund_candidates?.length) {
+      fundCandidates.value = lookup.fund_candidates
+      identityState.value = 'candidates'
+    } else if (form.target_type === 'etf') {
+      identityState.value = 'manual'
     }
     ElMessage.success(t('messages.lookupDone'))
   } catch (error) {
@@ -268,8 +342,74 @@ async function lookupTicker() {
 
 function openEdit(row: WatchTarget) {
   editingId.value = row.id
-  Object.assign(form, row)
+  Object.assign(form, {
+    ...row,
+    fund_series_id: row.fund_series_id || '',
+    fund_class_id: row.fund_class_id || '',
+    identity_source: row.identity_source || ''
+  })
+  clearFundResolution()
+  identityState.value = hasExactFundIdentity(row) ? 'exact' : row.target_type === 'etf' ? 'manual' : 'idle'
   dialogVisible.value = true
+}
+
+function hasExactFundIdentity(target: Pick<WatchTarget, 'target_type' | 'fund_series_id' | 'fund_class_id'> | typeof form) {
+  return target.target_type === 'etf' && Boolean(target.fund_series_id?.trim()) && Boolean(target.fund_class_id?.trim())
+}
+
+function clearFundResolution() {
+  fundCandidates.value = []
+  selectedFundCandidateKey.value = ''
+  if (identityState.value === 'candidates') identityState.value = 'manual'
+}
+
+function invalidateFundIdentity() {
+  Object.assign(form, { fund_series_id: '', fund_class_id: '', identity_source: '' })
+  clearFundResolution()
+  identityState.value = form.target_type === 'etf' ? 'manual' : 'idle'
+}
+
+function handleTargetTypeChange(targetType: string) {
+  if (targetType !== 'etf') {
+    Object.assign(form, { fund_series_id: '', fund_class_id: '', identity_source: '' })
+    clearFundResolution()
+    identityState.value = 'idle'
+    return
+  }
+  identityState.value = formHasExactFundIdentity.value ? 'exact' : 'manual'
+}
+
+function fundCandidateKey(candidate: FundIdentity) {
+  return `${candidate.cik}:${candidate.series_id}:${candidate.class_id}`
+}
+
+function fundCandidateLabel(candidate: FundIdentity) {
+  const name = candidate.fund_name || candidate.ticker
+  return `${name} · ${candidate.cik} · ${candidate.series_id} · ${candidate.class_id}`
+}
+
+function selectFundCandidate(key: string) {
+  const candidate = fundCandidates.value.find((item) => fundCandidateKey(item) === key)
+  if (!candidate) return
+  applyFundIdentity(candidate)
+  identityState.value = 'exact'
+}
+
+function applyFundIdentity(identity: FundIdentity) {
+  Object.assign(form, {
+    cik: identity.cik,
+    company_name: identity.fund_name || identity.ticker,
+    fund_series_id: identity.series_id,
+    fund_class_id: identity.class_id,
+    identity_source: identity.source
+  })
+}
+
+function markManualFundIdentity() {
+  if (identityState.value !== 'candidates') {
+    form.identity_source = 'manual'
+    identityState.value = 'manual'
+  }
 }
 
 async function save() {

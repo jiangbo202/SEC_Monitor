@@ -18,6 +18,9 @@ export interface WatchTarget {
   company_name: string
   cik: string
   target_type: string
+  fund_series_id?: string
+  fund_class_id?: string
+  identity_source?: string
   group?: string
   status: string
   last_sync_at?: string | null
