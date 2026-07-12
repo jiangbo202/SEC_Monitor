@@ -30,7 +30,7 @@
       </el-table-column>
       <el-table-column :label="t('pages.targets.fundFilter')" width="180">
         <template #default="{ row }">
-          <el-tag v-if="hasExactFundIdentity(row)" type="success" effect="plain">{{ t('pages.targets.fundIdentityExactShort') }}</el-tag>
+          <el-tag v-if="hasStoredExactFundIdentity(row)" type="success" effect="plain">{{ t('pages.targets.fundIdentityExactShort') }}</el-tag>
           <el-tag v-else-if="row.target_type === 'etf'" type="warning" effect="plain">{{ t('pages.targets.fundIdentityLegacyShort') }}</el-tag>
           <span v-else>-</span>
         </template>
@@ -93,7 +93,7 @@
           </el-input>
         </el-form-item>
         <el-form-item :label="t('common.companyName')"><el-input v-model="form.company_name" /></el-form-item>
-        <el-form-item label="CIK"><el-input v-model="form.cik" /></el-form-item>
+        <el-form-item label="CIK"><el-input v-model="form.cik" @input="markManualFundIdentity" /></el-form-item>
         <el-form-item :label="t('common.type')">
           <el-select v-model="form.target_type" @change="handleTargetTypeChange">
             <el-option label="Stock" value="stock" />
@@ -154,9 +154,9 @@
         <div class="target-detail-summary">
           <el-alert
             v-if="detailTarget.target_type === 'etf'"
-            :title="hasExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExact') : t('pages.targets.fundIdentityLegacy')"
-            :description="hasExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExactDetail') : t('pages.targets.fundIdentityLegacyDetail')"
-            :type="hasExactFundIdentity(detailTarget) ? 'success' : 'warning'"
+            :title="hasStoredExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExact') : t('pages.targets.fundIdentityLegacy')"
+            :description="hasStoredExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExactDetail') : t('pages.targets.fundIdentityLegacyDetail')"
+            :type="hasStoredExactFundIdentity(detailTarget) ? 'success' : 'warning'"
             :closable="false"
             show-icon
           />
@@ -230,6 +230,7 @@
 </template>
 
 <script setup lang="ts">
+import axios from 'axios'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -262,14 +263,15 @@ const form = reactive({
 })
 const fundCandidates = ref<FundIdentity[]>([])
 const selectedFundCandidateKey = ref('')
-const identityState = ref<'idle' | 'exact' | 'candidates' | 'manual'>('idle')
+const resolvedFundIdentity = ref<FundIdentity | null>(null)
 
-const formHasExactFundIdentity = computed(() => hasExactFundIdentity(form))
-const saveDisabled = computed(() => form.target_type === 'etf' && (!formHasExactFundIdentity.value || (fundCandidates.value.length > 0 && !selectedFundCandidateKey.value)))
+const formHasExactFundIdentity = computed(() => matchesResolvedFundIdentity(form))
+const saveDisabled = computed(() => form.target_type === 'etf' && !formHasExactFundIdentity.value)
 const fundIdentityFormDescription = computed(() => {
   if (formHasExactFundIdentity.value) {
-    return t('pages.targets.fundIdentityExactForm', { source: form.identity_source || t('pages.targets.identitySourceManual') })
+    return t('pages.targets.fundIdentityExactForm', { source: resolvedFundIdentity.value?.source || t('pages.targets.identitySourceManual') })
   }
+  if (resolvedFundIdentity.value) return t('pages.targets.fundIdentityModified')
   if (fundCandidates.value.length > 0) return t('pages.targets.fundCandidateRequired')
   return t('pages.targets.fundIdentityUnresolvedDetail')
 })
@@ -304,7 +306,6 @@ function openCreate() {
   editingId.value = null
   Object.assign(form, { ticker: '', company_name: '', cik: '', target_type: 'stock', fund_series_id: '', fund_class_id: '', identity_source: '', group: '', status: 'enabled' })
   clearFundResolution()
-  identityState.value = 'idle'
   dialogVisible.value = true
 }
 
@@ -325,12 +326,8 @@ async function lookupTicker() {
     Object.assign(form, { fund_series_id: '', fund_class_id: '', identity_source: '' })
     if (lookup.fund_identity) {
       applyFundIdentity(lookup.fund_identity)
-      identityState.value = 'exact'
     } else if (lookup.fund_candidates?.length) {
       fundCandidates.value = lookup.fund_candidates
-      identityState.value = 'candidates'
-    } else if (form.target_type === 'etf') {
-      identityState.value = 'manual'
     }
     ElMessage.success(t('messages.lookupDone'))
   } catch (error) {
@@ -349,34 +346,41 @@ function openEdit(row: WatchTarget) {
     identity_source: row.identity_source || ''
   })
   clearFundResolution()
-  identityState.value = hasExactFundIdentity(row) ? 'exact' : row.target_type === 'etf' ? 'manual' : 'idle'
   dialogVisible.value = true
 }
 
-function hasExactFundIdentity(target: Pick<WatchTarget, 'target_type' | 'fund_series_id' | 'fund_class_id'> | typeof form) {
-  return target.target_type === 'etf' && Boolean(target.fund_series_id?.trim()) && Boolean(target.fund_class_id?.trim())
+function hasCompleteFundIdentity(target: Pick<WatchTarget, 'target_type' | 'cik' | 'fund_series_id' | 'fund_class_id'> | typeof form) {
+  return target.target_type === 'etf' && Boolean(target.cik?.trim()) && Boolean(target.fund_series_id?.trim()) && Boolean(target.fund_class_id?.trim())
+}
+
+function hasStoredExactFundIdentity(target: WatchTarget) {
+  return hasCompleteFundIdentity(target)
+}
+
+function matchesResolvedFundIdentity(target: typeof form) {
+  const identity = resolvedFundIdentity.value
+  return Boolean(identity && hasCompleteFundIdentity(target) &&
+    target.cik.trim() === identity.cik.trim() &&
+    target.fund_series_id.trim() === identity.series_id.trim() &&
+    target.fund_class_id.trim() === identity.class_id.trim())
 }
 
 function clearFundResolution() {
   fundCandidates.value = []
   selectedFundCandidateKey.value = ''
-  if (identityState.value === 'candidates') identityState.value = 'manual'
+  resolvedFundIdentity.value = null
 }
 
 function invalidateFundIdentity() {
   Object.assign(form, { fund_series_id: '', fund_class_id: '', identity_source: '' })
   clearFundResolution()
-  identityState.value = form.target_type === 'etf' ? 'manual' : 'idle'
 }
 
 function handleTargetTypeChange(targetType: string) {
   if (targetType !== 'etf') {
     Object.assign(form, { fund_series_id: '', fund_class_id: '', identity_source: '' })
     clearFundResolution()
-    identityState.value = 'idle'
-    return
   }
-  identityState.value = formHasExactFundIdentity.value ? 'exact' : 'manual'
 }
 
 function fundCandidateKey(candidate: FundIdentity) {
@@ -392,10 +396,10 @@ function selectFundCandidate(key: string) {
   const candidate = fundCandidates.value.find((item) => fundCandidateKey(item) === key)
   if (!candidate) return
   applyFundIdentity(candidate)
-  identityState.value = 'exact'
 }
 
 function applyFundIdentity(identity: FundIdentity) {
+  resolvedFundIdentity.value = { ...identity }
   Object.assign(form, {
     cik: identity.cik,
     company_name: identity.fund_name || identity.ticker,
@@ -406,10 +410,9 @@ function applyFundIdentity(identity: FundIdentity) {
 }
 
 function markManualFundIdentity() {
-  if (identityState.value !== 'candidates') {
-    form.identity_source = 'manual'
-    identityState.value = 'manual'
-  }
+  // Keep the resolved tuple for comparison, but clear the displayed candidate
+  // selection as soon as any identity field is manually edited.
+  selectedFundCandidateKey.value = ''
 }
 
 async function save() {
@@ -422,15 +425,26 @@ async function save() {
       const res = await apiClient.post<ApiResponse<WatchTarget>>('/watch-targets', form)
       createdTarget = res.data.data
     }
-    dialogVisible.value = false
-    ElMessage.success(t('messages.saved'))
-    await load()
-    if (createdTarget) {
-      await offerImmediateSync(createdTarget)
-    }
+  } catch (error) {
+    ElMessage.error(saveErrorMessage(error))
+    return
   } finally {
     saving.value = false
   }
+  dialogVisible.value = false
+  ElMessage.success(t('messages.saved'))
+  await load()
+  if (createdTarget) {
+    await offerImmediateSync(createdTarget)
+  }
+}
+
+function saveErrorMessage(error: unknown) {
+  if (axios.isAxiosError(error)) {
+    const message = error.response?.data?.message
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  return t('messages.saveFailed')
 }
 
 async function setTargetEnabled(row: WatchTarget, enabled: boolean) {

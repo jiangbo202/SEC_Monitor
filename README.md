@@ -36,10 +36,10 @@ SEC Monitor 是一个本地优先的 SEC 情报监控系统，用于跟踪美股
 
 ### ETF 精确监控
 
-ETF 不能只按 Trust 的 CIK 监控。系统优先使用 SEC `company_tickers_mf.json` 解析 Ticker 对应的 `CIK + Series ID + Class ID`；若该数据不能唯一确认，再使用 SEC 搜索和 filing index 返回完整候选供用户选择。只有完整身份才会保存为新的 ETF 标的，避免将同一 Trust 下其他基金的文件混入结果。
+ETF 不能只按 Trust 的 CIK 监控。系统首先读取 SEC `company_tickers_mf.json`：只要其中存在该 Ticker，系统就直接使用该映射的唯一完整身份或返回映射中的完整候选供用户确认，不会再走搜索回退。只有该映射没有此 Ticker 记录时，才使用 SEC 全文搜索和 filing index 解析 `CIK + Series ID + Class ID`。只有完整身份才会保存为新的 ETF 标的，避免将同一 Trust 下其他基金的文件混入结果。
 
 - `DRAM` 示例：Roundhill Memory ETF 的 Trust CIK 为 `0001976517`，精确身份为 `S000102337` / `C000272806`。
-- 新增或编辑 ETF 时，自动匹配会直接填入完整身份；有多个候选时，必须在界面中选择正确基金份额才能保存。手动填写也必须同时提供 Series ID 和 Class ID。
+- 新增或编辑 ETF 时，自动匹配会直接填入完整身份；有多个候选时，必须在界面中选择正确基金份额才能保存。手工改动 CIK、Series ID 或 Class ID 会取消已验证状态，必须恢复匹配值或重新查询确认。
 - 系统不会自动退化为整个 Trust 的监控；不完整 ETF 身份会被后端拒绝。历史遗留的 Trust 级记录会在标的列表和详情中以黄色提示，其文件可能包含其他基金，应尽快补全身份。
 - 同步时先下载 Trust 的 filings，再读取 SEC filing index 中的 Series/Class 元数据；匹配结果会按 accession 缓存，以减少重复 index 请求，并且只入库目标基金份额的文件。
 
