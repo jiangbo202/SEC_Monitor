@@ -69,6 +69,7 @@ type IPOMarketClient interface {
 type HTTPClient struct {
 	BaseURL                   string
 	CompanyTickersURL         string
+	CompanyTickersMFURL       string
 	CompanyTickersExchangeURL string
 	CurrentFilingsURL         string
 	UserAgent                 string
@@ -79,6 +80,7 @@ func NewHTTPClient(baseURL string, userAgent string, timeout time.Duration) *HTT
 	return &HTTPClient{
 		BaseURL:                   strings.TrimRight(baseURL, "/"),
 		CompanyTickersURL:         "https://www.sec.gov/files/company_tickers.json",
+		CompanyTickersMFURL:       "https://www.sec.gov/files/company_tickers_mf.json",
 		CompanyTickersExchangeURL: "https://www.sec.gov/files/company_tickers_exchange.json",
 		CurrentFilingsURL:         "https://www.sec.gov/cgi-bin/browse-edgar",
 		UserAgent:                 userAgent,
@@ -228,6 +230,13 @@ func (c *HTTPClient) companyTickersURL() string {
 		return c.CompanyTickersURL
 	}
 	return "https://www.sec.gov/files/company_tickers.json"
+}
+
+func (c *HTTPClient) companyTickersMFURL() string {
+	if c.CompanyTickersMFURL != "" {
+		return c.CompanyTickersMFURL
+	}
+	return "https://www.sec.gov/files/company_tickers_mf.json"
 }
 
 func (c *HTTPClient) currentFilingsURL() string {

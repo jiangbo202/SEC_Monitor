@@ -15,6 +15,115 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+func newTestHTTPClient(t *testing.T, responses map[string]string) *HTTPClient {
+	t.Helper()
+	client := NewHTTPClient("https://sec.test", "sec-monitor-test", time.Second)
+	client.CompanyTickersMFURL = "https://sec.test/company_tickers_mf.json"
+	client.Client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, ok := responses[r.URL.Path]
+		if !ok {
+			t.Fatalf("unexpected request: %s", r.URL.String())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	return client
+}
+
+func TestHTTPClientResolveFundTicker(t *testing.T) {
+	client := newTestHTTPClient(t, map[string]string{
+		"/company_tickers_mf.json": `{"fields":["cik","seriesId","classId","symbol"],"data":[[1976517,"S000102337","C000272806","DRAM"]]}`,
+	})
+	got, err := client.ResolveFundTicker(context.Background(), "dram")
+	if err != nil || got.Identity == nil {
+		t.Fatalf("resolution=%+v err=%v", got, err)
+	}
+	if *got.Identity != (FundIdentity{Ticker: "DRAM", CIK: "0001976517", SeriesID: "S000102337", ClassID: "C000272806", Source: "sec_company_tickers_mf"}) {
+		t.Fatalf("identity=%+v", *got.Identity)
+	}
+}
+
+func TestHTTPClientResolveFundTickerTableDriven(t *testing.T) {
+	tests := []struct {
+		name           string
+		statusCode     int
+		body           string
+		wantErr        bool
+		wantIdentity   bool
+		wantCandidates int
+	}{
+		{
+			name:         "uses field names when SEC changes column order",
+			body:         `{"fields":["symbol","classId","cik","seriesId"],"data":[["DRAM","C000272806",1976517,"S000102337"]]}`,
+			wantIdentity: true,
+		},
+		{
+			name: "does not resolve incomplete identity with empty cik",
+			body: `{"fields":["cik","seriesId","classId","symbol"],"data":[["","S000102337","C000272806","DRAM"]]}`,
+		},
+		{
+			name:           "returns candidates without auto resolving ambiguous ticker",
+			body:           `{"fields":["cik","seriesId","classId","symbol"],"data":[[1976517,"S000102337","C000272806","DRAM"],[1976518,"S000102338","C000272807","DRAM"]]}`,
+			wantCandidates: 2,
+		},
+		{
+			name: "does not resolve when required SEC field is missing",
+			body: `{"fields":["cik","seriesId","symbol"],"data":[[1976517,"S000102337","DRAM"]]}`,
+		},
+		{
+			name:       "returns error for SEC rate limit",
+			statusCode: http.StatusTooManyRequests,
+			body:       `{}`,
+			wantErr:    true,
+		},
+		{
+			name:    "returns error for invalid json",
+			body:    `{`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewHTTPClient("https://sec.test", "sec-monitor-test", time.Second)
+			client.Client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				statusCode := tt.statusCode
+				if statusCode == 0 {
+					statusCode = http.StatusOK
+				}
+				return &http.Response{
+					StatusCode: statusCode,
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Header:     make(http.Header),
+				}, nil
+			})}
+
+			got, err := client.ResolveFundTicker(context.Background(), "DRAM")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("ResolveFundTicker expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveFundTicker: %v", err)
+			}
+			if (got.Identity != nil) != tt.wantIdentity {
+				t.Fatalf("identity=%+v, want present=%t", got.Identity, tt.wantIdentity)
+			}
+			if len(got.Candidates) != tt.wantCandidates {
+				t.Fatalf("candidates=%+v, want %d", got.Candidates, tt.wantCandidates)
+			}
+			if !tt.wantIdentity && strings.TrimSpace(got.Reason) == "" {
+				t.Fatalf("resolution reason must explain safe failure: %+v", got)
+			}
+		})
+	}
+}
+
 func TestNormalizeCIKTableDriven(t *testing.T) {
 	tests := []struct {
 		name string
