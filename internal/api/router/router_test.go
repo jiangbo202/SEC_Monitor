@@ -61,6 +61,7 @@ func TestRouterCreatesAndListsWatchTargets(t *testing.T) {
 	}
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.WatchTargetFiling{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
 		&model.IPOFiling{}, &model.IPOCompanyOverride{},
 	); err != nil {
@@ -125,6 +126,7 @@ func TestRouterConstructsWithDiscoveryDatabase(t *testing.T) {
 	}
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.WatchTargetFiling{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
 		&model.IPOFiling{}, &model.IPOCompanyOverride{},
 	); err != nil {
@@ -154,6 +156,7 @@ func TestRouterServesWebAppFallback(t *testing.T) {
 	}
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.WatchTargetFiling{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
 		&model.IPOFiling{}, &model.IPOCompanyOverride{},
 	); err != nil {

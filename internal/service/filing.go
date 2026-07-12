@@ -89,7 +89,17 @@ func (s *FilingService) List(ctx context.Context, filter FilingFilter) (PageResu
 	page, pageSize := normalizePage(filter.Page, filter.PageSize)
 	query := s.db.WithContext(ctx).Model(&model.Filing{})
 	if filter.Ticker != "" {
-		query = query.Where("ticker = ?", strings.ToUpper(strings.TrimSpace(filter.Ticker)))
+		ticker := strings.ToUpper(strings.TrimSpace(filter.Ticker))
+		query = query.Where(`(
+			EXISTS (
+				SELECT 1 FROM watch_target_filings target_filings
+				JOIN watch_targets target_filter ON target_filter.id = target_filings.target_id
+				WHERE target_filings.filing_id = filings.id AND target_filter.ticker = ?
+			) OR (
+				NOT EXISTS (SELECT 1 FROM watch_target_filings target_filings WHERE target_filings.filing_id = filings.id)
+				AND filings.ticker = ?
+			)
+		)`, ticker, ticker)
 	}
 	if filter.CompanyName != "" {
 		query = query.Where("company_name LIKE ?", "%"+strings.TrimSpace(filter.CompanyName)+"%")
@@ -257,16 +267,18 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 				RawContent:      item.RawContent,
 				PulledAt:        time.Now().UTC(),
 			}
-			created, err := s.createFilingIfNew(ctx, filing)
+			created, associated, storedFiling, err := s.createFilingAndAssociate(ctx, filing, target.ID)
 			if err != nil {
 				s.finishSyncRunDetail(ctx, detail.ID, "failed", targetNewFilings, detailStartedAt, err.Error(), warning)
 				return result, err
 			}
 			if created {
 				result.NewFilings++
+				_ = s.recordCandidateRecalcEvent(ctx, storedFiling)
+			}
+			if associated {
 				targetNewFilings++
-				_ = s.recordCandidateRecalcEvent(ctx, filing)
-				notificationCandidates = append(notificationCandidates, filingNotificationCandidate(filing, target.LastSyncAt, notificationSettings, time.Now()))
+				notificationCandidates = append(notificationCandidates, filingNotificationCandidateForTarget(storedFiling, target, target.LastSyncAt, notificationSettings, time.Now()))
 			}
 		}
 		s.markTargetSync(ctx, target.ID, "success", "", targetNewFilings)
@@ -484,6 +496,7 @@ func (s *FilingService) filterFundFilings(ctx context.Context, target model.Watc
 	identity := sec.FundIdentity{
 		Ticker: target.Ticker, CIK: target.CIK, SeriesID: seriesID, ClassID: classID,
 	}
+	metadataClient, hasMetadataClient := s.sec.(sec.FundFilingMetadataClient)
 	filtered := make([]sec.FilingResult, 0, len(filings))
 	skipped := 0
 	reasonCounts := map[string]int{}
@@ -492,7 +505,22 @@ func (s *FilingService) filterFundFilings(ctx context.Context, target model.Watc
 		if err != nil {
 			return fundFilingFilterResult{}, err
 		}
-		if !cached {
+		if !cached && hasMetadataClient {
+			metadata, parseErr := metadataClient.ParseFundFiling(ctx, filing)
+			if parseErr != nil {
+				_ = s.storeFundFilingParseFailure(ctx, identity, filing, parseErr.Error())
+				return fundFilingFilterResult{}, parseErr
+			}
+			if metadata.Incomplete || len(metadata.Relationships) == 0 {
+				_ = s.storeFundFilingParseFailure(ctx, identity, filing, "filing_identity_incomplete")
+				return fundFilingFilterResult{}, fmt.Errorf("filing %s identity metadata is incomplete", filing.AccessionNumber)
+			}
+			if err := s.storeFundFilingMetadata(ctx, identity, filing, metadata); err != nil {
+				return fundFilingFilterResult{}, err
+			}
+			matched, reason = matchFundFilingRelationships(identity, metadata.Relationships)
+		}
+		if !cached && !hasMetadataClient {
 			matched, reason, err = fundClient.MatchFundFiling(ctx, identity, filing)
 			if err != nil {
 				_ = s.storeFundFilingMatch(ctx, identity, filing, "failed", reason)
@@ -563,6 +591,20 @@ func (s *FilingService) cachedFundFilingMatch(ctx context.Context, identity sec.
 	if err != nil {
 		return false, "", false, err
 	}
+	if strings.TrimSpace(cached.RelationshipsJSON) != "" {
+		var relationships []sec.FundFilingRelationship
+		if err := json.Unmarshal([]byte(cached.RelationshipsJSON), &relationships); err != nil || len(relationships) == 0 {
+			return false, "", true, fmt.Errorf("cached fund filing metadata is invalid")
+		}
+		if cached.ParseStatus != "parsed" {
+			return false, "", true, fmt.Errorf("cached fund filing metadata is unavailable: %s", cached.ParseMessage)
+		}
+		matched, reason := matchFundFilingRelationships(identity, relationships)
+		return matched, reason, true, nil
+	}
+	if cached.ParseStatus == "failed" {
+		return false, "", true, fmt.Errorf("cached fund filing metadata is unavailable: %s", cached.ParseMessage)
+	}
 	var seriesIDs, classIDs []string
 	if json.Unmarshal([]byte(cached.SeriesIDsJSON), &seriesIDs) != nil || json.Unmarshal([]byte(cached.ClassIDsJSON), &classIDs) != nil || len(seriesIDs) != 1 || len(classIDs) != 1 || seriesIDs[0] != identity.SeriesID || classIDs[0] != identity.ClassID {
 		return false, "", false, nil
@@ -581,6 +623,23 @@ func (s *FilingService) cachedFundFilingMatch(ctx context.Context, identity sec.
 	default:
 		return false, "", false, nil
 	}
+}
+
+func matchFundFilingRelationships(identity sec.FundIdentity, relationships []sec.FundFilingRelationship) (bool, string) {
+	seriesFound := false
+	for _, relationship := range relationships {
+		if relationship.SeriesID != identity.SeriesID {
+			continue
+		}
+		seriesFound = true
+		if relationship.ClassID == identity.ClassID {
+			return true, "matched_class"
+		}
+	}
+	if !seriesFound {
+		return false, "series_not_found"
+	}
+	return false, "class_not_found"
 }
 
 func (s *FilingService) storeFundFilingMatch(ctx context.Context, identity sec.FundIdentity, filing sec.FilingResult, status, message string) error {
@@ -612,6 +671,50 @@ func (s *FilingService) storeFundFilingMatch(ctx context.Context, identity sec.F
 	}).Error
 }
 
+func (s *FilingService) storeFundFilingMetadata(ctx context.Context, identity sec.FundIdentity, filing sec.FilingResult, metadata sec.FundFilingMetadata) error {
+	relationshipsJSON, err := json.Marshal(metadata.Relationships)
+	if err != nil {
+		return err
+	}
+	seriesIDs := make([]string, 0, len(metadata.Relationships))
+	classIDs := make([]string, 0, len(metadata.Relationships))
+	seenSeries, seenClass := map[string]bool{}, map[string]bool{}
+	for _, relationship := range metadata.Relationships {
+		if !seenSeries[relationship.SeriesID] {
+			seenSeries[relationship.SeriesID] = true
+			seriesIDs = append(seriesIDs, relationship.SeriesID)
+		}
+		if !seenClass[relationship.ClassID] {
+			seenClass[relationship.ClassID] = true
+			classIDs = append(classIDs, relationship.ClassID)
+		}
+	}
+	seriesJSON, err := json.Marshal(seriesIDs)
+	if err != nil {
+		return err
+	}
+	classJSON, err := json.Marshal(classIDs)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "cik"}, {Name: "accession_number"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"series_ids_json": string(seriesJSON), "class_ids_json": string(classJSON), "relationships_json": string(relationshipsJSON),
+			"parse_status": "parsed", "parse_message": "", "checked_at": now,
+		}),
+	}).Create(&model.FundFilingIdentity{CIK: identity.CIK, AccessionNumber: filing.AccessionNumber, SeriesIDsJSON: string(seriesJSON), ClassIDsJSON: string(classJSON), RelationshipsJSON: string(relationshipsJSON), ParseStatus: "parsed", CheckedAt: now}).Error
+}
+
+func (s *FilingService) storeFundFilingParseFailure(ctx context.Context, identity sec.FundIdentity, filing sec.FilingResult, message string) error {
+	now := time.Now().UTC()
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "cik"}, {Name: "accession_number"}},
+		DoUpdates: clause.Assignments(map[string]any{"parse_status": "failed", "parse_message": message, "checked_at": now}),
+	}).Create(&model.FundFilingIdentity{CIK: identity.CIK, AccessionNumber: filing.AccessionNumber, ParseStatus: "failed", ParseMessage: message, CheckedAt: now}).Error
+}
+
 func (s *FilingService) createFilingIfNew(ctx context.Context, filing model.Filing) (bool, error) {
 	if filing.FilingID == "" {
 		return false, fmt.Errorf("%w: filing_id is required", ErrValidation)
@@ -621,6 +724,26 @@ func (s *FilingService) createFilingIfNew(ctx context.Context, filing model.Fili
 		return false, res.Error
 	}
 	return res.RowsAffected == 1, nil
+}
+
+func (s *FilingService) createFilingAndAssociate(ctx context.Context, filing model.Filing, targetID uint) (bool, bool, model.Filing, error) {
+	created, err := s.createFilingIfNew(ctx, filing)
+	if err != nil {
+		return false, false, model.Filing{}, err
+	}
+	var stored model.Filing
+	if err := s.db.WithContext(ctx).Where("filing_id = ?", filing.FilingID).First(&stored).Error; err != nil {
+		return false, false, model.Filing{}, err
+	}
+	if targetID == 0 {
+		return created, created, stored, nil
+	}
+	association := model.WatchTargetFiling{TargetID: targetID, FilingID: stored.ID}
+	result := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&association)
+	if result.Error != nil {
+		return false, false, model.Filing{}, result.Error
+	}
+	return created, result.RowsAffected == 1, stored, nil
 }
 
 func (s *FilingService) listFilingsWithRetry(ctx context.Context, query sec.FilingQuery) ([]sec.FilingResult, error) {
@@ -727,6 +850,14 @@ func filingNotificationCandidate(filing model.Filing, previousSync *time.Time, s
 		FilingURL: filing.FilingURL, EventAt: eventAt,
 		Reason: filingNotificationReason(filing, previousSync, settings, now),
 	}
+}
+
+func filingNotificationCandidateForTarget(filing model.Filing, target model.WatchTarget, previousSync *time.Time, settings NotificationSettings, now time.Time) NotificationCandidate {
+	candidate := filingNotificationCandidate(filing, previousSync, settings, now)
+	candidate.Ticker = target.Ticker
+	candidate.CIK = valueOrDefault(target.CIK, filing.CIK)
+	candidate.CompanyName = valueOrDefault(target.CompanyName, filing.CompanyName)
+	return candidate
 }
 
 func filingNotificationReason(filing model.Filing, previousSync *time.Time, settings NotificationSettings, now time.Time) string {

@@ -205,6 +205,7 @@
             <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
           </el-table-column>
           <el-table-column prop="error_message" :label="t('common.error')" min-width="180" show-overflow-tooltip />
+		  <el-table-column prop="warning_message" :label="t('pages.syncRuns.warning')" min-width="180" show-overflow-tooltip />
         </el-table>
 
         <div class="panel-header target-detail-section-title">

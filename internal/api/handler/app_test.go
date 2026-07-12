@@ -859,6 +859,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	}
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.WatchTargetFiling{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
 		&model.NotificationBatch{}, &model.NotificationBatchItem{},
 		&model.IPOFiling{}, &model.IPOCompanyOverride{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{},

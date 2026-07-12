@@ -4,10 +4,42 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestParseFundIndexParsesSECSeriesClassTable(t *testing.T) {
+	body, err := os.ReadFile("testdata/roundhill-memory-etf-index.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	parsed := parseFundIndex(string(body))
+	if parsed.Incomplete {
+		t.Fatalf("parsed=%+v", parsed)
+	}
+	if len(parsed.Identities) != 2 {
+		t.Fatalf("identities=%+v, want two class rows", parsed.Identities)
+	}
+	if got := parsed.Identities[0]; got.FundName != "Roundhill Memory ETF" || got.SeriesID != "S000102337" || got.ClassID != "C000272806" || got.Ticker != "DRAM" {
+		t.Fatalf("first identity=%+v", got)
+	}
+}
+
+func TestHTTPClientMatchFundFilingParsesSECSeriesClassTable(t *testing.T) {
+	body, err := os.ReadFile("testdata/roundhill-memory-etf-index.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	client := newFixtureHTTPClient(t, fixtureRoutes{
+		"/Archives/edgar/data/1976517/000197651726000001/0001976517-26-000001-index.htm": fixtureBody(string(body)),
+	})
+	matched, reason, err := client.MatchFundFiling(context.Background(), FundIdentity{Ticker: "DRAM", CIK: "0001976517", SeriesID: "S000102337", ClassID: "C000272806"}, FilingResult{CIK: "0001976517", AccessionNumber: "0001976517-26-000001"})
+	if err != nil || !matched || reason != "matched_class" {
+		t.Fatalf("matched=%v reason=%q err=%v", matched, reason, err)
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

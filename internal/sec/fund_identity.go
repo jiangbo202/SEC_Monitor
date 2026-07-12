@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"net/http"
 	"net/url"
@@ -35,6 +36,23 @@ type FundResolution struct {
 type FundIdentityClient interface {
 	ResolveFundTicker(context.Context, string) (FundResolution, error)
 	MatchFundFiling(context.Context, FundIdentity, FilingResult) (bool, string, error)
+}
+
+// FundFilingRelationship is one class belonging to a Series in a filing
+// index. It is deliberately independent of a watched ticker so callers can
+// cache it once per SEC accession and evaluate many targets locally.
+type FundFilingRelationship struct {
+	SeriesID string `json:"series_id"`
+	ClassID  string `json:"class_id"`
+}
+
+type FundFilingMetadata struct {
+	Relationships []FundFilingRelationship `json:"relationships"`
+	Incomplete    bool                     `json:"incomplete"`
+}
+
+type FundFilingMetadataClient interface {
+	ParseFundFiling(context.Context, FilingResult) (FundFilingMetadata, error)
 }
 
 type fundTickerPayload struct {
@@ -248,6 +266,40 @@ func (c *HTTPClient) MatchFundFiling(ctx context.Context, identity FundIdentity,
 	return false, "class_not_found", nil
 }
 
+func (c *HTTPClient) ParseFundFiling(ctx context.Context, filing FilingResult) (FundFilingMetadata, error) {
+	cik := normalizeFundCIK(filing.CIK)
+	if cik == "" {
+		return FundFilingMetadata{}, fmt.Errorf("filing cik is missing")
+	}
+	accessionNumber := strings.TrimSpace(filing.AccessionNumber)
+	if !validAccessionNumber(accessionNumber) {
+		return FundFilingMetadata{}, fmt.Errorf("filing accession number is missing")
+	}
+	parsed, err := c.fetchFundIndex(ctx, fundFilingIndexURL(cik, accessionNumber))
+	if err != nil {
+		return FundFilingMetadata{}, err
+	}
+	metadata := FundFilingMetadata{Incomplete: parsed.Incomplete}
+	for _, identity := range parsed.Identities {
+		if strings.TrimSpace(identity.SeriesID) == "" || strings.TrimSpace(identity.ClassID) == "" {
+			metadata.Incomplete = true
+			continue
+		}
+		relationship := FundFilingRelationship{SeriesID: strings.TrimSpace(identity.SeriesID), ClassID: strings.TrimSpace(identity.ClassID)}
+		duplicate := false
+		for _, existing := range metadata.Relationships {
+			if existing == relationship {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			metadata.Relationships = append(metadata.Relationships, relationship)
+		}
+	}
+	return metadata, nil
+}
+
 func (c *HTTPClient) fetchFundIndex(ctx context.Context, indexURL string) (fundIndexParseResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, indexURL, nil)
 	if err != nil {
@@ -271,6 +323,9 @@ func (c *HTTPClient) fetchFundIndex(ctx context.Context, indexURL string) (fundI
 }
 
 func parseFundIndex(body string) fundIndexParseResult {
+	if parsed, found := parseFundIndexSeriesClassTable(body); found {
+		return parsed
+	}
 	text := normalizeFundIndexText(body)
 	result := fundIndexParseResult{}
 	var row fundIndexRow
@@ -322,6 +377,109 @@ func parseFundIndex(body string) fundIndexParseResult {
 		result.Incomplete = true
 	}
 	return result
+}
+
+// parseFundIndexSeriesClassTable handles the table layout used by real SEC
+// filing indexes: a Series row establishes a Series ID and each following
+// Class/Contract row belongs to that series until the next Series row.
+func parseFundIndexSeriesClassTable(body string) (fundIndexParseResult, bool) {
+	rows := regexp.MustCompile(`(?is)<tr\b[^>]*>(.*?)</tr>`).FindAllStringSubmatch(body, -1)
+	if len(rows) == 0 {
+		return fundIndexParseResult{}, false
+	}
+	result := fundIndexParseResult{}
+	var seriesID, seriesName, classID, className string
+	seenSeries := false
+	seriesPattern := regexp.MustCompile(`(?i)^Series\s+(S[0-9]+)\s*$`)
+	classPattern := regexp.MustCompile(`(?i)^Class/Contract\s+(C[0-9]+)\s*$`)
+	tickerPattern := regexp.MustCompile(`(?i)^Ticker(?:\s+Symbol)?\s+([A-Za-z0-9.\-]+)\s*$`)
+	for _, row := range rows {
+		cells := fundIndexRowCells(row[1])
+		text := strings.Join(cells, " ")
+		if text == "" {
+			continue
+		}
+		if len(cells) >= 2 && strings.EqualFold(cells[0], "Series") && regexp.MustCompile(`^S[0-9]+$`).MatchString(cells[1]) {
+			if classID != "" {
+				result.Incomplete = true
+			}
+			seriesID, seriesName, classID, className = cells[1], "", "", ""
+			if len(cells) >= 3 {
+				seriesName = cells[2]
+			}
+			seenSeries = true
+			continue
+		}
+		if len(cells) >= 2 && strings.EqualFold(cells[0], "Class/Contract") && regexp.MustCompile(`^C[0-9]+$`).MatchString(cells[1]) {
+			if !seenSeries || seriesID == "" || classID != "" {
+				result.Incomplete = true
+				continue
+			}
+			classID, className = cells[1], ""
+			if len(cells) >= 3 {
+				className = cells[2]
+			}
+			if len(cells) >= 4 && seriesName != "" && className != "" {
+				result.Identities = appendUniqueFundIdentity(result.Identities, FundIdentity{Ticker: strings.ToUpper(cells[3]), SeriesID: seriesID, ClassID: classID, FundName: seriesName})
+				classID, className = "", ""
+			}
+			continue
+		}
+		if match := seriesPattern.FindStringSubmatch(text); len(match) == 2 {
+			if classID != "" {
+				result.Incomplete = true
+			}
+			seriesID, seriesName, classID, className = match[1], "", "", ""
+			seenSeries = true
+			continue
+		}
+		if match := classPattern.FindStringSubmatch(text); len(match) == 2 {
+			if !seenSeries || seriesID == "" || classID != "" {
+				result.Incomplete = true
+				continue
+			}
+			classID, className = match[1], ""
+			continue
+		}
+		if match := tickerPattern.FindStringSubmatch(text); len(match) == 2 {
+			if seriesID == "" || seriesName == "" || classID == "" || className == "" {
+				result.Incomplete = true
+				continue
+			}
+			result.Identities = appendUniqueFundIdentity(result.Identities, FundIdentity{Ticker: strings.ToUpper(match[1]), SeriesID: seriesID, ClassID: classID, FundName: seriesName})
+			classID, className = "", ""
+			continue
+		}
+		if classID != "" && className == "" {
+			className = text
+			continue
+		}
+		if seriesID != "" && seriesName == "" {
+			seriesName = text
+		}
+	}
+	if seenSeries && classID != "" {
+		result.Incomplete = true
+	}
+	return result, seenSeries
+}
+
+func fundIndexRowText(row string) string {
+	return strings.Join(fundIndexRowCells(row), " ")
+}
+
+func fundIndexRowCells(row string) []string {
+	cellPattern := regexp.MustCompile(`(?is)<t[dh]\b[^>]*>(.*?)</t[dh]>`)
+	cells := cellPattern.FindAllStringSubmatch(row, -1)
+	values := make([]string, 0, len(cells))
+	for _, cell := range cells {
+		value := regexp.MustCompile(`(?is)<[^>]+>`).ReplaceAllString(cell[1], " ")
+		value = strings.Join(strings.Fields(stdhtml.UnescapeString(value)), " ")
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 type fundIndexRow struct {

@@ -665,6 +665,7 @@ export interface SyncRunDetail {
   finished_at?: string | null
   duration_ms: number
   error_message?: string
+	warning_message?: string
   created_at: string
   updated_at: string
 }

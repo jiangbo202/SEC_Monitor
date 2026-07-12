@@ -52,6 +52,20 @@ type fakeFundMatchResult struct {
 	reason  string
 }
 
+type fakeFundMetadataSECClient struct {
+	*fakeFundSECClient
+	metadata      map[string]sec.FundFilingMetadata
+	metadataCalls map[string]int
+}
+
+func (f *fakeFundMetadataSECClient) ParseFundFiling(_ context.Context, filing sec.FilingResult) (sec.FundFilingMetadata, error) {
+	if f.metadataCalls == nil {
+		f.metadataCalls = map[string]int{}
+	}
+	f.metadataCalls[filing.AccessionNumber]++
+	return f.metadata[filing.AccessionNumber], nil
+}
+
 func (f *fakeFundSECClient) ResolveFundTicker(context.Context, string) (sec.FundResolution, error) {
 	return sec.FundResolution{}, nil
 }
@@ -354,6 +368,7 @@ func testDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&model.WatchTarget{},
 		&model.Filing{},
+		&model.WatchTargetFiling{},
 		&model.SyncRun{},
 		&model.SyncRunDetail{},
 		&model.TaskConfig{},
@@ -2258,6 +2273,77 @@ func TestFilingServiceSyncFiltersFundClass(t *testing.T) {
 	}
 	if detail.WarningMessage != "fund identity filtered 1 trust filings (class_not_found: 1)" {
 		t.Fatalf("warning=%q", detail.WarningMessage)
+	}
+}
+
+func TestFilingServiceAssociatesOneFundFilingWithEveryMatchedTarget(t *testing.T) {
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	first := model.WatchTarget{Ticker: "DRAM", CompanyName: "Roundhill Memory ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	second := model.WatchTarget{Ticker: "DRAMX", CompanyName: "Roundhill Memory ETF Institutional", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272807", Status: "enabled"}
+	if err := db.Create(&first).Error; err != nil {
+		t.Fatalf("create first target: %v", err)
+	}
+	if err := db.Create(&second).Error; err != nil {
+		t.Fatalf("create second target: %v", err)
+	}
+	filing := sec.FilingResult{FilingID: "0001976517-26-000001", AccessionNumber: "0001976517-26-000001", CIK: first.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}
+	secClient := &fakeFundMetadataSECClient{
+		fakeFundSECClient: &fakeFundSECClient{fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{filing}}},
+		metadata:          map[string]sec.FundFilingMetadata{filing.AccessionNumber: {Relationships: []sec.FundFilingRelationship{{SeriesID: first.FundSeriesID, ClassID: first.FundClassID}, {SeriesID: second.FundSeriesID, ClassID: second.FundClassID}}}},
+	}
+	result, err := NewFilingService(db, secClient, &fakeNotifier{}, configs).RefreshTargets(context.Background(), []model.WatchTarget{first, second})
+	if err != nil || result.NewFilings != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var documents int64
+	if err := db.Model(&model.Filing{}).Count(&documents).Error; err != nil || documents != 1 {
+		t.Fatalf("documents=%d err=%v", documents, err)
+	}
+	var associations int64
+	if err := db.Model(&model.WatchTargetFiling{}).Count(&associations).Error; err != nil || associations != 2 {
+		t.Fatalf("associations=%d err=%v", associations, err)
+	}
+	for _, target := range []model.WatchTarget{first, second} {
+		var detail model.SyncRunDetail
+		if err := db.Where("sync_run_id = ? AND target_id = ?", result.SyncRunID, target.ID).First(&detail).Error; err != nil || detail.NewFilings != 1 {
+			t.Fatalf("target=%s detail=%+v err=%v", target.Ticker, detail, err)
+		}
+	}
+	var notificationItems int64
+	if err := db.Model(&model.NotificationBatchItem{}).Count(&notificationItems).Error; err != nil || notificationItems != 2 {
+		t.Fatalf("notification items=%d err=%v", notificationItems, err)
+	}
+	for _, ticker := range []string{"DRAM", "DRAMX"} {
+		page, err := NewFilingService(db, secClient, &fakeNotifier{}, configs).List(context.Background(), FilingFilter{Ticker: ticker, Page: 1, PageSize: 10})
+		if err != nil || page.Total != 1 || page.Items[0].AccessionNumber != filing.AccessionNumber {
+			t.Fatalf("ticker=%s page=%+v err=%v", ticker, page, err)
+		}
+	}
+}
+
+func TestFilingServiceCachesFundIndexMetadataAcrossTargetClasses(t *testing.T) {
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	first := model.WatchTarget{Ticker: "DRAM", CompanyName: "Roundhill Memory ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	second := model.WatchTarget{Ticker: "DRAMX", CompanyName: "Roundhill Memory ETF Institutional", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272807", Status: "enabled"}
+	filing := sec.FilingResult{FilingID: "0001976517-26-000002", AccessionNumber: "0001976517-26-000002", CIK: first.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}
+	secClient := &fakeFundMetadataSECClient{
+		fakeFundSECClient: &fakeFundSECClient{fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{filing}}},
+		metadata:          map[string]sec.FundFilingMetadata{filing.AccessionNumber: {Relationships: []sec.FundFilingRelationship{{SeriesID: first.FundSeriesID, ClassID: first.FundClassID}, {SeriesID: second.FundSeriesID, ClassID: second.FundClassID}}}},
+	}
+	if _, err := NewFilingService(db, secClient, &fakeNotifier{}, configs).RefreshTargets(context.Background(), []model.WatchTarget{first, second}); err != nil {
+		t.Fatalf("refresh targets: %v", err)
+	}
+	if secClient.metadataCalls[filing.AccessionNumber] != 1 {
+		t.Fatalf("index parses=%d, want one accession-level parse", secClient.metadataCalls[filing.AccessionNumber])
+	}
+	var cached model.FundFilingIdentity
+	if err := db.Where("cik = ? AND accession_number = ?", first.CIK, filing.AccessionNumber).First(&cached).Error; err != nil {
+		t.Fatalf("load cached metadata: %v", err)
+	}
+	if cached.ParseStatus != "parsed" || !strings.Contains(cached.RelationshipsJSON, first.FundClassID) || !strings.Contains(cached.RelationshipsJSON, second.FundClassID) {
+		t.Fatalf("cached metadata=%+v", cached)
 	}
 }
 
