@@ -2,6 +2,7 @@ package sec
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -103,6 +104,10 @@ Ticker Symbol: ` + ticker + `
 </body></html>`
 }
 
+func fundFilingIndexTestPath(cik, accessionNumber string) string {
+	return "/Archives/edgar/data/" + strings.TrimLeft(cik, "0") + "/" + strings.ReplaceAll(accessionNumber, "-", "") + "/" + accessionNumber + "-index.htm"
+}
+
 func TestHTTPClientResolveFundTickerFallsBackToSECSearch(t *testing.T) {
 	client := newFixtureHTTPClient(t, fixtureRoutes{
 		"/company_tickers_mf.json": fixtureBody(`{"fields":["cik","seriesId","classId","symbol"],"data":[]}`),
@@ -139,6 +144,31 @@ func TestHTTPClientResolveFundTickerFallbackKeepsAmbiguousCandidates(t *testing.
 	}
 	if got.Identity != nil || len(got.Candidates) != 2 || got.Reason == "" {
 		t.Fatalf("resolution=%+v, want two candidates without auto resolution", got)
+	}
+}
+
+func TestHTTPClientResolveFundTickerFallbackLimitsFullTextSearchFanout(t *testing.T) {
+	hits := make([]string, 0, maxFundSearchHits+1)
+	routes := fixtureRoutes{
+		"/company_tickers_mf.json": fixtureBody(`{"fields":["cik","seriesId","classId","symbol"],"data":[]}`),
+	}
+	for i := 0; i < maxFundSearchHits+1; i++ {
+		cik := fmt.Sprintf("%010d", 1976517+i)
+		accession := fmt.Sprintf("%010d-26-%06d", 1976517+i, i+1)
+		hits = append(hits, `{"_source":{"adsh":"`+accession+`","ciks":["`+cik+`"]}}`)
+		if i < maxFundSearchHits {
+			routes[fundFilingIndexTestPath(cik, accession)] = fixtureBody(fundIndex("Other ETF", "S1", "Other ETF", "C1", "OTHER"))
+		}
+	}
+	routes["/LATEST/search-index"] = fixtureBody(`{"hits":{"hits":[` + strings.Join(hits, ",") + `]}}`)
+
+	client := newFixtureHTTPClient(t, routes)
+	got, err := client.ResolveFundTicker(context.Background(), "DRAM")
+	if err != nil {
+		t.Fatalf("ResolveFundTicker: %v", err)
+	}
+	if got.Identity != nil || !strings.Contains(got.Reason, "no complete SEC filing identity") {
+		t.Fatalf("resolution=%+v", got)
 	}
 }
 

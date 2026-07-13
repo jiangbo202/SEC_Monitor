@@ -10,11 +10,20 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const fundIdentitySource = "sec_company_tickers_mf"
 
 const fundFilingIndexSource = "sec_filing_index"
+
+// SEC full-text search is not a ticker directory: a short symbol can appear
+// in many unrelated filings. Keep this best-effort fallback bounded so a
+// newly listed ETF cannot make the target-setup request fan out indefinitely.
+const (
+	maxFundSearchHits = 8
+	fundSearchTimeout = 12 * time.Second
+)
 
 type FundIdentity struct {
 	Ticker      string
@@ -141,8 +150,13 @@ type fundIndexParseResult struct {
 }
 
 func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker string) (FundResolution, error) {
-	searchURL := "https://efts.sec.gov/LATEST/search-index?" + url.Values{"q": []string{ticker}}.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	searchCtx, cancel := context.WithTimeout(ctx, fundSearchTimeout)
+	defer cancel()
+	searchURL := "https://efts.sec.gov/LATEST/search-index?" + url.Values{
+		"q":    []string{ticker},
+		"size": []string{fmt.Sprintf("%d", maxFundSearchHits)},
+	}.Encode()
+	req, err := http.NewRequestWithContext(searchCtx, http.MethodGet, searchURL, nil)
 	if err != nil {
 		return FundResolution{}, err
 	}
@@ -163,7 +177,10 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 
 	candidates := make([]FundIdentity, 0)
 	incompleteMetadata := false
-	for _, hit := range payload.Hits.Hits {
+	for index, hit := range payload.Hits.Hits {
+		if index >= maxFundSearchHits {
+			break
+		}
 		accessionNumber := strings.TrimSpace(hit.Source.ADSH)
 		if !validAccessionNumber(accessionNumber) {
 			continue
@@ -174,8 +191,14 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 				continue
 			}
 			indexURL := fundFilingIndexURL(cik, accessionNumber)
-			parsed, err := c.fetchFundIndex(ctx, indexURL)
+			parsed, err := c.fetchFundIndex(searchCtx, indexURL)
 			if err != nil {
+				if searchCtx.Err() != nil {
+					return FundResolution{
+						Candidates: candidates,
+						Reason:     fmt.Sprintf("SEC filing search timed out before a complete identity was found for %s", ticker),
+					}, nil
+				}
 				return FundResolution{}, err
 			}
 			if parsed.Incomplete {
