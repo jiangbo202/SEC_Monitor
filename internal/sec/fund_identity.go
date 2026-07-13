@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,8 +22,9 @@ const fundFilingIndexSource = "sec_filing_index"
 // in many unrelated filings. Keep this best-effort fallback bounded so a
 // newly listed ETF cannot make the target-setup request fan out indefinitely.
 const (
-	maxFundSearchHits = 8
-	fundSearchTimeout = 12 * time.Second
+	maxFundSearchHits     = 8
+	maxFundNameSearchHits = 6
+	fundSearchTimeout     = 12 * time.Second
 )
 
 type FundIdentity struct {
@@ -116,7 +118,11 @@ func (c *HTTPClient) ResolveFundTicker(ctx context.Context, ticker string) (Fund
 	}
 
 	if matchingRecords == 0 {
-		return c.resolveFundTickerFromSearch(ctx, want)
+		fundName, nameErr := c.lookupFundNameFromCBOE(ctx, want)
+		if nameErr == nil && fundName != "" {
+			return c.resolveFundTickerFromSearch(ctx, want, `"`+fundName+`"`, fundName, maxFundNameSearchHits)
+		}
+		return c.resolveFundTickerFromSearch(ctx, want, want, "", maxFundSearchHits)
 	}
 	if matchingRecords == 1 && incompleteRecords == 0 && len(candidates) == 1 {
 		return FundResolution{Identity: &candidates[0]}, nil
@@ -149,13 +155,57 @@ type fundIndexParseResult struct {
 	Incomplete bool
 }
 
-func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker string) (FundResolution, error) {
+func (c *HTTPClient) lookupFundNameFromCBOE(ctx context.Context, ticker string) (string, error) {
+	listingURL := "https://www.cboe.com/us/equities/listings/listed_products/symbols/" + url.PathEscape(ticker) + "/"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, listingURL, nil)
+	if err != nil {
+		return "", err
+	}
+	c.setHeaders(req)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("cboe listed product lookup status: %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return "", err
+	}
+	return parseCBOEFundName(string(body), ticker), nil
+}
+
+func parseCBOEFundName(body, ticker string) string {
+	tickerPattern := `(?i)Cboe\s*:\s*` + regexp.QuoteMeta(strings.TrimSpace(ticker)) + `(?:\s|<|$)`
+	if !regexp.MustCompile(tickerPattern).MatchString(body) {
+		return ""
+	}
+	match := regexp.MustCompile(`(?is)<h1\b[^>]*>\s*(.*?)\s*</h1>`).FindStringSubmatch(body)
+	if len(match) != 2 {
+		return ""
+	}
+	name := regexp.MustCompile(`(?is)<[^>]+>`).ReplaceAllString(match[1], "")
+	return strings.TrimSpace(stdhtml.UnescapeString(name))
+}
+
+func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker, query, expectedFundName string, maxHits int) (FundResolution, error) {
 	searchCtx, cancel := context.WithTimeout(ctx, fundSearchTimeout)
 	defer cancel()
-	searchURL := "https://efts.sec.gov/LATEST/search-index?" + url.Values{
-		"q":    []string{ticker},
-		"size": []string{fmt.Sprintf("%d", maxFundSearchHits)},
-	}.Encode()
+	queryParams := url.Values{
+		"q":    []string{query},
+		"size": []string{fmt.Sprintf("%d", maxHits)},
+	}
+	if expectedFundName != "" {
+		// Prospectus and post-effective amendment filings expose the official
+		// Series/Class table while excluding most unrelated mentions of the fund.
+		queryParams.Set("forms", "497,485APOS")
+	}
+	searchURL := "https://efts.sec.gov/LATEST/search-index?" + queryParams.Encode()
 	req, err := http.NewRequestWithContext(searchCtx, http.MethodGet, searchURL, nil)
 	if err != nil {
 		return FundResolution{}, err
@@ -175,10 +225,20 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 		return FundResolution{}, err
 	}
 
-	candidates := make([]FundIdentity, 0)
-	incompleteMetadata := false
+	type indexJob struct {
+		cik      string
+		indexURL string
+	}
+	type indexResult struct {
+		cik      string
+		indexURL string
+		parsed   fundIndexParseResult
+		err      error
+	}
+	jobs := make([]indexJob, 0, maxHits)
+	seenIndexURLs := make(map[string]struct{})
 	for index, hit := range payload.Hits.Hits {
-		if index >= maxFundSearchHits {
+		if index >= maxHits {
 			break
 		}
 		accessionNumber := strings.TrimSpace(hit.Source.ADSH)
@@ -191,29 +251,69 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 				continue
 			}
 			indexURL := fundFilingIndexURL(cik, accessionNumber)
-			parsed, err := c.fetchFundIndex(searchCtx, indexURL)
-			if err != nil {
-				if searchCtx.Err() != nil {
-					return FundResolution{
-						Candidates: candidates,
-						Reason:     fmt.Sprintf("SEC filing search timed out before a complete identity was found for %s", ticker),
-					}, nil
-				}
-				return FundResolution{}, err
+			if _, seen := seenIndexURLs[indexURL]; seen {
+				continue
 			}
-			if parsed.Incomplete {
-				incompleteMetadata = true
+			seenIndexURLs[indexURL] = struct{}{}
+			jobs = append(jobs, indexJob{cik: cik, indexURL: indexURL})
+		}
+	}
+
+	results := make(chan indexResult, len(jobs))
+	workerCount := min(4, len(jobs))
+	work := make(chan indexJob)
+	var workers sync.WaitGroup
+	for range workerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for job := range work {
+				parsed, err := c.fetchFundIndex(searchCtx, job.indexURL)
+				results <- indexResult{cik: job.cik, indexURL: job.indexURL, parsed: parsed, err: err}
 			}
-			for _, identity := range parsed.Identities {
-				if identity.Ticker != ticker {
-					continue
-				}
-				identity.CIK = cik
-				identity.Source = fundFilingIndexSource
-				identity.EvidenceURL = indexURL
-				candidates = appendUniqueFundIdentity(candidates, identity)
+		}()
+	}
+	go func() {
+		defer close(work)
+		for _, job := range jobs {
+			select {
+			case work <- job:
+			case <-searchCtx.Done():
+				return
 			}
 		}
+	}()
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+
+	candidates := make([]FundIdentity, 0)
+	incompleteMetadata := false
+	indexFetchFailed := false
+	for result := range results {
+		if result.err != nil {
+			// Full-text results can include unrelated funds. A temporarily
+			// unavailable index must not turn the entire lookup into a 500 or
+			// prevent checking the other independently verifiable candidates.
+			indexFetchFailed = true
+			continue
+		}
+		if result.parsed.Incomplete {
+			incompleteMetadata = true
+		}
+		for _, identity := range result.parsed.Identities {
+			if identity.Ticker != ticker || (expectedFundName != "" && normalizeFundName(identity.FundName) != normalizeFundName(expectedFundName)) {
+				continue
+			}
+			identity.CIK = result.cik
+			identity.Source = fundFilingIndexSource
+			identity.EvidenceURL = result.indexURL
+			candidates = appendUniqueFundIdentity(candidates, identity)
+		}
+	}
+	if searchCtx.Err() != nil && len(candidates) == 0 {
+		return FundResolution{Reason: fmt.Sprintf("SEC filing search timed out before a complete identity was found for %s", ticker)}, nil
 	}
 
 	if incompleteMetadata {
@@ -221,6 +321,9 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 			Candidates: candidates,
 			Reason:     fmt.Sprintf("SEC filing index metadata is incomplete for ticker %s", ticker),
 		}, nil
+	}
+	if len(candidates) == 0 && indexFetchFailed {
+		return FundResolution{Reason: fmt.Sprintf("SEC filing indexes are temporarily unavailable for %s; please retry shortly", ticker)}, nil
 	}
 	// SEC full-text search display names usually identify the filing issuer
 	// (for example, a fund trust), not the individual ETF. The filing index is
@@ -236,6 +339,12 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 		}, nil
 	}
 	return FundResolution{Reason: fmt.Sprintf("no complete SEC filing identity found for %s", ticker)}, nil
+}
+
+func normalizeFundName(value string) string {
+	value = strings.ToUpper(stdhtml.UnescapeString(strings.TrimSpace(value)))
+	value = regexp.MustCompile(`[^A-Z0-9]+`).ReplaceAllString(value, " ")
+	return strings.TrimSpace(value)
 }
 
 func (c *HTTPClient) MatchFundFiling(ctx context.Context, identity FundIdentity, filing FilingResult) (bool, string, error) {

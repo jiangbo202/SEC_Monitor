@@ -28,13 +28,6 @@
           <el-tag :type="row.target_type === 'etf' ? 'warning' : 'info'" effect="plain">{{ row.target_type === 'etf' ? 'ETF' : 'Stock' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="t('pages.targets.fundFilter')" width="180">
-        <template #default="{ row }">
-          <el-tag v-if="hasStoredExactFundIdentity(row)" type="success" effect="plain">{{ t('pages.targets.fundIdentityExactShort') }}</el-tag>
-          <el-tag v-else-if="row.target_type === 'etf'" type="warning" effect="plain">{{ t('pages.targets.fundIdentityLegacyShort') }}</el-tag>
-          <span v-else>-</span>
-        </template>
-      </el-table-column>
       <el-table-column prop="group" :label="t('common.targetGroup')" width="120">
         <template #default="{ row }">
           <el-tag v-if="row.group" effect="plain">{{ row.group }}</el-tag>

@@ -66,6 +66,9 @@ func newFixtureHTTPClient(t *testing.T, routes fixtureRoutes) *HTTPClient {
 	client.Client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		route, ok := routes[r.URL.Path]
 		if !ok {
+			if r.URL.Host == "www.cboe.com" {
+				return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found")), Header: make(http.Header)}, nil
+			}
 			t.Fatalf("unexpected request: %s", r.URL.String())
 		}
 		statusCode := route.statusCode
@@ -108,14 +111,22 @@ func fundFilingIndexTestPath(cik, accessionNumber string) string {
 	return "/Archives/edgar/data/" + strings.TrimLeft(cik, "0") + "/" + strings.ReplaceAll(accessionNumber, "-", "") + "/" + accessionNumber + "-index.htm"
 }
 
-func TestHTTPClientResolveFundTickerFallsBackToSECSearch(t *testing.T) {
+func TestHTTPClientResolveFundTickerFallsBackToCBOENameAndSECSearch(t *testing.T) {
 	client := newFixtureHTTPClient(t, fixtureRoutes{
-		"/company_tickers_mf.json": fixtureBody(`{"fields":["cik","seriesId","classId","symbol"],"data":[]}`),
+		"/company_tickers_mf.json":                            fixtureBody(`{"fields":["cik","seriesId","classId","symbol"],"data":[]}`),
+		"/us/equities/listings/listed_products/symbols/DRAM/": fixtureBody(`<html><body><h1>Roundhill Memory ETF</h1><h2>Cboe: DRAM</h2></body></html>`),
 		// SEC full-text results identify the filing trust, not necessarily the
 		// ETF ticker or fund series. The filing index remains the identity
 		// authority because it contains the exact Series/Class/ticker tuple.
 		"/LATEST/search-index": fixtureBody(searchHit("0001976517-26-005961", "0001976517", "Roundhill ETF Trust (CIK 0001976517)")),
 		"/Archives/edgar/data/1976517/000197651726005961/0001976517-26-005961-index.htm": fixtureBody(fundIndex("Roundhill Memory ETF", "S000102337", "Roundhill Memory ETF", "C000272806", "DRAM")),
+	})
+	originalTransport := client.Client.Transport
+	client.Client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/LATEST/search-index" && r.URL.Query().Get("q") != `"Roundhill Memory ETF"` {
+			t.Fatalf("SEC name search query=%q, want exact Cboe fund name", r.URL.Query().Get("q"))
+		}
+		return originalTransport.RoundTrip(r)
 	})
 
 	got, err := client.ResolveFundTicker(context.Background(), "DRAM")
@@ -144,6 +155,24 @@ func TestHTTPClientResolveFundTickerFallbackKeepsAmbiguousCandidates(t *testing.
 	}
 	if got.Identity != nil || len(got.Candidates) != 2 || got.Reason == "" {
 		t.Fatalf("resolution=%+v, want two candidates without auto resolution", got)
+	}
+}
+
+func TestHTTPClientResolveFundTickerFallbackSkipsUnavailableIndex(t *testing.T) {
+	client := newFixtureHTTPClient(t, fixtureRoutes{
+		"/company_tickers_mf.json":                            fixtureBody(`{"fields":["cik","seriesId","classId","symbol"],"data":[]}`),
+		"/us/equities/listings/listed_products/symbols/DRAM/": fixtureBody(`<html><body><h1>Roundhill Memory ETF</h1><h2>Cboe: DRAM</h2></body></html>`),
+		"/LATEST/search-index": fixtureBody(`{"hits":{"hits":[
+          {"_source":{"adsh":"0000894189-26-014723","ciks":["0001540305"]}},
+          {"_source":{"adsh":"0001398344-26-006844","ciks":["0001976517"]}}
+        ]}}`),
+		"/Archives/edgar/data/1540305/000089418926014723/0000894189-26-014723-index.htm": fixtureRoute{statusCode: http.StatusServiceUnavailable, body: "busy"},
+		"/Archives/edgar/data/1976517/000139834426006844/0001398344-26-006844-index.htm": fixtureBody(fundIndex("Roundhill Memory ETF", "S000102337", "Roundhill Memory ETF", "C000272806", "DRAM")),
+	})
+
+	got, err := client.ResolveFundTicker(context.Background(), "DRAM")
+	if err != nil || got.Identity == nil || got.Identity.CIK != "0001976517" {
+		t.Fatalf("resolution=%+v err=%v", got, err)
 	}
 }
 
