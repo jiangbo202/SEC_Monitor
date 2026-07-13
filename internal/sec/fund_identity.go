@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 const fundIdentitySource = "sec_company_tickers_mf"
@@ -129,9 +128,8 @@ type fundSearchPayload struct {
 	Hits struct {
 		Hits []struct {
 			Source struct {
-				ADSH         string          `json:"adsh"`
-				CIKs         json.RawMessage `json:"ciks"`
-				DisplayNames json.RawMessage `json:"display_names"`
+				ADSH string          `json:"adsh"`
+				CIKs json.RawMessage `json:"ciks"`
 			} `json:"_source"`
 		} `json:"hits"`
 	} `json:"hits"`
@@ -164,13 +162,10 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 	}
 
 	candidates := make([]FundIdentity, 0)
-	exactCandidates := make([]FundIdentity, 0)
 	incompleteMetadata := false
-	fundNameMismatch := false
 	for _, hit := range payload.Hits.Hits {
 		accessionNumber := strings.TrimSpace(hit.Source.ADSH)
-		displayNames := rawStringSlice(hit.Source.DisplayNames)
-		if !validAccessionNumber(accessionNumber) || !searchDisplayNamesContainTicker(displayNames, ticker) {
+		if !validAccessionNumber(accessionNumber) {
 			continue
 		}
 		for _, rawCIK := range rawStringSlice(hit.Source.CIKs) {
@@ -194,11 +189,6 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 				identity.Source = fundFilingIndexSource
 				identity.EvidenceURL = indexURL
 				candidates = appendUniqueFundIdentity(candidates, identity)
-				if fundNameMatchesSearchDisplayName(identity.FundName, displayNames, ticker) {
-					exactCandidates = appendUniqueFundIdentity(exactCandidates, identity)
-				} else {
-					fundNameMismatch = true
-				}
 			}
 		}
 	}
@@ -209,14 +199,12 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker str
 			Reason:     fmt.Sprintf("SEC filing index metadata is incomplete for ticker %s", ticker),
 		}, nil
 	}
-	if fundNameMismatch {
-		return FundResolution{
-			Candidates: candidates,
-			Reason:     fmt.Sprintf("SEC filing series name does not exactly match search display name for ticker %s", ticker),
-		}, nil
-	}
-	if len(candidates) == 1 && len(exactCandidates) == 1 {
-		return FundResolution{Identity: &exactCandidates[0]}, nil
+	// SEC full-text search display names usually identify the filing issuer
+	// (for example, a fund trust), not the individual ETF. The filing index is
+	// the identity authority because it carries the exact ticker/Series/Class
+	// tuple that must be unique before auto-resolution.
+	if len(candidates) == 1 {
+		return FundResolution{Identity: &candidates[0]}, nil
 	}
 	if len(candidates) > 1 {
 		return FundResolution{
@@ -564,51 +552,6 @@ func rawStringSlice(raw json.RawMessage) []string {
 		return []string{value}
 	}
 	return nil
-}
-
-func searchDisplayNamesContainTicker(displayNames []string, ticker string) bool {
-	pattern := regexp.MustCompile(`(?i)(?:^|[^A-Z0-9])` + regexp.QuoteMeta(ticker) + `(?:$|[^A-Z0-9])`)
-	for _, displayName := range displayNames {
-		if pattern.MatchString(strings.TrimSpace(displayName)) {
-			return true
-		}
-	}
-	return false
-}
-
-func fundNameMatchesSearchDisplayName(fundName string, displayNames []string, ticker string) bool {
-	want := normalizeFundName(fundName)
-	if want == "" {
-		return false
-	}
-	tickerPattern := regexp.MustCompile(`(?i)\(\s*` + regexp.QuoteMeta(strings.TrimSpace(ticker)) + `\s*\)`)
-	for _, displayName := range displayNames {
-		match := tickerPattern.FindStringIndex(displayName)
-		if match == nil {
-			continue
-		}
-		if normalizeFundName(displayName[:match[0]]) == want {
-			return true
-		}
-	}
-	return false
-}
-
-func normalizeFundName(value string) string {
-	var normalized strings.Builder
-	spacePending := false
-	for _, char := range strings.ToUpper(strings.TrimSpace(value)) {
-		if unicode.IsLetter(char) || unicode.IsDigit(char) {
-			if spacePending && normalized.Len() > 0 {
-				normalized.WriteByte(' ')
-			}
-			normalized.WriteRune(char)
-			spacePending = false
-			continue
-		}
-		spacePending = normalized.Len() > 0
-	}
-	return strings.TrimSpace(normalized.String())
 }
 
 func validAccessionNumber(value string) bool {

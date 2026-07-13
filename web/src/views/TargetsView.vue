@@ -327,10 +327,15 @@ async function lookupTicker() {
     Object.assign(form, { fund_series_id: '', fund_class_id: '', identity_source: '' })
     if (lookup.fund_identity) {
       applyFundIdentity(lookup.fund_identity)
+      ElMessage.success(t('pages.targets.fundIdentityExact'))
     } else if (lookup.fund_candidates?.length) {
       fundCandidates.value = lookup.fund_candidates
+      ElMessage.warning(t('pages.targets.fundCandidateRequired'))
+    } else if (form.target_type === 'etf') {
+      ElMessage.warning(t('pages.targets.fundIdentityUnresolved'))
+    } else {
+      ElMessage.success(t('messages.lookupDone'))
     }
-    ElMessage.success(t('messages.lookupDone'))
   } catch (error) {
     ElMessage.warning(t('messages.lookupFailed'))
   } finally {

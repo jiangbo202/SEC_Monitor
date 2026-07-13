@@ -106,7 +106,10 @@ Ticker Symbol: ` + ticker + `
 func TestHTTPClientResolveFundTickerFallsBackToSECSearch(t *testing.T) {
 	client := newFixtureHTTPClient(t, fixtureRoutes{
 		"/company_tickers_mf.json": fixtureBody(`{"fields":["cik","seriesId","classId","symbol"],"data":[]}`),
-		"/LATEST/search-index":     fixtureBody(searchHit("0001976517-26-005961", "0001976517", "Roundhill Memory ETF (DRAM)")),
+		// SEC full-text results identify the filing trust, not necessarily the
+		// ETF ticker or fund series. The filing index remains the identity
+		// authority because it contains the exact Series/Class/ticker tuple.
+		"/LATEST/search-index": fixtureBody(searchHit("0001976517-26-005961", "0001976517", "Roundhill ETF Trust (CIK 0001976517)")),
 		"/Archives/edgar/data/1976517/000197651726005961/0001976517-26-005961-index.htm": fixtureBody(fundIndex("Roundhill Memory ETF", "S000102337", "Roundhill Memory ETF", "C000272806", "DRAM")),
 	})
 
@@ -151,11 +154,6 @@ func TestHTTPClientResolveFundTickerFallbackDoesNotAutoResolveUnsafeIndexMetadat
 			indexBody:   fundIndex("Roundhill Memory ETF", "S1", "Roundhill Memory ETF", "C1", "DRAM") + "\nSeries: orphaned series",
 		},
 		{
-			name:        "series name does not exactly match search display name",
-			displayName: "Roundhill Memory ETF (DRAM)",
-			indexBody:   fundIndex("Different Memory ETF", "S1", "Different Memory ETF", "C1", "DRAM"),
-		},
-		{
 			name:        "surplus and misaligned index metadata",
 			displayName: "Roundhill Memory ETF (DRAM)",
 			indexBody:   fundIndex("Roundhill Memory ETF", "S1", "Roundhill Memory ETF", "C1", "DRAM") + "\nClass/Contract: orphaned class",
@@ -178,15 +176,6 @@ func TestHTTPClientResolveFundTickerFallbackDoesNotAutoResolveUnsafeIndexMetadat
 				t.Fatalf("resolution=%+v, want candidates and a safe non-resolution reason", got)
 			}
 		})
-	}
-}
-
-func TestFundNameMatchesSearchDisplayNameNormalization(t *testing.T) {
-	if !fundNameMatchesSearchDisplayName("Roundhill Memory ETF Inc", []string{" roundhill-memory ETF, inc. (DRAM) "}, "DRAM") {
-		t.Fatal("punctuation and case normalization should retain an exact fund-name match")
-	}
-	if fundNameMatchesSearchDisplayName("Roundhill Memory ETF", []string{"Roundhill Memory ETF Trust (DRAM)"}, "DRAM") {
-		t.Fatal("substring-only fund-name matching must not be accepted")
 	}
 }
 
