@@ -2347,6 +2347,60 @@ func TestFilingServiceCachesFundIndexMetadataAcrossTargetClasses(t *testing.T) {
 	}
 }
 
+func TestFilingServiceKeepsNotificationStatusPerTargetAssociation(t *testing.T) {
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("ensure defaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+		{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
+		{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
+	}, "tester"); err != nil {
+		t.Fatalf("configure telegram: %v", err)
+	}
+	previous := time.Now().UTC().Add(-time.Hour)
+	first := model.WatchTarget{Ticker: "DRAM", CompanyName: "Roundhill Memory ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled", LastSyncAt: &previous}
+	second := model.WatchTarget{Ticker: "DRAMX", CompanyName: "Roundhill Memory ETF Institutional", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272807", Status: "enabled"}
+	if err := db.Create(&[]model.WatchTarget{first, second}).Error; err != nil {
+		t.Fatalf("create targets: %v", err)
+	}
+	if err := db.Where("ticker = ?", first.Ticker).First(&first).Error; err != nil {
+		t.Fatalf("reload first: %v", err)
+	}
+	if err := db.Where("ticker = ?", second.Ticker).First(&second).Error; err != nil {
+		t.Fatalf("reload second: %v", err)
+	}
+	filing := sec.FilingResult{FilingID: "0001976517-26-000003", AccessionNumber: "0001976517-26-000003", CIK: first.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}
+	secClient := &fakeFundMetadataSECClient{
+		fakeFundSECClient: &fakeFundSECClient{fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{filing}}},
+		metadata:          map[string]sec.FundFilingMetadata{filing.AccessionNumber: {Relationships: []sec.FundFilingRelationship{{SeriesID: first.FundSeriesID, ClassID: first.FundClassID}, {SeriesID: second.FundSeriesID, ClassID: second.FundClassID}}}},
+	}
+	notifier := &fakeNotifier{}
+	if _, err := NewFilingService(db, secClient, notifier, configs).RefreshTargets(context.Background(), []model.WatchTarget{first, second}); err != nil {
+		t.Fatalf("refresh targets: %v", err)
+	}
+	if notifier.calls != 1 {
+		t.Fatalf("notification calls=%d, want one eligible target delivery", notifier.calls)
+	}
+	firstPage, err := NewFilingService(db, secClient, notifier, configs).List(context.Background(), FilingFilter{Ticker: first.Ticker, Page: 1, PageSize: 10})
+	if err != nil || firstPage.Total != 1 || firstPage.Items[0].NotificationStatus != "success" {
+		t.Fatalf("first notification page=%+v err=%v", firstPage, err)
+	}
+	secondPage, err := NewFilingService(db, secClient, notifier, configs).List(context.Background(), FilingFilter{Ticker: second.Ticker, Page: 1, PageSize: 10})
+	if err != nil || secondPage.Total != 1 || secondPage.Items[0].NotificationStatus != "" {
+		t.Fatalf("second notification page=%+v err=%v", secondPage, err)
+	}
+	var items []model.NotificationBatchItem
+	if err := db.Order("target_id ASC").Find(&items).Error; err != nil || len(items) != 2 {
+		t.Fatalf("notification items=%+v err=%v", items, err)
+	}
+	if items[0].TargetID != first.ID || items[0].Status != "sent" || items[1].TargetID != second.ID || items[1].Status != "suppressed" || items[1].Reason != "initial_sync" {
+		t.Fatalf("notification items=%+v", items)
+	}
+}
+
 func TestFilingServiceSyncWarningExplainsFundFilterReasons(t *testing.T) {
 	db := testDB(t)
 	configs := NewConfigService(db, NewAuditService(db))

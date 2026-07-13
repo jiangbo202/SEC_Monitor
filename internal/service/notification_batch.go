@@ -23,6 +23,7 @@ const notificationRetryLeaseDuration = 30 * time.Minute
 type NotificationCandidate struct {
 	EntityKind  string
 	FilingID    string
+	TargetID    uint
 	Ticker      string
 	CIK         string
 	CompanyName string
@@ -109,7 +110,7 @@ func (s *NotificationBatchService) Deliver(ctx context.Context, input Notificati
 				status = "pending"
 			}
 			items = append(items, model.NotificationBatchItem{
-				BatchID: batch.ID, EntityKind: candidate.EntityKind, FilingID: candidate.FilingID,
+				BatchID: batch.ID, TargetID: candidate.TargetID, EntityKind: candidate.EntityKind, FilingID: candidate.FilingID,
 				Ticker: candidate.Ticker, CIK: candidate.CIK, CompanyName: candidate.CompanyName,
 				FilingType: candidate.FilingType, Title: candidate.Title, FilingURL: candidate.FilingURL,
 				EventAt: candidate.EventAt, Status: status, Reason: candidate.Reason, CreatedAt: now, UpdatedAt: now,
@@ -380,7 +381,7 @@ func notificationCandidatesFromBatchItems(items []model.NotificationBatchItem) [
 	candidates := make([]NotificationCandidate, 0, len(items))
 	for _, item := range items {
 		candidates = append(candidates, NotificationCandidate{
-			EntityKind: item.EntityKind, FilingID: item.FilingID, Ticker: item.Ticker, CIK: item.CIK,
+			EntityKind: item.EntityKind, FilingID: item.FilingID, TargetID: item.TargetID, Ticker: item.Ticker, CIK: item.CIK,
 			CompanyName: item.CompanyName, FilingType: item.FilingType, Title: item.Title, FilingURL: item.FilingURL,
 			Status: item.Status, Reason: "eligible", EventAt: item.EventAt,
 		})

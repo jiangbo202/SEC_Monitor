@@ -33,6 +33,7 @@ func (NotificationBatch) TableName() string {
 type NotificationBatchItem struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	BatchID     uint      `gorm:"not null;index" json:"batch_id"`
+	TargetID    uint      `gorm:"index" json:"target_id,omitempty"`
 	EntityKind  string    `gorm:"size:32;not null;index" json:"entity_kind"`
 	FilingID    string    `gorm:"size:255;not null;index" json:"filing_id"`
 	Ticker      string    `gorm:"size:32;index" json:"ticker,omitempty"`

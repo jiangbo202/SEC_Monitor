@@ -88,8 +88,13 @@ func (s *FilingService) WithDiscoveryDB(db *gorm.DB) *FilingService {
 func (s *FilingService) List(ctx context.Context, filter FilingFilter) (PageResult[FilingItem], error) {
 	page, pageSize := normalizePage(filter.Page, filter.PageSize)
 	query := s.db.WithContext(ctx).Model(&model.Filing{})
+	targetID := uint(0)
 	if filter.Ticker != "" {
 		ticker := strings.ToUpper(strings.TrimSpace(filter.Ticker))
+		var target model.WatchTarget
+		if err := s.db.WithContext(ctx).Where("ticker = ?", ticker).First(&target).Error; err == nil {
+			targetID = target.ID
+		}
 		query = query.Where(`(
 			EXISTS (
 				SELECT 1 FROM watch_target_filings target_filings
@@ -108,13 +113,24 @@ func (s *FilingService) List(ctx context.Context, filter FilingFilter) (PageResu
 		query = query.Where("filing_type = ?", strings.TrimSpace(filter.FilingType))
 	}
 	notificationStatus := strings.ToLower(strings.TrimSpace(filter.NotificationStatus))
-	switch notificationStatus {
-	case "success":
-		query = query.Where("notified_at IS NOT NULL OR (SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ?", "success")
-	case "failed":
-		query = query.Where("(SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ? OR (SELECT status FROM notification_batch_items WHERE notification_batch_items.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ?", "failed", "failed")
-	case "unnotified":
-		query = query.Where("notified_at IS NULL AND COALESCE((SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1), '') NOT IN ('success', 'failed') AND COALESCE((SELECT status FROM notification_batch_items WHERE notification_batch_items.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1), '') <> 'failed'")
+	if targetID != 0 {
+		switch notificationStatus {
+		case "success":
+			query = query.Where("(SELECT status FROM notification_batch_items WHERE notification_batch_items.filing_id = filings.filing_id AND notification_batch_items.target_id = ? ORDER BY created_at DESC, id DESC LIMIT 1) = ?", targetID, "sent")
+		case "failed":
+			query = query.Where("(SELECT status FROM notification_batch_items WHERE notification_batch_items.filing_id = filings.filing_id AND notification_batch_items.target_id = ? ORDER BY created_at DESC, id DESC LIMIT 1) = ?", targetID, "failed")
+		case "unnotified":
+			query = query.Where("COALESCE((SELECT status FROM notification_batch_items WHERE notification_batch_items.filing_id = filings.filing_id AND notification_batch_items.target_id = ? ORDER BY created_at DESC, id DESC LIMIT 1), '') NOT IN ('sent', 'failed')", targetID)
+		}
+	} else {
+		switch notificationStatus {
+		case "success":
+			query = query.Where("notified_at IS NOT NULL OR (SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ?", "success")
+		case "failed":
+			query = query.Where("(SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ? OR (SELECT status FROM notification_batch_items WHERE notification_batch_items.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1) = ?", "failed", "failed")
+		case "unnotified":
+			query = query.Where("notified_at IS NULL AND COALESCE((SELECT status FROM notification_logs WHERE notification_logs.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1), '') NOT IN ('success', 'failed') AND COALESCE((SELECT status FROM notification_batch_items WHERE notification_batch_items.filing_id = filings.filing_id ORDER BY created_at DESC, id DESC LIMIT 1), '') <> 'failed'")
+		}
 	}
 	if filter.DateFrom != nil {
 		query = query.Where("filing_date >= ?", *filter.DateFrom)
@@ -132,7 +148,7 @@ func (s *FilingService) List(ctx context.Context, filter FilingFilter) (PageResu
 	if err := query.Order(filingOrder(filter.SortBy, filter.SortOrder)).Offset((page - 1) * pageSize).Limit(pageSize).Find(&filings).Error; err != nil {
 		return PageResult[FilingItem]{}, err
 	}
-	items, err := s.withNotificationStatus(ctx, filings)
+	items, err := s.withNotificationStatus(ctx, filings, targetID)
 	if err != nil {
 		return PageResult[FilingItem]{}, err
 	}
@@ -350,7 +366,7 @@ func (s *FilingService) ListTargetSyncDetails(ctx context.Context, targetID uint
 	return details, err
 }
 
-func (s *FilingService) withNotificationStatus(ctx context.Context, filings []model.Filing) ([]FilingItem, error) {
+func (s *FilingService) withNotificationStatus(ctx context.Context, filings []model.Filing, targetID uint) ([]FilingItem, error) {
 	items := make([]FilingItem, 0, len(filings))
 	if len(filings) == 0 {
 		return items, nil
@@ -359,6 +375,29 @@ func (s *FilingService) withNotificationStatus(ctx context.Context, filings []mo
 	for _, filing := range filings {
 		items = append(items, FilingItem{Filing: filing})
 		filingIDs = append(filingIDs, filing.FilingID)
+	}
+	if targetID != 0 {
+		var batchItems []model.NotificationBatchItem
+		if err := s.db.WithContext(ctx).Where("filing_id IN ? AND target_id = ?", filingIDs, targetID).Order("created_at DESC, id DESC").Find(&batchItems).Error; err != nil {
+			return nil, err
+		}
+		latest := map[string]model.NotificationBatchItem{}
+		for _, batchItem := range batchItems {
+			if _, exists := latest[batchItem.FilingID]; !exists {
+				latest[batchItem.FilingID] = batchItem
+			}
+		}
+		for i := range items {
+			if batchItem, ok := latest[items[i].FilingID]; ok {
+				switch batchItem.Status {
+				case "sent":
+					items[i].NotificationStatus = "success"
+				case "failed":
+					items[i].NotificationStatus = "failed"
+				}
+			}
+		}
+		return items, nil
 	}
 	var logs []model.NotificationLog
 	if err := s.db.WithContext(ctx).
@@ -854,6 +893,7 @@ func filingNotificationCandidate(filing model.Filing, previousSync *time.Time, s
 
 func filingNotificationCandidateForTarget(filing model.Filing, target model.WatchTarget, previousSync *time.Time, settings NotificationSettings, now time.Time) NotificationCandidate {
 	candidate := filingNotificationCandidate(filing, previousSync, settings, now)
+	candidate.TargetID = target.ID
 	candidate.Ticker = target.Ticker
 	candidate.CIK = valueOrDefault(target.CIK, filing.CIK)
 	candidate.CompanyName = valueOrDefault(target.CompanyName, filing.CompanyName)

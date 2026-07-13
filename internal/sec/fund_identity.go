@@ -399,6 +399,34 @@ func parseFundIndexSeriesClassTable(body string) (fundIndexParseResult, bool) {
 		if text == "" {
 			continue
 		}
+		if len(cells) >= 1 {
+			if match := seriesPattern.FindStringSubmatch(cells[0]); len(match) == 2 {
+				if classID != "" {
+					result.Incomplete = true
+				}
+				seriesID, seriesName, classID, className = match[1], "", "", ""
+				if len(cells) >= 2 {
+					seriesName = cells[1]
+				}
+				seenSeries = true
+				continue
+			}
+			if match := classPattern.FindStringSubmatch(cells[0]); len(match) == 2 {
+				if !seenSeries || seriesID == "" || classID != "" {
+					result.Incomplete = true
+					continue
+				}
+				classID, className = match[1], ""
+				if len(cells) >= 2 {
+					className = cells[1]
+				}
+				if len(cells) >= 3 && seriesName != "" && className != "" {
+					result.Identities = appendUniqueFundIdentity(result.Identities, FundIdentity{Ticker: strings.ToUpper(cells[2]), SeriesID: seriesID, ClassID: classID, FundName: seriesName})
+					classID, className = "", ""
+				}
+				continue
+			}
+		}
 		if len(cells) >= 2 && strings.EqualFold(cells[0], "Series") && regexp.MustCompile(`^S[0-9]+$`).MatchString(cells[1]) {
 			if classID != "" {
 				result.Incomplete = true
