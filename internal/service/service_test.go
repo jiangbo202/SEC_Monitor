@@ -2401,6 +2401,104 @@ func TestFilingServiceKeepsNotificationStatusPerTargetAssociation(t *testing.T) 
 	}
 }
 
+func TestFilingServiceTargetScopedListFallsBackToLegacyNotificationHistory(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().UTC()
+	targets := []model.WatchTarget{
+		{Ticker: "LEGST", CompanyName: "Legacy Stock", CIK: "0000001001", TargetType: "stock", Status: "enabled"},
+		{Ticker: "LEGLOG", CompanyName: "Legacy ETF Log", CIK: "0000001002", TargetType: "etf", Status: "enabled"},
+		{Ticker: "LEGBAT", CompanyName: "Legacy ETF Batch", CIK: "0000001003", TargetType: "etf", Status: "enabled"},
+	}
+	if err := db.Create(&targets).Error; err != nil {
+		t.Fatalf("create targets: %v", err)
+	}
+	if err := db.Create(&[]model.Filing{
+		{FilingID: "legacy-success", Ticker: "LEGST", CompanyName: "Legacy Stock", FilingType: "8-K", FilingDate: now, PulledAt: now, NotifiedAt: &now},
+		{FilingID: "legacy-log-failed", Ticker: "LEGLOG", CompanyName: "Legacy ETF Log", FilingType: "N-CSR", FilingDate: now, PulledAt: now},
+		{FilingID: "legacy-batch-failed", Ticker: "LEGBAT", CompanyName: "Legacy ETF Batch", FilingType: "N-CSR", FilingDate: now, PulledAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create filings: %v", err)
+	}
+	if err := db.Create(&model.NotificationLog{FilingID: "legacy-log-failed", Channel: "telegram", Status: "failed"}).Error; err != nil {
+		t.Fatalf("create notification log: %v", err)
+	}
+	if err := db.Create(&model.NotificationBatchItem{BatchID: 1, EntityKind: "filing", FilingID: "legacy-batch-failed", Status: "failed", Reason: "delivery_failed"}).Error; err != nil {
+		t.Fatalf("create global batch item: %v", err)
+	}
+	svc := NewFilingService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	for _, tt := range []struct {
+		ticker string
+		status string
+	}{
+		{ticker: "LEGST", status: "success"},
+		{ticker: "LEGLOG", status: "failed"},
+		{ticker: "LEGBAT", status: "failed"},
+	} {
+		page, err := svc.List(context.Background(), FilingFilter{Ticker: tt.ticker, Page: 1, PageSize: 10})
+		if err != nil || page.Total != 1 || page.Items[0].NotificationStatus != tt.status {
+			t.Fatalf("ticker=%s page=%+v err=%v", tt.ticker, page, err)
+		}
+		filtered, err := svc.List(context.Background(), FilingFilter{Ticker: tt.ticker, NotificationStatus: tt.status, Page: 1, PageSize: 10})
+		if err != nil || filtered.Total != 1 {
+			t.Fatalf("ticker=%s filtered=%+v err=%v", tt.ticker, filtered, err)
+		}
+	}
+}
+
+func TestWatchTargetDeleteRemovesAssociationsAndRestoresLegacyFilingVisibility(t *testing.T) {
+	db := testDB(t)
+	target := model.WatchTarget{Ticker: "CLEAN", CompanyName: "Cleanup Fund", CIK: "0000002001", TargetType: "stock", Status: "enabled"}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	filing := model.Filing{FilingID: "cleanup-target-filing", Ticker: target.Ticker, CompanyName: target.CompanyName, FilingType: "8-K", FilingDate: time.Now().UTC(), PulledAt: time.Now().UTC()}
+	if err := db.Create(&filing).Error; err != nil {
+		t.Fatalf("create filing: %v", err)
+	}
+	if err := db.Create(&model.WatchTargetFiling{TargetID: target.ID, FilingID: filing.ID}).Error; err != nil {
+		t.Fatalf("create association: %v", err)
+	}
+	targetService := NewWatchTargetService(db, NewAuditService(db))
+	if err := targetService.Delete(context.Background(), target.ID, "tester"); err != nil {
+		t.Fatalf("delete target: %v", err)
+	}
+	if _, err := targetService.Create(context.Background(), WatchTargetInput{Ticker: target.Ticker, CompanyName: target.CompanyName, CIK: target.CIK, TargetType: "stock", Status: "enabled"}, "tester"); err != nil {
+		t.Fatalf("recreate target: %v", err)
+	}
+	var associationCount int64
+	if err := db.Model(&model.WatchTargetFiling{}).Count(&associationCount).Error; err != nil || associationCount != 0 {
+		t.Fatalf("associations=%d err=%v", associationCount, err)
+	}
+	page, err := NewFilingService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db))).List(context.Background(), FilingFilter{Ticker: target.Ticker, Page: 1, PageSize: 10})
+	if err != nil || page.Total != 1 || page.Items[0].FilingID != filing.FilingID {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
+func TestFilingServiceCleanupRemovesTargetAssociations(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().UTC()
+	target := model.WatchTarget{Ticker: "RETENTION", CompanyName: "Retention Fund", CIK: "0000003001", TargetType: "stock", Status: "enabled"}
+	filing := model.Filing{FilingID: "retention-filing", Ticker: target.Ticker, CompanyName: target.CompanyName, FilingType: "8-K", FilingDate: now.AddDate(0, 0, -31), PulledAt: now.AddDate(0, 0, -31)}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := db.Create(&filing).Error; err != nil {
+		t.Fatalf("create filing: %v", err)
+	}
+	if err := db.Create(&model.WatchTargetFiling{TargetID: target.ID, FilingID: filing.ID}).Error; err != nil {
+		t.Fatalf("create association: %v", err)
+	}
+	deleted, err := NewFilingService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db))).Cleanup(context.Background(), 30, now)
+	if err != nil || deleted != 1 {
+		t.Fatalf("deleted=%d err=%v", deleted, err)
+	}
+	var associationCount int64
+	if err := db.Model(&model.WatchTargetFiling{}).Count(&associationCount).Error; err != nil || associationCount != 0 {
+		t.Fatalf("associations=%d err=%v", associationCount, err)
+	}
+}
+
 func TestFilingServiceSyncWarningExplainsFundFilterReasons(t *testing.T) {
 	db := testDB(t)
 	configs := NewConfigService(db, NewAuditService(db))

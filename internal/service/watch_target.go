@@ -100,6 +100,9 @@ func (s *WatchTargetService) Delete(ctx context.Context, id uint, operator strin
 		if err := tx.First(&before, id).Error; err != nil {
 			return mapNotFound(err)
 		}
+		if err := tx.Where("target_id = ?", id).Delete(&model.WatchTargetFiling{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Delete(&before).Error; err != nil {
 			return err
 		}
