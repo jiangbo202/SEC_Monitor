@@ -31,6 +31,7 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 		"SMALL_CAP_YAHOO_REQUEST_BUDGET",
 		"SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS",
 		"SMALL_CAP_RESEARCH_MODE",
+		"SMALL_CAP_AUTO_TECHNICAL_HISTORY_WARMUP",
 		"SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT",
 		"SMALL_CAP_TASK_TIMEOUT_MINUTES",
 	} {
@@ -89,6 +90,9 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 	if !cfg.Discovery.ResearchMode {
 		t.Fatalf("research mode should default to true")
 	}
+	if !cfg.Discovery.AutoTechnicalHistoryWarmup {
+		t.Fatalf("technical history warmup should default to true")
+	}
 	if cfg.Discovery.MinPublishCoveragePct != 85 {
 		t.Fatalf("min publish coverage = %f", cfg.Discovery.MinPublishCoveragePct)
 	}
@@ -131,6 +135,7 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	t.Setenv("SMALL_CAP_YAHOO_REQUEST_BUDGET", "30")
 	t.Setenv("SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS", "500")
 	t.Setenv("SMALL_CAP_RESEARCH_MODE", "false")
+	t.Setenv("SMALL_CAP_AUTO_TECHNICAL_HISTORY_WARMUP", "false")
 	t.Setenv("SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT", "35.5")
 	t.Setenv("SMALL_CAP_TASK_TIMEOUT_MINUTES", "15")
 
@@ -172,6 +177,9 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	}
 	if cfg.ResearchMode {
 		t.Fatalf("research mode should be disabled by override")
+	}
+	if cfg.AutoTechnicalHistoryWarmup {
+		t.Fatalf("technical history warmup should be disabled by override")
 	}
 	if cfg.MinPublishCoveragePct != 35.5 {
 		t.Fatalf("min publish coverage = %f", cfg.MinPublishCoveragePct)

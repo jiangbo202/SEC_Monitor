@@ -245,6 +245,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "discovery.yahoo_request_budget", Value: "45", ValueType: "int", Category: "discovery"},
 		{Key: "discovery.min_publish_coverage_pct", Value: "85", ValueType: "float", Category: "discovery"},
 		{Key: "discovery.research_mode", Value: "true", ValueType: "bool", Category: "discovery"},
+		{Key: "discovery.auto_technical_history_warmup", Value: "true", ValueType: "bool", Category: "discovery"},
 		{Key: "social_heat.enabled", Value: "false", ValueType: "bool", Category: "social_heat"},
 		{Key: "social_heat.provider", Value: "manual", ValueType: "string", Category: "social_heat"},
 		{Key: "social_heat.lookback_hours", Value: "24", ValueType: "int", Category: "social_heat"},
@@ -776,6 +777,14 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 		parsed, parseErr := strconv.ParseBool(strings.TrimSpace(researchMode))
 		if parseErr == nil {
 			cfg.ResearchMode = parsed
+		}
+	}
+	if enabled, ok, err := s.GetValue(ctx, "discovery.auto_technical_history_warmup"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(enabled) != "" {
+		parsed, parseErr := strconv.ParseBool(strings.TrimSpace(enabled))
+		if parseErr == nil {
+			cfg.AutoTechnicalHistoryWarmup = parsed
 		}
 	}
 	return cfg, nil

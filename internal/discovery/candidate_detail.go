@@ -11,20 +11,34 @@ import (
 )
 
 type CandidateDetail struct {
-	BatchID          string                         `json:"batch_id"`
-	Security         Security                       `json:"security"`
-	Universe         *UniverseSnapshot              `json:"universe,omitempty"`
-	Score            CandidateScoreSnapshot         `json:"score"`
-	Financial        *FinancialMetricSnapshot       `json:"financial,omitempty"`
-	Insiders         []InsiderTransactionSnapshot   `json:"insiders"`
-	CapitalRisks     []CapitalRiskSnapshot          `json:"capital_risks"`
-	RecentFilings    []RecentSECFiling              `json:"recent_filings"`
-	Sector           SectorExplanation              `json:"sector"`
-	Technical        CandidateTechnicalAnalysis     `json:"technical"`
-	TechnicalHistory []CandidateTechnicalHistoryRow `json:"technical_history"`
-	DataQuality      map[string]string              `json:"data_quality"`
-	Evidence         []Evidence                     `json:"evidence"`
+	BatchID            string                         `json:"batch_id"`
+	Security           Security                       `json:"security"`
+	Universe           *UniverseSnapshot              `json:"universe,omitempty"`
+	Score              CandidateScoreSnapshot         `json:"score"`
+	Financial          *FinancialMetricSnapshot       `json:"financial,omitempty"`
+	Insiders           []InsiderTransactionSnapshot   `json:"insiders"`
+	CapitalRisks       []CapitalRiskSnapshot          `json:"capital_risks"`
+	CapitalRiskSummary CandidateCapitalRiskSummary    `json:"capital_risk_summary"`
+	RecentFilings      []RecentSECFiling              `json:"recent_filings"`
+	Sector             SectorExplanation              `json:"sector"`
+	Technical          CandidateTechnicalAnalysis     `json:"technical"`
+	TechnicalHistory   []CandidateTechnicalHistoryRow `json:"technical_history"`
+	DataQuality        map[string]string              `json:"data_quality"`
+	Evidence           []Evidence                     `json:"evidence"`
 }
+
+// CandidateCapitalRiskSummary separates the financing evidence retained for
+// audit from the events that are currently actionable. Historical, inactive
+// filings must not be presented as a current financing warning.
+type CandidateCapitalRiskSummary struct {
+	TotalEvents             int        `json:"total_events"`
+	ActiveEvents            int        `json:"active_events"`
+	RecentInactiveEvents    int        `json:"recent_inactive_events"`
+	HistoricalInactiveCount int        `json:"historical_inactive_count"`
+	LatestEffectiveAt       *time.Time `json:"latest_effective_at,omitempty"`
+}
+
+const candidateCapitalRiskRecentDays = 180
 
 type RecentSECFiling struct {
 	FilingID        string     `json:"filing_id"`
@@ -122,9 +136,11 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	} else {
 		result.DataQuality["insider"] = QualityStatusMissing
 	}
-	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id = ?", evidenceBatchID, result.Score.SecurityID).Order("severity DESC, effective_at DESC").Find(&result.CapitalRisks).Error; err != nil {
+	var allCapitalRisks []CapitalRiskSnapshot
+	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id = ?", evidenceBatchID, result.Score.SecurityID).Order("active DESC, severity DESC, effective_at DESC").Find(&allCapitalRisks).Error; err != nil {
 		return result, err
 	}
+	result.CapitalRiskSummary, result.CapitalRisks = summarizeCandidateCapitalRisks(allCapitalRisks, time.Now().UTC())
 	result.DataQuality["capital_risk"] = QualityStatusValid
 	if result.Technical.Status == TechnicalStatusReady {
 		result.DataQuality["technical"] = QualityStatusValid
@@ -203,8 +219,36 @@ func candidateDetailEvidence(detail CandidateDetail) []Evidence {
 	if len(detail.Insiders) > 0 {
 		evidence = append(evidence, Evidence{Field: "qualified_insider_buys", Value: fmt.Sprintf("%d", len(detail.Insiders)), Source: "insider_transaction_snapshots"})
 	}
-	if len(detail.CapitalRisks) > 0 {
-		evidence = append(evidence, Evidence{Field: "capital_risk_events", Value: fmt.Sprintf("%d", len(detail.CapitalRisks)), Source: "capital_risk_snapshots"})
+	if detail.CapitalRiskSummary.TotalEvents > 0 {
+		evidence = append(evidence, Evidence{Field: "capital_risk_events", Value: fmt.Sprintf("%d", detail.CapitalRiskSummary.TotalEvents), Source: "capital_risk_snapshots"})
 	}
 	return evidence
+}
+
+func summarizeCandidateCapitalRisks(rows []CapitalRiskSnapshot, now time.Time) (CandidateCapitalRiskSummary, []CapitalRiskSnapshot) {
+	summary := CandidateCapitalRiskSummary{}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	cutoff := now.AddDate(0, 0, -candidateCapitalRiskRecentDays)
+	current := make([]CapitalRiskSnapshot, 0, len(rows))
+	for _, row := range rows {
+		summary.TotalEvents++
+		if summary.LatestEffectiveAt == nil || row.EffectiveAt.After(*summary.LatestEffectiveAt) {
+			latest := row.EffectiveAt
+			summary.LatestEffectiveAt = &latest
+		}
+		if row.Active {
+			summary.ActiveEvents++
+			current = append(current, row)
+			continue
+		}
+		if !row.EffectiveAt.IsZero() && !row.EffectiveAt.Before(cutoff) {
+			summary.RecentInactiveEvents++
+			current = append(current, row)
+			continue
+		}
+		summary.HistoricalInactiveCount++
+	}
+	return summary, current
 }

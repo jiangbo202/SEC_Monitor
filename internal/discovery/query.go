@@ -61,6 +61,7 @@ type RevenueGrowthExplanation struct {
 
 type CandidateScoreResult struct {
 	CandidateScoreSnapshot
+	ScoreEffectiveDate    string                     `json:"score_effective_date"`
 	PriceCloseUSD         float64                    `json:"price_close_usd"`
 	PriceVolume           int64                      `json:"price_volume"`
 	PriceTradeDate        *time.Time                 `json:"price_trade_date"`
@@ -277,6 +278,9 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	items, err := hydrateCandidateSectorEvidence(ctx, db, batch.UniverseSourceVersion, scores)
 	if err != nil {
 		return result, err
+	}
+	for i := range items {
+		items[i].ScoreEffectiveDate = batch.EffectiveDate
 	}
 	if category := strings.TrimSpace(filter.SectorCategory); category != "" {
 		filtered := items[:0]

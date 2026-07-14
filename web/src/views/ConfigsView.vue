@@ -210,6 +210,9 @@
               controls-position="right"
             />
           </el-form-item>
+          <el-form-item :label="t('pages.configs.autoTechnicalHistoryWarmup')">
+            <el-switch v-model="discoveryForm.auto_technical_history_warmup" />
+          </el-form-item>
         </el-form>
         <el-alert :title="t('pages.configs.discoveryDatasourceHint')" type="info" :closable="false" show-icon />
       </el-card>
@@ -386,7 +389,8 @@ const discoveryForm = reactive({
   twelve_data_base_url: 'https://api.twelvedata.com',
   yahoo_request_budget: 45,
   yahoo_base_url: 'https://query1.finance.yahoo.com',
-  min_publish_coverage_pct: 85
+  min_publish_coverage_pct: 85,
+  auto_technical_history_warmup: true
 })
 const ipoForm = reactive({
   enabled: true,
@@ -517,6 +521,7 @@ async function load() {
     discoveryForm.yahoo_request_budget = Number(configValue(configs, 'discovery.yahoo_request_budget', '45'))
     discoveryForm.yahoo_base_url = configValue(configs, 'discovery.yahoo_base_url', 'https://query1.finance.yahoo.com')
     discoveryForm.min_publish_coverage_pct = Number(configValue(configs, 'discovery.min_publish_coverage_pct', '85'))
+    discoveryForm.auto_technical_history_warmup = configValue(configs, 'discovery.auto_technical_history_warmup', 'true') === 'true'
     ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
     ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,S-1MEF')
     ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))
@@ -567,6 +572,7 @@ async function save() {
       { key: 'discovery.yahoo_request_budget', value: String(discoveryForm.yahoo_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
       { key: 'discovery.yahoo_base_url', value: discoveryForm.yahoo_base_url, value_type: 'string', category: 'discovery', encrypted: false },
       { key: 'discovery.min_publish_coverage_pct', value: String(discoveryForm.min_publish_coverage_pct), value_type: 'float', category: 'discovery', encrypted: false },
+      { key: 'discovery.auto_technical_history_warmup', value: String(discoveryForm.auto_technical_history_warmup), value_type: 'bool', category: 'discovery', encrypted: false },
       { key: 'ipo.enabled', value: String(ipoForm.enabled), value_type: 'bool', category: 'ipo', encrypted: false },
       { key: 'ipo.form_types', value: ipoForm.form_types, value_type: 'string', category: 'ipo', encrypted: false },
       { key: 'ipo.lookback_days', value: String(ipoForm.lookback_days), value_type: 'int', category: 'ipo', encrypted: false },

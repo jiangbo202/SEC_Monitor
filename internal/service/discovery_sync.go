@@ -42,14 +42,24 @@ type productionDiscoveryRunner struct {
 }
 
 type DiscoverySyncResult struct {
-	Status          string                     `json:"status"`
-	BatchID         string                     `json:"batch_id"`
-	SecurityBatchID string                     `json:"security_batch_id"`
-	MarketBatchID   string                     `json:"market_batch_id"`
-	SecurityBatch   discovery.UniverseBatch    `json:"security_batch"`
-	MarketBatch     discovery.UniverseBatch    `json:"market_batch"`
-	Summary         discovery.CandidateSummary `json:"summary"`
-	Health          discovery.CandidateHealth  `json:"health"`
+	Status                 string                       `json:"status"`
+	BatchID                string                       `json:"batch_id"`
+	SecurityBatchID        string                       `json:"security_batch_id"`
+	MarketBatchID          string                       `json:"market_batch_id"`
+	SecurityBatch          discovery.UniverseBatch      `json:"security_batch"`
+	MarketBatch            discovery.UniverseBatch      `json:"market_batch"`
+	Summary                discovery.CandidateSummary   `json:"summary"`
+	Health                 discovery.CandidateHealth    `json:"health"`
+	TechnicalHistoryWarmup TechnicalHistoryWarmupResult `json:"technical_history_warmup"`
+}
+
+// TechnicalHistoryWarmupResult records the non-blocking daily technical
+// history pre-warm. Market candidates remain publishable if the optional
+// enrichment source is temporarily rate-limited.
+type TechnicalHistoryWarmupResult struct {
+	Status       string                                   `json:"status"`
+	Result       discovery.TechnicalHistoryBackfillResult `json:"result"`
+	ErrorMessage string                                   `json:"error_message,omitempty"`
 }
 
 func NewDiscoverySyncService(db *gorm.DB, cfg config.DiscoveryConfig) *DiscoverySyncService {
@@ -98,6 +108,7 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 		return result, fmt.Errorf("%w: %v", ErrDiscoveryMarketSync, err)
 	}
 	result.Status = DiscoverySyncStatusPublished
+	result.TechnicalHistoryWarmup = s.autoWarmTechnicalHistory(ctx)
 	result.Summary, err = discovery.BuildCandidateSummary(ctx, s.db, 10)
 	if err != nil {
 		return result, err
@@ -127,6 +138,7 @@ func (s *DiscoverySyncService) RunMarketOnly(ctx context.Context) (DiscoverySync
 		return result, fmt.Errorf("%w: %v", ErrDiscoveryMarketSync, err)
 	}
 	result.Status = DiscoverySyncStatusPublished
+	result.TechnicalHistoryWarmup = s.autoWarmTechnicalHistory(ctx)
 	result.Summary, err = discovery.BuildCandidateSummary(ctx, s.db, 10)
 	if err != nil {
 		return result, err
@@ -141,14 +153,52 @@ func (s *DiscoverySyncService) BackfillTechnicalHistory(ctx context.Context, loo
 	if s == nil || s.db == nil {
 		return discovery.TechnicalHistoryBackfillResult{}, errors.New("discovery sync service is not configured")
 	}
-	cfg := s.cfg
-	if s.configs != nil {
-		applied, err := s.configs.ApplyDiscoveryConfig(ctx, cfg)
-		if err != nil {
-			return discovery.TechnicalHistoryBackfillResult{}, err
-		}
-		cfg = applied
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.TechnicalHistoryBackfillResult{}, err
 	}
+	return s.backfillTechnicalHistoryWithConfig(ctx, cfg, lookbackDays)
+}
+
+func (s *DiscoverySyncService) autoWarmTechnicalHistory(ctx context.Context) TechnicalHistoryWarmupResult {
+	result := TechnicalHistoryWarmupResult{Status: "skipped", Result: discovery.TechnicalHistoryBackfillResult{SourceRecordCounts: map[string]int{}}}
+	// Custom runners are used by deterministic service tests and embedding
+	// callers; only the production scheduler performs external enrichment.
+	if s == nil || s.runner != nil {
+		return result
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		result.Status = "warning"
+		result.ErrorMessage = SanitizeSensitiveError(err.Error())
+		log.Printf("discovery technical history warmup skipped: %s", result.ErrorMessage)
+		return result
+	}
+	if !cfg.AutoTechnicalHistoryWarmup {
+		return result
+	}
+	backfill, err := s.backfillTechnicalHistoryWithConfig(ctx, cfg, 0)
+	result.Result = backfill
+	if err != nil {
+		result.Status = "warning"
+		result.ErrorMessage = SanitizeSensitiveError(err.Error())
+		log.Printf("discovery technical history warmup warning: %s", result.ErrorMessage)
+		return result
+	}
+	result.Status = "completed"
+	log.Printf("discovery technical history warmup completed: candidates=%d requested=%d persisted=%d", backfill.CandidateCount, backfill.RequestedCount, backfill.PersistedCount)
+	return result
+}
+
+func (s *DiscoverySyncService) appliedDiscoveryConfig(ctx context.Context) (config.DiscoveryConfig, error) {
+	cfg := s.cfg
+	if s.configs == nil {
+		return cfg, nil
+	}
+	return s.configs.ApplyDiscoveryConfig(ctx, cfg)
+}
+
+func (s *DiscoverySyncService) backfillTechnicalHistoryWithConfig(ctx context.Context, cfg config.DiscoveryConfig, lookbackDays int) (discovery.TechnicalHistoryBackfillResult, error) {
 	timeout := time.Duration(cfg.TaskTimeoutMin) * time.Minute
 	if timeout <= 0 {
 		timeout = 60 * time.Minute

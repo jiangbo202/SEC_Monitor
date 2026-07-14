@@ -35,12 +35,15 @@ func TestBuildCandidateHealthSummarizesMissingData(t *testing.T) {
 	if err := db.Create(&InsiderTransactionSnapshot{SecurityID: ready.ID, Accession: "h1", TransactionDate: time.Now(), TransactionCode: "P", Qualified: true}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&CapitalRiskSnapshot{BatchID: batch.BatchID, SecurityID: ready.ID, Kind: CapitalEventATMProgram, Accession: "risk-1", EffectiveAt: time.Now(), Active: true}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	health, err := BuildCandidateHealth(context.Background(), db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if health.BatchID != batch.BatchID || health.TotalCandidates != 2 || health.MissingFinancials != 1 || health.MissingInsiders != 0 || health.CandidatesWithInsiderRecords != 1 || health.InsiderRecordCoveragePct != 50 || health.NoQualifiedInsiderCandidates != 1 || health.QualifiedInsiderCandidates != 1 || health.MissingMarketCap != 1 {
+	if health.BatchID != batch.BatchID || health.TotalCandidates != 2 || health.MissingFinancials != 1 || health.MissingInsiders != 0 || health.CandidatesWithInsiderRecords != 1 || health.InsiderRecordCoveragePct != 50 || health.NoQualifiedInsiderCandidates != 1 || health.QualifiedInsiderCandidates != 1 || health.MissingMarketCap != 1 || health.ActiveRiskEvents != 1 {
 		t.Fatalf("health = %#v", health)
 	}
 	if health.Status != CandidateHealthDegraded || len(health.Issues) == 0 {
@@ -71,6 +74,9 @@ func TestBuildCandidateHealthReadsFinancialsFromSecurityBatch(t *testing.T) {
 	if err := db.Create(&InsiderTransactionSnapshot{SecurityID: security.ID, Accession: "h2", TransactionDate: time.Now(), TransactionCode: "P", Qualified: true}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&SECFilingSnapshot{SecurityID: security.ID, AccessionNumber: "0000008801-26-000001", FilingType: "10-Q", FilingDate: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	health, err := BuildCandidateHealth(context.Background(), db)
 	if err != nil {
@@ -92,7 +98,7 @@ func TestBuildCandidateHealthDistinguishesInsiderDataFromNoSignal(t *testing.T) 
 		wantWithoutQualified int
 		wantStatus           string
 	}{
-		{name: "source available without qualified purchase", sourceVersionsJSON: `[{"source":"insiders:sec-form4","version":"v1"}]`, wantDataStatus: "available", wantWithoutQualified: 1, wantStatus: CandidateHealthOK},
+		{name: "source available without candidate records", sourceVersionsJSON: `[{"source":"insiders:sec-form4","version":"v1"}]`, wantDataStatus: "available", wantWithoutQualified: 1, wantStatus: CandidateHealthDegraded},
 		{name: "source missing", sourceVersionsJSON: `[]`, wantDataStatus: "missing", wantMissing: 1, wantStatus: CandidateHealthDegraded},
 		{name: "source available with qualified purchase", sourceVersionsJSON: `[{"source":"insiders:sec-form4","version":"v1"}]`, qualified: true, wantDataStatus: "available", wantQualified: 1, wantStatus: CandidateHealthOK},
 	}
@@ -121,6 +127,9 @@ func TestBuildCandidateHealthDistinguishesInsiderDataFromNoSignal(t *testing.T) 
 			}
 			if tt.qualified {
 				if err := db.Create(&InsiderTransactionSnapshot{SecurityID: security.ID, Accession: "signal", TransactionDate: now, TransactionCode: "P", Qualified: true}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Create(&SECFilingSnapshot{SecurityID: security.ID, AccessionNumber: "0000008811-26-000001", FilingType: "8-K", FilingDate: now}).Error; err != nil {
 					t.Fatal(err)
 				}
 			}

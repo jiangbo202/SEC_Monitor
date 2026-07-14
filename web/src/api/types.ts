@@ -191,6 +191,7 @@ export interface CandidateScore {
   reason_code: string
   scoring_version: string
   created_at: string
+  score_effective_date?: string
   price_close_usd?: number
   price_volume?: number
   price_trade_date?: string | null
@@ -448,12 +449,21 @@ export interface CandidateDetail {
   financial?: DiscoveryFinancialMetric
   insiders: DiscoveryInsiderTransaction[]
   capital_risks: DiscoveryCapitalRisk[]
+  capital_risk_summary: CandidateCapitalRiskSummary
   sector: SectorExplanation
   technical: CandidateTechnicalAnalysis
 	technical_history: CandidateTechnicalHistoryRow[]
   data_quality: Record<string, string>
   evidence: DiscoveryEvidence[]
   recent_filings: RecentSECFiling[]
+}
+
+export interface CandidateCapitalRiskSummary {
+  total_events: number
+  active_events: number
+  recent_inactive_events: number
+  historical_inactive_count: number
+  latest_effective_at?: string | null
 }
 
 export interface CandidateSummary {
@@ -504,6 +514,8 @@ export interface CandidateHealth {
   insider_record_coverage_pct: number
   qualified_insider_candidates: number
   no_qualified_insider_candidates: number
+  candidates_with_recent_filings: number
+  recent_filing_coverage_pct: number
   price_effective_date: string
   current_price_candidates: number
   fallback_price_candidates: number
@@ -521,6 +533,13 @@ export interface DiscoveryWorkflowResult {
   market_batch_id?: string
   summary: CandidateSummary
   health: CandidateHealth
+  technical_history_warmup?: TechnicalHistoryWarmupResult
+}
+
+export interface TechnicalHistoryWarmupResult {
+  status: 'completed' | 'skipped' | 'warning' | string
+  result: TechnicalHistoryBackfillResult
+  error_message?: string
 }
 
 export interface DiscoveryBatch {

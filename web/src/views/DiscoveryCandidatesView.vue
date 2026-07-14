@@ -1,11 +1,11 @@
 <template>
   <div>
-    <div class="page-header">
-      <div>
+    <div class="page-header candidate-page-header">
+      <div class="candidate-page-title">
         <h1>小盘股候选</h1>
         <p>基于公开 SEC 文件、财务指标、内幕交易和融资风险生成的研究候选列表。</p>
       </div>
-      <el-space>
+      <el-space wrap class="candidate-page-actions">
         <el-button :loading="workflowLoading" type="primary" plain @click="runWorkflow">刷新候选工作流</el-button>
         <el-button :loading="technicalHistoryLoading" type="warning" plain @click="backfillTechnicalHistory">回填技术历史</el-button>
         <el-button :loading="watchLoading" @click="openWatchList">关注列表</el-button>
@@ -24,7 +24,7 @@
       :closable="false"
       show-icon
       class="health-alert"
-      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜财务指标不可用 ${health.missing_financials}｜内幕来源 ${healthInsiderDataLabel(health.insider_data_status)}｜内幕记录 ${health.candidates_with_insider_records}/${health.total_candidates}｜合格买入 ${health.qualified_insider_candidates}｜价格当日 ${health.current_price_candidates}｜前一交易日 ${health.fallback_price_candidates}｜缺/过期 ${health.missing_price_candidates + health.stale_price_candidates}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
+      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜财务指标不可用 ${health.missing_financials}｜内幕源 ${healthInsiderDataLabel(health.insider_data_status)}｜内幕记录 ${health.candidates_with_insider_records}/${health.total_candidates}｜SEC 公告 ${health.candidates_with_recent_filings}/${health.total_candidates}｜合格买入 ${health.qualified_insider_candidates}｜批次价格当日 ${health.current_price_candidates}｜前一交易日 ${health.fallback_price_candidates}｜缺/过期 ${health.missing_price_candidates + health.stale_price_candidates}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
       :description="health.issues.length ? health.issues.map(formatHealthIssue).join('；') : '当前候选证据链完整度正常。'"
     />
 
@@ -79,9 +79,11 @@
         <el-button :type="quickFilterActive('high_priority') ? 'primary' : 'default'" plain @click="toggleQuickFilter('high_priority')">
           高优先级
         </el-button>
-        <el-button :type="filters.recommended_only ? 'primary' : 'default'" plain @click="toggleRecommendedOnly">
-          主推荐
-        </el-button>
+        <el-tooltip content="主推荐：A 级无阻断；或质量为强/标准的 B 级，且排除低收入基数、低流动性与活跃融资风险。" placement="top">
+          <el-button :type="filters.recommended_only ? 'primary' : 'default'" plain @click="toggleRecommendedOnly">
+            主推荐
+          </el-button>
+        </el-tooltip>
         <el-button :type="quickFilterActive('strong_b') ? 'primary' : 'default'" plain @click="toggleQuickFilter('strong_b')">
           强B
         </el-button>
@@ -96,6 +98,7 @@
           <el-radio-button value="compact">紧凑</el-radio-button>
           <el-radio-button value="full">完整</el-radio-button>
         </el-radio-group>
+        <span class="current-list-count">当前显示 {{ total }} / {{ overview?.total || total }} 只{{ filters.recommended_only ? '（主推荐）' : '' }}</span>
       </div>
       <el-form :inline="true" :model="filters">
         <el-form-item label="等级">
@@ -192,10 +195,18 @@
         </template>
       </el-table-column>
       <el-table-column prop="market_cap_usd" label="市值" width="130" align="right" sortable="custom">
-        <template #default="{ row }">{{ formatUSD(row.market_cap_usd) }}</template>
+        <template #default="{ row }">
+          <el-tooltip :content="`用于评分的市值快照；评分有效日：${formatDate(row.score_effective_date)}`" placement="top">
+            <span class="metric-help">{{ formatUSD(row.market_cap_usd) }}</span>
+          </el-tooltip>
+        </template>
       </el-table-column>
       <el-table-column prop="price_close_usd" label="价格" width="100" align="right" sortable="custom">
-        <template #default="{ row }">{{ formatPrice(row.price_close_usd, row.price_currency) }}</template>
+        <template #default="{ row }">
+          <el-tooltip :content="priceEvidenceTooltip(row)" placement="top">
+            <span class="metric-help">{{ formatPrice(row.price_close_usd, row.price_currency) }}</span>
+          </el-tooltip>
+        </template>
       </el-table-column>
       <el-table-column prop="price_volume" label="成交量" width="120" align="right" sortable="custom">
         <template #default="{ row }">{{ formatVolume(row.price_volume) }}</template>
@@ -697,7 +708,17 @@
 
         <el-card shadow="never">
           <template #header>融资/稀释风险</template>
-          <el-table :data="candidateDetail.capital_risks" size="small" border empty-text="暂无融资风险">
+          <el-alert
+            v-if="candidateDetail.capital_risk_summary?.total_events"
+            :type="candidateDetail.capital_risk_summary?.active_events ? 'warning' : 'info'"
+            :closable="false"
+            show-icon
+            class="capital-risk-summary"
+            :title="capitalRiskSummaryTitle(candidateDetail)"
+            :description="capitalRiskSummaryDescription(candidateDetail)"
+          />
+          <el-table :data="candidateDetail.capital_risks" size="small" border empty-text="暂无当前或近 180 日融资风险">
+            <el-table-column prop="effective_at" label="日期" width="120"><template #default="{ row }">{{ formatDate(row.effective_at) }}</template></el-table-column>
             <el-table-column prop="kind" label="类型" width="140" />
             <el-table-column prop="severity" label="严重度" width="90" />
             <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
@@ -1000,7 +1021,14 @@ async function runWorkflow() {
     summary.value = res.data.data.summary
     await load()
     if (res.data.data.status === 'published') {
-      ElMessage.success('小盘候选真实同步已完成')
+      const warmup = res.data.data.technical_history_warmup
+      if (warmup?.status === 'warning') {
+        ElMessage.warning(`小盘候选同步已完成；技术历史自动预热未完成：${warmup.error_message || '请稍后手动回填'}`)
+      } else if (warmup?.status === 'completed') {
+        ElMessage.success(`小盘候选真实同步已完成；技术历史已自动预热 ${warmup.result.requested_count} 个待补齐候选`)
+      } else {
+        ElMessage.success('小盘候选真实同步已完成')
+      }
     } else if (res.data.data.status === 'market_failed') {
       ElMessage.warning('证券与 SEC 数据已同步，行情候选阶段失败，请检查行情源配置')
     } else {
@@ -1379,6 +1407,11 @@ function priceFreshnessTooltip(row: CandidateScore) {
   return '价格日期无法与本批次有效交易日比较'
 }
 
+function priceEvidenceTooltip(row: CandidateScore) {
+  const source = row.price_source || '本地行情缓存'
+  return `列表/技术分析使用最新本地行情：${source}，交易日 ${formatDate(row.price_trade_date)}。${priceFreshnessTooltip(row)}`
+}
+
 function sectorTagType(score?: number) {
   if (!Number.isFinite(score)) return 'info'
   if (Number(score) >= 7) return 'success'
@@ -1402,6 +1435,7 @@ function formatHealthIssue(issue: string) {
   if (code === 'stale_prices') return `价格已过期：${count || 0}`
   if (code === 'missing_prices') return `价格缺失：${count || 0}`
   if (code === 'candidate_insider_records') return `候选内幕记录覆盖：${count || 0}`
+  if (code === 'candidate_recent_filings') return `候选近期 SEC 公告覆盖：${count || 0}`
   if (code === 'no_current_published_prescreen_batch') return '暂无已发布的小盘候选批次'
   return issue
 }
@@ -1599,8 +1633,26 @@ function candidateRiskSignals(detail: CandidateDetail) {
   if (!detail.score.recent_qualified_insider) risks.push('缺少合格内幕买入')
   if (detail.financial?.quality_flags_json?.includes('low_revenue_base')) risks.push('收入基数偏低')
   if (detail.financial?.quality_flags_json?.includes('extreme_revenue_growth')) risks.push('增长异常需核验')
-  if (detail.capital_risks?.length) risks.push(`融资/稀释事件 ${detail.capital_risks.length} 条`)
+  const riskSummary = detail.capital_risk_summary
+  if (riskSummary?.active_events) risks.push(`活跃融资/稀释风险 ${riskSummary.active_events} 条`)
+  else if (riskSummary?.recent_inactive_events) risks.push(`近 180 日融资/稀释事件 ${riskSummary.recent_inactive_events} 条`)
   return risks.length ? risks : ['暂无明显风险']
+}
+
+function capitalRiskSummaryTitle(detail: CandidateDetail) {
+  const summary = detail.capital_risk_summary
+  if (!summary) return '没有当前或近 180 日融资/稀释风险'
+  if (summary.active_events) return `当前有 ${summary.active_events} 条活跃融资/稀释风险`
+  if (summary.recent_inactive_events) return `近 180 日有 ${summary.recent_inactive_events} 条已失效融资/稀释事件`
+  return '没有当前或近 180 日融资/稀释风险'
+}
+
+function capitalRiskSummaryDescription(detail: CandidateDetail) {
+  const summary = detail.capital_risk_summary
+  if (!summary) return '详情表仅展示当前活跃或近 180 日事件。'
+  const historical = summary.historical_inactive_count || 0
+  if (!historical) return '详情表仅展示当前活跃或近 180 日事件。'
+  return `另有 ${historical} 条更早的已失效历史记录，仅保留为审计证据，不作为当前风险或评分阻断。`
 }
 
 function formatMonths(value: number) {
@@ -1716,6 +1768,20 @@ onMounted(() => {
   margin-bottom: 12px;
 }
 
+.candidate-page-header {
+  align-items: flex-start;
+}
+
+.candidate-page-title {
+  min-width: 280px;
+  flex: 1 1 300px;
+}
+
+.candidate-page-actions {
+  flex: 0 1 940px;
+  justify-content: flex-end;
+}
+
 .criteria-card {
   margin-bottom: 12px;
 }
@@ -1825,6 +1891,11 @@ onMounted(() => {
   font-size: 13px;
 }
 
+.current-list-count {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
 .candidate-table-compact :deep(.el-table__cell) {
   padding-top: 6px;
   padding-bottom: 6px;
@@ -1834,6 +1905,10 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.capital-risk-summary {
+  margin-bottom: 10px;
 }
 
 .detail-summary-grid {
@@ -2017,6 +2092,36 @@ onMounted(() => {
 @media (max-width: 1200px) {
   .overview-grid {
     grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+}
+
+@media (max-width: 1400px) {
+  .candidate-page-header {
+    flex-wrap: wrap;
+  }
+
+  .candidate-page-title,
+  .candidate-page-actions {
+    flex-basis: 100%;
+  }
+
+  .candidate-page-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 720px) {
+  .overview-grid,
+  .detail-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .candidate-page-title {
+    min-width: 0;
+  }
+
+  .table-view-label {
+    margin-left: 0;
   }
 }
 </style>

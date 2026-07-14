@@ -828,6 +828,7 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				{Key: "discovery.yahoo_request_budget", Value: "56", ValueType: "int", Category: "discovery"},
 				{Key: "discovery.min_publish_coverage_pct", Value: "85.5", ValueType: "float", Category: "discovery"},
 				{Key: "discovery.research_mode", Value: "false", ValueType: "bool", Category: "discovery"},
+				{Key: "discovery.auto_technical_history_warmup", Value: "true", ValueType: "bool", Category: "discovery"},
 			},
 			want: config.DiscoveryConfig{
 				PriceProvider:               "tiingo",
@@ -844,6 +845,7 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				YahooRequestBudget:          56,
 				MinPublishCoveragePct:       85.5,
 				ResearchMode:                false,
+				AutoTechnicalHistoryWarmup:  true,
 			},
 		},
 		{
@@ -869,6 +871,7 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				YahooRequestBudget:          10,
 				MinPublishCoveragePct:       11,
 				ResearchMode:                true,
+				AutoTechnicalHistoryWarmup:  true,
 			},
 		},
 	}
@@ -886,6 +889,7 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				YahooRequestBudget:          10,
 				MinPublishCoveragePct:       11,
 				ResearchMode:                true,
+				AutoTechnicalHistoryWarmup:  true,
 			})
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ApplyDiscoveryConfig err=%v wantErr=%v", err, tt.wantErr)
@@ -1067,15 +1071,15 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ApplyDiscoveryConfig: %v", err)
 			}
-			if applied.PriceProvider != "stooq" || len(applied.StooqURLs) != 1 || applied.StooqURLs[0] != "https://env.example.test/stooq.csv" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || applied.TwelveDataAPIKey != "env-td" || applied.TwelveDataBaseURL != "https://api.twelvedata.com" || applied.TwelveDataRequestBudget != 700 || applied.TwelveDataRequestIntervalMS != 8000 || applied.YahooBaseURL != "https://query1.finance.yahoo.com" || applied.YahooRequestBudget != 45 || applied.MinPublishCoveragePct != 85 || !applied.ResearchMode {
+			if applied.PriceProvider != "stooq" || len(applied.StooqURLs) != 1 || applied.StooqURLs[0] != "https://env.example.test/stooq.csv" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || applied.TwelveDataAPIKey != "env-td" || applied.TwelveDataBaseURL != "https://api.twelvedata.com" || applied.TwelveDataRequestBudget != 700 || applied.TwelveDataRequestIntervalMS != 8000 || applied.YahooBaseURL != "https://query1.finance.yahoo.com" || applied.YahooRequestBudget != 45 || applied.MinPublishCoveragePct != 85 || !applied.ResearchMode || !applied.AutoTechnicalHistoryWarmup {
 				t.Fatalf("applied defaults = %+v", applied)
 			}
 			configs, err := svc.List(context.Background(), "discovery", true)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 14 {
-				t.Fatalf("discovery defaults = %d, want 14", len(configs))
+			if len(configs) != 15 {
+				t.Fatalf("discovery defaults = %d, want 15", len(configs))
 			}
 		}},
 		{name: "stored twelve data config overrides env config", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {

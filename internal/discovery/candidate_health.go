@@ -27,6 +27,8 @@ type CandidateHealth struct {
 	InsiderRecordCoveragePct     float64  `json:"insider_record_coverage_pct"`
 	QualifiedInsiderCandidates   int      `json:"qualified_insider_candidates"`
 	NoQualifiedInsiderCandidates int      `json:"no_qualified_insider_candidates"`
+	CandidatesWithRecentFilings  int      `json:"candidates_with_recent_filings"`
+	RecentFilingCoveragePct      float64  `json:"recent_filing_coverage_pct"`
 	PriceEffectiveDate           string   `json:"price_effective_date"`
 	CurrentPriceCandidates       int      `json:"current_price_candidates"`
 	FallbackPriceCandidates      int      `json:"fallback_price_candidates"`
@@ -78,6 +80,10 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 	if err != nil {
 		return result, err
 	}
+	filingCoverageBySecurity, err := candidateRecentFilingCoverageBySecurity(ctx, db, scores)
+	if err != nil {
+		return result, err
+	}
 	for _, score := range scores {
 		if score.MarketCapUSD <= 0 {
 			result.MissingMarketCap++
@@ -92,6 +98,9 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 		coverage := insiderCoverageBySecurity[score.SecurityID]
 		if coverage.records > 0 {
 			result.CandidatesWithInsiderRecords++
+		}
+		if filingCoverageBySecurity[score.SecurityID] > 0 {
+			result.CandidatesWithRecentFilings++
 		}
 		if !insiderDataAvailable {
 			result.MissingInsiders++
@@ -113,10 +122,21 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 	}
 	if result.TotalCandidates > 0 {
 		result.InsiderRecordCoveragePct = float64(result.CandidatesWithInsiderRecords) * 100 / float64(result.TotalCandidates)
+		result.RecentFilingCoveragePct = float64(result.CandidatesWithRecentFilings) * 100 / float64(result.TotalCandidates)
 	}
 	var activeRiskEvents int64
-	if err := db.WithContext(ctx).Model(&CapitalRiskSnapshot{}).Where("batch_id = ? AND active = ?", batch.BatchID, true).Count(&activeRiskEvents).Error; err != nil {
-		return result, err
+	riskBatchID := batch.UniverseSourceVersion
+	if riskBatchID == "" {
+		riskBatchID = batch.BatchID
+	}
+	candidateSecurityIDs := make([]uint, 0, len(scores))
+	for _, score := range scores {
+		candidateSecurityIDs = append(candidateSecurityIDs, score.SecurityID)
+	}
+	if len(candidateSecurityIDs) > 0 {
+		if err := db.WithContext(ctx).Model(&CapitalRiskSnapshot{}).Where("batch_id = ? AND security_id IN ? AND active = ?", riskBatchID, candidateSecurityIDs, true).Count(&activeRiskEvents).Error; err != nil {
+			return result, err
+		}
 	}
 	result.ActiveRiskEvents = int(activeRiskEvents)
 	result.Status = CandidateHealthOK
@@ -128,6 +148,9 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 	}
 	if insiderDataAvailable && result.TotalCandidates > 0 && result.CandidatesWithInsiderRecords == 0 {
 		result.Issues = append(result.Issues, fmt.Sprintf("candidate_insider_records:0/%d", result.TotalCandidates))
+	}
+	if result.TotalCandidates > 0 && result.CandidatesWithRecentFilings == 0 {
+		result.Issues = append(result.Issues, fmt.Sprintf("candidate_recent_filings:0/%d", result.TotalCandidates))
 	}
 	if result.MissingMarketCap > 0 {
 		result.Issues = append(result.Issues, fmt.Sprintf("missing_market_cap:%d", result.MissingMarketCap))
@@ -141,8 +164,29 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 	if result.MissingPriceCandidates > 0 {
 		result.Issues = append(result.Issues, fmt.Sprintf("missing_prices:%d", result.MissingPriceCandidates))
 	}
-	if result.MissingFinancials > 0 || result.MissingInsiders > 0 || result.MissingMarketCap > 0 || result.StalePriceCandidates > 0 || result.MissingPriceCandidates > 0 {
+	if result.MissingFinancials > 0 || result.MissingInsiders > 0 || result.MissingMarketCap > 0 || result.StalePriceCandidates > 0 || result.MissingPriceCandidates > 0 ||
+		(result.TotalCandidates > 0 && insiderDataAvailable && result.CandidatesWithInsiderRecords == 0) ||
+		(result.TotalCandidates > 0 && result.CandidatesWithRecentFilings == 0) {
 		result.Status = CandidateHealthDegraded
+	}
+	return result, nil
+}
+
+func candidateRecentFilingCoverageBySecurity(ctx context.Context, db *gorm.DB, scores []CandidateScoreSnapshot) (map[uint]int, error) {
+	result := map[uint]int{}
+	if len(scores) == 0 {
+		return result, nil
+	}
+	securityIDs := make([]uint, 0, len(scores))
+	for _, score := range scores {
+		securityIDs = append(securityIDs, score.SecurityID)
+	}
+	var rows []SECFilingSnapshot
+	if err := db.WithContext(ctx).Where("security_id IN ?", securityIDs).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		result[row.SecurityID]++
 	}
 	return result, nil
 }

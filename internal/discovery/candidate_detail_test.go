@@ -70,11 +70,30 @@ func TestGetCandidateDetailReturnsCurrentEvidence(t *testing.T) {
 	if len(detail.CapitalRisks) != 1 || !detail.CapitalRisks[0].BlocksA {
 		t.Fatalf("risks = %#v", detail.CapitalRisks)
 	}
+	if detail.CapitalRiskSummary.TotalEvents != 1 || detail.CapitalRiskSummary.ActiveEvents != 1 || detail.CapitalRiskSummary.HistoricalInactiveCount != 0 {
+		t.Fatalf("risk summary = %#v", detail.CapitalRiskSummary)
+	}
 	if len(detail.RecentFilings) != 2 || detail.RecentFilings[0].AccessionNumber != "0000012345-26-000002" || detail.RecentFilings[0].Ticker != "DTCO" || detail.RecentFilings[0].Title != "8-K — Items 2.02" {
 		t.Fatalf("recent filings = %#v", detail.RecentFilings)
 	}
 	if detail.DataQuality["financial"] != QualityStatusValid || detail.DataQuality["universe"] != QualityStatusValid {
 		t.Fatalf("quality = %#v", detail.DataQuality)
+	}
+}
+
+func TestSummarizeCandidateCapitalRisksSeparatesInactiveHistory(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	rows := []CapitalRiskSnapshot{
+		{Kind: CapitalEventATMProgram, EffectiveAt: now.AddDate(0, 0, -3), Active: true},
+		{Kind: CapitalEventWarrants, EffectiveAt: now.AddDate(0, 0, -20), Active: false},
+		{Kind: CapitalEventConfirmedFinancing, EffectiveAt: now.AddDate(0, 0, -181), Active: false},
+	}
+	summary, current := summarizeCandidateCapitalRisks(rows, now)
+	if summary.TotalEvents != 3 || summary.ActiveEvents != 1 || summary.RecentInactiveEvents != 1 || summary.HistoricalInactiveCount != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if len(current) != 2 || !current[0].Active || current[1].Active {
+		t.Fatalf("current = %#v", current)
 	}
 }
 
