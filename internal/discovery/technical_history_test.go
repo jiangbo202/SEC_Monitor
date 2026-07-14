@@ -41,8 +41,8 @@ func TestBackfillCandidateTechnicalHistoryPersistsOnlyIncompleteCandidates(t *te
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	records := make([]PriceRecord, 0, technicalMinimumSamples)
-	for index := 0; index < technicalMinimumSamples; index++ {
+	records := make([]PriceRecord, 0, technicalHistorySamplesRequired)
+	for index := 0; index < technicalHistorySamplesRequired; index++ {
 		records = append(records, PriceRecord{Symbol: "HIST", Source: "fake", TradeDate: base.AddDate(0, 0, index), CloseMicros: 1_000_000 + int64(index), Volume: 100, Currency: "USD"})
 	}
 	provider := &fakeTechnicalHistoryProvider{records: records}
@@ -50,7 +50,7 @@ func TestBackfillCandidateTechnicalHistoryPersistsOnlyIncompleteCandidates(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.CandidateCount != 1 || result.RequestedCount != 1 || result.PersistedCount != technicalMinimumSamples {
+	if result.CandidateCount != 1 || result.RequestedCount != 1 || result.PersistedCount != technicalHistorySamplesRequired {
 		t.Fatalf("result = %+v", result)
 	}
 	if len(provider.called) != 1 || provider.called[0].ProviderTicker != "HIST.P" {
@@ -60,8 +60,8 @@ func TestBackfillCandidateTechnicalHistoryPersistsOnlyIncompleteCandidates(t *te
 	if err := db.Model(&PriceSnapshot{}).Where("symbol = ?", "HIST").Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
-	if count != technicalMinimumSamples {
-		t.Fatalf("history rows = %d, want %d", count, technicalMinimumSamples)
+	if count != technicalHistorySamplesRequired {
+		t.Fatalf("history rows = %d, want %d", count, technicalHistorySamplesRequired)
 	}
 	second, err := BackfillCandidateTechnicalHistory(context.Background(), db, provider, time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC), 35)
 	if err != nil {

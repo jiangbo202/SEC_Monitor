@@ -11,9 +11,11 @@ import (
 )
 
 const (
-	defaultTechnicalHistoryLookbackDays = 35
-	minimumTechnicalHistoryLookbackDays = technicalMinimumSamples
-	maximumTechnicalHistoryLookbackDays = 90
+	// 120 calendar days normally produces roughly 80 US trading days, leaving
+	// enough visible MA50 points without fetching a multi-year history.
+	defaultTechnicalHistoryLookbackDays = 120
+	minimumTechnicalHistoryLookbackDays = technicalLongLookbackDays
+	maximumTechnicalHistoryLookbackDays = 180
 )
 
 // TechnicalHistoryBackfillResult describes a manual, one-time price-history
@@ -146,7 +148,7 @@ func candidateTechnicalHistoryListings(ctx context.Context, db *gorm.DB, batch U
 		if ticker == "" {
 			continue
 		}
-		if len(datesByTicker[ticker]) >= technicalMinimumSamples {
+		if len(datesByTicker[ticker]) >= technicalHistorySamplesRequired {
 			ready++
 			continue
 		}

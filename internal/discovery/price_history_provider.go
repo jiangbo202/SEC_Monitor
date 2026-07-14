@@ -408,7 +408,7 @@ func (p *PriceProviderChain) LoadHistory(ctx context.Context, expected []Listing
 				dayCounts[symbol] = map[string]struct{}{}
 			}
 			dayCounts[symbol][row.TradeDate.Format(time.DateOnly)] = struct{}{}
-			if len(dayCounts[symbol]) >= technicalMinimumSamples {
+			if len(dayCounts[symbol]) >= technicalHistorySamplesRequired {
 				covered[symbol] = struct{}{}
 			}
 		}

@@ -9,10 +9,14 @@ import (
 )
 
 const (
-	technicalLookbackDays      = 20
-	technicalMinimumSamples    = technicalLookbackDays + 1
-	technicalDetailHistoryDays = 35
-	technicalVolumeMultiple    = 1.5
+	technicalLookbackDays     = 20
+	technicalMinimumSamples   = technicalLookbackDays + 1
+	technicalLongLookbackDays = 50
+	// Technical history is retained beyond the minimum needed by the MA20
+	// signals so that the detail chart can also present a useful MA50.
+	technicalHistorySamplesRequired = technicalLongLookbackDays
+	technicalDetailHistoryDays      = 90
+	technicalVolumeMultiple         = 1.5
 )
 
 const (
