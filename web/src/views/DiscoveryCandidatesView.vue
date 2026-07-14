@@ -904,7 +904,14 @@ async function backfillTechnicalHistory() {
   }
   technicalHistoryLoading.value = true
   try {
-    const res = await apiClient.post<ApiResponse<TechnicalHistoryBackfillResult>>('/discovery/candidates/technical-history-backfill', { lookback_days: 35 })
+    const res = await apiClient.post<ApiResponse<TechnicalHistoryBackfillResult>>(
+      '/discovery/candidates/technical-history-backfill',
+      { lookback_days: 35 },
+      // Twelve Data can deliberately throttle to one request every several
+      // seconds. This one-time task must outlive the normal 10-second UI API
+      // timeout, otherwise the browser cancels its server-side context.
+      { timeout: 70 * 60 * 1000 },
+    )
     const result = res.data.data
     const sources = Object.entries(result.source_record_counts || {}).map(([source, count]) => `${source} ${count}`).join(' / ') || '无'
     ElMessage.success(`技术历史回填完成：请求 ${result.requested_count}，写入 ${result.persisted_count} 条（${sources}）`)
