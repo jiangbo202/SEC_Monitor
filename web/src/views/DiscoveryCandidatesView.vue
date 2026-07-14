@@ -564,10 +564,55 @@
               <el-descriptions-item label="量比">{{ formatRatio(candidateDetail.technical.volume_ratio_20) }}（20 日均量 {{ formatVolume(candidateDetail.technical.average_volume_20) }}）</el-descriptions-item>
             </el-descriptions>
           </template>
-          <div class="technical-history-title">
-            本地日线历史（最近 {{ candidateDetail.technical_history?.length || 0 }} 个交易日；“历史回填”为手动补齐的历史数据）
+          <div class="technical-history-heading">
+            <div class="technical-history-title">
+              本地日线历史（最近 {{ candidateDetail.technical_history?.length || 0 }} 个交易日；“历史回填”为手动补齐的历史数据）
+            </div>
+            <el-radio-group v-model="technicalHistoryView" size="small" aria-label="技术历史展示方式">
+              <el-radio-button value="chart">图表</el-radio-button>
+              <el-radio-button value="table">列表</el-radio-button>
+            </el-radio-group>
           </div>
-          <el-table :data="candidateDetail.technical_history || []" size="small" border max-height="360" empty-text="暂无本地日线数据">
+          <template v-if="technicalHistoryView === 'chart'">
+            <div v-if="technicalHistoryChart.points.length" class="technical-chart" role="img" :aria-label="`${candidateDetail.score.ticker} 本地日线价格和成交量图表`">
+              <div class="technical-chart-legend">
+                <span><i class="technical-chart-line-key" />收盘价</span>
+                <span><i class="technical-chart-bar-key" />成交量</span>
+                <span>价格范围 {{ formatPrice(technicalHistoryChart.minClose, 'USD') }} – {{ formatPrice(technicalHistoryChart.maxClose, 'USD') }}</span>
+              </div>
+              <svg class="technical-chart-svg" viewBox="0 0 720 270" preserveAspectRatio="none">
+                <line v-for="y in [24, 76, 128, 180]" :key="`grid-${y}`" x1="0" :y1="y" x2="720" :y2="y" class="technical-chart-grid" />
+                <rect
+                  v-for="point in technicalHistoryChart.points"
+                  :key="`volume-${point.tradeDate}`"
+                  :x="point.x - technicalHistoryChart.barWidth / 2"
+                  :y="point.volumeY"
+                  :width="technicalHistoryChart.barWidth"
+                  :height="240 - point.volumeY"
+                  class="technical-chart-volume"
+                >
+                  <title>{{ `${point.tradeDate}｜成交量 ${formatVolume(point.volume)}` }}</title>
+                </rect>
+                <polyline :points="technicalHistoryChart.pricePolyline" fill="none" class="technical-chart-price" />
+                <circle
+                  v-for="point in technicalHistoryChart.points"
+                  :key="`price-${point.tradeDate}`"
+                  :cx="point.x"
+                  :cy="point.priceY"
+                  r="3"
+                  class="technical-chart-point"
+                >
+                  <title>{{ `${point.tradeDate}｜收盘 ${formatPrice(point.close, 'USD')}｜成交量 ${formatVolume(point.volume)}｜${point.backfilled ? '历史回填' : '日常同步'} / ${point.source || '-'}` }}</title>
+                </circle>
+                <text x="0" y="264" class="technical-chart-axis-label">{{ technicalHistoryChart.startDate }}</text>
+                <text x="360" y="264" text-anchor="middle" class="technical-chart-axis-label">{{ technicalHistoryChart.middleDate }}</text>
+                <text x="720" y="264" text-anchor="end" class="technical-chart-axis-label">{{ technicalHistoryChart.endDate }}</text>
+              </svg>
+              <div class="technical-chart-note">悬浮数据点可查看该日价格、成交量、来源及是否为历史回填。</div>
+            </div>
+            <el-empty v-else :image-size="72" description="暂无可绘制的本地日线数据" />
+          </template>
+          <el-table v-else :data="candidateDetail.technical_history || []" size="small" border max-height="360" empty-text="暂无本地日线数据">
             <el-table-column prop="trade_date" label="日期" width="120">
               <template #default="{ row }">{{ formatDate(row.trade_date) }}</template>
             </el-table-column>
@@ -765,6 +810,7 @@ import type {
   CandidateReport,
   CandidateScore,
   CandidateSummary,
+  CandidateTechnicalHistoryRow,
   CandidateWatch,
   DiscoveryWorkflowResult,
   PageResult,
@@ -792,6 +838,7 @@ const effectivenessVisible = ref(false)
 const effectiveness = ref<CandidateEffectivenessReport | null>(null)
 const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
+const technicalHistoryView = ref<'chart' | 'table'>('chart')
 const health = ref<CandidateHealth | null>(null)
 const report = ref<CandidateReport | null>(null)
 const reportVisible = ref(false)
@@ -850,6 +897,7 @@ const sectorCategoryOptions = [
   '其他已分类赛道',
   '赛道数据缺失',
 ]
+const technicalHistoryChart = computed(() => buildTechnicalHistoryChart(candidateDetail.value?.technical_history || []))
 
 function requestParams() {
   const params: Record<string, string | number> = { page: page.value, page_size: pageSize }
@@ -979,6 +1027,7 @@ function exportCandidates() {
 
 async function openDetail(row: CandidateScore) {
   detailLoadingTicker.value = row.ticker
+  technicalHistoryView.value = 'chart'
   try {
     const res = await apiClient.get<ApiResponse<CandidateDetail>>(`/discovery/candidates/${row.ticker}/detail`)
     candidateDetail.value = res.data.data
@@ -1508,6 +1557,70 @@ function formatDate(value?: string | null) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString()
 }
 
+type TechnicalHistoryChartPoint = {
+  tradeDate: string
+  close: number
+  volume: number
+  source: string
+  backfilled: boolean
+  x: number
+  priceY: number
+  volumeY: number
+}
+
+type TechnicalHistoryChart = {
+  points: TechnicalHistoryChartPoint[]
+  pricePolyline: string
+  barWidth: number
+  minClose: number
+  maxClose: number
+  startDate: string
+  middleDate: string
+  endDate: string
+}
+
+function buildTechnicalHistoryChart(rows: CandidateTechnicalHistoryRow[]): TechnicalHistoryChart {
+  const history = [...rows]
+    .filter((row) => Number.isFinite(row.close_usd) && row.close_usd > 0)
+    .sort((a, b) => a.trade_date.localeCompare(b.trade_date))
+  if (!history.length) {
+    return { points: [], pricePolyline: '', barWidth: 0, minClose: 0, maxClose: 0, startDate: '', middleDate: '', endDate: '' }
+  }
+  const closes = history.map((row) => row.close_usd)
+  const minClose = Math.min(...closes)
+  const maxClose = Math.max(...closes)
+  const closeRange = Math.max(maxClose - minClose, Math.max(maxClose * 0.02, 0.01))
+  const maxVolume = Math.max(...history.map((row) => Math.max(row.volume || 0, 0)), 1)
+  const pointCount = history.length
+  const barWidth = Math.max(2, Math.min(18, 540 / pointCount))
+  const points = history.map((row, index) => {
+    const x = pointCount === 1 ? 360 : (index / (pointCount - 1)) * 720
+    const priceY = 174 - ((row.close_usd - minClose) / closeRange) * 142
+    const volumeY = 240 - (Math.max(row.volume || 0, 0) / maxVolume) * 42
+    return {
+      tradeDate: row.trade_date,
+      close: row.close_usd,
+      volume: row.volume,
+      source: row.source,
+      backfilled: row.backfilled,
+      x,
+      priceY,
+      volumeY,
+    }
+  })
+  const middle = history[Math.floor((history.length - 1) / 2)]
+  return {
+    points,
+    pricePolyline: points.map((point) => `${point.x},${point.priceY}`).join(' '),
+    barWidth,
+    minClose,
+    maxClose,
+    startDate: history[0].trade_date,
+    middleDate: middle.trade_date,
+    endDate: history[history.length - 1].trade_date,
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -1613,14 +1726,97 @@ onMounted(load)
   margin-bottom: 12px;
 }
 
-.technical-history-title {
+.technical-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin: 16px 0 8px;
+}
+
+.technical-history-title {
   color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
 .history-source {
   color: var(--el-text-color-secondary);
+}
+
+.technical-chart {
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  background: var(--el-fill-color-blank);
+}
+
+.technical-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 10px 12px 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.technical-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.technical-chart-line-key,
+.technical-chart-bar-key {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--el-color-primary);
+}
+
+.technical-chart-bar-key {
+  height: 8px;
+  background: var(--el-color-primary-light-7);
+}
+
+.technical-chart-svg {
+  display: block;
+  width: 100%;
+  height: 280px;
+}
+
+.technical-chart-grid {
+  stroke: var(--el-border-color-lighter);
+  stroke-dasharray: 3 4;
+}
+
+.technical-chart-volume {
+  fill: var(--el-color-primary-light-7);
+  opacity: 0.8;
+}
+
+.technical-chart-price {
+  stroke: var(--el-color-primary);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.technical-chart-point {
+  fill: var(--el-color-primary);
+  stroke: var(--el-fill-color-blank);
+  stroke-width: 1.5;
+}
+
+.technical-chart-axis-label {
+  fill: var(--el-text-color-secondary);
+  font-size: 15px;
+}
+
+.technical-chart-note {
+  padding: 0 12px 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .risk-tag {
