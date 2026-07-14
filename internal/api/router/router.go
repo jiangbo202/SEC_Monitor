@@ -93,6 +93,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.GET("/discovery/candidates/notification-preview", app.PreviewDiscoveryCandidateNotification)
 		api.POST("/discovery/candidates/notification-send", app.SendDiscoveryCandidateNotification)
 		api.POST("/discovery/candidates/refresh", app.RefreshDiscoveryCandidates)
+		api.POST("/discovery/candidates/technical-history-backfill", app.BackfillDiscoveryCandidateTechnicalHistory)
 		api.GET("/discovery/candidates/health", app.GetDiscoveryCandidateHealth)
 		api.GET("/discovery/candidates/overview", app.GetDiscoveryCandidateOverview)
 		api.GET("/discovery/candidates/report", app.GetDiscoveryCandidateReport)

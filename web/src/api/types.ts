@@ -228,6 +228,18 @@ export interface CandidateMarketQuality {
   status: string
 }
 
+export interface TechnicalHistoryBackfillResult {
+  batch_id: string
+  effective_date: string
+  lookback_calendar_days: number
+  candidate_count: number
+  already_ready_count: number
+  requested_count: number
+  record_count: number
+  persisted_count: number
+  source_record_counts: Record<string, number>
+}
+
 export interface CandidateTechnicalSignal {
   kind: 'cross_above_ma20' | 'breakout_20d_high' | 'volume_backed_breakout' | string
   label: string

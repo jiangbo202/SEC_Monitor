@@ -7,6 +7,7 @@
       </div>
       <el-space>
         <el-button :loading="workflowLoading" type="primary" plain @click="runWorkflow">刷新候选工作流</el-button>
+        <el-button :loading="technicalHistoryLoading" type="warning" plain @click="backfillTechnicalHistory">回填技术历史</el-button>
         <el-button :loading="watchLoading" @click="openWatchList">关注列表</el-button>
         <el-button :loading="effectivenessLoading" @click="openEffectiveness">效果评估</el-button>
         <el-button @click="exportCandidates">导出 CSV</el-button>
@@ -745,12 +746,14 @@ import type {
   CandidateWatch,
   DiscoveryWorkflowResult,
   PageResult,
+  TechnicalHistoryBackfillResult,
 } from '@/api/types'
 
 const rows = ref<CandidateScore[]>([])
 const overview = ref<CandidateOverview | null>(null)
 const loading = ref(false)
 const workflowLoading = ref(false)
+const technicalHistoryLoading = ref(false)
 const reportLoading = ref(false)
 const detailVisible = ref(false)
 const detailLoadingTicker = ref('')
@@ -886,6 +889,30 @@ async function runWorkflow() {
     ElMessage.error(err?.response?.data?.message || '刷新候选工作流失败')
   } finally {
     workflowLoading.value = false
+  }
+}
+
+async function backfillTechnicalHistory() {
+  try {
+    await ElMessageBox.confirm(
+      '将仅对当前 A/B 小盘候选补齐近 35 个自然日的日线历史。任务会遵守已配置的行情源请求预算，可能需要数分钟；不会修改基本面评分或发送通知。',
+      '确认回填技术历史',
+      { type: 'warning', confirmButtonText: '开始回填', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  technicalHistoryLoading.value = true
+  try {
+    const res = await apiClient.post<ApiResponse<TechnicalHistoryBackfillResult>>('/discovery/candidates/technical-history-backfill', { lookback_days: 35 })
+    const result = res.data.data
+    const sources = Object.entries(result.source_record_counts || {}).map(([source, count]) => `${source} ${count}`).join(' / ') || '无'
+    ElMessage.success(`技术历史回填完成：请求 ${result.requested_count}，写入 ${result.persisted_count} 条（${sources}）`)
+    await load()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '技术历史回填失败，请检查行情源额度与配置')
+  } finally {
+    technicalHistoryLoading.value = false
   }
 }
 

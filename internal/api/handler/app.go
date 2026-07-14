@@ -236,6 +236,22 @@ func (h *AppHandler) RefreshDiscoveryCandidates(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) BackfillDiscoveryCandidateTechnicalHistory(c *gin.Context) {
+	var input struct {
+		LookbackDays int `json:"lookback_days"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := h.discoverySyncService().BackfillTechnicalHistory(c.Request.Context(), input.LookbackDays)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) GetDiscoveryCandidateReport(c *gin.Context) {
 	result, err := discovery.BuildCandidateReport(c.Request.Context(), h.DiscoveryDB, c.Query("date"))
 	if err != nil {

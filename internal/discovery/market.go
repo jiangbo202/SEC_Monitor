@@ -76,6 +76,14 @@ type DatedPriceProvider interface {
 	LoadForDate(ctx context.Context, expected []Listing, effectiveDate string) ([]PriceRecord, ProviderResult, error)
 }
 
+// HistoricalPriceProvider loads a bounded daily-price window for one-time
+// research warm-up. It is deliberately separate from PriceProvider so normal
+// market publishing continues to validate only its effective trading day.
+type HistoricalPriceProvider interface {
+	PriceProvider
+	LoadHistory(ctx context.Context, expected []Listing, effectiveDate string, lookbackDays int) ([]PriceRecord, error)
+}
+
 type NamedPriceProvider interface {
 	PriceProvider
 	ProviderName() string

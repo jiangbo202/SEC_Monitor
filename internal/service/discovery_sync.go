@@ -135,6 +135,43 @@ func (s *DiscoverySyncService) RunMarketOnly(ctx context.Context) (DiscoverySync
 	return result, err
 }
 
+// BackfillTechnicalHistory warms local daily-price history for the current A/B
+// candidate set. It is intentionally independent of market batch publishing.
+func (s *DiscoverySyncService) BackfillTechnicalHistory(ctx context.Context, lookbackDays int) (discovery.TechnicalHistoryBackfillResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.TechnicalHistoryBackfillResult{}, errors.New("discovery sync service is not configured")
+	}
+	cfg := s.cfg
+	if s.configs != nil {
+		applied, err := s.configs.ApplyDiscoveryConfig(ctx, cfg)
+		if err != nil {
+			return discovery.TechnicalHistoryBackfillResult{}, err
+		}
+		cfg = applied
+	}
+	timeout := time.Duration(cfg.TaskTimeoutMin) * time.Minute
+	if timeout <= 0 {
+		timeout = 60 * time.Minute
+	}
+	downloads := &discovery.Downloader{Client: &http.Client{Timeout: timeout}, CacheDir: cfg.CacheDir, MaxBytes: 8 << 30, UserAgent: cfg.UserAgent}
+	calendar, err := discovery.NewDatabaseMarketCalendar(s.db, discovery.DefaultNYSECalendarVersion)
+	if err != nil {
+		return discovery.TechnicalHistoryBackfillResult{}, err
+	}
+	provider, marketErr, err := s.buildPriceProvider(cfg, downloads, calendar)
+	if err != nil {
+		return discovery.TechnicalHistoryBackfillResult{}, err
+	}
+	if marketErr != nil {
+		return discovery.TechnicalHistoryBackfillResult{}, marketErr
+	}
+	history, ok := provider.(discovery.HistoricalPriceProvider)
+	if !ok {
+		return discovery.TechnicalHistoryBackfillResult{}, errors.New("configured price provider does not support technical history backfill")
+	}
+	return discovery.BackfillCandidateTechnicalHistory(ctx, s.db, history, time.Now(), lookbackDays)
+}
+
 func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 	cfg := s.cfg
 	if s.configs != nil {
