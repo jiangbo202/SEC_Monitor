@@ -6,6 +6,7 @@ import type {
   CandidateNotificationSendResult,
   CandidateReport,
   CandidateScore,
+  CandidateSelectionCriteria,
   CandidateSummary,
   DiscoveryWorkflowResult,
 } from './types'
@@ -45,6 +46,21 @@ export const candidateSummaryTypecheck: CandidateSummary = {
   items_b: [],
   event_notes: { ACME: '新增入选' },
   message: '小盘股研究候选摘要',
+}
+
+export const candidateSelectionCriteriaTypecheck: CandidateSelectionCriteria = {
+  scoring_version: 'small-cap-discovery-score-v1',
+  market_cap_min_usd: 30_000_000,
+  a_market_cap_max_exclusive_usd: 500_000_000,
+  b_market_cap_max_exclusive_usd: 1_000_000_000,
+  a_revenue_growth_min_exclusive_pct: 40,
+  b_revenue_growth_min_exclusive_pct: 20,
+  a_runway_min_months: 12,
+  insider_lookback_days: 180,
+  b_min_sector_score: 7,
+  revenue_growth_selection: '优先最新可比季度收入同比；季度不可用时回退年度同比',
+  qualified_insider_requirement: '近 180 日 CEO、CFO 或创始人的合格 Form 4 公开市场买入',
+  active_capital_risk_requirement: 'A级不允许 A/B 阻断；B级不允许 B 阻断',
 }
 
 export const candidateNotificationPreviewTypecheck: CandidateNotificationPreview = {

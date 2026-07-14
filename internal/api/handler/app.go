@@ -121,6 +121,10 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) GetDiscoveryCandidateCriteria(c *gin.Context) {
+	OK(c, discovery.CurrentCandidateSelectionCriteria())
+}
+
 func (h *AppHandler) GetDiscoveryCandidateOverview(c *gin.Context) {
 	result, err := discovery.BuildCandidateOverview(c.Request.Context(), h.DiscoveryDB)
 	if err != nil {

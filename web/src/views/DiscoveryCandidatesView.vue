@@ -28,6 +28,23 @@
       :description="health.issues.length ? health.issues.map(formatHealthIssue).join('；') : '当前候选证据链完整度正常。'"
     />
 
+    <el-card v-if="criteria" shadow="never" class="criteria-card">
+      <div class="criteria-heading">
+        <div>
+          <strong>当前选股口径</strong>
+          <span>按当前评分规则筛选；研究用途，不构成投资建议。</span>
+        </div>
+        <el-tag type="info" effect="plain">{{ criteria.scoring_version }}</el-tag>
+      </div>
+      <el-space wrap class="criteria-tags">
+        <el-tag effect="plain">候选池：市值 {{ formatCriteriaUSD(criteria.market_cap_min_usd) }} – &lt;{{ formatCriteriaUSD(criteria.b_market_cap_max_exclusive_usd) }}</el-tag>
+        <el-tooltip placement="top" :content="criteria.revenue_growth_selection"><el-tag type="success" effect="plain">A级：市值 &lt;{{ formatCriteriaUSD(criteria.a_market_cap_max_exclusive_usd) }} · 收入 &gt;{{ criteria.a_revenue_growth_min_exclusive_pct }}%</el-tag></el-tooltip>
+        <el-tooltip placement="top" :content="`${criteria.a_runway_min_months} 个月以上现金 runway；${criteria.qualified_insider_requirement}；${criteria.active_capital_risk_requirement}`"><el-tag type="success" effect="plain">A级：现金 ≥{{ criteria.a_runway_min_months }}月 · {{ criteria.insider_lookback_days }}日内幕买入 · 无阻断</el-tag></el-tooltip>
+        <el-tooltip placement="top" :content="criteria.revenue_growth_selection"><el-tag type="warning" effect="plain">B级：市值 &lt;{{ formatCriteriaUSD(criteria.b_market_cap_max_exclusive_usd) }} · 收入 &gt;{{ criteria.b_revenue_growth_min_exclusive_pct }}% · 赛道 ≥{{ criteria.b_min_sector_score }}/10 · 无B级阻断</el-tag></el-tooltip>
+      </el-space>
+      <div class="criteria-note">收入增长：{{ criteria.revenue_growth_selection }}。风险阻断：{{ criteria.active_capital_risk_requirement }}。</div>
+    </el-card>
+
     <div v-if="overview" class="overview-grid">
       <el-card shadow="never" class="overview-card">
         <span class="overview-label">当前候选</span>
@@ -826,6 +843,7 @@ import type {
   CandidateOverview,
   CandidateReport,
   CandidateScore,
+  CandidateSelectionCriteria,
   CandidateSummary,
   CandidateTechnicalHistoryRow,
   CandidateWatch,
@@ -858,6 +876,7 @@ const candidateDetail = ref<CandidateDetail | null>(null)
 const candidateTableView = ref<'compact' | 'full'>('compact')
 const technicalHistoryView = ref<'chart' | 'table'>('chart')
 const health = ref<CandidateHealth | null>(null)
+const criteria = ref<CandidateSelectionCriteria | null>(null)
 const report = ref<CandidateReport | null>(null)
 const reportVisible = ref(false)
 const summaryLoading = ref(false)
@@ -962,6 +981,15 @@ async function loadHealth() {
 async function loadOverview() {
   const res = await apiClient.get<ApiResponse<CandidateOverview>>('/discovery/candidates/overview')
   overview.value = res.data.data
+}
+
+async function loadCriteria() {
+  try {
+    const res = await apiClient.get<ApiResponse<CandidateSelectionCriteria>>('/discovery/candidates/criteria')
+    criteria.value = res.data.data
+  } catch {
+    criteria.value = null
+  }
 }
 
 async function runWorkflow() {
@@ -1390,6 +1418,12 @@ function formatUSD(value: number) {
 	return `$${(value / 1_000_000).toFixed(1)}M`
 }
 
+function formatCriteriaUSD(value: number) {
+  if (!Number.isFinite(value)) return '-'
+  if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(0)}B`
+  return `$${(value / 1_000_000).toFixed(0)}M`
+}
+
 function formatPrice(value?: number, currency?: string) {
   if (!Number.isFinite(value)) return '-'
   const prefix = currency === 'USD' || !currency ? '$' : `${currency} `
@@ -1671,12 +1705,48 @@ function buildTechnicalHistoryChart(rows: CandidateTechnicalHistoryRow[]): Techn
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadCriteria()
+})
 </script>
 
 <style scoped>
 .health-alert {
   margin-bottom: 12px;
+}
+
+.criteria-card {
+  margin-bottom: 12px;
+}
+
+.criteria-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.criteria-heading > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.criteria-heading span,
+.criteria-note {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.criteria-tags {
+  display: flex;
+}
+
+.criteria-note {
+  margin-top: 8px;
 }
 
 .overview-grid {

@@ -272,6 +272,21 @@ export interface CandidateTechnicalHistoryRow {
   backfilled: boolean
 }
 
+export interface CandidateSelectionCriteria {
+  scoring_version: string
+  market_cap_min_usd: number
+  a_market_cap_max_exclusive_usd: number
+  b_market_cap_max_exclusive_usd: number
+  a_revenue_growth_min_exclusive_pct: number
+  b_revenue_growth_min_exclusive_pct: number
+  a_runway_min_months: number
+  insider_lookback_days: number
+  b_min_sector_score: number
+  revenue_growth_selection: string
+  qualified_insider_requirement: string
+  active_capital_risk_requirement: string
+}
+
 export interface ReviewPriorityReason {
   label: string
   points: number

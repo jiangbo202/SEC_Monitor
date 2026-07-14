@@ -350,6 +350,20 @@ func TestAppHandlerListsDiscoveryCandidates(t *testing.T) {
 	}
 }
 
+func TestAppHandlerGetsDiscoveryCandidateCriteria(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := &AppHandler{}
+	r.GET("/discovery/candidates/criteria", h.GetDiscoveryCandidateCriteria)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/discovery/candidates/criteria", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"market_cap_min_usd":30000000`) || !strings.Contains(rec.Body.String(), `"a_market_cap_max_exclusive_usd":500000000`) || !strings.Contains(rec.Body.String(), `"insider_lookback_days":180`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAppHandlerGetsIPOHealth(t *testing.T) {
 	r, db, _ := testApp(t)
 	now := time.Now().UTC().Truncate(time.Second)
