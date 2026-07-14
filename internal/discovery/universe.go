@@ -21,6 +21,7 @@ const (
 	BatchKindPrescreen         = "market-prescreen"
 	universeChunkSize          = 1000
 	maxResearchCoverageDropPct = 15.0
+	recentSECFilingLimit       = 20
 )
 
 const (
@@ -1030,12 +1031,105 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 			return classifications, selections, err
 		}
 	}
+	if err := c.persistRecentSECFilingSnapshots(ctx, securityIDByCIK, groups, now); err != nil {
+		return classifications, selections, err
+	}
 	if len(eventsByCIK) > 0 {
 		if err := c.persistCapitalRiskSnapshots(ctx, batch.BatchID, securityIDByCIK, eventsByCIK, now); err != nil {
 			return classifications, selections, err
 		}
 	}
 	return classifications, selections, nil
+}
+
+func (c *Coordinator) persistRecentSECFilingSnapshots(ctx context.Context, securityIDByCIK map[string]uint, groups []metadataGroup, now time.Time) error {
+	rows := make([]SECFilingSnapshot, 0)
+	for _, group := range groups {
+		securityID, ok := securityIDByCIK[group.Primary.CIK]
+		if !ok {
+			continue
+		}
+		filings := append([]FilingMetadata(nil), group.Primary.FilingMetadata...)
+		sort.Slice(filings, func(i, j int) bool {
+			left, right := filingMetadataTimestamp(filings[i]), filingMetadataTimestamp(filings[j])
+			if left.Equal(right) {
+				return filings[i].Accession > filings[j].Accession
+			}
+			return left.After(right)
+		})
+		seen := map[string]struct{}{}
+		for _, filing := range filings {
+			accession := strings.TrimSpace(filing.Accession)
+			if accession == "" {
+				continue
+			}
+			if _, duplicate := seen[accession]; duplicate {
+				continue
+			}
+			seen[accession] = struct{}{}
+			rows = append(rows, secFilingSnapshotFromMetadata(securityID, filing, now))
+			if len(seen) >= recentSECFilingLimit {
+				break
+			}
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return canonicalLess(rows[i], rows[j]) })
+	for start := 0; start < len(rows); start += universeChunkSize {
+		end := start + universeChunkSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunk := rows[start:end]
+		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
+		}); err != nil {
+			return err
+		}
+		if c.AfterStageChunk != nil {
+			if err := c.AfterStageChunk("sec-filing-index", start/universeChunkSize); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func filingMetadataTimestamp(filing FilingMetadata) time.Time {
+	if !filing.AcceptedAt.IsZero() {
+		return filing.AcceptedAt
+	}
+	return filing.FiledAt
+}
+
+func secFilingSnapshotFromMetadata(securityID uint, filing FilingMetadata, now time.Time) SECFilingSnapshot {
+	var reportDate, acceptedAt *time.Time
+	if !filing.ReportAt.IsZero() {
+		value := filing.ReportAt
+		reportDate = &value
+	}
+	if !filing.AcceptedAt.IsZero() {
+		value := filing.AcceptedAt
+		acceptedAt = &value
+	}
+	return SECFilingSnapshot{
+		SecurityID: securityID, AccessionNumber: strings.TrimSpace(filing.Accession), FilingType: strings.TrimSpace(filing.Form),
+		FilingDate: filing.FiledAt, ReportDate: reportDate, AcceptedAt: acceptedAt,
+		PrimaryDocument: strings.TrimSpace(filing.PrimaryDocument), Items: strings.TrimSpace(filing.Items),
+		FilingURL: secFilingURL(filing), CreatedAt: now,
+	}
+}
+
+func secFilingURL(filing FilingMetadata) string {
+	cik := strings.TrimLeft(strings.TrimSpace(filing.CIK), "0")
+	accession := strings.ReplaceAll(strings.TrimSpace(filing.Accession), "-", "")
+	if cik == "" || accession == "" {
+		return ""
+	}
+	base := "https://www.sec.gov/Archives/edgar/data/" + cik + "/" + accession + "/"
+	if document := strings.TrimSpace(filing.PrimaryDocument); document != "" {
+		return base + document
+	}
+	return base
 }
 
 func (c *Coordinator) persistFinancialSnapshots(ctx context.Context, batchID string, securityIDByCIK map[string]uint, factsByCIK map[string][]FinancialFact, now time.Time) error {

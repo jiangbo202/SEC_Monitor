@@ -111,7 +111,7 @@ func attachLatestCandidateScores(ctx context.Context, db *gorm.DB, items []Candi
 	if scoreItems, err = hydrateCandidateRevenueGrowthEvidence(ctx, db, batch.UniverseSourceVersion, scoreItems); err != nil {
 		return err
 	}
-	if scoreItems, err = hydrateCandidatePriceEvidence(ctx, db, batch.BatchID, scoreItems); err != nil {
+	if scoreItems, err = hydrateCandidatePriceEvidence(ctx, db, batch, scoreItems); err != nil {
 		return err
 	}
 	riskBatchID := strings.TrimSpace(batch.UniverseSourceVersion)

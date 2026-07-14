@@ -97,10 +97,20 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 		}
 		minPriority = parsed
 	}
+	recommendedOnly := false
+	if value := strings.TrimSpace(c.Query("recommended_only")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			Error(c, service.ErrValidation)
+			return
+		}
+		recommendedOnly = parsed
+	}
 	result, err := discovery.ListCandidateScores(c.Request.Context(), h.DiscoveryDB, discovery.CandidateScoreQuery{
 		Page: page, PageSize: pageSize, Ticker: c.Query("ticker"), Grade: c.Query("grade"),
 		SectorCategory: c.Query("sector_category"), QualityTier: c.Query("quality_tier"), ChangeStatus: c.Query("change_status"),
 		SortBy: c.Query("sort_by"), SortOrder: c.Query("sort_order"), MinReviewPriorityScore: minPriority,
+		RecommendedOnly:    recommendedOnly,
 		ExcludeQualityTags: splitQueryValues(c.QueryArray("exclude_quality_tag"), c.Query("exclude_quality_tag")),
 		EligibleA:          eligibleA, EligibleB: eligibleB,
 	})

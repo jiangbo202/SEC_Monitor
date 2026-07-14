@@ -111,8 +111,34 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		return result, err
 	}
 	result.DataQuality["capital_risk"] = QualityStatusValid
+	var filings []SECFilingSnapshot
+	if err := db.WithContext(ctx).Where("security_id = ?", result.Score.SecurityID).Order("filing_date DESC, accepted_at DESC, id DESC").Limit(recentSECFilingLimit).Find(&filings).Error; err != nil {
+		return result, err
+	}
+	result.RecentFilings = recentCandidateFilings(result.Security, result.Score.Ticker, filings)
+	if len(result.RecentFilings) > 0 {
+		result.DataQuality["recent_filings"] = QualityStatusValid
+	} else {
+		result.DataQuality["recent_filings"] = QualityStatusMissing
+	}
 	result.Evidence = candidateDetailEvidence(result)
 	return result, nil
+}
+
+func recentCandidateFilings(security Security, ticker string, filings []SECFilingSnapshot) []RecentSECFiling {
+	result := make([]RecentSECFiling, 0, len(filings))
+	for _, filing := range filings {
+		title := strings.TrimSpace(filing.FilingType)
+		if items := strings.TrimSpace(filing.Items); items != "" {
+			title += " — Items " + items
+		}
+		result = append(result, RecentSECFiling{
+			FilingID: fmt.Sprintf("%d:%s", filing.SecurityID, filing.AccessionNumber), AccessionNumber: filing.AccessionNumber,
+			Ticker: strings.ToUpper(strings.TrimSpace(ticker)), CIK: security.CIK, CompanyName: security.CompanyName, FilingType: filing.FilingType,
+			FilingDate: filing.FilingDate, PublishedAt: filing.AcceptedAt, FilingURL: filing.FilingURL, Title: title,
+		})
+	}
+	return result
 }
 
 func applyIdentityToSecurity(security *Security, identity SecurityBatchIdentity) {

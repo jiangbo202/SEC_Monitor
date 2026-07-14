@@ -33,6 +33,7 @@ type CandidateScoreQuery struct {
 	SectorCategory         string
 	QualityTier            string
 	ChangeStatus           string
+	RecommendedOnly        bool
 	SortBy, SortOrder      string
 	MinReviewPriorityScore int
 	ExcludeQualityTags     []string
@@ -62,6 +63,8 @@ type CandidateScoreResult struct {
 	PriceCloseUSD         float64                  `json:"price_close_usd"`
 	PriceVolume           int64                    `json:"price_volume"`
 	PriceTradeDate        *time.Time               `json:"price_trade_date"`
+	PriceFreshnessStatus  string                   `json:"price_freshness_status"`
+	PriceAgeCalendarDays  int                      `json:"price_age_calendar_days"`
 	PriceCurrency         string                   `json:"price_currency"`
 	PriceQualityStatus    string                   `json:"price_quality_status"`
 	PriceSource           string                   `json:"price_source"`
@@ -286,7 +289,7 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if err != nil {
 		return result, err
 	}
-	items, err = hydrateCandidatePriceEvidence(ctx, db, batch.BatchID, items)
+	items, err = hydrateCandidatePriceEvidence(ctx, db, batch, items)
 	if err != nil {
 		return result, err
 	}
@@ -718,11 +721,14 @@ func filterCandidateScoreResults(items []CandidateScoreResult, filter CandidateS
 	qualityTier := strings.TrimSpace(filter.QualityTier)
 	changeStatus := strings.TrimSpace(filter.ChangeStatus)
 	excludeTags := normalizedStringSet(filter.ExcludeQualityTags)
-	if qualityTier == "" && changeStatus == "" && filter.MinReviewPriorityScore == 0 && len(excludeTags) == 0 {
+	if qualityTier == "" && changeStatus == "" && !filter.RecommendedOnly && filter.MinReviewPriorityScore == 0 && len(excludeTags) == 0 {
 		return items
 	}
 	filtered := items[:0]
 	for _, item := range items {
+		if filter.RecommendedOnly && !candidatePrimaryRecommendation(item) {
+			continue
+		}
 		if qualityTier != "" && item.QualityTier != qualityTier {
 			continue
 		}
@@ -738,6 +744,18 @@ func filterCandidateScoreResults(items []CandidateScoreResult, filter CandidateS
 		filtered = append(filtered, item)
 	}
 	return filtered
+}
+
+// candidatePrimaryRecommendation defines the default, conservative view for
+// research. The full A/B universe remains available by turning this filter off.
+func candidatePrimaryRecommendation(item CandidateScoreResult) bool {
+	if item.Grade == CandidateGradeA {
+		return !hasAnyQualityTag(item.QualityTags, "financials_missing", "active_capital_risk")
+	}
+	if item.QualityTier != "strong_b" && item.QualityTier != "standard_b" {
+		return false
+	}
+	return !hasAnyQualityTag(item.QualityTags, "financials_missing", "low_revenue_base", "low_liquidity", "active_capital_risk")
 }
 
 func candidateQualityAdjustedScore(item CandidateScoreResult) int {
@@ -1042,7 +1060,7 @@ func hydrateCandidateSectorEvidence(ctx context.Context, db *gorm.DB, securityBa
 	return items, nil
 }
 
-func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batchID string, items []CandidateScoreResult) ([]CandidateScoreResult, error) {
+func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batch UniverseBatch, items []CandidateScoreResult) ([]CandidateScoreResult, error) {
 	if len(items) == 0 {
 		return items, nil
 	}
@@ -1051,7 +1069,7 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batchID str
 		securityIDs = append(securityIDs, item.SecurityID)
 	}
 	var universeRows []UniverseSnapshot
-	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id IN ?", batchID, securityIDs).Find(&universeRows).Error; err != nil {
+	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id IN ?", batch.BatchID, securityIDs).Find(&universeRows).Error; err != nil {
 		return nil, err
 	}
 	priceIDs := make([]uint, 0, len(universeRows))
@@ -1075,6 +1093,7 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batchID str
 		priceByID[price.ID] = price
 	}
 	for i := range items {
+		items[i].PriceFreshnessStatus, items[i].PriceAgeCalendarDays = candidatePriceFreshness(batch.EffectiveDate, nil)
 		priceID, ok := priceIDBySecurity[items[i].SecurityID]
 		if !ok {
 			continue
@@ -1087,11 +1106,51 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batchID str
 		items[i].PriceCloseUSD = float64(price.CloseMicros) / 1_000_000
 		items[i].PriceVolume = price.Volume
 		items[i].PriceTradeDate = &tradeDate
+		items[i].PriceFreshnessStatus, items[i].PriceAgeCalendarDays = candidatePriceFreshness(batch.EffectiveDate, &tradeDate)
 		items[i].PriceCurrency = price.Currency
 		items[i].PriceQualityStatus = price.QualityStatus
 		items[i].PriceSource = price.Source
 	}
 	return items, nil
+}
+
+const (
+	PriceFreshnessCurrent            = "current"
+	PriceFreshnessPreviousTradingDay = "previous_trading_day"
+	PriceFreshnessStale              = "stale"
+	PriceFreshnessFuture             = "future"
+	PriceFreshnessMissing            = "missing"
+	PriceFreshnessUnknown            = "unknown"
+)
+
+func candidatePriceFreshness(expectedDate string, tradeDate *time.Time) (string, int) {
+	if strings.TrimSpace(expectedDate) == "" {
+		return PriceFreshnessUnknown, 0
+	}
+	if tradeDate == nil || tradeDate.IsZero() {
+		return PriceFreshnessMissing, 0
+	}
+	expected, err := time.Parse(time.DateOnly, strings.TrimSpace(expectedDate))
+	if err != nil {
+		return PriceFreshnessUnknown, 0
+	}
+	actual, err := time.Parse(time.DateOnly, tradeDate.Format(time.DateOnly))
+	if err != nil {
+		return PriceFreshnessUnknown, 0
+	}
+	age := int(expected.Sub(actual).Hours() / 24)
+	switch {
+	case age == 0:
+		return PriceFreshnessCurrent, 0
+	case age < 0:
+		return PriceFreshnessFuture, age
+	case age <= 4:
+		// The market input contract permits one prior trading day. A calendar
+		// gap of up to four days covers normal weekends and holidays.
+		return PriceFreshnessPreviousTradingDay, age
+	default:
+		return PriceFreshnessStale, age
+	}
 }
 
 func hydrateCandidatePerformance(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {

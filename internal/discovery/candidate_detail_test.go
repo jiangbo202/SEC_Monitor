@@ -42,6 +42,14 @@ func TestGetCandidateDetailReturnsCurrentEvidence(t *testing.T) {
 	if err := db.Create(&CapitalRiskSnapshot{BatchID: securityBatch.BatchID, SecurityID: security.ID, Kind: CapitalEventATMProgram, Active: true, BlocksA: true, BlocksB: false, Severity: CapitalRiskSeverityHigh, Reason: "ATM program active"}).Error; err != nil {
 		t.Fatal(err)
 	}
+	older := time.Now().AddDate(0, 0, -12)
+	newer := time.Now().AddDate(0, 0, -2)
+	if err := db.Create(&[]SECFilingSnapshot{
+		{SecurityID: security.ID, AccessionNumber: "0000012345-26-000001", FilingType: "10-Q", FilingDate: older, FilingURL: "https://sec.test/older"},
+		{SecurityID: security.ID, AccessionNumber: "0000012345-26-000002", FilingType: "8-K", FilingDate: newer, Items: "2.02", FilingURL: "https://sec.test/newer"},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	detail, err := GetCandidateDetail(context.Background(), db, "dtco")
 	if err != nil {
@@ -61,6 +69,9 @@ func TestGetCandidateDetailReturnsCurrentEvidence(t *testing.T) {
 	}
 	if len(detail.CapitalRisks) != 1 || !detail.CapitalRisks[0].BlocksA {
 		t.Fatalf("risks = %#v", detail.CapitalRisks)
+	}
+	if len(detail.RecentFilings) != 2 || detail.RecentFilings[0].AccessionNumber != "0000012345-26-000002" || detail.RecentFilings[0].Ticker != "DTCO" || detail.RecentFilings[0].Title != "8-K — Items 2.02" {
+		t.Fatalf("recent filings = %#v", detail.RecentFilings)
 	}
 	if detail.DataQuality["financial"] != QualityStatusValid || detail.DataQuality["universe"] != QualityStatusValid {
 		t.Fatalf("quality = %#v", detail.DataQuality)

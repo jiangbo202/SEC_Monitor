@@ -24,6 +24,8 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		PriceCloseUSD         float64                  `json:"price_close_usd"`
 		PriceVolume           int64                    `json:"price_volume"`
 		PriceTradeDate        *time.Time               `json:"price_trade_date"`
+		PriceFreshnessStatus  string                   `json:"price_freshness_status"`
+		PriceAgeCalendarDays  int                      `json:"price_age_calendar_days"`
 		PriceCurrency         string                   `json:"price_currency"`
 		PriceQualityStatus    string                   `json:"price_quality_status"`
 		PriceSource           string                   `json:"price_source"`
@@ -50,6 +52,8 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		PriceCloseUSD:         finiteFloat(row.PriceCloseUSD, 0),
 		PriceVolume:           row.PriceVolume,
 		PriceTradeDate:        row.PriceTradeDate,
+		PriceFreshnessStatus:  row.PriceFreshnessStatus,
+		PriceAgeCalendarDays:  row.PriceAgeCalendarDays,
 		PriceCurrency:         row.PriceCurrency,
 		PriceQualityStatus:    row.PriceQualityStatus,
 		PriceSource:           row.PriceSource,

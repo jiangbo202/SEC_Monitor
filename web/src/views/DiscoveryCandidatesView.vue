@@ -23,7 +23,7 @@
       :closable="false"
       show-icon
       class="health-alert"
-      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜财务指标不可用 ${health.missing_financials}｜内幕来源 ${healthInsiderDataLabel(health.insider_data_status)}｜合格买入 ${health.qualified_insider_candidates}｜暂无合格买入 ${health.no_qualified_insider_candidates}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
+      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜财务指标不可用 ${health.missing_financials}｜内幕来源 ${healthInsiderDataLabel(health.insider_data_status)}｜内幕记录 ${health.candidates_with_insider_records}/${health.total_candidates}｜合格买入 ${health.qualified_insider_candidates}｜价格当日 ${health.current_price_candidates}｜前一交易日 ${health.fallback_price_candidates}｜缺/过期 ${health.missing_price_candidates + health.stale_price_candidates}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
       :description="health.issues.length ? health.issues.map(formatHealthIssue).join('；') : '当前候选证据链完整度正常。'"
     />
 
@@ -60,6 +60,9 @@
         <span class="quick-filter-label">快捷筛选</span>
         <el-button :type="quickFilterActive('high_priority') ? 'primary' : 'default'" plain @click="toggleQuickFilter('high_priority')">
           高优先级
+        </el-button>
+        <el-button :type="filters.recommended_only ? 'primary' : 'default'" plain @click="toggleRecommendedOnly">
+          主推荐
         </el-button>
         <el-button :type="quickFilterActive('strong_b') ? 'primary' : 'default'" plain @click="toggleQuickFilter('strong_b')">
           强B
@@ -183,7 +186,11 @@
         </template>
       </el-table-column>
       <el-table-column prop="price_trade_date" label="价格日期" width="110" sortable="custom">
-        <template #default="{ row }">{{ formatDate(row.price_trade_date) }}</template>
+        <template #default="{ row }">
+          <el-tooltip :content="priceFreshnessTooltip(row)" placement="top">
+            <el-tag :type="priceFreshnessTagType(row.price_freshness_status)" effect="plain">{{ formatDate(row.price_trade_date) }}</el-tag>
+          </el-tooltip>
+        </template>
       </el-table-column>
       <el-table-column prop="sector_category" label="赛道分类" min-width="150">
         <template #default="{ row }">
@@ -724,6 +731,7 @@ const filters = reactive({
   sector_category: '',
   quality_tier: '',
   change_status: '',
+  recommended_only: true,
   min_review_priority_score: 0,
   exclude_quality_tags: [] as string[],
 })
@@ -769,6 +777,7 @@ function requestParams() {
   if (filters.sector_category) params.sector_category = filters.sector_category
   if (filters.quality_tier) params.quality_tier = filters.quality_tier
   if (filters.change_status) params.change_status = filters.change_status
+  if (filters.recommended_only) params.recommended_only = 'true'
   if (filters.min_review_priority_score) params.min_review_priority_score = filters.min_review_priority_score
   if (filters.exclude_quality_tags.length) params.exclude_quality_tag = filters.exclude_quality_tags.join(',')
   if (sortState.sort_by) params.sort_by = sortState.sort_by
@@ -1005,6 +1014,7 @@ function reset() {
   filters.sector_category = ''
   filters.quality_tier = ''
   filters.change_status = ''
+  filters.recommended_only = true
   filters.min_review_priority_score = 0
   filters.exclude_quality_tags = []
   search()
@@ -1028,6 +1038,11 @@ function toggleQuickFilter(kind: string) {
   } else if (kind === 'exclude_low_liquidity') {
     filters.exclude_quality_tags = filters.exclude_quality_tags.includes('low_liquidity') ? [] : ['low_liquidity']
   }
+  search()
+}
+
+function toggleRecommendedOnly() {
+  filters.recommended_only = !filters.recommended_only
   search()
 }
 
@@ -1132,6 +1147,22 @@ function qualityTagType(tag: string) {
   return 'info'
 }
 
+function priceFreshnessTagType(status?: string) {
+  if (status === 'current') return 'success'
+  if (status === 'previous_trading_day') return 'warning'
+  if (status === 'stale' || status === 'future' || status === 'missing') return 'danger'
+  return 'info'
+}
+
+function priceFreshnessTooltip(row: CandidateScore) {
+  if (row.price_freshness_status === 'current') return '与本批次有效交易日一致'
+  if (row.price_freshness_status === 'previous_trading_day') return `回退至前一交易日（相差 ${row.price_age_calendar_days ?? '-'} 个自然日）`
+  if (row.price_freshness_status === 'stale') return `价格已过期（相差 ${row.price_age_calendar_days ?? '-'} 个自然日）`
+  if (row.price_freshness_status === 'future') return '价格日期晚于本批次有效交易日，需要复核'
+  if (row.price_freshness_status === 'missing') return '未取得该标的价格'
+  return '价格日期无法与本批次有效交易日比较'
+}
+
 function sectorTagType(score?: number) {
   if (!Number.isFinite(score)) return 'info'
   if (Number(score) >= 7) return 'success'
@@ -1151,6 +1182,10 @@ function formatHealthIssue(issue: string) {
   if (code === 'missing_financials') return `财务指标不可用：${count || 0}`
   if (code === 'missing_insider_data' || code === 'missing_insiders') return `内幕来源缺失：${count || 0}`
   if (code === 'missing_market_cap') return `缺市值：${count || 0}`
+  if (code === 'price_previous_trading_day') return `使用前一交易日价格：${count || 0}`
+  if (code === 'stale_prices') return `价格已过期：${count || 0}`
+  if (code === 'missing_prices') return `价格缺失：${count || 0}`
+  if (code === 'candidate_insider_records') return `候选内幕记录覆盖：${count || 0}`
   if (code === 'no_current_published_prescreen_batch') return '暂无已发布的小盘候选批次'
   return issue
 }

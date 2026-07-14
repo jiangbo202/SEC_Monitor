@@ -194,6 +194,8 @@ export interface CandidateScore {
   price_close_usd?: number
   price_volume?: number
   price_trade_date?: string | null
+  price_freshness_status?: 'current' | 'previous_trading_day' | 'stale' | 'future' | 'missing' | 'unknown' | string
+  price_age_calendar_days?: number
   price_currency?: string
   price_quality_status?: string
   price_source?: string
@@ -436,8 +438,15 @@ export interface CandidateHealth {
   missing_financials: number
   missing_insiders: number
   insider_data_status: 'available' | 'missing' | string
+  candidates_with_insider_records: number
+  insider_record_coverage_pct: number
   qualified_insider_candidates: number
   no_qualified_insider_candidates: number
+  price_effective_date: string
+  current_price_candidates: number
+  fallback_price_candidates: number
+  stale_price_candidates: number
+  missing_price_candidates: number
   missing_market_cap: number
   active_risk_events: number
   issues: string[]

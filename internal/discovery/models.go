@@ -264,6 +264,24 @@ type InsiderTransactionSnapshot struct {
 	Security                     Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
 }
 
+// SECFilingSnapshot is a compact, immutable index of a filing from SEC
+// submissions data. It deliberately stores metadata only; filing documents
+// remain on SEC EDGAR and are opened through FilingURL when a user needs them.
+type SECFilingSnapshot struct {
+	ID              uint       `json:"id"`
+	SecurityID      uint       `json:"security_id" gorm:"uniqueIndex:idx_sec_filing_security_accession,priority:1;index"`
+	AccessionNumber string     `json:"accession_number" gorm:"size:32;uniqueIndex:idx_sec_filing_security_accession,priority:2;index"`
+	FilingType      string     `json:"filing_type" gorm:"size:32;index"`
+	FilingDate      time.Time  `json:"filing_date" gorm:"index"`
+	ReportDate      *time.Time `json:"report_date"`
+	AcceptedAt      *time.Time `json:"accepted_at" gorm:"index"`
+	PrimaryDocument string     `json:"primary_document" gorm:"size:512"`
+	Items           string     `json:"items" gorm:"size:512"`
+	FilingURL       string     `json:"filing_url" gorm:"size:2048"`
+	CreatedAt       time.Time  `json:"created_at"`
+	Security        Security   `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
 type CapitalRiskSnapshot struct {
 	ID            uint      `json:"id"`
 	BatchID       string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_capital_risk_identity,priority:1;index"`

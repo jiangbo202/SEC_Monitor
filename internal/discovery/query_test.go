@@ -75,7 +75,7 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	}
 	old := UniverseBatch{BatchID: "old", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Hour)}
 	securityBatch := UniverseBatch{BatchID: "security-current", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now()}
-	current := UniverseBatch{BatchID: "current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
+	current := UniverseBatch{BatchID: "current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-06-30", UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
 	if err := db.Create(&[]UniverseBatch{old, securityBatch, current}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +128,9 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	}
 	if page.Items[0].PriceCloseUSD != 1.25 || page.Items[0].PriceVolume != 1234567 || page.Items[0].PriceCurrency != "USD" || page.Items[0].PriceTradeDate == nil || !page.Items[0].PriceTradeDate.Equal(tradeDate) {
 		t.Fatalf("price evidence = %#v", page.Items[0])
+	}
+	if page.Items[0].PriceFreshnessStatus != PriceFreshnessCurrent || page.Items[0].PriceAgeCalendarDays != 0 {
+		t.Fatalf("price freshness = %#v", page.Items[0])
 	}
 	if page.Items[0].SectorCategory != "软件与数据服务" || page.Items[0].SectorRatingScore != 9 || page.Items[0].SectorSIC != 7372 || page.Items[0].SectorLabel != "优秀赛道" {
 		t.Fatalf("sector evidence = %#v", page.Items[0])
@@ -276,6 +279,13 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	}
 	if filtered.Total != 1 || filtered.Items[0].Ticker != "STRB" {
 		t.Fatalf("filtered candidates = %#v", filtered)
+	}
+	recommended, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{RecommendedOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recommended.Total != 1 || recommended.Items[0].Ticker != "STRB" {
+		t.Fatalf("recommended candidates = %#v", recommended)
 	}
 }
 

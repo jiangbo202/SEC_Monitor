@@ -40,7 +40,7 @@ func TestBuildCandidateHealthSummarizesMissingData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if health.BatchID != batch.BatchID || health.TotalCandidates != 2 || health.MissingFinancials != 1 || health.MissingInsiders != 0 || health.NoQualifiedInsiderCandidates != 1 || health.QualifiedInsiderCandidates != 1 || health.MissingMarketCap != 1 {
+	if health.BatchID != batch.BatchID || health.TotalCandidates != 2 || health.MissingFinancials != 1 || health.MissingInsiders != 0 || health.CandidatesWithInsiderRecords != 1 || health.InsiderRecordCoveragePct != 50 || health.NoQualifiedInsiderCandidates != 1 || health.QualifiedInsiderCandidates != 1 || health.MissingMarketCap != 1 {
 		t.Fatalf("health = %#v", health)
 	}
 	if health.Status != CandidateHealthDegraded || len(health.Issues) == 0 {
@@ -76,7 +76,7 @@ func TestBuildCandidateHealthReadsFinancialsFromSecurityBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if health.MissingFinancials != 0 || health.MissingInsiders != 0 || health.QualifiedInsiderCandidates != 1 || health.NoQualifiedInsiderCandidates != 0 || health.InsiderDataStatus != "available" || health.Status != CandidateHealthOK {
+	if health.MissingFinancials != 0 || health.MissingInsiders != 0 || health.CandidatesWithInsiderRecords != 1 || health.InsiderRecordCoveragePct != 100 || health.QualifiedInsiderCandidates != 1 || health.NoQualifiedInsiderCandidates != 0 || health.InsiderDataStatus != "available" || health.Status != CandidateHealthOK {
 		t.Fatalf("health = %#v", health)
 	}
 }
