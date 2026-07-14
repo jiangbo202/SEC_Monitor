@@ -564,6 +564,28 @@
               <el-descriptions-item label="量比">{{ formatRatio(candidateDetail.technical.volume_ratio_20) }}（20 日均量 {{ formatVolume(candidateDetail.technical.average_volume_20) }}）</el-descriptions-item>
             </el-descriptions>
           </template>
+          <div class="technical-history-title">
+            本地日线历史（最近 {{ candidateDetail.technical_history?.length || 0 }} 个交易日；“历史回填”为手动补齐的历史数据）
+          </div>
+          <el-table :data="candidateDetail.technical_history || []" size="small" border max-height="360" empty-text="暂无本地日线数据">
+            <el-table-column prop="trade_date" label="日期" width="120">
+              <template #default="{ row }">{{ formatDate(row.trade_date) }}</template>
+            </el-table-column>
+            <el-table-column label="收盘价" width="120" align="right">
+              <template #default="{ row }">{{ formatPrice(row.close_usd, 'USD') }}</template>
+            </el-table-column>
+            <el-table-column label="成交量" width="130" align="right">
+              <template #default="{ row }">{{ formatVolume(row.volume) }}</template>
+            </el-table-column>
+            <el-table-column label="数据来源" min-width="180">
+              <template #default="{ row }">
+                <el-space>
+                  <el-tag :type="row.backfilled ? 'warning' : 'info'" effect="plain">{{ row.backfilled ? '历史回填' : '日常同步' }}</el-tag>
+                  <span class="history-source">{{ row.source || '-' }}</span>
+                </el-space>
+              </template>
+            </el-table-column>
+          </el-table>
         </el-card>
 
         <el-card shadow="never">
@@ -1589,6 +1611,16 @@ onMounted(load)
 
 .technical-signal-row {
   margin-bottom: 12px;
+}
+
+.technical-history-title {
+  margin: 16px 0 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.history-source {
+  color: var(--el-text-color-secondary);
 }
 
 .risk-tag {

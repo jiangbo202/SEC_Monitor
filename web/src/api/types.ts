@@ -263,6 +263,15 @@ export interface CandidateTechnicalAnalysis {
   signals: CandidateTechnicalSignal[]
 }
 
+export interface CandidateTechnicalHistoryRow {
+  trade_date: string
+  close_usd: number
+  volume: number
+  source: string
+  source_version: string
+  backfilled: boolean
+}
+
 export interface ReviewPriorityReason {
   label: string
   points: number
@@ -426,6 +435,7 @@ export interface CandidateDetail {
   capital_risks: DiscoveryCapitalRisk[]
   sector: SectorExplanation
   technical: CandidateTechnicalAnalysis
+	technical_history: CandidateTechnicalHistoryRow[]
   data_quality: Record<string, string>
   evidence: DiscoveryEvidence[]
   recent_filings: RecentSECFiling[]

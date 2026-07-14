@@ -11,18 +11,19 @@ import (
 )
 
 type CandidateDetail struct {
-	BatchID       string                       `json:"batch_id"`
-	Security      Security                     `json:"security"`
-	Universe      *UniverseSnapshot            `json:"universe,omitempty"`
-	Score         CandidateScoreSnapshot       `json:"score"`
-	Financial     *FinancialMetricSnapshot     `json:"financial,omitempty"`
-	Insiders      []InsiderTransactionSnapshot `json:"insiders"`
-	CapitalRisks  []CapitalRiskSnapshot        `json:"capital_risks"`
-	RecentFilings []RecentSECFiling            `json:"recent_filings"`
-	Sector        SectorExplanation            `json:"sector"`
-	Technical     CandidateTechnicalAnalysis   `json:"technical"`
-	DataQuality   map[string]string            `json:"data_quality"`
-	Evidence      []Evidence                   `json:"evidence"`
+	BatchID          string                         `json:"batch_id"`
+	Security         Security                       `json:"security"`
+	Universe         *UniverseSnapshot              `json:"universe,omitempty"`
+	Score            CandidateScoreSnapshot         `json:"score"`
+	Financial        *FinancialMetricSnapshot       `json:"financial,omitempty"`
+	Insiders         []InsiderTransactionSnapshot   `json:"insiders"`
+	CapitalRisks     []CapitalRiskSnapshot          `json:"capital_risks"`
+	RecentFilings    []RecentSECFiling              `json:"recent_filings"`
+	Sector           SectorExplanation              `json:"sector"`
+	Technical        CandidateTechnicalAnalysis     `json:"technical"`
+	TechnicalHistory []CandidateTechnicalHistoryRow `json:"technical_history"`
+	DataQuality      map[string]string              `json:"data_quality"`
+	Evidence         []Evidence                     `json:"evidence"`
 }
 
 type RecentSECFiling struct {
@@ -39,7 +40,7 @@ type RecentSECFiling struct {
 }
 
 func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (CandidateDetail, error) {
-	result := CandidateDetail{Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
+	result := CandidateDetail{Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, TechnicalHistory: []CandidateTechnicalHistoryRow{}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -86,6 +87,11 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		return result, err
 	}
 	result.Technical = technicalItems[0].Technical
+	technicalHistory, err := candidateTechnicalPriceHistoryLimit(ctx, db, technicalItems[0], technicalDetailHistoryDays)
+	if err != nil {
+		return result, err
+	}
+	result.TechnicalHistory = candidateTechnicalHistoryRows(technicalHistory)
 	var universe UniverseSnapshot
 	if err := db.WithContext(ctx).First(&universe, "batch_id = ? AND security_id = ?", batch.BatchID, result.Score.SecurityID).Error; err == nil {
 		result.Universe = &universe

@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	technicalLookbackDays   = 20
-	technicalMinimumSamples = technicalLookbackDays + 1
-	technicalVolumeMultiple = 1.5
+	technicalLookbackDays      = 20
+	technicalMinimumSamples    = technicalLookbackDays + 1
+	technicalDetailHistoryDays = 35
+	technicalVolumeMultiple    = 1.5
 )
 
 const (
@@ -48,6 +49,18 @@ type CandidateTechnicalAnalysis struct {
 	Signals                []CandidateTechnicalSignal `json:"signals"`
 }
 
+// CandidateTechnicalHistoryRow is one local daily price record used for
+// technical research. Backfilled distinguishes a one-time history fetch from
+// the regular daily market sync.
+type CandidateTechnicalHistoryRow struct {
+	TradeDate     string  `json:"trade_date"`
+	CloseUSD      float64 `json:"close_usd"`
+	Volume        int64   `json:"volume"`
+	Source        string  `json:"source"`
+	SourceVersion string  `json:"source_version"`
+	Backfilled    bool    `json:"backfilled"`
+}
+
 func hydrateCandidateTechnicalAnalysis(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {
 	for i := range items {
 		rows, err := candidateTechnicalPriceHistory(ctx, db, items[i])
@@ -60,9 +73,16 @@ func hydrateCandidateTechnicalAnalysis(ctx context.Context, db *gorm.DB, items [
 }
 
 func candidateTechnicalPriceHistory(ctx context.Context, db *gorm.DB, item CandidateScoreResult) ([]PriceSnapshot, error) {
+	return candidateTechnicalPriceHistoryLimit(ctx, db, item, technicalMinimumSamples)
+}
+
+func candidateTechnicalPriceHistoryLimit(ctx context.Context, db *gorm.DB, item CandidateScoreResult, limit int) ([]PriceSnapshot, error) {
+	if limit <= 0 {
+		limit = technicalMinimumSamples
+	}
 	query := db.WithContext(ctx).Where("symbol = ? AND quality_status = ?", strings.ToUpper(strings.TrimSpace(item.Ticker)), QualityStatusValid)
 	var raw []PriceSnapshot
-	if err := query.Order("trade_date DESC, created_at DESC, id DESC").Limit(technicalMinimumSamples * 12).Find(&raw).Error; err != nil {
+	if err := query.Order("trade_date DESC, created_at DESC, id DESC").Limit(limit * 12).Find(&raw).Error; err != nil {
 		return nil, err
 	}
 	preferredSource := strings.TrimSpace(item.PriceSource)
@@ -74,16 +94,34 @@ func candidateTechnicalPriceHistory(ctx context.Context, db *gorm.DB, item Candi
 			byDate[date] = row
 		}
 	}
-	rows := make([]PriceSnapshot, 0, minInt(len(byDate), technicalMinimumSamples))
+	rows := make([]PriceSnapshot, 0, minInt(len(byDate), limit))
 	for _, row := range byDate {
 		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].TradeDate.After(rows[j].TradeDate) })
-	if len(rows) > technicalMinimumSamples {
-		rows = rows[:technicalMinimumSamples]
+	if len(rows) > limit {
+		rows = rows[:limit]
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].TradeDate.Before(rows[j].TradeDate) })
 	return rows, nil
+}
+
+func candidateTechnicalHistoryRows(rows []PriceSnapshot) []CandidateTechnicalHistoryRow {
+	result := make([]CandidateTechnicalHistoryRow, 0, len(rows))
+	// The calculation uses chronological data, while the detail table should
+	// lead with the newest available trading day.
+	for index := len(rows) - 1; index >= 0; index-- {
+		row := rows[index]
+		result = append(result, CandidateTechnicalHistoryRow{
+			TradeDate:     row.TradeDate.Format("2006-01-02"),
+			CloseUSD:      priceSnapshotClose(row),
+			Volume:        row.Volume,
+			Source:        row.Source,
+			SourceVersion: row.SourceVersion,
+			Backfilled:    strings.Contains(row.SourceVersion, ":technical-history:"),
+		})
+	}
+	return result
 }
 
 func buildCandidateTechnicalAnalysis(rows []PriceSnapshot) CandidateTechnicalAnalysis {
