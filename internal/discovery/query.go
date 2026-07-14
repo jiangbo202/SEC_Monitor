@@ -1090,12 +1090,11 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batch Unive
 		priceIDBySecurity[row.SecurityID] = *row.PriceSnapshotID
 		priceIDs = append(priceIDs, *row.PriceSnapshotID)
 	}
-	if len(priceIDs) == 0 {
-		return items, nil
-	}
 	var prices []PriceSnapshot
-	if err := db.WithContext(ctx).Where("id IN ?", priceIDs).Find(&prices).Error; err != nil {
-		return nil, err
+	if len(priceIDs) > 0 {
+		if err := db.WithContext(ctx).Where("id IN ?", priceIDs).Find(&prices).Error; err != nil {
+			return nil, err
+		}
 	}
 	priceByID := map[uint]PriceSnapshot{}
 	for _, price := range prices {
@@ -1120,7 +1119,83 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batch Unive
 		items[i].PriceQualityStatus = price.QualityStatus
 		items[i].PriceSource = price.Source
 	}
+	// A published batch holds the price that was used to calculate its market
+	// cap, but the research list and its technical summary should surface the
+	// newest locally available daily quote. This also ensures that the list and
+	// technical analysis use the same price source and as-of date after a
+	// history backfill.
+	tickers := make([]string, 0, len(items))
+	preferredSourceByTicker := make(map[string]string, len(items))
+	for _, item := range items {
+		ticker := strings.ToUpper(strings.TrimSpace(item.Ticker))
+		if ticker == "" {
+			continue
+		}
+		tickers = append(tickers, ticker)
+		if source := strings.TrimSpace(item.PriceSource); source != "" {
+			preferredSourceByTicker[ticker] = source
+		}
+	}
+	if len(tickers) == 0 {
+		return items, nil
+	}
+	var localPrices []PriceSnapshot
+	if err := db.WithContext(ctx).
+		Where("symbol IN ? AND quality_status = ?", tickers, QualityStatusValid).
+		Order("trade_date DESC, created_at DESC, id DESC").
+		Find(&localPrices).Error; err != nil {
+		return nil, err
+	}
+	latestByTicker := map[string]PriceSnapshot{}
+	for _, price := range localPrices {
+		ticker := strings.ToUpper(strings.TrimSpace(price.Symbol))
+		current, found := latestByTicker[ticker]
+		if !found || candidatePriceIsNewer(price, current, preferredSourceByTicker[ticker]) {
+			latestByTicker[ticker] = price
+		}
+	}
+	for i := range items {
+		price, found := latestByTicker[strings.ToUpper(strings.TrimSpace(items[i].Ticker))]
+		if !found {
+			continue
+		}
+		applyCandidatePriceEvidence(&items[i], batch, price)
+	}
 	return items, nil
+}
+
+func applyCandidatePriceEvidence(item *CandidateScoreResult, batch UniverseBatch, price PriceSnapshot) {
+	if item == nil {
+		return
+	}
+	tradeDate := price.TradeDate
+	item.PriceCloseUSD = float64(price.CloseMicros) / 1_000_000
+	item.PriceVolume = price.Volume
+	item.PriceTradeDate = &tradeDate
+	item.PriceFreshnessStatus, item.PriceAgeCalendarDays = candidatePriceFreshness(batch.EffectiveDate, &tradeDate)
+	item.PriceCurrency = price.Currency
+	item.PriceQualityStatus = price.QualityStatus
+	item.PriceSource = price.Source
+}
+
+func candidatePriceIsNewer(candidate, current PriceSnapshot, preferredSource string) bool {
+	if candidate.TradeDate.After(current.TradeDate) {
+		return true
+	}
+	if candidate.TradeDate.Before(current.TradeDate) {
+		return false
+	}
+	preferredSource = strings.TrimSpace(preferredSource)
+	if candidate.Source == preferredSource && current.Source != preferredSource {
+		return true
+	}
+	if candidate.Source != preferredSource && current.Source == preferredSource {
+		return false
+	}
+	if candidate.CreatedAt.After(current.CreatedAt) {
+		return true
+	}
+	return candidate.CreatedAt.Equal(current.CreatedAt) && candidate.ID > current.ID
 }
 
 const (

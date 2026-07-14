@@ -75,7 +75,7 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	}
 	old := UniverseBatch{BatchID: "old", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now().Add(-time.Hour)}
 	securityBatch := UniverseBatch{BatchID: "security-current", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now()}
-	current := UniverseBatch{BatchID: "current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-06-30", UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
+	current := UniverseBatch{BatchID: "current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-07-01", UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
 	if err := db.Create(&[]UniverseBatch{old, securityBatch, current}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +115,11 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	if err := db.Create(&price).Error; err != nil {
 		t.Fatal(err)
 	}
+	latestTradeDate := tradeDate.AddDate(0, 0, 1)
+	latestPrice := PriceSnapshot{Source: "twelvedata", SourceVersion: "twelvedata:technical-history", Symbol: "AAA", TradeDate: latestTradeDate, CloseMicros: 1_500_000, Volume: 7654321, Currency: "USD", QualityStatus: QualityStatusValid, CreatedAt: current.StartedAt.Add(time.Minute)}
+	if err := db.Create(&latestPrice).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&UniverseSnapshot{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "AAA", MarketCapUSD: 300_000_000, PriceSnapshotID: &price.ID, QualityStatus: QualityStatusValid}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +131,7 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Ticker != "AAA" {
 		t.Fatalf("page=%#v", page)
 	}
-	if page.Items[0].PriceCloseUSD != 1.25 || page.Items[0].PriceVolume != 1234567 || page.Items[0].PriceCurrency != "USD" || page.Items[0].PriceTradeDate == nil || !page.Items[0].PriceTradeDate.Equal(tradeDate) {
+	if page.Items[0].PriceCloseUSD != 1.5 || page.Items[0].PriceVolume != 7654321 || page.Items[0].PriceCurrency != "USD" || page.Items[0].PriceSource != "twelvedata" || page.Items[0].PriceTradeDate == nil || !page.Items[0].PriceTradeDate.Equal(latestTradeDate) {
 		t.Fatalf("price evidence = %#v", page.Items[0])
 	}
 	if page.Items[0].PriceFreshnessStatus != PriceFreshnessCurrent || page.Items[0].PriceAgeCalendarDays != 0 {
