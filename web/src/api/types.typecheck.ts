@@ -93,6 +93,7 @@ export const candidateDetailTypecheck: CandidateDetail = {
   insiders: [],
   capital_risks: [],
   sector: { sic: 1000, category: '未分类赛道', score: 8, label: '优秀赛道', rationale: '基于 SIC 1000。' },
+  technical: { status: 'data_insufficient', sample_days: 7, required_sample_days: 21, trade_date: '2026-06-30', close_usd: 12.3, ma20_usd: 0, prior_close_usd: 0, prior_ma20_usd: 0, distance_to_ma20_pct: 0, prior_20d_high_usd: 0, distance_to_20d_high_pct: 0, average_volume_20: 0, volume_ratio_20: 0, signals: [] },
   data_quality: { financial: 'valid' },
   evidence: [{ field: 'total_score', value: '88', source: 'candidate_score_snapshots' }],
   recent_filings: [],

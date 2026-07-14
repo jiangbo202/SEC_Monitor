@@ -216,6 +216,7 @@ export interface CandidateScore {
   revenue_growth_explanation?: RevenueGrowthExplanation
   capital_risk_summaries?: CapitalRiskSummary[]
   market_quality?: CandidateMarketQuality
+  technical?: CandidateTechnicalAnalysis
 }
 
 export interface CandidateMarketQuality {
@@ -225,6 +226,29 @@ export interface CandidateMarketQuality {
   momentum_pct: number
   max_drawdown_pct: number
   status: string
+}
+
+export interface CandidateTechnicalSignal {
+  kind: 'cross_above_ma20' | 'breakout_20d_high' | 'volume_backed_breakout' | string
+  label: string
+  direction: 'bullish' | string
+}
+
+export interface CandidateTechnicalAnalysis {
+  status: 'ready' | 'data_insufficient' | 'missing' | string
+  sample_days: number
+  required_sample_days: number
+  trade_date: string
+  close_usd: number
+  ma20_usd: number
+  prior_close_usd: number
+  prior_ma20_usd: number
+  distance_to_ma20_pct: number
+  prior_20d_high_usd: number
+  distance_to_20d_high_pct: number
+  average_volume_20: number
+  volume_ratio_20: number
+  signals: CandidateTechnicalSignal[]
 }
 
 export interface ReviewPriorityReason {
@@ -389,6 +413,7 @@ export interface CandidateDetail {
   insiders: DiscoveryInsiderTransaction[]
   capital_risks: DiscoveryCapitalRisk[]
   sector: SectorExplanation
+  technical: CandidateTechnicalAnalysis
   data_quality: Record<string, string>
   evidence: DiscoveryEvidence[]
   recent_filings: RecentSECFiling[]

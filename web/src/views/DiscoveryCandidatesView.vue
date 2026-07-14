@@ -102,6 +102,13 @@
             <el-option v-for="category in sectorCategoryOptions" :key="category" :label="category" :value="category" />
           </el-select>
         </el-form-item>
+        <el-form-item label="技术信号">
+          <el-select v-model="filters.technical_signal" clearable style="width: 170px">
+            <el-option label="上穿 20 日均线" value="cross_above_ma20" />
+            <el-option label="突破 20 日最高收盘价" value="breakout_20d_high" />
+            <el-option label="放量突破" value="volume_backed_breakout" />
+          </el-select>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="search">查询</el-button>
           <el-button @click="reset">重置</el-button>
@@ -182,6 +189,29 @@
               </div>
             </template>
             <el-tag :type="row.market_quality?.status === 'risk' ? 'warning' : 'success'" effect="plain">{{ row.market_quality?.status === 'risk' ? '需复核' : '正常' }}</el-tag>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column label="技术信号" min-width="170">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <template v-if="row.technical?.status === 'ready'">
+                  <div>收盘价：{{ formatPrice(row.technical.close_usd, 'USD') }}</div>
+                  <div>MA20：{{ formatPrice(row.technical.ma20_usd, 'USD') }}（{{ formatPerformance(row.technical.distance_to_ma20_pct) }}）</div>
+                  <div>前 20 日最高收盘价：{{ formatPrice(row.technical.prior_20d_high_usd, 'USD') }}（{{ formatPerformance(row.technical.distance_to_20d_high_pct) }}）</div>
+                  <div>量比：{{ formatRatio(row.technical.volume_ratio_20) }}（相对 20 日均量）</div>
+                </template>
+                <div v-else>{{ technicalStatusDescription(row.technical) }}</div>
+              </div>
+            </template>
+            <el-space wrap>
+              <el-tag v-for="signal in row.technical?.signals || []" :key="signal.kind" type="success" effect="plain">{{ signal.label }}</el-tag>
+              <el-tag v-if="!(row.technical?.signals || []).length" :type="row.technical?.status === 'ready' ? 'info' : 'warning'" effect="plain">
+                {{ row.technical?.status === 'ready' ? '暂无突破' : technicalStatusLabel(row.technical) }}
+              </el-tag>
+            </el-space>
           </el-tooltip>
         </template>
       </el-table-column>
@@ -509,6 +539,33 @@
         </el-card>
 
         <el-card shadow="never">
+          <template #header>技术分析（独立研究信号，不计入基本面总分）</template>
+          <el-alert
+            v-if="candidateDetail.technical.status !== 'ready'"
+            type="warning"
+            :closable="false"
+            show-icon
+            :title="technicalStatusDescription(candidateDetail.technical)"
+          />
+          <template v-else>
+            <div class="technical-signal-row">
+              <el-space wrap>
+                <el-tag v-for="signal in candidateDetail.technical.signals" :key="signal.kind" type="success" effect="plain">{{ signal.label }}</el-tag>
+                <el-tag v-if="!candidateDetail.technical.signals.length" type="info" effect="plain">暂无突破信号</el-tag>
+              </el-space>
+            </div>
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="价格日期">{{ formatDate(candidateDetail.technical.trade_date) }}</el-descriptions-item>
+              <el-descriptions-item label="有效样本">{{ candidateDetail.technical.sample_days }}/{{ candidateDetail.technical.required_sample_days }} 个交易日</el-descriptions-item>
+              <el-descriptions-item label="收盘价">{{ formatPrice(candidateDetail.technical.close_usd, 'USD') }}</el-descriptions-item>
+              <el-descriptions-item label="20 日均线">{{ formatPrice(candidateDetail.technical.ma20_usd, 'USD') }}（{{ formatPerformance(candidateDetail.technical.distance_to_ma20_pct) }}）</el-descriptions-item>
+              <el-descriptions-item label="前 20 日最高收盘价">{{ formatPrice(candidateDetail.technical.prior_20d_high_usd, 'USD') }}（{{ formatPerformance(candidateDetail.technical.distance_to_20d_high_pct) }}）</el-descriptions-item>
+              <el-descriptions-item label="量比">{{ formatRatio(candidateDetail.technical.volume_ratio_20) }}（20 日均量 {{ formatVolume(candidateDetail.technical.average_volume_20) }}）</el-descriptions-item>
+            </el-descriptions>
+          </template>
+        </el-card>
+
+        <el-card shadow="never">
           <template #header>近期 SEC 公告</template>
           <el-table :data="candidateDetail.recent_filings || []" size="small" border empty-text="暂无近期公告">
             <el-table-column prop="filing_date" label="日期" width="120">
@@ -731,6 +788,7 @@ const filters = reactive({
   sector_category: '',
   quality_tier: '',
   change_status: '',
+  technical_signal: '',
   recommended_only: true,
   min_review_priority_score: 0,
   exclude_quality_tags: [] as string[],
@@ -777,6 +835,7 @@ function requestParams() {
   if (filters.sector_category) params.sector_category = filters.sector_category
   if (filters.quality_tier) params.quality_tier = filters.quality_tier
   if (filters.change_status) params.change_status = filters.change_status
+  if (filters.technical_signal) params.technical_signal = filters.technical_signal
   if (filters.recommended_only) params.recommended_only = 'true'
   if (filters.min_review_priority_score) params.min_review_priority_score = filters.min_review_priority_score
   if (filters.exclude_quality_tags.length) params.exclude_quality_tag = filters.exclude_quality_tags.join(',')
@@ -1014,6 +1073,7 @@ function reset() {
   filters.sector_category = ''
   filters.quality_tier = ''
   filters.change_status = ''
+  filters.technical_signal = ''
   filters.recommended_only = true
   filters.min_review_priority_score = 0
   filters.exclude_quality_tags = []
@@ -1221,6 +1281,25 @@ function formatPerformance(value?: number | null) {
   return `${num >= 0 ? '+' : ''}${num.toFixed(1)}%`
 }
 
+function formatRatio(value?: number | null) {
+  if (!Number.isFinite(value) || Number(value) <= 0) return '-'
+  return `${Number(value).toFixed(2)}x`
+}
+
+function technicalStatusLabel(technical?: CandidateScore['technical']) {
+  if (technical?.status === 'data_insufficient') return '历史不足'
+  if (technical?.status === 'missing') return '无行情数据'
+  return '暂无技术数据'
+}
+
+function technicalStatusDescription(technical?: CandidateScore['technical']) {
+  if (technical?.status === 'data_insufficient') {
+    return `技术分析需要至少 ${technical.required_sample_days || 21} 个有效交易日，当前仅有 ${technical.sample_days || 0} 个；不会据此生成信号。`
+  }
+  if (technical?.status === 'missing') return '暂无可用的日线行情，无法计算技术信号。'
+  return '暂无技术分析数据。'
+}
+
 function formatSignedNumber(value: number) {
   return `${value >= 0 ? '+' : ''}${value}`
 }
@@ -1347,6 +1426,7 @@ function candidatePositiveSignals(detail: CandidateDetail) {
   if (detail.score.cash_runway_months >= 12) signals.push('现金 runway 充足')
   if (detail.score.recent_qualified_insider) signals.push('近期合格内幕买入')
   if (detail.sector?.score >= 7) signals.push('赛道评分较高')
+  for (const signal of detail.technical?.signals || []) signals.push(signal.label)
   return signals.length ? signals : ['暂无强信号']
 }
 
@@ -1471,6 +1551,10 @@ onMounted(load)
 .metric-help {
   cursor: help;
   border-bottom: 1px dotted var(--el-text-color-secondary);
+}
+
+.technical-signal-row {
+  margin-bottom: 12px;
 }
 
 .risk-tag {

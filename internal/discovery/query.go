@@ -33,6 +33,7 @@ type CandidateScoreQuery struct {
 	SectorCategory         string
 	QualityTier            string
 	ChangeStatus           string
+	TechnicalSignal        string
 	RecommendedOnly        bool
 	SortBy, SortOrder      string
 	MinReviewPriorityScore int
@@ -60,31 +61,32 @@ type RevenueGrowthExplanation struct {
 
 type CandidateScoreResult struct {
 	CandidateScoreSnapshot
-	PriceCloseUSD         float64                  `json:"price_close_usd"`
-	PriceVolume           int64                    `json:"price_volume"`
-	PriceTradeDate        *time.Time               `json:"price_trade_date"`
-	PriceFreshnessStatus  string                   `json:"price_freshness_status"`
-	PriceAgeCalendarDays  int                      `json:"price_age_calendar_days"`
-	PriceCurrency         string                   `json:"price_currency"`
-	PriceQualityStatus    string                   `json:"price_quality_status"`
-	PriceSource           string                   `json:"price_source"`
-	QualityTier           string                   `json:"quality_tier"`
-	QualityTags           []string                 `json:"quality_tags"`
-	QualityAdjustedScore  int                      `json:"quality_adjusted_score"`
-	ReviewPriorityScore   int                      `json:"review_priority_score"`
-	ReviewPriorityReasons []ReviewPriorityReason   `json:"review_priority_reasons"`
-	ChangeStatus          string                   `json:"change_status"`
-	ChangeReasons         []CandidateChangeReason  `json:"change_reasons"`
-	PreviousTotalScore    *int                     `json:"previous_total_score"`
-	PreviousGrade         string                   `json:"previous_grade"`
-	Performance           CandidatePerformance     `json:"performance"`
-	SectorCategory        string                   `json:"sector_category"`
-	SectorLabel           string                   `json:"sector_label"`
-	SectorSIC             int                      `json:"sector_sic"`
-	SectorRatingScore     int                      `json:"sector_rating_score"`
-	RevenueGrowthInfo     RevenueGrowthExplanation `json:"revenue_growth_explanation"`
-	CapitalRiskSummaries  []CapitalRiskSummary     `json:"capital_risk_summaries"`
-	MarketQuality         CandidateMarketQuality   `json:"market_quality"`
+	PriceCloseUSD         float64                    `json:"price_close_usd"`
+	PriceVolume           int64                      `json:"price_volume"`
+	PriceTradeDate        *time.Time                 `json:"price_trade_date"`
+	PriceFreshnessStatus  string                     `json:"price_freshness_status"`
+	PriceAgeCalendarDays  int                        `json:"price_age_calendar_days"`
+	PriceCurrency         string                     `json:"price_currency"`
+	PriceQualityStatus    string                     `json:"price_quality_status"`
+	PriceSource           string                     `json:"price_source"`
+	QualityTier           string                     `json:"quality_tier"`
+	QualityTags           []string                   `json:"quality_tags"`
+	QualityAdjustedScore  int                        `json:"quality_adjusted_score"`
+	ReviewPriorityScore   int                        `json:"review_priority_score"`
+	ReviewPriorityReasons []ReviewPriorityReason     `json:"review_priority_reasons"`
+	ChangeStatus          string                     `json:"change_status"`
+	ChangeReasons         []CandidateChangeReason    `json:"change_reasons"`
+	PreviousTotalScore    *int                       `json:"previous_total_score"`
+	PreviousGrade         string                     `json:"previous_grade"`
+	Performance           CandidatePerformance       `json:"performance"`
+	SectorCategory        string                     `json:"sector_category"`
+	SectorLabel           string                     `json:"sector_label"`
+	SectorSIC             int                        `json:"sector_sic"`
+	SectorRatingScore     int                        `json:"sector_rating_score"`
+	RevenueGrowthInfo     RevenueGrowthExplanation   `json:"revenue_growth_explanation"`
+	CapitalRiskSummaries  []CapitalRiskSummary       `json:"capital_risk_summaries"`
+	MarketQuality         CandidateMarketQuality     `json:"market_quality"`
+	Technical             CandidateTechnicalAnalysis `json:"technical"`
 }
 
 type ReviewPriorityReason struct {
@@ -294,6 +296,9 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		return result, err
 	}
 	if err = hydrateCandidateMarketQuality(ctx, db, items); err != nil {
+		return result, err
+	}
+	if err = hydrateCandidateTechnicalAnalysis(ctx, db, items); err != nil {
 		return result, err
 	}
 	riskBatchID := strings.TrimSpace(batch.UniverseSourceVersion)
@@ -720,8 +725,9 @@ func annotateCandidateQuality(items []CandidateScoreResult) {
 func filterCandidateScoreResults(items []CandidateScoreResult, filter CandidateScoreQuery) []CandidateScoreResult {
 	qualityTier := strings.TrimSpace(filter.QualityTier)
 	changeStatus := strings.TrimSpace(filter.ChangeStatus)
+	technicalSignal := strings.TrimSpace(filter.TechnicalSignal)
 	excludeTags := normalizedStringSet(filter.ExcludeQualityTags)
-	if qualityTier == "" && changeStatus == "" && !filter.RecommendedOnly && filter.MinReviewPriorityScore == 0 && len(excludeTags) == 0 {
+	if qualityTier == "" && changeStatus == "" && technicalSignal == "" && !filter.RecommendedOnly && filter.MinReviewPriorityScore == 0 && len(excludeTags) == 0 {
 		return items
 	}
 	filtered := items[:0]
@@ -733,6 +739,9 @@ func filterCandidateScoreResults(items []CandidateScoreResult, filter CandidateS
 			continue
 		}
 		if changeStatus != "" && item.ChangeStatus != changeStatus {
+			continue
+		}
+		if technicalSignal != "" && !candidateHasTechnicalSignal(item.Technical, technicalSignal) {
 			continue
 		}
 		if filter.MinReviewPriorityScore > 0 && item.ReviewPriorityScore < filter.MinReviewPriorityScore {

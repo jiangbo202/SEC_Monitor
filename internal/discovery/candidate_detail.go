@@ -20,6 +20,7 @@ type CandidateDetail struct {
 	CapitalRisks  []CapitalRiskSnapshot        `json:"capital_risks"`
 	RecentFilings []RecentSECFiling            `json:"recent_filings"`
 	Sector        SectorExplanation            `json:"sector"`
+	Technical     CandidateTechnicalAnalysis   `json:"technical"`
 	DataQuality   map[string]string            `json:"data_quality"`
 	Evidence      []Evidence                   `json:"evidence"`
 }
@@ -77,6 +78,14 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		}
 	}
 	result.Sector = ExplainSectorScore(result.Score, result.Security)
+	technicalItems := []CandidateScoreResult{{CandidateScoreSnapshot: result.Score}}
+	if technicalItems, err = hydrateCandidatePriceEvidence(ctx, db, batch, technicalItems); err != nil {
+		return result, err
+	}
+	if err = hydrateCandidateTechnicalAnalysis(ctx, db, technicalItems); err != nil {
+		return result, err
+	}
+	result.Technical = technicalItems[0].Technical
 	var universe UniverseSnapshot
 	if err := db.WithContext(ctx).First(&universe, "batch_id = ? AND security_id = ?", batch.BatchID, result.Score.SecurityID).Error; err == nil {
 		result.Universe = &universe
@@ -111,6 +120,11 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		return result, err
 	}
 	result.DataQuality["capital_risk"] = QualityStatusValid
+	if result.Technical.Status == TechnicalStatusReady {
+		result.DataQuality["technical"] = QualityStatusValid
+	} else {
+		result.DataQuality["technical"] = result.Technical.Status
+	}
 	var filings []SECFilingSnapshot
 	if err := db.WithContext(ctx).Where("security_id = ?", result.Score.SecurityID).Order("filing_date DESC, accepted_at DESC, id DESC").Limit(recentSECFilingLimit).Find(&filings).Error; err != nil {
 		return result, err
