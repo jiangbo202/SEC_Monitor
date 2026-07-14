@@ -577,6 +577,7 @@
             <div v-if="technicalHistoryChart.points.length" class="technical-chart" role="img" :aria-label="`${candidateDetail.score.ticker} 本地日线价格和成交量图表`">
               <div class="technical-chart-legend">
                 <span><i class="technical-chart-line-key" />收盘价</span>
+                <span><i class="technical-chart-ma20-key" />20 日均线</span>
                 <span><i class="technical-chart-bar-key" />成交量</span>
                 <span>价格范围 {{ formatPrice(technicalHistoryChart.minClose, 'USD') }} – {{ formatPrice(technicalHistoryChart.maxClose, 'USD') }}</span>
               </div>
@@ -594,6 +595,7 @@
                   <title>{{ `${point.tradeDate}｜成交量 ${formatVolume(point.volume)}` }}</title>
                 </rect>
                 <polyline :points="technicalHistoryChart.pricePolyline" fill="none" class="technical-chart-price" />
+                <polyline v-if="technicalHistoryChart.ma20Polyline" :points="technicalHistoryChart.ma20Polyline" fill="none" class="technical-chart-ma20" />
                 <circle
                   v-for="point in technicalHistoryChart.points"
                   :key="`price-${point.tradeDate}`"
@@ -602,13 +604,13 @@
                   r="3"
                   class="technical-chart-point"
                 >
-                  <title>{{ `${point.tradeDate}｜收盘 ${formatPrice(point.close, 'USD')}｜成交量 ${formatVolume(point.volume)}｜${point.backfilled ? '历史回填' : '日常同步'} / ${point.source || '-'}` }}</title>
+                  <title>{{ `${point.tradeDate}｜收盘 ${formatPrice(point.close, 'USD')}｜MA20 ${point.ma20 == null ? '历史不足' : formatPrice(point.ma20, 'USD')}｜成交量 ${formatVolume(point.volume)}｜${point.backfilled ? '历史回填' : '日常同步'} / ${point.source || '-'}` }}</title>
                 </circle>
                 <text x="0" y="264" class="technical-chart-axis-label">{{ technicalHistoryChart.startDate }}</text>
                 <text x="360" y="264" text-anchor="middle" class="technical-chart-axis-label">{{ technicalHistoryChart.middleDate }}</text>
                 <text x="720" y="264" text-anchor="end" class="technical-chart-axis-label">{{ technicalHistoryChart.endDate }}</text>
               </svg>
-              <div class="technical-chart-note">悬浮数据点可查看该日价格、成交量、来源及是否为历史回填。</div>
+              <div class="technical-chart-note">20 日均线需累计满 20 个有效交易日后开始绘制；悬浮数据点可查看该日价格、MA20、成交量、来源及是否为历史回填。</div>
             </div>
             <el-empty v-else :image-size="72" description="暂无可绘制的本地日线数据" />
           </template>
@@ -1560,17 +1562,20 @@ function formatDate(value?: string | null) {
 type TechnicalHistoryChartPoint = {
   tradeDate: string
   close: number
+  ma20: number | null
   volume: number
   source: string
   backfilled: boolean
   x: number
   priceY: number
+  ma20Y: number | null
   volumeY: number
 }
 
 type TechnicalHistoryChart = {
   points: TechnicalHistoryChartPoint[]
   pricePolyline: string
+  ma20Polyline: string
   barWidth: number
   minClose: number
   maxClose: number
@@ -1584,11 +1589,17 @@ function buildTechnicalHistoryChart(rows: CandidateTechnicalHistoryRow[]): Techn
     .filter((row) => Number.isFinite(row.close_usd) && row.close_usd > 0)
     .sort((a, b) => a.trade_date.localeCompare(b.trade_date))
   if (!history.length) {
-    return { points: [], pricePolyline: '', barWidth: 0, minClose: 0, maxClose: 0, startDate: '', middleDate: '', endDate: '' }
+    return { points: [], pricePolyline: '', ma20Polyline: '', barWidth: 0, minClose: 0, maxClose: 0, startDate: '', middleDate: '', endDate: '' }
   }
   const closes = history.map((row) => row.close_usd)
-  const minClose = Math.min(...closes)
-  const maxClose = Math.max(...closes)
+  const ma20Values = history.map((_, index) => {
+    if (index < 19) return null
+    const window = closes.slice(index - 19, index + 1)
+    return window.reduce((sum, close) => sum + close, 0) / window.length
+  })
+  const chartPrices = [...closes, ...ma20Values.filter((value): value is number => value != null)]
+  const minClose = Math.min(...chartPrices)
+  const maxClose = Math.max(...chartPrices)
   const closeRange = Math.max(maxClose - minClose, Math.max(maxClose * 0.02, 0.01))
   const maxVolume = Math.max(...history.map((row) => Math.max(row.volume || 0, 0)), 1)
   const pointCount = history.length
@@ -1596,15 +1607,19 @@ function buildTechnicalHistoryChart(rows: CandidateTechnicalHistoryRow[]): Techn
   const points = history.map((row, index) => {
     const x = pointCount === 1 ? 360 : (index / (pointCount - 1)) * 720
     const priceY = 174 - ((row.close_usd - minClose) / closeRange) * 142
+    const ma20 = ma20Values[index]
+    const ma20Y = ma20 == null ? null : 174 - ((ma20 - minClose) / closeRange) * 142
     const volumeY = 240 - (Math.max(row.volume || 0, 0) / maxVolume) * 42
     return {
       tradeDate: row.trade_date,
       close: row.close_usd,
+      ma20,
       volume: row.volume,
       source: row.source,
       backfilled: row.backfilled,
       x,
       priceY,
+      ma20Y,
       volumeY,
     }
   })
@@ -1612,6 +1627,7 @@ function buildTechnicalHistoryChart(rows: CandidateTechnicalHistoryRow[]): Techn
   return {
     points,
     pricePolyline: points.map((point) => `${point.x},${point.priceY}`).join(' '),
+    ma20Polyline: points.filter((point) => point.ma20Y != null).map((point) => `${point.x},${point.ma20Y}`).join(' '),
     barWidth,
     minClose,
     maxClose,
@@ -1766,6 +1782,7 @@ onMounted(load)
 }
 
 .technical-chart-line-key,
+.technical-chart-ma20-key,
 .technical-chart-bar-key {
   display: inline-block;
   width: 14px;
@@ -1777,6 +1794,10 @@ onMounted(load)
 .technical-chart-bar-key {
   height: 8px;
   background: var(--el-color-primary-light-7);
+}
+
+.technical-chart-ma20-key {
+  background: var(--el-color-warning);
 }
 
 .technical-chart-svg {
@@ -1800,6 +1821,14 @@ onMounted(load)
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 3;
+}
+
+.technical-chart-ma20 {
+  stroke: var(--el-color-warning);
+  stroke-dasharray: 6 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.5;
 }
 
 .technical-chart-point {
