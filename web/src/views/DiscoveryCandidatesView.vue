@@ -74,6 +74,11 @@
         <el-button :type="quickFilterActive('exclude_low_liquidity') ? 'primary' : 'default'" plain @click="toggleQuickFilter('exclude_low_liquidity')">
           排除低流动性
         </el-button>
+        <span class="table-view-label">列表字段</span>
+        <el-radio-group v-model="candidateTableView" size="small" aria-label="候选列表字段显示方式">
+          <el-radio-button value="compact">紧凑</el-radio-button>
+          <el-radio-button value="full">完整</el-radio-button>
+        </el-radio-group>
       </div>
       <el-form :inline="true" :model="filters">
         <el-form-item label="等级">
@@ -117,7 +122,7 @@
       </el-form>
     </el-card>
 
-    <el-table :data="rows" v-loading="loading" border empty-text="暂无候选" @sort-change="onSortChange">
+    <el-table :data="rows" v-loading="loading" border empty-text="暂无候选" :size="candidateTableView === 'compact' ? 'small' : 'default'" :class="{ 'candidate-table-compact': candidateTableView === 'compact' }" @sort-change="onSortChange">
       <el-table-column prop="grade" label="等级" width="90" align="center">
         <template #default="{ row }">
           <el-tag :type="gradeTagType(row.grade)" effect="dark">{{ gradeLabel(row.grade) }}</el-tag>
@@ -125,7 +130,7 @@
       </el-table-column>
       <el-table-column prop="ticker" label="Ticker" width="110" sortable="custom" />
       <el-table-column prop="total_score" label="总分" width="90" align="right" sortable="custom" />
-      <el-table-column prop="quality_adjusted_score" label="调整分" width="90" align="right">
+      <el-table-column v-if="candidateTableView === 'full'" prop="quality_adjusted_score" label="调整分" width="90" align="right">
         <template #default="{ row }">
           <el-tooltip v-if="row.quality_adjusted_score !== row.total_score" content="已按低基数、极端增长、低流动性或融资风险进行上限保护" placement="top">
             <span class="metric-help">{{ row.quality_adjusted_score ?? row.total_score }}</span>
@@ -150,12 +155,12 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="quality_tier" label="质量" width="110">
+      <el-table-column v-if="candidateTableView === 'full'" prop="quality_tier" label="质量" width="110">
         <template #default="{ row }">
           <el-tag :type="qualityTierTagType(row.quality_tier)" effect="plain">{{ qualityTierLabel(row.quality_tier) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="change_status" label="变化" width="100">
+      <el-table-column v-if="candidateTableView === 'full'" prop="change_status" label="变化" width="100">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark" :disabled="!(row.change_reasons || []).length">
             <template #content>
@@ -178,7 +183,7 @@
       <el-table-column prop="price_volume" label="成交量" width="120" align="right" sortable="custom">
         <template #default="{ row }">{{ formatVolume(row.price_volume) }}</template>
       </el-table-column>
-      <el-table-column label="市场质量" width="120" align="right">
+      <el-table-column v-if="candidateTableView === 'full'" label="市场质量" width="120" align="right">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -245,7 +250,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="quarterly_revenue_qoq_pct" label="季度环比" width="110" align="right" sortable="custom">
+      <el-table-column v-if="candidateTableView === 'full'" prop="quarterly_revenue_qoq_pct" label="季度环比" width="110" align="right" sortable="custom">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -257,7 +262,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="annual_revenue_yoy_pct" label="年度同比" width="110" align="right" sortable="custom">
+      <el-table-column v-if="candidateTableView === 'full'" prop="annual_revenue_yoy_pct" label="年度同比" width="110" align="right" sortable="custom">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -269,7 +274,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="annual_revenue_qoq_pct" label="年度环比" width="110" align="right" sortable="custom">
+      <el-table-column v-if="candidateTableView === 'full'" prop="annual_revenue_qoq_pct" label="年度环比" width="110" align="right" sortable="custom">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -284,7 +289,7 @@
       <el-table-column prop="cash_runway_months" label="现金 runway" width="120" align="right" sortable="custom">
         <template #default="{ row }">{{ formatMonths(row.cash_runway_months) }}</template>
       </el-table-column>
-      <el-table-column label="表现" width="140" align="right">
+      <el-table-column v-if="candidateTableView === 'full'" label="表现" width="140" align="right">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -299,7 +304,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="核心信号" min-width="220">
+      <el-table-column v-if="candidateTableView === 'full'" label="核心信号" min-width="220">
         <template #default="{ row }">
           <el-space wrap>
             <el-tag v-if="row.recent_qualified_insider" type="success" effect="plain">内部人买入</el-tag>
@@ -326,12 +331,12 @@
           </el-space>
         </template>
       </el-table-column>
-      <el-table-column label="分项" min-width="260">
+      <el-table-column v-if="candidateTableView === 'full'" label="分项" min-width="260">
         <template #default="{ row }">
           增长 {{ row.revenue_growth_score }} / 现金 {{ row.cash_runway_score }} / 内幕 {{ row.insider_score }} / 稀释 {{ row.dilution_risk_score }}
         </template>
       </el-table-column>
-      <el-table-column prop="reason_code" label="原因" min-width="140" />
+      <el-table-column v-if="candidateTableView === 'full'" prop="reason_code" label="原因" min-width="140" />
       <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
           <el-space>
@@ -850,6 +855,7 @@ const effectivenessVisible = ref(false)
 const effectiveness = ref<CandidateEffectivenessReport | null>(null)
 const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
+const candidateTableView = ref<'compact' | 'full'>('compact')
 const technicalHistoryView = ref<'chart' | 'table'>('chart')
 const health = ref<CandidateHealth | null>(null)
 const report = ref<CandidateReport | null>(null)
@@ -1741,6 +1747,17 @@ onMounted(load)
 .quick-filter-label {
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+
+.table-view-label {
+  margin-left: auto;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.candidate-table-compact :deep(.el-table__cell) {
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .candidate-detail {
