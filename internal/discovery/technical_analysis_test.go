@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -66,6 +67,31 @@ func TestCandidateTechnicalHistoryRows(t *testing.T) {
 	}
 	if history[1].TradeDate != "2026-06-01" || !history[1].Backfilled {
 		t.Fatalf("older history = %+v, want backfilled 2026-06-01", history[1])
+	}
+}
+
+func TestCandidateTechnicalPriceHistoryUsesPublishedPriceDateCutoff(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	prices := []PriceSnapshot{
+		{Source: "tiingo", SourceVersion: "tiingo:old", Symbol: "CUT", TradeDate: base, CloseMicros: 10_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "tiingo", SourceVersion: "tiingo:old", Symbol: "CUT", TradeDate: base.AddDate(0, 0, 1), CloseMicros: 11_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "tiingo", SourceVersion: "tiingo:backfill", Symbol: "CUT", TradeDate: base.AddDate(0, 0, 2), CloseMicros: 12_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+	}
+	if err := db.Create(&prices).Error; err != nil {
+		t.Fatal(err)
+	}
+	cutoff := base.AddDate(0, 0, 1)
+	rows, err := candidateTechnicalPriceHistory(context.Background(), db, CandidateScoreResult{
+		CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "CUT"},
+		PriceTradeDate:         &cutoff,
+		PriceSource:            "tiingo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || !rows[len(rows)-1].TradeDate.Equal(cutoff) {
+		t.Fatalf("rows = %+v, want no record after %s", rows, cutoff.Format(time.DateOnly))
 	}
 }
 

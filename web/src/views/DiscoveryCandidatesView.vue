@@ -573,6 +573,14 @@
               <el-radio-button value="table">列表</el-radio-button>
             </el-radio-group>
           </div>
+          <el-alert
+            v-if="technicalHistoryHasLaterRows"
+            type="info"
+            :closable="false"
+            show-icon
+            class="technical-history-asof-alert"
+            :title="`当前发布批次的价格与技术信号均截至 ${formatDate(candidateDetail.technical.trade_date)}；图表中之后的本地日线仅供后续观察，不参与当前批次评分或技术信号。`"
+          />
           <template v-if="technicalHistoryView === 'chart'">
             <div v-if="technicalHistoryChart.points.length" class="technical-chart" role="img" :aria-label="`${candidateDetail.score.ticker} 本地日线价格和成交量图表`">
               <div class="technical-chart-legend">
@@ -902,6 +910,11 @@ const sectorCategoryOptions = [
   '赛道数据缺失',
 ]
 const technicalHistoryChart = computed(() => buildTechnicalHistoryChart(candidateDetail.value?.technical_history || []))
+const technicalHistoryHasLaterRows = computed(() => {
+  const asOfDate = candidateDetail.value?.technical?.trade_date
+  if (!asOfDate) return false
+  return (candidateDetail.value?.technical_history || []).some((row) => row.trade_date > asOfDate)
+})
 
 function requestParams() {
   const params: Record<string, string | number> = { page: page.value, page_size: pageSize }
@@ -1768,6 +1781,10 @@ onMounted(load)
 .technical-history-title {
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+
+.technical-history-asof-alert {
+  margin-bottom: 10px;
 }
 
 .history-source {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -77,14 +78,24 @@ func hydrateCandidateTechnicalAnalysis(ctx context.Context, db *gorm.DB, items [
 }
 
 func candidateTechnicalPriceHistory(ctx context.Context, db *gorm.DB, item CandidateScoreResult) ([]PriceSnapshot, error) {
-	return candidateTechnicalPriceHistoryLimit(ctx, db, item, technicalMinimumSamples)
+	// Technical signals shown in a published candidate batch must not use a
+	// later manual history backfill. The batch's selected price is the common
+	// as-of point for the list price, market quality, and technical signals.
+	return candidateTechnicalPriceHistoryLimitAtOrBefore(ctx, db, item, technicalMinimumSamples, item.PriceTradeDate)
 }
 
 func candidateTechnicalPriceHistoryLimit(ctx context.Context, db *gorm.DB, item CandidateScoreResult, limit int) ([]PriceSnapshot, error) {
+	return candidateTechnicalPriceHistoryLimitAtOrBefore(ctx, db, item, limit, nil)
+}
+
+func candidateTechnicalPriceHistoryLimitAtOrBefore(ctx context.Context, db *gorm.DB, item CandidateScoreResult, limit int, cutoff *time.Time) ([]PriceSnapshot, error) {
 	if limit <= 0 {
 		limit = technicalMinimumSamples
 	}
 	query := db.WithContext(ctx).Where("symbol = ? AND quality_status = ?", strings.ToUpper(strings.TrimSpace(item.Ticker)), QualityStatusValid)
+	if cutoff != nil && !cutoff.IsZero() {
+		query = query.Where("trade_date <= ?", *cutoff)
+	}
 	var raw []PriceSnapshot
 	if err := query.Order("trade_date DESC, created_at DESC, id DESC").Limit(limit * 12).Find(&raw).Error; err != nil {
 		return nil, err
