@@ -10,6 +10,10 @@
           <el-input v-model="form.bot_token" show-password :placeholder="t('pages.telegram.tokenPlaceholder')" />
         </el-form-item>
         <el-form-item label="Chat ID"><el-input v-model="form.chat_id" /></el-form-item>
+        <el-form-item label="Telegram API 地址">
+          <el-input v-model="form.api_base_url" placeholder="https://api.telegram.org" />
+          <div class="form-hint">Docker 无法直连 Telegram 时，可填入你自建或可信代理的兼容 API 地址。</div>
+        </el-form-item>
         <el-form-item :label="t('pages.telegram.enableNotification')"><el-switch v-model="form.enabled" /></el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</el-button>
@@ -31,7 +35,7 @@ const { t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
-const form = reactive({ bot_token: '', chat_id: '', enabled: false })
+const form = reactive({ bot_token: '', chat_id: '', api_base_url: 'https://api.telegram.org', enabled: false })
 
 async function load() {
   loading.value = true
@@ -40,6 +44,7 @@ async function load() {
     for (const cfg of res.data.data) {
       if (cfg.config_key === 'telegram.bot_token') form.bot_token = cfg.config_value
       if (cfg.config_key === 'telegram.chat_id') form.chat_id = cfg.config_value
+      if (cfg.config_key === 'telegram.api_base_url') form.api_base_url = cfg.config_value || 'https://api.telegram.org'
       if (cfg.config_key === 'telegram.enabled') form.enabled = cfg.config_value === 'true'
     }
   } finally {

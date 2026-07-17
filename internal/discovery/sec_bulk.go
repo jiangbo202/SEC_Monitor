@@ -36,6 +36,7 @@ type SECBulkSource struct {
 	Downloader                                 *Downloader
 	TickerURL, SubmissionsURL, CompanyFactsURL string
 	Limits                                     ZIPParseLimits
+	CacheTTL                                   time.Duration
 }
 
 type tickerFile struct {
@@ -638,11 +639,11 @@ func (s SECBulkSource) Load(ctx context.Context) ([]SecuritySourceRecord, Source
 	if s.TickerURL == "" || s.SubmissionsURL == "" {
 		return nil, SourceVersion{}, fmt.Errorf("SEC metadata URLs are required")
 	}
-	a, err := s.Downloader.Download(ctx, s.TickerURL, "company_tickers_exchange.json", nil)
+	a, err := s.Downloader.DownloadWithCacheTTL(ctx, s.TickerURL, "company_tickers_exchange.json", nil, s.CacheTTL)
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
-	b, err := s.Downloader.Download(ctx, s.SubmissionsURL, "submissions.zip", nil)
+	b, err := s.Downloader.DownloadWithCacheTTL(ctx, s.SubmissionsURL, "submissions.zip", nil, s.CacheTTL)
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
@@ -691,7 +692,7 @@ func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]
 	if s.CompanyFactsURL == "" || s.SubmissionsURL == "" {
 		return nil, SourceVersion{}, fmt.Errorf("SEC companyfacts and submissions URLs are required")
 	}
-	c, err := s.Downloader.Download(ctx, s.CompanyFactsURL, "companyfacts.zip", nil)
+	c, err := s.Downloader.DownloadWithCacheTTL(ctx, s.CompanyFactsURL, "companyfacts.zip", nil, s.CacheTTL)
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
@@ -704,7 +705,7 @@ func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
-	submissions, err := s.Downloader.Download(ctx, s.SubmissionsURL, "submissions.zip", nil)
+	submissions, err := s.Downloader.DownloadWithCacheTTL(ctx, s.SubmissionsURL, "submissions.zip", nil, s.CacheTTL)
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
@@ -735,7 +736,7 @@ func (s SECBulkSource) LoadFinancialFacts(ctx context.Context, allowed map[strin
 	if s.CompanyFactsURL == "" {
 		return nil, SourceVersion{}, fmt.Errorf("SEC companyfacts URL is required")
 	}
-	c, err := s.Downloader.Download(ctx, s.CompanyFactsURL, "companyfacts.zip", nil)
+	c, err := s.Downloader.DownloadWithCacheTTL(ctx, s.CompanyFactsURL, "companyfacts.zip", nil, s.CacheTTL)
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}

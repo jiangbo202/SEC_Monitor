@@ -442,11 +442,31 @@ export interface RecentSECFiling {
   title: string
 }
 
+export interface ProfitHistoryPoint {
+  period: string
+  period_start: string
+  period_end: string
+  net_income_usd: number
+  form: string
+  concept: string
+  source_url: string
+  derived: boolean
+}
+
+export interface ProfitHistory {
+  ticker: string
+  as_of: string
+  quarterly: ProfitHistoryPoint[]
+  annual: ProfitHistoryPoint[]
+}
+
 export interface CandidateDetail {
   batch_id: string
   security: DiscoverySecurity
   score: CandidateScore
   financial?: DiscoveryFinancialMetric
+
+  profit_history?: ProfitHistory
   insiders: DiscoveryInsiderTransaction[]
   capital_risks: DiscoveryCapitalRisk[]
   capital_risk_summary: CandidateCapitalRiskSummary
@@ -523,6 +543,7 @@ export interface CandidateHealth {
   missing_price_candidates: number
   missing_market_cap: number
   active_risk_events: number
+  pending_financial_recalculations?: number
   issues: string[]
 }
 

@@ -793,6 +793,58 @@ func containsPriorityReason(values []ReviewPriorityReason, label string, points 
 	return false
 }
 
+func TestCandidatePriceFreshnessUsesLatestCompletedNYSESession(t *testing.T) {
+	date := func(value string) *time.Time {
+		parsed, err := time.Parse(time.DateOnly, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &parsed
+	}
+	ny := mustNY(t)
+	tests := []struct {
+		name     string
+		expected string
+		actual   string
+		now      time.Time
+		want     string
+		wantAge  int
+	}{
+		{
+			name:     "pre-close prior session is current",
+			expected: "2026-07-17",
+			actual:   "2026-07-16",
+			now:      time.Date(2026, 7, 17, 9, 11, 0, 0, ny),
+			want:     PriceFreshnessCurrent,
+			wantAge:  0,
+		},
+		{
+			name:     "after close prior session is stale fallback",
+			expected: "2026-07-17",
+			actual:   "2026-07-16",
+			now:      time.Date(2026, 7, 17, 16, 1, 0, 0, ny),
+			want:     PriceFreshnessPreviousTradingDay,
+			wantAge:  1,
+		},
+		{
+			name:     "pre-close skips weekend and NYSE holiday",
+			expected: "2026-07-06",
+			actual:   "2026-07-02",
+			now:      time.Date(2026, 7, 6, 10, 0, 0, 0, ny),
+			want:     PriceFreshnessCurrent,
+			wantAge:  0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, age := candidatePriceFreshnessAt(tt.expected, date(tt.actual), tt.now)
+			if status != tt.want || age != tt.wantAge {
+				t.Fatalf("freshness = (%q, %d), want (%q, %d)", status, age, tt.want, tt.wantAge)
+			}
+		})
+	}
+}
+
 func TestBatchAndProviderQueriesPaginateFilterAndOrder(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)

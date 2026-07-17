@@ -98,6 +98,60 @@ func TestDownloaderFallsBackToCachedFileOnRequestFailure(t *testing.T) {
 	}
 }
 
+func TestDownloaderReusesFreshCacheWithoutRequest(t *testing.T) {
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return responseForRequest(request, http.StatusOK, "fresh payload"), nil
+	})}
+	d := &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1024}
+	if _, err := d.Download(context.Background(), "https://example.test/source", "fresh-cache", nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := d.DownloadWithCacheTTL(context.Background(), "https://example.test/source", "fresh-cache", nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.NotModified {
+		t.Fatal("fresh cache result should be marked not modified")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("transport calls = %d, want 1", got)
+	}
+}
+
+func TestDownloaderStopsStalledTransferAfterIdleTimeout(t *testing.T) {
+	body := &blockingReadCloser{closed: make(chan struct{})}
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body, Request: request}, nil
+	})}
+	d := &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1024, ReadIdleTimeout: 20 * time.Millisecond}
+	_, err := d.Download(context.Background(), "https://example.test/source", "stalled", nil)
+	if err == nil || !strings.Contains(err.Error(), "made no progress") {
+		t.Fatalf("Download() error = %v, want idle timeout", err)
+	}
+	select {
+	case <-body.closed:
+	case <-time.After(time.Second):
+		t.Fatal("stalled response body was not closed")
+	}
+}
+
+type blockingReadCloser struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (r *blockingReadCloser) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (r *blockingReadCloser) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
+}
+
 func TestDownloaderReturnsRedirectFinalURL(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
@@ -239,6 +293,9 @@ func TestDownloaderRejectsFailuresAndClosesBodies(t *testing.T) {
 		_, err := d.Download(context.Background(), "https://example.test/status", "status", nil)
 		if err == nil || !strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "secret response body") {
 			t.Fatalf("Download() error = %v", err)
+		}
+		if !IsDownloadHTTPStatus(err, http.StatusBadGateway) {
+			t.Fatalf("Download() error = %v, want typed HTTP status", err)
 		}
 	})
 

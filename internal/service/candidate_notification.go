@@ -57,6 +57,9 @@ func (s *CandidateNotificationService) Preview(ctx context.Context) (CandidateNo
 		return CandidateNotificationPreview{}, err
 	}
 	result := CandidateNotificationPreview{Enabled: settings.Enabled, Settings: settings}
+	if settings.ShadowMode {
+		result.SuppressedReason = "candidate_notification_shadow_mode"
+	}
 	if !settings.Enabled {
 		result.SuppressedReason = "candidate_notification_disabled"
 		result.Summary = discovery.CandidateSummary{
@@ -81,6 +84,9 @@ func (s *CandidateNotificationService) Preview(ctx context.Context) (CandidateNo
 	if err != nil {
 		return CandidateNotificationPreview{}, err
 	}
+	if settings.ShadowMode {
+		return result, nil
+	}
 	if !settings.NotifyA && !settings.NotifyB {
 		result.SuppressedReason = "candidate_notification_grades_disabled"
 	}
@@ -97,6 +103,11 @@ func (s *CandidateNotificationService) Send(ctx context.Context, input Candidate
 	preview, err := s.Preview(ctx)
 	if err != nil {
 		return CandidateNotificationSendResult{}, err
+	}
+	if preview.SuppressedReason == "candidate_notification_shadow_mode" {
+		// Shadow mode deliberately completes without a Telegram delivery. This
+		// keeps the scheduler healthy while preserving a reviewable preview.
+		return CandidateNotificationSendResult{Preview: preview}, nil
 	}
 	if preview.SuppressedReason != "" {
 		return CandidateNotificationSendResult{}, fmt.Errorf("%w: %s", ErrValidation, preview.SuppressedReason)

@@ -53,6 +53,8 @@ type DiscoveryConfig struct {
 	AutoTechnicalHistoryWarmup  bool
 	MinPublishCoveragePct       float64
 	TaskTimeoutMin              int
+	DownloadIdleTimeoutSec      int
+	SECBulkCacheTTLHours        int
 }
 
 type SECConfig struct {
@@ -111,6 +113,8 @@ func Load() Config {
 			AutoTechnicalHistoryWarmup:  boolOrDefault("SMALL_CAP_AUTO_TECHNICAL_HISTORY_WARMUP", true),
 			MinPublishCoveragePct:       floatOrDefault("SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT", 85),
 			TaskTimeoutMin:              positiveIntOrDefault("SMALL_CAP_TASK_TIMEOUT_MINUTES", 60),
+			DownloadIdleTimeoutSec:      positiveIntOrDefault("SMALL_CAP_DOWNLOAD_IDLE_TIMEOUT_SECONDS", 90),
+			SECBulkCacheTTLHours:        positiveIntOrDefault("SMALL_CAP_SEC_BULK_CACHE_TTL_HOURS", 12),
 		},
 		SEC: SECConfig{
 			BaseURL:   valueOrDefault("SEC_BASE_URL", "https://data.sec.gov"),

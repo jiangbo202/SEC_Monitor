@@ -94,6 +94,10 @@ func (p *TwelveDataPriceProvider) load(ctx context.Context, expected []Listing, 
 	if err != nil {
 		return nil, ProviderResult{}, err
 	}
+	previous, err := previousTradingDate(ctx, p.options.Calendar, target)
+	if err != nil {
+		return nil, ProviderResult{}, fmt.Errorf("find previous trading date: %w", err)
+	}
 	limit := len(expected)
 	if p.options.RequestBudget > 0 && p.options.RequestBudget < limit {
 		limit = p.options.RequestBudget
@@ -131,7 +135,15 @@ func (p *TwelveDataPriceProvider) load(ctx context.Context, expected []Listing, 
 			break
 		}
 		if ok {
-			records = append(records, record)
+			reason, accepted, dateErr := twelveDataRecordDateStatus(ctx, record, target, previous, p.options.Calendar)
+			if dateErr != nil {
+				return nil, ProviderResult{}, dateErr
+			}
+			if accepted {
+				records = append(records, record)
+			} else {
+				skipReasons[reason]++
+			}
 		} else {
 			skipReasons[reasonOrDefault(reason, "no_record")]++
 		}
@@ -141,7 +153,7 @@ func (p *TwelveDataPriceProvider) load(ctx context.Context, expected []Listing, 
 		if rateLimited {
 			return nil, ProviderResult{}, errors.New("twelve data rate limited")
 		}
-		return nil, ProviderResult{}, errors.New("twelve data returned no usable price records")
+		return nil, ProviderResult{}, errors.New("twelve data returned no current or previous-trading-day price records")
 	}
 	priceDate := latestPriceRecordDate(records)
 	result, err := validatePriceBatch(ctx, records, PriceValidationOptions{
@@ -159,6 +171,29 @@ func (p *TwelveDataPriceProvider) load(ctx context.Context, expected []Listing, 
 	}
 	result.SHA256 = hashTwelveDataPriceRecords(records)
 	return records, result, nil
+}
+
+// twelveDataRecordDateStatus keeps a stale response for the provider cache,
+// but prevents it from invalidating every other symbol in the provider run.
+// A later coordinator step may explicitly reuse a locally persisted previous
+// trading-day quote; provider responses older than that are never accepted.
+func twelveDataRecordDateStatus(ctx context.Context, record PriceRecord, target, previous time.Time, calendar MarketCalendar) (string, bool, error) {
+	date := record.TradeDate.Format(time.DateOnly)
+	targetDate := target.Format(time.DateOnly)
+	if date > targetDate {
+		return "future_trade_date", false, nil
+	}
+	trading, err := calendar.IsTradingDate(ctx, date)
+	if err != nil {
+		return "", false, fmt.Errorf("validate twelve data trade date %s: %w", date, err)
+	}
+	if !trading {
+		return "non_trading_date", false, nil
+	}
+	if date < previous.Format(time.DateOnly) {
+		return "stale_trade_date", false, nil
+	}
+	return "", true, nil
 }
 
 func (p *TwelveDataPriceProvider) emitProgress(processed, total, records int, skipReasons map[string]int, started time.Time, force bool) {

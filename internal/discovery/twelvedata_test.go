@@ -162,3 +162,33 @@ func TestTwelveDataPriceProviderSkipsInvalidRecordAndContinues(t *testing.T) {
 		t.Fatalf("requests=%d records=%#v result=%#v", requests, records, result)
 	}
 }
+
+func TestTwelveDataPriceProviderSkipsStaleRecordsWithoutDiscardingFreshSymbols(t *testing.T) {
+	requests := 0
+	client := httpClientForHandler(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.Query().Get("symbol") == "STALE" {
+			return textResponse(http.StatusOK, `{"values":[{"datetime":"2026-06-26","open":"1","high":"1","low":"1","close":"1","volume":"1"}],"status":"ok"}`), nil
+		}
+		return textResponse(http.StatusOK, `{"values":[{"datetime":"2026-06-30","open":"2","high":"2","low":"2","close":"2","volume":"2"}],"status":"ok"}`), nil
+	})
+	provider, err := NewTwelveDataPriceProvider(TwelveDataPriceProviderOptions{
+		APIKey:        "test-key",
+		BaseURL:       "https://api.twelvedata.com",
+		Client:        client,
+		Calendar:      &stubMarketCalendar{},
+		Now:           func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
+		RequestBudget: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records, result, err := provider.LoadForDate(context.Background(), []Listing{{Ticker: "STALE"}, {Ticker: "FRESH"}}, "2026-06-30")
+	if err != nil {
+		t.Fatalf("LoadForDate() error = %v", err)
+	}
+	if requests != 2 || len(records) != 1 || records[0].Symbol != "FRESH" || result.Records != 1 || result.Expected != 2 || result.CoveragePct != 50 {
+		t.Fatalf("requests=%d records=%#v result=%#v", requests, records, result)
+	}
+}

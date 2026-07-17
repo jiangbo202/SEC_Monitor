@@ -9,6 +9,8 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -84,6 +86,9 @@ func (s SECForm4InsiderSource) LoadInsiderTransactions(ctx context.Context, allo
 	}
 	downloads := []downloadedDoc{}
 	transactions := []InsiderTransaction{}
+	eligibleDownloads := 0
+	failedDownloads := 0
+	var lastDownloadErr error
 	for _, record := range records {
 		if _, ok := allowed[record.CIK]; !ok {
 			continue
@@ -99,9 +104,25 @@ func (s SECForm4InsiderSource) LoadInsiderTransactions(ctx context.Context, allo
 			if err != nil {
 				continue
 			}
-			download, err := s.Downloader.Download(ctx, sourceURL, cacheKey, nil)
+			eligibleDownloads++
+			// Form 4 attachments are immutable once accessioned. Reusing the
+			// local copy avoids thousands of unnecessary SEC requests on every
+			// daily universe refresh.
+			download, err := s.Downloader.DownloadWithCacheTTL(ctx, sourceURL, cacheKey, nil, -1)
 			if err != nil {
-				return nil, SourceVersion{}, err
+				if IsDownloadHTTPStatus(err, http.StatusNotFound) || IsDownloadHTTPStatus(err, http.StatusGone) {
+					// SEC submissions metadata can retain a historical primary
+					// document name after the attachment is removed or replaced.
+					// A permanent 404/410 is not a source outage and must not make
+					// every daily universe refresh fail.
+					continue
+				}
+				// A historical Form 4 attachment can disappear temporarily or
+				// suffer a transient SEC/network failure. Keep the daily universe
+				// usable when other ownership documents remain available.
+				failedDownloads++
+				lastDownloadErr = err
+				continue
 			}
 			file, err := os.Open(download.Path)
 			if err != nil {
@@ -110,7 +131,10 @@ func (s SECForm4InsiderSource) LoadInsiderTransactions(ctx context.Context, allo
 			parsed, parseErr := ParseForm4OwnershipXML(file, filing.Accession, sourceURL)
 			closeErr := file.Close()
 			if parseErr != nil {
-				return nil, SourceVersion{}, parseErr
+				// EDGAR's submissions metadata occasionally points at an HTML
+				// wrapper or a non-ownership attachment. One malformed filing must
+				// not invalidate the whole small-cap universe run.
+				continue
 			}
 			if closeErr != nil {
 				return nil, SourceVersion{}, closeErr
@@ -118,6 +142,9 @@ func (s SECForm4InsiderSource) LoadInsiderTransactions(ctx context.Context, allo
 			transactions = append(transactions, parsed...)
 			downloads = append(downloads, downloadedDoc{Filing: filing, Result: download})
 		}
+	}
+	if eligibleDownloads > 0 && len(downloads) == 0 && failedDownloads > 0 {
+		return nil, SourceVersion{}, fmt.Errorf("download all eligible Form 4 documents: %w", lastDownloadErr)
 	}
 	sort.Slice(transactions, func(i, j int) bool { return canonicalLess(transactions[i], transactions[j]) })
 	versionHash := sha256.New()
@@ -198,8 +225,8 @@ func form4DocumentLocation(baseURL string, filing FilingMetadata) (string, strin
 	if accession == "" {
 		return "", "", fmt.Errorf("missing Form 4 accession")
 	}
-	primary := strings.TrimSpace(filing.PrimaryDocument)
-	if primary == "" || strings.Contains(primary, "/") || strings.Contains(primary, `\`) || strings.Contains(primary, "..") {
+	primary, ok := safeForm4PrimaryDocument(filing.PrimaryDocument)
+	if !ok {
 		return "", "", fmt.Errorf("invalid Form 4 primary document")
 	}
 	noDash := strings.ReplaceAll(accession, "-", "")
@@ -207,12 +234,42 @@ func form4DocumentLocation(baseURL string, filing FilingMetadata) (string, strin
 		return "", "", fmt.Errorf("invalid Form 4 accession")
 	}
 	cikPath := strings.TrimLeft(filing.CIK, "0")
-	sourceURL := strings.TrimRight(baseURL, "/") + "/" + cikPath + "/" + noDash + "/" + primary
+	sourceURL := strings.TrimRight(baseURL, "/") + "/" + cikPath + "/" + noDash + "/" + escapeForm4DocumentPath(primary)
 	cacheKey := "form4-" + filing.CIK + "-" + noDash + "-" + sanitizeForm4CachePart(primary)
 	if !safeCacheKey(cacheKey) {
 		return "", "", fmt.Errorf("invalid Form 4 cache key")
 	}
 	return sourceURL, cacheKey, nil
+}
+
+// safeForm4PrimaryDocument accepts SEC's common xslF345*/document.xml paths
+// while rejecting path traversal and unsafe EDGAR archive path segments.
+func safeForm4PrimaryDocument(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, `\`) {
+		return "", false
+	}
+	parts := strings.Split(value, "/")
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return "", false
+		}
+		for i := 0; i < len(part); i++ {
+			ch := part[i]
+			if !(ch >= 'a' && ch <= 'z') && !(ch >= 'A' && ch <= 'Z') && !(ch >= '0' && ch <= '9') && ch != '-' && ch != '_' && ch != '.' {
+				return "", false
+			}
+		}
+	}
+	return value, true
+}
+
+func escapeForm4DocumentPath(value string) string {
+	parts := strings.Split(value, "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return strings.Join(parts, "/")
 }
 
 func sanitizeForm4CachePart(value string) string {

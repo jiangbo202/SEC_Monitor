@@ -58,6 +58,8 @@ type fundFilingFilterResult struct {
 	reasonSummary string
 }
 
+const fundFilingIdentityIncompleteRetryAfter = time.Hour
+
 type SyncRunFilter struct {
 	Status   string
 	Trigger  string
@@ -598,12 +600,16 @@ func (s *FilingService) filterFundFilings(ctx context.Context, target model.Watc
 			}
 			if metadata.Incomplete || len(metadata.Relationships) == 0 {
 				_ = s.storeFundFilingParseFailure(ctx, identity, filing, "filing_identity_incomplete")
-				return fundFilingFilterResult{}, fmt.Errorf("filing %s identity metadata is incomplete", filing.AccessionNumber)
+				// Exact fund identity must fail closed for this one filing, but an
+				// incomplete SEC index is not a reason to fail the entire ETF
+				// target. The failed parse is cached briefly and retried later.
+				matched, reason = false, "filing_identity_incomplete"
+			} else {
+				if err := s.storeFundFilingMetadata(ctx, identity, filing, metadata); err != nil {
+					return fundFilingFilterResult{}, err
+				}
+				matched, reason = matchFundFilingRelationships(identity, metadata.Relationships)
 			}
-			if err := s.storeFundFilingMetadata(ctx, identity, filing, metadata); err != nil {
-				return fundFilingFilterResult{}, err
-			}
-			matched, reason = matchFundFilingRelationships(identity, metadata.Relationships)
 		}
 		if !cached && !hasMetadataClient {
 			matched, reason, err = fundClient.MatchFundFiling(ctx, identity, filing)
@@ -648,7 +654,7 @@ func summarizeFundFilingSkipReasons(reasonCounts map[string]int) string {
 	const maxReasons = 4
 	reasons := make([]string, 0, len(reasonCounts))
 	for reason, count := range reasonCounts {
-		if count > 0 && fundFilingMatchReasonVerified(reason) {
+		if count > 0 && (fundFilingMatchReasonVerified(reason) || reason == "filing_identity_incomplete") {
 			reasons = append(reasons, reason)
 		}
 	}
@@ -688,6 +694,14 @@ func (s *FilingService) cachedFundFilingMatch(ctx context.Context, identity sec.
 		return matched, reason, true, nil
 	}
 	if cached.ParseStatus == "failed" {
+		if cached.ParseMessage == "filing_identity_incomplete" {
+			if cached.CheckedAt.Add(fundFilingIdentityIncompleteRetryAfter).After(time.Now().UTC()) {
+				return false, cached.ParseMessage, true, nil
+			}
+			// The SEC index can be completed or repaired after its first
+			// publication. Re-parse this accession after the short cooldown.
+			return false, "", false, nil
+		}
 		return false, "", true, fmt.Errorf("cached fund filing metadata is unavailable: %s", cached.ParseMessage)
 	}
 	var seriesIDs, classIDs []string

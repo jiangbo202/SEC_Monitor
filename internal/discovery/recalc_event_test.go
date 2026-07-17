@@ -29,13 +29,13 @@ func TestRecordCandidateRecalcEventForFilingMarksCurrentCandidateDirty(t *testin
 	}
 
 	created, err := RecordCandidateRecalcEventForFiling(context.Background(), db, CandidateRecalcFilingInput{
-		FilingID: "filing-1", AccessionNumber: "0000001234-26-000001", Ticker: "EVNT", CIK: security.CIK, FilingType: "8-K", FilingDate: now,
+		FilingID: "filing-1", AccessionNumber: "0000001234-26-000001", Ticker: "EVNT", CIK: security.CIK, FilingType: "10-Q", FilingDate: now,
 	})
 	if err != nil || !created {
 		t.Fatalf("created=%v err=%v", created, err)
 	}
 	again, err := RecordCandidateRecalcEventForFiling(context.Background(), db, CandidateRecalcFilingInput{
-		FilingID: "filing-1", AccessionNumber: "0000001234-26-000001", Ticker: "EVNT", CIK: security.CIK, FilingType: "8-K", FilingDate: now,
+		FilingID: "filing-1", AccessionNumber: "0000001234-26-000001", Ticker: "EVNT", CIK: security.CIK, FilingType: "10-Q", FilingDate: now,
 	})
 	if err != nil || again {
 		t.Fatalf("again=%v err=%v", again, err)
@@ -46,6 +46,10 @@ func TestRecordCandidateRecalcEventForFilingMarksCurrentCandidateDirty(t *testin
 	}
 	if event.Status != CandidateRecalcStatusDirty || event.Ticker != "EVNT" || event.SecurityID != security.ID {
 		t.Fatalf("event = %#v", event)
+	}
+	nonFinancial, err := RecordCandidateRecalcEventForFiling(context.Background(), db, CandidateRecalcFilingInput{FilingID: "filing-8k", Ticker: "EVNT", FilingType: "8-K"})
+	if err != nil || nonFinancial {
+		t.Fatalf("non-financial created=%v err=%v", nonFinancial, err)
 	}
 	missing, err := RecordCandidateRecalcEventForFiling(context.Background(), db, CandidateRecalcFilingInput{FilingID: "filing-2", Ticker: "MISS"})
 	if err != nil || missing {

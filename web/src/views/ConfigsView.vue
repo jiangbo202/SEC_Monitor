@@ -66,6 +66,10 @@
           <el-form-item :label="t('pages.configs.candidateNotificationEnabled')">
             <el-switch v-model="candidateNotificationForm.enabled" />
           </el-form-item>
+          <el-form-item :label="t('pages.configs.candidateNotificationShadowMode')">
+            <el-switch v-model="candidateNotificationForm.shadow_mode" />
+            <span class="form-help">{{ t('pages.configs.candidateNotificationShadowModeHint') }}</span>
+          </el-form-item>
           <el-form-item :label="t('pages.configs.candidateNotifyA')">
             <el-switch v-model="candidateNotificationForm.notify_a" />
           </el-form-item>
@@ -212,6 +216,15 @@
           </el-form-item>
           <el-form-item :label="t('pages.configs.autoTechnicalHistoryWarmup')">
             <el-switch v-model="discoveryForm.auto_technical_history_warmup" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.discoveryTaskTimeoutMinutes')">
+            <el-input-number v-model="discoveryForm.task_timeout_minutes" :min="15" :max="240" :step="15" controls-position="right" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.discoveryDownloadIdleTimeoutSeconds')">
+            <el-input-number v-model="discoveryForm.download_idle_timeout_seconds" :min="30" :max="900" :step="30" controls-position="right" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.discoverySECBulkCacheTTLHours')">
+            <el-input-number v-model="discoveryForm.sec_bulk_cache_ttl_hours" :min="1" :max="72" :step="1" controls-position="right" />
           </el-form-item>
         </el-form>
         <el-alert :title="t('pages.configs.discoveryDatasourceHint')" type="info" :closable="false" show-icon />
@@ -367,6 +380,7 @@ const notificationForm = reactive({
 })
 const candidateNotificationForm = reactive({
   enabled: false,
+  shadow_mode: false,
   notify_a: false,
   notify_b: false,
   send_time: '09:30',
@@ -390,7 +404,10 @@ const discoveryForm = reactive({
   yahoo_request_budget: 45,
   yahoo_base_url: 'https://query1.finance.yahoo.com',
   min_publish_coverage_pct: 85,
-  auto_technical_history_warmup: true
+  auto_technical_history_warmup: true,
+  task_timeout_minutes: 60,
+  download_idle_timeout_seconds: 90,
+  sec_bulk_cache_ttl_hours: 12
 })
 const ipoForm = reactive({
   enabled: true,
@@ -501,6 +518,7 @@ async function load() {
     notificationForm.quiet_hours_start = configValue(configs, 'notification.quiet_hours_start', '22:00')
     notificationForm.quiet_hours_end = configValue(configs, 'notification.quiet_hours_end', '08:00')
     candidateNotificationForm.enabled = configValue(configs, 'candidate_notification.enabled', 'false') === 'true'
+    candidateNotificationForm.shadow_mode = configValue(configs, 'candidate_notification.shadow_mode', 'false') === 'true'
     candidateNotificationForm.notify_a = configValue(configs, 'candidate_notification.notify_a', 'false') === 'true'
     candidateNotificationForm.notify_b = configValue(configs, 'candidate_notification.notify_b', 'false') === 'true'
     candidateNotificationForm.send_time = configValue(configs, 'candidate_notification.send_time', '09:30')
@@ -522,6 +540,9 @@ async function load() {
     discoveryForm.yahoo_base_url = configValue(configs, 'discovery.yahoo_base_url', 'https://query1.finance.yahoo.com')
     discoveryForm.min_publish_coverage_pct = Number(configValue(configs, 'discovery.min_publish_coverage_pct', '85'))
     discoveryForm.auto_technical_history_warmup = configValue(configs, 'discovery.auto_technical_history_warmup', 'true') === 'true'
+    discoveryForm.task_timeout_minutes = Number(configValue(configs, 'discovery.task_timeout_minutes', '60'))
+    discoveryForm.download_idle_timeout_seconds = Number(configValue(configs, 'discovery.download_idle_timeout_seconds', '90'))
+    discoveryForm.sec_bulk_cache_ttl_hours = Number(configValue(configs, 'discovery.sec_bulk_cache_ttl_hours', '12'))
     ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
     ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,S-1MEF')
     ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))
@@ -552,6 +573,7 @@ async function save() {
       { key: 'notification.quiet_hours_start', value: notificationForm.quiet_hours_start, value_type: 'string', category: 'notification', encrypted: false },
       { key: 'notification.quiet_hours_end', value: notificationForm.quiet_hours_end, value_type: 'string', category: 'notification', encrypted: false },
       { key: 'candidate_notification.enabled', value: String(candidateNotificationForm.enabled), value_type: 'bool', category: 'candidate_notification', encrypted: false },
+      { key: 'candidate_notification.shadow_mode', value: String(candidateNotificationForm.shadow_mode), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.notify_a', value: String(candidateNotificationForm.notify_a), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.notify_b', value: String(candidateNotificationForm.notify_b), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.send_time', value: candidateNotificationForm.send_time, value_type: 'string', category: 'candidate_notification', encrypted: false },
@@ -573,6 +595,9 @@ async function save() {
       { key: 'discovery.yahoo_base_url', value: discoveryForm.yahoo_base_url, value_type: 'string', category: 'discovery', encrypted: false },
       { key: 'discovery.min_publish_coverage_pct', value: String(discoveryForm.min_publish_coverage_pct), value_type: 'float', category: 'discovery', encrypted: false },
       { key: 'discovery.auto_technical_history_warmup', value: String(discoveryForm.auto_technical_history_warmup), value_type: 'bool', category: 'discovery', encrypted: false },
+      { key: 'discovery.task_timeout_minutes', value: String(discoveryForm.task_timeout_minutes), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.download_idle_timeout_seconds', value: String(discoveryForm.download_idle_timeout_seconds), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.sec_bulk_cache_ttl_hours', value: String(discoveryForm.sec_bulk_cache_ttl_hours), value_type: 'int', category: 'discovery', encrypted: false },
       { key: 'ipo.enabled', value: String(ipoForm.enabled), value_type: 'bool', category: 'ipo', encrypted: false },
       { key: 'ipo.form_types', value: ipoForm.form_types, value_type: 'string', category: 'ipo', encrypted: false },
       { key: 'ipo.lookback_days', value: String(ipoForm.lookback_days), value_type: 'int', category: 'ipo', encrypted: false },

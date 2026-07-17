@@ -99,6 +99,9 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 	if cfg.Discovery.TaskTimeoutMin != 60 {
 		t.Fatalf("task timeout = %d", cfg.Discovery.TaskTimeoutMin)
 	}
+	if cfg.Discovery.DownloadIdleTimeoutSec != 90 || cfg.Discovery.SECBulkCacheTTLHours != 12 {
+		t.Fatalf("download safeguards = idle:%d cache ttl:%d", cfg.Discovery.DownloadIdleTimeoutSec, cfg.Discovery.SECBulkCacheTTLHours)
+	}
 }
 
 func TestLoadDiscoveryDatabaseDefaultsToMainDatabaseSibling(t *testing.T) {
@@ -138,6 +141,8 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	t.Setenv("SMALL_CAP_AUTO_TECHNICAL_HISTORY_WARMUP", "false")
 	t.Setenv("SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT", "35.5")
 	t.Setenv("SMALL_CAP_TASK_TIMEOUT_MINUTES", "15")
+	t.Setenv("SMALL_CAP_DOWNLOAD_IDLE_TIMEOUT_SECONDS", "75")
+	t.Setenv("SMALL_CAP_SEC_BULK_CACHE_TTL_HOURS", "8")
 
 	cfg := Load().Discovery
 	if cfg.Database != (DatabaseConfig{Type: "sqlite", DSN: "tmp/discovery.db"}) {
@@ -187,6 +192,9 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	if cfg.TaskTimeoutMin != 15 {
 		t.Fatalf("task timeout = %d", cfg.TaskTimeoutMin)
 	}
+	if cfg.DownloadIdleTimeoutSec != 75 || cfg.SECBulkCacheTTLHours != 8 {
+		t.Fatalf("download safeguards = idle:%d cache ttl:%d", cfg.DownloadIdleTimeoutSec, cfg.SECBulkCacheTTLHours)
+	}
 }
 
 func TestLoadDiscoveryTaskTimeoutFallsBackForNonPositiveOrInvalidValues(t *testing.T) {
@@ -195,6 +203,19 @@ func TestLoadDiscoveryTaskTimeoutFallsBackForNonPositiveOrInvalidValues(t *testi
 			t.Setenv("SMALL_CAP_TASK_TIMEOUT_MINUTES", value)
 			if got := Load().Discovery.TaskTimeoutMin; got != 60 {
 				t.Fatalf("task timeout = %d, want 60", got)
+			}
+		})
+	}
+}
+
+func TestLoadDiscoveryDownloadSafeguardsFallBackForNonPositiveOrInvalidValues(t *testing.T) {
+	for _, value := range []string{"0", "-1", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("SMALL_CAP_DOWNLOAD_IDLE_TIMEOUT_SECONDS", value)
+			t.Setenv("SMALL_CAP_SEC_BULK_CACHE_TTL_HOURS", value)
+			cfg := Load().Discovery
+			if cfg.DownloadIdleTimeoutSec != 90 || cfg.SECBulkCacheTTLHours != 12 {
+				t.Fatalf("safeguards = idle:%d cache ttl:%d", cfg.DownloadIdleTimeoutSec, cfg.SECBulkCacheTTLHours)
 			}
 		})
 	}

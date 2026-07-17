@@ -17,26 +17,27 @@ const (
 )
 
 type CandidateHealth struct {
-	BatchID                      string   `json:"batch_id"`
-	Status                       string   `json:"status"`
-	TotalCandidates              int      `json:"total_candidates"`
-	MissingFinancials            int      `json:"missing_financials"`
-	MissingInsiders              int      `json:"missing_insiders"`
-	InsiderDataStatus            string   `json:"insider_data_status"`
-	CandidatesWithInsiderRecords int      `json:"candidates_with_insider_records"`
-	InsiderRecordCoveragePct     float64  `json:"insider_record_coverage_pct"`
-	QualifiedInsiderCandidates   int      `json:"qualified_insider_candidates"`
-	NoQualifiedInsiderCandidates int      `json:"no_qualified_insider_candidates"`
-	CandidatesWithRecentFilings  int      `json:"candidates_with_recent_filings"`
-	RecentFilingCoveragePct      float64  `json:"recent_filing_coverage_pct"`
-	PriceEffectiveDate           string   `json:"price_effective_date"`
-	CurrentPriceCandidates       int      `json:"current_price_candidates"`
-	FallbackPriceCandidates      int      `json:"fallback_price_candidates"`
-	StalePriceCandidates         int      `json:"stale_price_candidates"`
-	MissingPriceCandidates       int      `json:"missing_price_candidates"`
-	MissingMarketCap             int      `json:"missing_market_cap"`
-	ActiveRiskEvents             int      `json:"active_risk_events"`
-	Issues                       []string `json:"issues"`
+	BatchID                        string   `json:"batch_id"`
+	Status                         string   `json:"status"`
+	TotalCandidates                int      `json:"total_candidates"`
+	MissingFinancials              int      `json:"missing_financials"`
+	MissingInsiders                int      `json:"missing_insiders"`
+	InsiderDataStatus              string   `json:"insider_data_status"`
+	CandidatesWithInsiderRecords   int      `json:"candidates_with_insider_records"`
+	InsiderRecordCoveragePct       float64  `json:"insider_record_coverage_pct"`
+	QualifiedInsiderCandidates     int      `json:"qualified_insider_candidates"`
+	NoQualifiedInsiderCandidates   int      `json:"no_qualified_insider_candidates"`
+	CandidatesWithRecentFilings    int      `json:"candidates_with_recent_filings"`
+	RecentFilingCoveragePct        float64  `json:"recent_filing_coverage_pct"`
+	PriceEffectiveDate             string   `json:"price_effective_date"`
+	CurrentPriceCandidates         int      `json:"current_price_candidates"`
+	FallbackPriceCandidates        int      `json:"fallback_price_candidates"`
+	StalePriceCandidates           int      `json:"stale_price_candidates"`
+	MissingPriceCandidates         int      `json:"missing_price_candidates"`
+	MissingMarketCap               int      `json:"missing_market_cap"`
+	ActiveRiskEvents               int      `json:"active_risk_events"`
+	PendingFinancialRecalculations int      `json:"pending_financial_recalculations"`
+	Issues                         []string `json:"issues"`
 }
 
 func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, error) {
@@ -72,6 +73,20 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 		return result, err
 	}
 	result.TotalCandidates = len(scores)
+	securityIDs := make([]uint, 0, len(scores))
+	for _, score := range scores {
+		securityIDs = append(securityIDs, score.SecurityID)
+	}
+	if len(securityIDs) > 0 {
+		var pending int64
+		if err := db.WithContext(ctx).Model(&CandidateRecalcEvent{}).Where("security_id IN ? AND status = ?", securityIDs, CandidateRecalcStatusDirty).Count(&pending).Error; err != nil {
+			return result, err
+		}
+		result.PendingFinancialRecalculations = int(pending)
+		if pending > 0 {
+			result.Issues = append(result.Issues, fmt.Sprintf("pending_financial_recalculations:%d", pending))
+		}
+	}
 	priceFreshnessBySecurity, err := candidatePriceFreshnessBySecurity(ctx, db, batch, scores)
 	if err != nil {
 		return result, err

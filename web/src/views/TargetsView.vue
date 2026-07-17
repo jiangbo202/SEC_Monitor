@@ -180,6 +180,10 @@
           </div>
         </div>
 
+        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+          <ProfitHistoryChart :history="detailProfitHistory" />
+        </div>
+
         <div class="panel-header target-detail-section-title">
           <span>{{ t('pages.targets.recentSync') }}</span>
           <el-link type="primary" @click="$router.push('/sync-runs')">{{ t('common.history') }}</el-link>
@@ -230,7 +234,8 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, Filing, FundIdentity, PageResult, SyncRunDetail, SystemConfig, TickerLookup, WatchTarget } from '@/api/types'
+import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
+import type { ApiResponse, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerLookup, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -249,6 +254,7 @@ const detailLoading = ref(false)
 const detailTarget = ref<WatchTarget | null>(null)
 const detailFilings = ref<Filing[]>([])
 const detailSyncDetails = ref<SyncRunDetail[]>([])
+const detailProfitHistory = ref<ProfitHistory | null>(null)
 const systemConfigs = ref<SystemConfig[]>([])
 const editingId = ref<number | null>(null)
 const filters = reactive({ ticker: '', status: '', group: '' })
@@ -528,8 +534,9 @@ async function openDetail(row: WatchTarget) {
 }
 
 async function loadTargetDetailData(row: WatchTarget) {
-  detailLoading.value = true
-  try {
+	detailLoading.value = true
+	detailProfitHistory.value = null
+	try {
     const [filings, syncDetails, configs] = await Promise.all([
       apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', {
         params: { ticker: row.ticker, page: 1, page_size: 8, sort_by: 'pulled_at', sort_order: 'desc' }
@@ -540,6 +547,14 @@ async function loadTargetDetailData(row: WatchTarget) {
     detailFilings.value = filings.data.data.items
     detailSyncDetails.value = syncDetails.data.data
     systemConfigs.value = configs.data.data
+		if (row.target_type === 'stock') {
+			try {
+				const history = await apiClient.get<ApiResponse<ProfitHistory>>(`/discovery/profit-history/${encodeURIComponent(row.ticker)}`)
+				detailProfitHistory.value = history.data.data
+			} catch {
+				detailProfitHistory.value = null
+			}
+		}
   } finally {
     detailLoading.value = false
   }

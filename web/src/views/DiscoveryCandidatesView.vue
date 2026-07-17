@@ -573,6 +573,10 @@
         </el-card>
 
         <el-card shadow="never">
+          <ProfitHistoryChart :history="candidateDetail.profit_history" />
+        </el-card>
+
+        <el-card shadow="never">
           <template #header>技术分析（独立研究信号，不计入基本面总分）</template>
           <el-alert
             v-if="candidateDetail.technical.status !== 'ready'"
@@ -852,6 +856,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
+import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import type {
   ApiResponse,
   CandidateDetail,
@@ -1399,8 +1404,8 @@ function priceFreshnessTagType(status?: string) {
 }
 
 function priceFreshnessTooltip(row: CandidateScore) {
-  if (row.price_freshness_status === 'current') return '与本批次有效交易日一致'
-  if (row.price_freshness_status === 'previous_trading_day') return `回退至前一交易日（相差 ${row.price_age_calendar_days ?? '-'} 个自然日）`
+  if (row.price_freshness_status === 'current') return '与最近已收盘交易日一致'
+  if (row.price_freshness_status === 'previous_trading_day') return `最近已收盘交易日（较本批次有效日早 ${row.price_age_calendar_days ?? '-'} 个自然日）`
   if (row.price_freshness_status === 'stale') return `价格已过期（相差 ${row.price_age_calendar_days ?? '-'} 个自然日）`
   if (row.price_freshness_status === 'future') return '价格日期晚于本批次有效交易日，需要复核'
   if (row.price_freshness_status === 'missing') return '未取得该标的价格'
@@ -1408,8 +1413,13 @@ function priceFreshnessTooltip(row: CandidateScore) {
 }
 
 function priceEvidenceTooltip(row: CandidateScore) {
-  const source = row.price_source || '本地行情缓存'
+  const source = priceSourceLabel(row.price_source)
   return `列表/技术分析使用最新本地行情：${source}，交易日 ${formatDate(row.price_trade_date)}。${priceFreshnessTooltip(row)}`
+}
+
+function priceSourceLabel(source?: string) {
+  if (source === 'local-cache') return '本地前一交易日回退'
+  return source || '本地行情缓存'
 }
 
 function sectorTagType(score?: number) {
@@ -1435,6 +1445,7 @@ function formatHealthIssue(issue: string) {
   if (code === 'stale_prices') return `价格已过期：${count || 0}`
   if (code === 'missing_prices') return `价格缺失：${count || 0}`
   if (code === 'candidate_insider_records') return `候选内幕记录覆盖：${count || 0}`
+  if (code === 'pending_financial_recalculations') return `待财务重算：${count || 0}`
   if (code === 'candidate_recent_filings') return `候选近期 SEC 公告覆盖：${count || 0}`
   if (code === 'no_current_published_prescreen_batch') return '暂无已发布的小盘候选批次'
   return issue

@@ -54,6 +54,7 @@ type NasdaqDirectorySource struct {
 	Downloader *Downloader
 	ListedURL  string
 	OtherURL   string
+	CacheTTL   time.Duration
 }
 
 var listedHeader = []string{"Symbol", "Security Name", "Market Category", "Test Issue", "Financial Status", "Round Lot Size", "ETF", "NextShares"}
@@ -205,11 +206,11 @@ func (s NasdaqDirectorySource) Load(ctx context.Context) ([]SecuritySourceRecord
 	if s.ListedURL == "" || s.OtherURL == "" {
 		return nil, SourceVersion{}, fmt.Errorf("Nasdaq source URLs are required")
 	}
-	a, err := s.Downloader.Download(ctx, s.ListedURL, "nasdaqlisted.txt", nil)
+	a, err := s.Downloader.DownloadWithCacheTTL(ctx, s.ListedURL, "nasdaqlisted.txt", nil, s.CacheTTL)
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}
-	b, err := s.Downloader.Download(ctx, s.OtherURL, "otherlisted.txt", nil)
+	b, err := s.Downloader.DownloadWithCacheTTL(ctx, s.OtherURL, "otherlisted.txt", nil, s.CacheTTL)
 	if err != nil {
 		return nil, SourceVersion{}, err
 	}

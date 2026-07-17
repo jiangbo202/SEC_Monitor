@@ -282,6 +282,28 @@ func BuildFinancialSummary(facts []FinancialFact, asOf time.Time) FinancialSumma
 	return out
 }
 
+// FinancialFactFromSnapshot restores the normalized representation used by
+// the financial calculator. It lets incremental SEC updates reuse the same
+// calculation path as a full security-universe run.
+func FinancialFactFromSnapshot(row FinancialFactSnapshot) FinancialFact {
+	return FinancialFact{
+		Metric: row.Metric, Concept: row.Concept, Unit: row.Unit, Form: row.Form, Accession: row.Accession,
+		PeriodStart: row.PeriodStart, PeriodEnd: row.PeriodEnd, FiledAt: row.FiledAt, AcceptedAt: row.AcceptedAt,
+		AmountMicros: row.AmountMicros, SourceURL: row.SourceURL,
+	}
+}
+
+// FinancialMetricFromFacts creates the persisted metric row from normalized
+// SEC facts. Full and incremental paths therefore share the same formula.
+func FinancialMetricFromFacts(batchID string, securityID uint, facts []FinancialFact, asOf time.Time) (FinancialMetricSnapshot, error) {
+	summary := BuildFinancialSummary(facts, asOf)
+	flags, err := json.Marshal(summary.QualityFlags)
+	if err != nil {
+		return FinancialMetricSnapshot{}, err
+	}
+	return financialMetricSnapshot(batchID, securityID, summary, string(flags), asOf), nil
+}
+
 func (out *FinancialSummary) setQuarterlyGrossMargin(facts []FinancialFact, revenue FinancialFact) {
 	if revenue.AmountMicros <= 0 {
 		return

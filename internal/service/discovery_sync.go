@@ -14,6 +14,7 @@ import (
 	"sec_monitor/internal/discovery"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -51,6 +52,13 @@ type DiscoverySyncResult struct {
 	Summary                discovery.CandidateSummary   `json:"summary"`
 	Health                 discovery.CandidateHealth    `json:"health"`
 	TechnicalHistoryWarmup TechnicalHistoryWarmupResult `json:"technical_history_warmup"`
+}
+
+type DiscoveryFinancialRefreshResult struct {
+	Events       int `json:"events"`
+	Companies    int `json:"companies"`
+	Facts        int `json:"facts"`
+	Recalculated int `json:"recalculated"`
 }
 
 // TechnicalHistoryWarmupResult records the non-blocking daily technical
@@ -115,6 +123,81 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	}
 	result.Health, err = discovery.BuildCandidateHealth(ctx, s.db)
 	return result, err
+}
+
+// RefreshDirtyFinancials consumes financial-report events without requesting
+// fresh prices. New SEC facts immediately refresh the current financial metric
+// and candidate score; the existing published market batch keeps its price
+// evidence and effective date.
+func (s *DiscoverySyncService) RefreshDirtyFinancials(ctx context.Context) (DiscoveryFinancialRefreshResult, error) {
+	result := DiscoveryFinancialRefreshResult{}
+	if s == nil || s.db == nil {
+		return result, errors.New("discovery sync service is not configured")
+	}
+	var events []discovery.CandidateRecalcEvent
+	if err := s.db.WithContext(ctx).Where("status = ?", discovery.CandidateRecalcStatusDirty).Order("id ASC").Find(&events).Error; err != nil {
+		return result, err
+	}
+	if len(events) == 0 {
+		return result, nil
+	}
+	result.Events = len(events)
+	ciks := map[string]struct{}{}
+	for _, event := range events {
+		if event.CIK != "" {
+			ciks[event.CIK] = struct{}{}
+		}
+	}
+	if len(ciks) == 0 {
+		return result, nil
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return result, err
+	}
+	timeout := time.Duration(cfg.TaskTimeoutMin) * time.Minute
+	if timeout <= 0 {
+		timeout = time.Hour
+	}
+	source := discovery.SECBulkSource{Downloader: newDiscoveryDownloader(cfg, timeout), CompanyFactsURL: cfg.SECCompanyFactsURL, Limits: discovery.ZIPParseLimits{MaxEntries: 1_000_000, MaxEntryBytes: 512 << 20, MaxTotalBytes: 64 << 30}, CacheTTL: discoveryCacheTTL(cfg)}
+	facts, _, err := source.LoadFinancialFacts(ctx, ciks)
+	if err != nil {
+		return result, err
+	}
+	byCIK := map[string][]discovery.FinancialFact{}
+	for _, fact := range facts {
+		byCIK[fact.CIK] = append(byCIK[fact.CIK], fact)
+	}
+	now := time.Now().UTC()
+	processedSecurityIDs := make([]uint, 0, len(byCIK))
+	for cik, rows := range byCIK {
+		var security discovery.Security
+		if err := s.db.WithContext(ctx).Where("cik = ?", cik).First(&security).Error; err != nil {
+			return result, err
+		}
+		for _, fact := range rows {
+			item := discovery.FinancialFactSnapshot{SecurityID: security.ID, Metric: fact.Metric, Concept: fact.Concept, PeriodStart: fact.PeriodStart, PeriodEnd: fact.PeriodEnd, Accession: fact.Accession, Unit: fact.Unit, AmountMicros: fact.AmountMicros, Form: fact.Form, SourceURL: fact.SourceURL, QualityStatus: discovery.QualityStatusValid, FiledAt: fact.FiledAt, AcceptedAt: fact.AcceptedAt, CreatedAt: now}
+			res := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&item)
+			if res.Error != nil {
+				return result, res.Error
+			}
+			result.Facts += int(res.RowsAffected)
+		}
+		result.Companies++
+		processedSecurityIDs = append(processedSecurityIDs, security.ID)
+	}
+	if len(processedSecurityIDs) == 0 {
+		return result, nil
+	}
+	recalculated, err := discovery.RefreshCurrentCandidateFinancials(ctx, s.db, processedSecurityIDs, now)
+	if err != nil {
+		return result, err
+	}
+	result.Recalculated = recalculated
+	if err := s.db.WithContext(ctx).Model(&discovery.CandidateRecalcEvent{}).Where("status = ? AND security_id IN ?", discovery.CandidateRecalcStatusDirty, processedSecurityIDs).Updates(map[string]any{"status": "recalculated", "updated_at": now}).Error; err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func (s *DiscoverySyncService) RunMarketOnly(ctx context.Context) (DiscoverySyncResult, error) {
@@ -198,12 +281,34 @@ func (s *DiscoverySyncService) appliedDiscoveryConfig(ctx context.Context) (conf
 	return s.configs.ApplyDiscoveryConfig(ctx, cfg)
 }
 
+func newDiscoveryDownloader(cfg config.DiscoveryConfig, timeout time.Duration) *discovery.Downloader {
+	idleTimeout := time.Duration(cfg.DownloadIdleTimeoutSec) * time.Second
+	if idleTimeout <= 0 {
+		idleTimeout = 90 * time.Second
+	}
+	return &discovery.Downloader{
+		Client:          &http.Client{Timeout: timeout},
+		CacheDir:        cfg.CacheDir,
+		MaxBytes:        8 << 30,
+		UserAgent:       cfg.UserAgent,
+		ReadIdleTimeout: idleTimeout,
+	}
+}
+
+func discoveryCacheTTL(cfg config.DiscoveryConfig) time.Duration {
+	ttl := time.Duration(cfg.SECBulkCacheTTLHours) * time.Hour
+	if ttl <= 0 {
+		return 12 * time.Hour
+	}
+	return ttl
+}
+
 func (s *DiscoverySyncService) backfillTechnicalHistoryWithConfig(ctx context.Context, cfg config.DiscoveryConfig, lookbackDays int) (discovery.TechnicalHistoryBackfillResult, error) {
 	timeout := time.Duration(cfg.TaskTimeoutMin) * time.Minute
 	if timeout <= 0 {
 		timeout = 60 * time.Minute
 	}
-	downloads := &discovery.Downloader{Client: &http.Client{Timeout: timeout}, CacheDir: cfg.CacheDir, MaxBytes: 8 << 30, UserAgent: cfg.UserAgent}
+	downloads := newDiscoveryDownloader(cfg, timeout)
 	calendar, err := discovery.NewDatabaseMarketCalendar(s.db, discovery.DefaultNYSECalendarVersion)
 	if err != nil {
 		return discovery.TechnicalHistoryBackfillResult{}, err
@@ -235,12 +340,7 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Minute
 	}
-	downloader := &discovery.Downloader{
-		Client:    &http.Client{Timeout: timeout},
-		CacheDir:  cfg.CacheDir,
-		MaxBytes:  8 << 30,
-		UserAgent: cfg.UserAgent,
-	}
+	downloader := newDiscoveryDownloader(cfg, timeout)
 	limits := discovery.ZIPParseLimits{MaxEntries: 1_000_000, MaxEntryBytes: 512 << 20, MaxTotalBytes: 64 << 30}
 	secBulk := discovery.SECBulkSource{
 		Downloader:      downloader,
@@ -248,11 +348,13 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 		SubmissionsURL:  cfg.SECSubmissionsURL,
 		CompanyFactsURL: cfg.SECCompanyFactsURL,
 		Limits:          limits,
+		CacheTTL:        discoveryCacheTTL(cfg),
 	}
 	nasdaq := discovery.NasdaqDirectorySource{
 		Downloader: downloader,
 		ListedURL:  cfg.NasdaqListedURL,
 		OtherURL:   cfg.NasdaqOtherListedURL,
+		CacheTTL:   discoveryCacheTTL(cfg),
 	}
 	metadata := discovery.CompositeSecurityMetadataSource{
 		Nasdaq:           nasdaq,

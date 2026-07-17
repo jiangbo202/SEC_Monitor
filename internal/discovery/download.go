@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type CacheMetadata struct {
@@ -42,13 +44,31 @@ type DownloadResult struct {
 	NotModified  bool
 }
 
+// DownloadHTTPStatusError retains a safe, machine-readable HTTP status for
+// callers that need to distinguish a permanently missing resource from a
+// transient transport failure. It intentionally contains only the host.
+type DownloadHTTPStatusError struct {
+	Host       string
+	StatusCode int
+}
+
+func (e *DownloadHTTPStatusError) Error() string {
+	return fmt.Sprintf("download from host %q returned HTTP %d", e.Host, e.StatusCode)
+}
+
+func IsDownloadHTTPStatus(err error, statusCode int) bool {
+	var statusErr *DownloadHTTPStatusError
+	return errors.As(err, &statusErr) && statusErr.StatusCode == statusCode
+}
+
 // Downloader is stateful. Use it through a pointer and do not copy it after
 // the first call to Download.
 type Downloader struct {
-	Client    *http.Client
-	CacheDir  string
-	MaxBytes  int64
-	UserAgent string
+	Client          *http.Client
+	CacheDir        string
+	MaxBytes        int64
+	UserAgent       string
+	ReadIdleTimeout time.Duration
 
 	locksMu sync.Mutex
 	locks   map[string]*cachePathLock
@@ -60,6 +80,17 @@ type cachePathLock struct {
 }
 
 func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, prior *CacheMetadata) (DownloadResult, error) {
+	return d.download(ctx, sourceURL, cacheKey, prior, 0)
+}
+
+// DownloadWithCacheTTL reuses an existing cache file while it is fresh. A
+// negative ttl means the cached resource is immutable and can be reused
+// indefinitely. This is appropriate for accession-specific SEC documents.
+func (d *Downloader) DownloadWithCacheTTL(ctx context.Context, sourceURL, cacheKey string, prior *CacheMetadata, ttl time.Duration) (DownloadResult, error) {
+	return d.download(ctx, sourceURL, cacheKey, prior, ttl)
+}
+
+func (d *Downloader) download(ctx context.Context, sourceURL, cacheKey string, prior *CacheMetadata, cacheTTL time.Duration) (DownloadResult, error) {
 	if d.MaxBytes <= 0 {
 		return DownloadResult{}, fmt.Errorf("download maximum bytes must be positive")
 	}
@@ -80,6 +111,11 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 		return DownloadResult{}, fmt.Errorf("wait for download cache lock: %w", err)
 	}
 	defer unlock()
+	if cacheTTL != 0 {
+		if cached, ok := d.freshCachedDownloadResult(cachePath, sourceURL, cacheKey, cacheTTL); ok {
+			return cached, nil
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
@@ -126,7 +162,7 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 		return notModifiedResult(*prior, resp, sourceURL, cacheKey), nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return DownloadResult{}, fmt.Errorf("download from host %q returned HTTP %d", req.URL.Host, resp.StatusCode)
+		return DownloadResult{}, &DownloadHTTPStatusError{Host: req.URL.Host, StatusCode: resp.StatusCode}
 	}
 	if resp.ContentLength > d.MaxBytes {
 		return DownloadResult{}, fmt.Errorf("download from host %q exceeds maximum size of %d bytes", req.URL.Host, d.MaxBytes)
@@ -149,7 +185,11 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 	}()
 
 	hash := sha256.New()
-	written, exceeded, err := copyWithHardLimit(io.MultiWriter(temp, hash), resp.Body, d.MaxBytes)
+	body := io.Reader(resp.Body)
+	if d.ReadIdleTimeout > 0 {
+		body = &readIdleTimeoutReader{body: resp.Body, timeout: d.ReadIdleTimeout}
+	}
+	written, exceeded, err := copyWithHardLimit(io.MultiWriter(temp, hash), body, d.MaxBytes)
 	if err != nil {
 		if cached, ok := d.cachedDownloadResult(cachePath, sourceURL, cacheKey); ok {
 			return cached, nil
@@ -189,6 +229,42 @@ func (d *Downloader) Download(ctx context.Context, sourceURL, cacheKey string, p
 		ContentType:  resp.Header.Get("Content-Type"),
 		Size:         written,
 	}, nil
+}
+
+func (d *Downloader) freshCachedDownloadResult(cachePath, sourceURL, cacheKey string, ttl time.Duration) (DownloadResult, bool) {
+	info, err := os.Stat(cachePath)
+	if err != nil || !info.Mode().IsRegular() {
+		return DownloadResult{}, false
+	}
+	if ttl > 0 && time.Since(info.ModTime()) > ttl {
+		return DownloadResult{}, false
+	}
+	return d.cachedDownloadResult(cachePath, sourceURL, cacheKey)
+}
+
+// readIdleTimeoutReader enforces an inactivity timeout without imposing a
+// total transfer time limit. Large SEC ZIP files may legitimately take many
+// minutes, but a socket that stops producing bytes must not consume an entire
+// discovery task's timeout budget.
+type readIdleTimeoutReader struct {
+	body    io.ReadCloser
+	timeout time.Duration
+}
+
+func (r *readIdleTimeoutReader) Read(p []byte) (int, error) {
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(r.timeout, func() {
+		timedOut.Store(true)
+		_ = r.body.Close()
+	})
+	n, err := r.body.Read(p)
+	if !timer.Stop() && timedOut.Load() {
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		return n, fmt.Errorf("download transfer made no progress for %s: %w", r.timeout, err)
+	}
+	return n, err
 }
 
 func (d *Downloader) cachedDownloadResult(cachePath, sourceURL, cacheKey string) (DownloadResult, bool) {

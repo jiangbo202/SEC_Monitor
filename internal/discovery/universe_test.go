@@ -77,6 +77,39 @@ func (f *fakePriceProvider) LoadForDate(_ context.Context, expected []Listing, e
 	return f.records, f.result, f.err
 }
 
+func TestCoordinatorResearchLocalPriceFallbackUsesOnlyPreviousTradingDay(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ny := mustNY(t)
+	previous := time.Date(2026, 7, 13, 0, 0, 0, 0, ny)
+	effective := time.Date(2026, 7, 14, 0, 0, 0, 0, ny)
+	if err := db.Create(&[]PriceSnapshot{
+		{Source: "tiingo", SourceVersion: "prior", Symbol: "AAA", TradeDate: previous, CloseMicros: 1_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "tiingo", SourceVersion: "old", Symbol: "STALE", TradeDate: previous.AddDate(0, 0, -3), CloseMicros: 1_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	c := Coordinator{DB: db, Calendar: &stubMarketCalendar{}, ResearchMode: true, Clock: func() time.Time { return time.Date(2026, 7, 15, 11, 0, 0, 0, ny) }}
+	expected := []Listing{{Ticker: "AAA"}, {Ticker: "LIVE"}, {Ticker: "STALE"}}
+	live := []PriceRecord{{Symbol: "LIVE", TradeDate: effective, CloseMicros: 2_000_000, Volume: 200, Currency: "USD", Source: "tiingo"}}
+	records, result, err := c.mergeResearchLocalPriceFallback(context.Background(), "chain", "2026-07-14", expected, live, ProviderResult{Provider: "chain", SourceVersion: "chain:live"}, nil, c.Clock())
+	if err != nil {
+		t.Fatalf("mergeResearchLocalPriceFallback() error = %v", err)
+	}
+	if len(records) != 2 || result.Provider != "chain" || result.Expected != 3 || result.Records != 2 || result.CoveragePct < 66 || result.CoveragePct > 67 {
+		t.Fatalf("records=%#v result=%#v", records, result)
+	}
+	bySymbol := map[string]PriceRecord{}
+	for _, record := range records {
+		bySymbol[record.Symbol] = record
+	}
+	if got := bySymbol["AAA"]; got.Source != PriceSourceLocalCache || !got.TradeDate.Equal(previous) {
+		t.Fatalf("AAA fallback = %#v", got)
+	}
+	if _, found := bySymbol["STALE"]; found {
+		t.Fatalf("stale local quote must not be reused: %#v", bySymbol["STALE"])
+	}
+}
+
 func (f fakeShareSource) LoadLatestShares(context.Context, map[string]struct{}) ([]ShareFact, SourceVersion, error) {
 	return f.facts, f.version, f.err
 }

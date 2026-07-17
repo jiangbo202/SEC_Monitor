@@ -301,7 +301,7 @@ function formatPriceSources(counts?: Record<string, number> | null) {
   if (!counts || Object.keys(counts).length === 0) return '-'
   return Object.entries(counts)
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .map(([source, count]) => `${source}: ${count}`)
+    .map(([source, count]) => `${source === 'local-cache' ? '本地前日回退' : source}: ${count}`)
     .join(' / ')
 }
 

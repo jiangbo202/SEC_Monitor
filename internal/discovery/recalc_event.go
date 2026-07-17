@@ -30,6 +30,9 @@ func RecordCandidateRecalcEventForFiling(ctx context.Context, db *gorm.DB, input
 	if ctx == nil {
 		return false, errors.New("context is required")
 	}
+	if !candidateFinancialRecalcForm(input.FilingType) {
+		return false, nil
+	}
 	var pointer CurrentBatchPointer
 	err := db.WithContext(ctx).First(&pointer, "kind = ?", BatchKindPrescreen).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -78,4 +81,16 @@ func RecordCandidateRecalcEventForFiling(ctx context.Context, db *gorm.DB, input
 		return false, res.Error
 	}
 	return res.RowsAffected == 1, nil
+}
+
+// Only filings that can update the structured Company Facts metrics enter the
+// financial re-evaluation queue. 8-K/Form 4 events remain visible in the SEC
+// evidence feed but do not cause needless financial recalculation.
+func candidateFinancialRecalcForm(form string) bool {
+	switch strings.ToUpper(strings.TrimSpace(form)) {
+	case "10-Q", "10-Q/A", "10-K", "10-K/A":
+		return true
+	default:
+		return false
+	}
 }

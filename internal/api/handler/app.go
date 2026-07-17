@@ -190,6 +190,15 @@ func (h *AppHandler) GetDiscoveryCandidateDetail(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) GetDiscoveryProfitHistory(c *gin.Context) {
+	result, err := discovery.GetProfitHistory(c.Request.Context(), h.DiscoveryDB, c.Param("ticker"))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) listRecentCandidateFilings(ctx context.Context, ticker, cik string, limit int) ([]discovery.RecentSECFiling, error) {
 	if limit <= 0 {
 		limit = 20
@@ -904,9 +913,10 @@ func (h *AppHandler) GetTelegramConfig(c *gin.Context) {
 
 func (h *AppHandler) UpdateTelegramConfig(c *gin.Context) {
 	var input struct {
-		BotToken string `json:"bot_token"`
-		ChatID   string `json:"chat_id"`
-		Enabled  bool   `json:"enabled"`
+		BotToken   string `json:"bot_token"`
+		ChatID     string `json:"chat_id"`
+		Enabled    bool   `json:"enabled"`
+		APIBaseURL string `json:"api_base_url"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		Error(c, err)
@@ -915,6 +925,7 @@ func (h *AppHandler) UpdateTelegramConfig(c *gin.Context) {
 	configs := []service.ConfigInput{
 		{Key: "telegram.chat_id", Value: input.ChatID, ValueType: "string", Category: "telegram"},
 		{Key: "telegram.enabled", Value: strconv.FormatBool(input.Enabled), ValueType: "bool", Category: "telegram"},
+		{Key: "telegram.api_base_url", Value: strings.TrimRight(strings.TrimSpace(input.APIBaseURL), "/"), ValueType: "string", Category: "telegram"},
 	}
 	if !service.IsMaskedSecret(input.BotToken) {
 		configs = append(configs, service.ConfigInput{Key: "telegram.bot_token", Value: input.BotToken, ValueType: "string", Category: "telegram", Encrypted: true})
@@ -937,7 +948,9 @@ func (h *AppHandler) TestTelegram(c *gin.Context) {
 		Error(c, fmt.Errorf("%w: Bot Token 已被脱敏值覆盖，请重新输入真实 Token 并保存", service.ErrValidation))
 		return
 	}
-	err = telegram.NewHTTPNotifier(cfg.BotToken, cfg.ChatID, 10*time.Second).Send(c.Request.Context(), telegram.Message{Text: "SEC Monitor test message"})
+	notifier := telegram.NewHTTPNotifier(cfg.BotToken, cfg.ChatID, 10*time.Second)
+	notifier.BaseURL = cfg.APIBaseURL
+	err = notifier.Send(c.Request.Context(), telegram.Message{Text: "SEC Monitor test message"})
 	if err != nil {
 		Error(c, fmt.Errorf("%s", service.SanitizeSensitiveError(err.Error())))
 		return

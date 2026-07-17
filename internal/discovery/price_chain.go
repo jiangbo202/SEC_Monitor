@@ -85,7 +85,12 @@ func (p *PriceProviderChain) LoadForDate(ctx context.Context, expected []Listing
 func (p *PriceProviderChain) load(ctx context.Context, expected []Listing, effectiveDate string) ([]PriceRecord, ProviderResult, error) {
 	remaining := append([]Listing(nil), expected...)
 	covered := make(map[string]struct{})
-	records := make([]PriceRecord, 0, len(expected))
+	// When the caller supplies an effective date, covered means an exact quote
+	// for that date. A previous-trading-day quote remains in records as a
+	// fallback, but must not stop a later provider from trying to fill the
+	// current trading day.
+	exactDateRequired := strings.TrimSpace(effectiveDate) != ""
+	recordsBySymbol := make(map[string]PriceRecord, len(expected))
 	childVersions := make([]string, 0, len(p.providers))
 	var lastErr error
 	var effective time.Time
@@ -124,12 +129,14 @@ func (p *PriceProviderChain) load(ctx context.Context, expected []Listing, effec
 			if symbol == "" {
 				continue
 			}
-			if _, exists := covered[symbol]; exists {
-				continue
-			}
 			record.Symbol = symbol
-			records = append(records, record)
-			covered[symbol] = struct{}{}
+			current, exists := recordsBySymbol[symbol]
+			if !exists || priceRecordIsNewer(record, current) {
+				recordsBySymbol[symbol] = record
+			}
+			if !exactDateRequired || record.TradeDate.Format(time.DateOnly) == effectiveDate {
+				covered[symbol] = struct{}{}
+			}
 		}
 		remaining = missingListings(expected, covered)
 		p.emitDiagnostic(PriceProviderChainDiagnostic{
@@ -141,6 +148,10 @@ func (p *PriceProviderChain) load(ctx context.Context, expected []Listing, effec
 			CoveragePct: childResult.CoveragePct,
 			Elapsed:     time.Since(started),
 		})
+	}
+	records := make([]PriceRecord, 0, len(recordsBySymbol))
+	for _, record := range recordsBySymbol {
+		records = append(records, record)
 	}
 	if len(records) == 0 && lastErr != nil {
 		return nil, ProviderResult{}, lastErr
@@ -172,6 +183,18 @@ func (p *PriceProviderChain) load(ctx context.Context, expected []Listing, effec
 	}
 	result.SHA256 = sha
 	return records, result, nil
+}
+
+func priceRecordIsNewer(candidate, current PriceRecord) bool {
+	if candidate.TradeDate.After(current.TradeDate) {
+		return true
+	}
+	if candidate.TradeDate.Before(current.TradeDate) {
+		return false
+	}
+	// Keep the first provider's quote on an equal trade date. Provider order is
+	// the configured reliability preference and preserves deterministic output.
+	return false
 }
 
 func (p *PriceProviderChain) emitDiagnostic(event PriceProviderChainDiagnostic) {

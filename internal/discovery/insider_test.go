@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -193,5 +194,113 @@ func TestSECForm4InsiderSourceDownloadsRecentAllowedOwnershipXML(t *testing.T) {
 	}
 	if version.Source != "insiders:sec-form4" || !strings.Contains(version.Version, InsiderParserVersion) || version.SHA256 == "" {
 		t.Fatalf("version = %#v", version)
+	}
+}
+
+func TestSECForm4InsiderSourceSkipsMalformedOwnershipDocument(t *testing.T) {
+	asOf := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	requested := []string{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requested = append(requested, r.URL.String())
+		body := `<ownershipDocument><documentType>4</documentType><issuer><issuerCik>0000001234</issuerCik><issuerTradingSymbol>ACME</issuerTradingSymbol></issuer></ownershipDocument>`
+		if strings.Contains(r.URL.Path, "not-ownership.html") {
+			body = `<html><head><meta charset="utf-8"></head><body>SEC archive wrapper</body></html>`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r}, nil
+	})}
+	source := SECForm4InsiderSource{
+		Metadata: fakeMetadataSource{records: []SecuritySourceRecord{{CIK: "0000001234", FilingMetadata: []FilingMetadata{
+			{CIK: "0000001234", Accession: "0000001234-26-000010", Form: "4", FiledAt: asOf.AddDate(0, 0, -2), PrimaryDocument: "form4.xml"},
+			{CIK: "0000001234", Accession: "0000001234-26-000011", Form: "4", FiledAt: asOf.AddDate(0, 0, -1), PrimaryDocument: "xslF345X05/not-ownership.html"},
+		}}}, version: testSourceVersion("metadata", "form4-skip", asOf)},
+		Downloader:   &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1 << 20},
+		BaseURL:      "https://www.sec.gov/Archives/edgar/data",
+		LookbackDays: 180,
+	}
+
+	transactions, version, err := source.LoadInsiderTransactions(context.Background(), map[string]struct{}{"0000001234": {}}, asOf)
+	if err != nil {
+		t.Fatalf("LoadInsiderTransactions: %v", err)
+	}
+	if len(requested) != 2 || len(transactions) != 0 {
+		t.Fatalf("requested=%d transactions=%#v", len(requested), transactions)
+	}
+	if version.SHA256 == "" || !strings.Contains(version.Version, InsiderParserVersion) {
+		t.Fatalf("version = %#v", version)
+	}
+}
+
+func TestSECForm4InsiderSourceSkipsSingleTransientDownloadFailure(t *testing.T) {
+	asOf := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	requested := []string{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requested = append(requested, r.URL.String())
+		if strings.Contains(r.URL.Path, "temporarily-unavailable.xml") {
+			return nil, errors.New("connection reset by peer")
+		}
+		body := `<ownershipDocument><documentType>4</documentType><issuer><issuerCik>0000001234</issuerCik><issuerTradingSymbol>ACME</issuerTradingSymbol></issuer></ownershipDocument>`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r}, nil
+	})}
+	source := SECForm4InsiderSource{
+		Metadata: fakeMetadataSource{records: []SecuritySourceRecord{{CIK: "0000001234", FilingMetadata: []FilingMetadata{
+			{CIK: "0000001234", Accession: "0000001234-26-000020", Form: "4", FiledAt: asOf.AddDate(0, 0, -2), PrimaryDocument: "form4.xml"},
+			{CIK: "0000001234", Accession: "0000001234-26-000021", Form: "4", FiledAt: asOf.AddDate(0, 0, -1), PrimaryDocument: "temporarily-unavailable.xml"},
+		}}}, version: testSourceVersion("metadata", "form4-network", asOf)},
+		Downloader:   &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1 << 20},
+		BaseURL:      "https://www.sec.gov/Archives/edgar/data",
+		LookbackDays: 180,
+	}
+
+	transactions, version, err := source.LoadInsiderTransactions(context.Background(), map[string]struct{}{"0000001234": {}}, asOf)
+	if err != nil {
+		t.Fatalf("LoadInsiderTransactions: %v", err)
+	}
+	if len(requested) != 2 || len(transactions) != 0 || version.SHA256 == "" {
+		t.Fatalf("requested=%d transactions=%#v version=%#v", len(requested), transactions, version)
+	}
+}
+
+func TestSECForm4InsiderSourceSkipsAllPermanentlyMissingDocuments(t *testing.T) {
+	asOf := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("missing")), Header: make(http.Header), Request: r}, nil
+	})}
+	source := SECForm4InsiderSource{
+		Metadata: fakeMetadataSource{records: []SecuritySourceRecord{{CIK: "0000001234", FilingMetadata: []FilingMetadata{
+			{CIK: "0000001234", Accession: "0000001234-26-000030", Form: "4", FiledAt: asOf.AddDate(0, 0, -2), PrimaryDocument: "removed.xml"},
+		}}}, version: testSourceVersion("metadata", "form4-missing", asOf)},
+		Downloader:   &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1 << 20},
+		BaseURL:      "https://www.sec.gov/Archives/edgar/data",
+		LookbackDays: 180,
+	}
+
+	transactions, version, err := source.LoadInsiderTransactions(context.Background(), map[string]struct{}{"0000001234": {}}, asOf)
+	if err != nil {
+		t.Fatalf("LoadInsiderTransactions: %v", err)
+	}
+	if len(transactions) != 0 || version.SHA256 == "" || !strings.Contains(version.Version, InsiderParserVersion) {
+		t.Fatalf("transactions=%#v version=%#v", transactions, version)
+	}
+}
+
+func TestForm4DocumentLocationAllowsSafeSECXSLSubdirectory(t *testing.T) {
+	filing := FilingMetadata{
+		CIK:             "0000001234",
+		Accession:       "0000001234-26-000004",
+		PrimaryDocument: "xslF345X05/ownership.xml",
+	}
+	url, cacheKey, err := form4DocumentLocation("https://www.sec.gov/Archives/edgar/data", filing)
+	if err != nil {
+		t.Fatalf("form4DocumentLocation() error = %v", err)
+	}
+	if want := "https://www.sec.gov/Archives/edgar/data/1234/000000123426000004/xslF345X05/ownership.xml"; url != want {
+		t.Fatalf("url = %q, want %q", url, want)
+	}
+	if cacheKey != "form4-0000001234-000000123426000004-xslF345X05_ownership.xml" {
+		t.Fatalf("cache key = %q", cacheKey)
+	}
+	filing.PrimaryDocument = "../ownership.xml"
+	if _, _, err := form4DocumentLocation("https://www.sec.gov", filing); err == nil {
+		t.Fatal("expected traversal path rejection")
 	}
 }

@@ -188,6 +188,12 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 	switch taskName {
 	case secFilingSyncTaskName:
 		_, err := s.filings.RefreshWithTrigger(ctx, "scheduler")
+		if err != nil {
+			return err
+		}
+		if s.discoverySync != nil {
+			_, err = s.discoverySync.RefreshDirtyFinancials(ctx)
+		}
 		return err
 	case ipoRadarSyncTaskName:
 		_, err := s.ipo.RefreshWithTrigger(ctx, "ipo_scheduler")

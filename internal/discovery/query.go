@@ -1212,6 +1212,14 @@ const (
 )
 
 func candidatePriceFreshness(expectedDate string, tradeDate *time.Time) (string, int) {
+	return candidatePriceFreshnessAt(expectedDate, tradeDate, time.Now())
+}
+
+// candidatePriceFreshnessAt compares a daily close with the most recent
+// completed NYSE session. Before the regular US close, yesterday's close is
+// the newest valid daily price even though the batch's civil effective date is
+// today. This keeps the list from flagging a normal pre-close quote as stale.
+func candidatePriceFreshnessAt(expectedDate string, tradeDate *time.Time, now time.Time) (string, int) {
 	if strings.TrimSpace(expectedDate) == "" {
 		return PriceFreshnessUnknown, 0
 	}
@@ -1226,6 +1234,9 @@ func candidatePriceFreshness(expectedDate string, tradeDate *time.Time) (string,
 	if err != nil {
 		return PriceFreshnessUnknown, 0
 	}
+	if latestClosed, ok := latestCompletedNYSETradingDate(expected, now); ok && actual.Equal(latestClosed) {
+		return PriceFreshnessCurrent, 0
+	}
 	age := int(expected.Sub(actual).Hours() / 24)
 	switch {
 	case age == 0:
@@ -1239,6 +1250,43 @@ func candidatePriceFreshness(expectedDate string, tradeDate *time.Time) (string,
 	default:
 		return PriceFreshnessStale, age
 	}
+}
+
+func latestCompletedNYSETradingDate(expected, now time.Time) (time.Time, bool) {
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return time.Time{}, false
+	}
+	localNow := now.In(newYork)
+	if localNow.Year() != expected.Year() || localNow.Month() != expected.Month() || localNow.Day() != expected.Day() {
+		return expected, true
+	}
+	marketClose := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 16, 0, 0, 0, newYork)
+	if !localNow.Before(marketClose) {
+		return expected, true
+	}
+	for offset := 1; offset <= 14; offset++ {
+		candidate := expected.AddDate(0, 0, -offset)
+		if knownNYSETradingDate(candidate) {
+			return candidate, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func knownNYSETradingDate(day time.Time) bool {
+	if day.Weekday() == time.Saturday || day.Weekday() == time.Sunday {
+		return false
+	}
+	if holidays, ok := nyseCalendarManifest[DefaultNYSECalendarVersion][day.Year()]; ok {
+		date := day.Format(time.DateOnly)
+		for _, holiday := range holidays {
+			if holiday == date {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func hydrateCandidatePerformance(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {

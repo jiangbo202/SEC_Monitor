@@ -19,6 +19,7 @@ import (
 const (
 	BatchKindSecurity          = "security-universe"
 	BatchKindPrescreen         = "market-prescreen"
+	PriceSourceLocalCache      = "local-cache"
 	universeChunkSize          = 1000
 	maxResearchCoverageDropPct = 15.0
 	recentSECFilingLimit       = 20
@@ -286,15 +287,28 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	}
 	var records []PriceRecord
 	var result ProviderResult
+	var loadErr error
 	if c.ResearchMode && len(expected) == 0 {
 		result, err = emptyResearchProviderResult(providerName, securityBatch, now)
 	} else if dated, ok := c.Prices.(DatedPriceProvider); ok {
-		records, result, err = dated.LoadForDate(ctx, expected, securityBatch.EffectiveDate)
+		records, result, loadErr = dated.LoadForDate(ctx, expected, securityBatch.EffectiveDate)
 	} else {
-		records, result, err = c.Prices.Load(ctx, expected)
+		records, result, loadErr = c.Prices.Load(ctx, expected)
 	}
 	if err != nil {
-		cause := fmt.Errorf("load market prices: %w", err)
+		cause := fmt.Errorf("prepare empty research market prices: %w", err)
+		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "load-failed", now, cause)
+	}
+	if c.ResearchMode && len(expected) > 0 {
+		records, result, err = c.mergeResearchLocalPriceFallback(ctx, providerName, securityBatch.EffectiveDate, expected, records, result, loadErr, now)
+		loadErr = nil
+	}
+	if err != nil {
+		cause := fmt.Errorf("merge local market price fallback: %w", err)
+		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "load-failed", now, cause)
+	}
+	if loadErr != nil {
+		cause := fmt.Errorf("load market prices: %w", loadErr)
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "load-failed", now, cause)
 	}
 	if result.Provider != providerName {
@@ -476,7 +490,7 @@ func emptyResearchProviderResult(provider string, securityBatch UniverseBatch, n
 }
 
 func allowedPriceRecordSources(provider PriceProvider, providerName string) map[string]struct{} {
-	allowed := map[string]struct{}{strings.ToLower(strings.TrimSpace(providerName)): {}}
+	allowed := map[string]struct{}{strings.ToLower(strings.TrimSpace(providerName)): {}, PriceSourceLocalCache: {}}
 	if provider == nil {
 		return allowed
 	}
@@ -488,6 +502,124 @@ func allowedPriceRecordSources(provider PriceProvider, providerName string) map[
 		}
 	}
 	return allowed
+}
+
+// mergeResearchLocalPriceFallback fills only symbols missing from the live
+// provider chain with a valid local quote from the effective or immediately
+// previous trading day. It is deliberately limited to research publishing:
+// production provider-health validation must never be advanced by cached data.
+func (c *Coordinator) mergeResearchLocalPriceFallback(ctx context.Context, providerName, effectiveDate string, expected []Listing, live []PriceRecord, liveResult ProviderResult, loadErr error, now time.Time) ([]PriceRecord, ProviderResult, error) {
+	effective, err := parseNYCivilDate(effectiveDate)
+	if err != nil {
+		return nil, ProviderResult{}, err
+	}
+	previous, err := previousTradingDate(ctx, c.Calendar, effective)
+	if err != nil {
+		return nil, ProviderResult{}, fmt.Errorf("find local fallback trading date: %w", err)
+	}
+	covered := make(map[string]struct{}, len(live))
+	for _, record := range live {
+		if symbol := strings.ToUpper(strings.TrimSpace(record.Symbol)); symbol != "" {
+			covered[symbol] = struct{}{}
+		}
+	}
+	fallback, err := c.localPriceFallbackRecords(ctx, expected, covered, previous, effective)
+	if err != nil {
+		return nil, ProviderResult{}, fmt.Errorf("load local price fallback: %w", err)
+	}
+	if len(live) == 0 && len(fallback) == 0 && loadErr != nil {
+		return nil, ProviderResult{}, loadErr
+	}
+	// Preserve the provider's original evidence version when it already covered
+	// everything it returned and no local evidence was required. Apart from
+	// avoiding needless writes, this keeps deterministic retry IDs stable.
+	if len(fallback) == 0 && loadErr == nil {
+		return live, liveResult, nil
+	}
+	merged := append(append([]PriceRecord(nil), live...), fallback...)
+	if len(merged) == 0 {
+		return nil, ProviderResult{}, errors.New("no live or local fallback market prices available")
+	}
+	childVersions := []string{"local-cache:none"}
+	if strings.TrimSpace(liveResult.SourceVersion) != "" {
+		childVersions[0] = "live:" + liveResult.SourceVersion
+	}
+	if len(fallback) > 0 {
+		childVersions = append(childVersions, fmt.Sprintf("local-cache:%d", len(fallback)))
+	}
+	sortPriceRecordsByExpected(merged, expected)
+	version, sha := chainSourceVersion(providerName, effective, childVersions, merged)
+	result, err := validatePriceBatch(ctx, merged, PriceValidationOptions{
+		Provider:                      providerName,
+		SourceVersion:                 version,
+		EffectiveDate:                 effective,
+		Now:                           now,
+		Calendar:                      c.Calendar,
+		Expected:                      expected,
+		AllowPreviousTradingDatePrice: true,
+	})
+	if err != nil {
+		return nil, ProviderResult{}, err
+	}
+	result.SHA256 = sha
+	return merged, result, nil
+}
+
+func (c *Coordinator) localPriceFallbackRecords(ctx context.Context, expected []Listing, covered map[string]struct{}, previous, effective time.Time) ([]PriceRecord, error) {
+	symbols := make([]string, 0, len(expected)*2)
+	seen := map[string]struct{}{}
+	for _, listing := range expected {
+		for _, symbol := range []string{listing.Ticker, listing.ProviderTicker} {
+			symbol = strings.ToUpper(strings.TrimSpace(symbol))
+			if symbol == "" {
+				continue
+			}
+			if _, exists := seen[symbol]; !exists {
+				seen[symbol] = struct{}{}
+				symbols = append(symbols, symbol)
+			}
+		}
+	}
+	if len(symbols) == 0 {
+		return nil, nil
+	}
+	var rows []PriceSnapshot
+	if err := c.DB.WithContext(ctx).
+		Where("symbol IN ? AND quality_status = ? AND trade_date >= ? AND trade_date <= ?", symbols, QualityStatusValid, previous, effective).
+		Order("trade_date DESC, created_at DESC, id DESC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	bySymbol := make(map[string]PriceSnapshot, len(rows))
+	for _, row := range rows {
+		symbol := strings.ToUpper(strings.TrimSpace(row.Symbol))
+		if _, exists := bySymbol[symbol]; !exists {
+			bySymbol[symbol] = row
+		}
+	}
+	result := make([]PriceRecord, 0, len(expected))
+	for _, listing := range expected {
+		canonical := strings.ToUpper(strings.TrimSpace(listing.Ticker))
+		if canonical == "" {
+			continue
+		}
+		if _, exists := covered[canonical]; exists {
+			continue
+		}
+		row, found := bySymbol[canonical]
+		if !found {
+			row, found = bySymbol[strings.ToUpper(strings.TrimSpace(listing.ProviderTicker))]
+		}
+		if !found {
+			continue
+		}
+		result = append(result, PriceRecord{
+			Symbol: canonical, TradeDate: row.TradeDate,
+			CloseMicros: row.CloseMicros, Volume: row.Volume, Currency: row.Currency,
+			Adjusted: row.Adjusted, Source: PriceSourceLocalCache,
+		})
+	}
+	return result, nil
 }
 
 func emptyResearchProviderDay(result ProviderResult) ProviderDayResult {
@@ -1146,12 +1278,11 @@ func (c *Coordinator) persistFinancialSnapshots(ctx context.Context, batchID str
 		for _, fact := range facts {
 			rows.Facts = append(rows.Facts, financialFactSnapshot(securityID, fact, now))
 		}
-		summary := BuildFinancialSummary(facts, now)
-		flags, err := json.Marshal(summary.QualityFlags)
+		metric, err := FinancialMetricFromFacts(batchID, securityID, facts, now)
 		if err != nil {
 			return err
 		}
-		rows.Metrics = append(rows.Metrics, financialMetricSnapshot(batchID, securityID, summary, string(flags), now))
+		rows.Metrics = append(rows.Metrics, metric)
 	}
 	sort.Slice(rows.Facts, func(i, j int) bool { return canonicalLess(rows.Facts[i], rows.Facts[j]) })
 	sort.Slice(rows.Metrics, func(i, j int) bool { return canonicalLess(rows.Metrics[i], rows.Metrics[j]) })

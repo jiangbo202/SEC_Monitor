@@ -829,6 +829,9 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				{Key: "discovery.min_publish_coverage_pct", Value: "85.5", ValueType: "float", Category: "discovery"},
 				{Key: "discovery.research_mode", Value: "false", ValueType: "bool", Category: "discovery"},
 				{Key: "discovery.auto_technical_history_warmup", Value: "true", ValueType: "bool", Category: "discovery"},
+				{Key: "discovery.task_timeout_minutes", Value: "75", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.download_idle_timeout_seconds", Value: "120", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.sec_bulk_cache_ttl_hours", Value: "10", ValueType: "int", Category: "discovery"},
 			},
 			want: config.DiscoveryConfig{
 				PriceProvider:               "tiingo",
@@ -846,6 +849,9 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				MinPublishCoveragePct:       85.5,
 				ResearchMode:                false,
 				AutoTechnicalHistoryWarmup:  true,
+				TaskTimeoutMin:              75,
+				DownloadIdleTimeoutSec:      120,
+				SECBulkCacheTTLHours:        10,
 			},
 		},
 		{
@@ -860,6 +866,9 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				{Key: "discovery.yahoo_request_budget", Value: "-2", ValueType: "int", Category: "discovery"},
 				{Key: "discovery.min_publish_coverage_pct", Value: "-1", ValueType: "float", Category: "discovery"},
 				{Key: "discovery.research_mode", Value: "not-bool", ValueType: "bool", Category: "discovery"},
+				{Key: "discovery.task_timeout_minutes", Value: "bad", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.download_idle_timeout_seconds", Value: "0", ValueType: "int", Category: "discovery"},
+				{Key: "discovery.sec_bulk_cache_ttl_hours", Value: "-1", ValueType: "int", Category: "discovery"},
 			},
 			want: config.DiscoveryConfig{
 				TiingoAPIToken:              "old-token",
@@ -872,6 +881,9 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				MinPublishCoveragePct:       11,
 				ResearchMode:                true,
 				AutoTechnicalHistoryWarmup:  true,
+				TaskTimeoutMin:              12,
+				DownloadIdleTimeoutSec:      13,
+				SECBulkCacheTTLHours:        14,
 			},
 		},
 	}
@@ -890,6 +902,9 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				MinPublishCoveragePct:       11,
 				ResearchMode:                true,
 				AutoTechnicalHistoryWarmup:  true,
+				TaskTimeoutMin:              12,
+				DownloadIdleTimeoutSec:      13,
+				SECBulkCacheTTLHours:        14,
 			})
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ApplyDiscoveryConfig err=%v wantErr=%v", err, tt.wantErr)
@@ -1015,15 +1030,15 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CandidateNotificationSettings: %v", err)
 			}
-			if settings.Enabled || settings.NotifyA || settings.NotifyB || settings.SendTime != "09:30" || settings.MaxPerGrade != 5 || !settings.ActionableOnly || settings.MinReviewPriorityScore != 0 {
+			if settings.Enabled || settings.ShadowMode || settings.NotifyA || settings.NotifyB || settings.SendTime != "09:30" || settings.MaxPerGrade != 5 || !settings.ActionableOnly || settings.MinReviewPriorityScore != 0 {
 				t.Fatalf("settings = %+v", settings)
 			}
 			configs, err := svc.List(context.Background(), "candidate_notification", false)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 7 {
-				t.Fatalf("candidate notification defaults = %d, want 7", len(configs))
+			if len(configs) != 8 {
+				t.Fatalf("candidate notification defaults = %d, want 8", len(configs))
 			}
 		}},
 		{name: "ensure social heat defaults are usable", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
@@ -1071,15 +1086,15 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ApplyDiscoveryConfig: %v", err)
 			}
-			if applied.PriceProvider != "stooq" || len(applied.StooqURLs) != 1 || applied.StooqURLs[0] != "https://env.example.test/stooq.csv" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || applied.TwelveDataAPIKey != "env-td" || applied.TwelveDataBaseURL != "https://api.twelvedata.com" || applied.TwelveDataRequestBudget != 700 || applied.TwelveDataRequestIntervalMS != 8000 || applied.YahooBaseURL != "https://query1.finance.yahoo.com" || applied.YahooRequestBudget != 45 || applied.MinPublishCoveragePct != 85 || !applied.ResearchMode || !applied.AutoTechnicalHistoryWarmup {
+			if applied.PriceProvider != "stooq" || len(applied.StooqURLs) != 1 || applied.StooqURLs[0] != "https://env.example.test/stooq.csv" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || applied.TwelveDataAPIKey != "env-td" || applied.TwelveDataBaseURL != "https://api.twelvedata.com" || applied.TwelveDataRequestBudget != 700 || applied.TwelveDataRequestIntervalMS != 8000 || applied.YahooBaseURL != "https://query1.finance.yahoo.com" || applied.YahooRequestBudget != 45 || applied.MinPublishCoveragePct != 85 || !applied.ResearchMode || !applied.AutoTechnicalHistoryWarmup || applied.TaskTimeoutMin != 60 || applied.DownloadIdleTimeoutSec != 90 || applied.SECBulkCacheTTLHours != 12 {
 				t.Fatalf("applied defaults = %+v", applied)
 			}
 			configs, err := svc.List(context.Background(), "discovery", true)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 15 {
-				t.Fatalf("discovery defaults = %d, want 15", len(configs))
+			if len(configs) != 18 {
+				t.Fatalf("discovery defaults = %d, want 18", len(configs))
 			}
 		}},
 		{name: "stored twelve data config overrides env config", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
@@ -2619,6 +2634,52 @@ func TestFilingServiceRefreshTargetsFailsExactETFWhenIdentityUnavailable(t *test
 	}
 	if detail.Status != "failed" || !strings.Contains(detail.ErrorMessage, "fund identity unavailable") {
 		t.Fatalf("detail=%+v", detail)
+	}
+}
+
+func TestFilingServiceRefreshTargetsSkipsAndRetriesIncompleteFundIdentity(t *testing.T) {
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	target := model.WatchTarget{Ticker: "KMEM", CompanyName: "KMEM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	filing := sec.FilingResult{FilingID: "kmem-1", AccessionNumber: "kmem-1", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}
+	secClient := &fakeFundMetadataSECClient{
+		fakeFundSECClient: &fakeFundSECClient{fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{filing}}},
+		metadata:          map[string]sec.FundFilingMetadata{filing.AccessionNumber: {Incomplete: true}},
+	}
+	svc := NewFilingService(db, secClient, &fakeNotifier{}, configs)
+
+	first, err := svc.RefreshTargets(context.Background(), []model.WatchTarget{target})
+	if err != nil || first.FailedTargets != 0 || first.NewFilings != 0 {
+		t.Fatalf("first refresh=%+v err=%v", first, err)
+	}
+	var detail model.SyncRunDetail
+	if err := db.Where("sync_run_id = ?", first.SyncRunID).First(&detail).Error; err != nil {
+		t.Fatalf("load first detail: %v", err)
+	}
+	if detail.Status != "success" || !strings.Contains(detail.WarningMessage, "filing_identity_incomplete") {
+		t.Fatalf("first detail=%+v", detail)
+	}
+	if got := secClient.metadataCalls[filing.AccessionNumber]; got != 1 {
+		t.Fatalf("first metadata calls=%d, want 1", got)
+	}
+
+	second, err := svc.RefreshTargets(context.Background(), []model.WatchTarget{target})
+	if err != nil || second.FailedTargets != 0 || secClient.metadataCalls[filing.AccessionNumber] != 1 {
+		t.Fatalf("cooldown refresh=%+v calls=%d err=%v", second, secClient.metadataCalls[filing.AccessionNumber], err)
+	}
+
+	if err := db.Model(&model.FundFilingIdentity{}).
+		Where("cik = ? AND accession_number = ?", target.CIK, filing.AccessionNumber).
+		Update("checked_at", time.Now().UTC().Add(-fundFilingIdentityIncompleteRetryAfter-time.Minute)).Error; err != nil {
+		t.Fatalf("expire cached parse: %v", err)
+	}
+	secClient.metadata[filing.AccessionNumber] = sec.FundFilingMetadata{Relationships: []sec.FundFilingRelationship{{SeriesID: target.FundSeriesID, ClassID: target.FundClassID}}}
+	third, err := svc.RefreshTargets(context.Background(), []model.WatchTarget{target})
+	if err != nil || third.FailedTargets != 0 || third.NewFilings != 1 {
+		t.Fatalf("retry refresh=%+v err=%v", third, err)
+	}
+	if got := secClient.metadataCalls[filing.AccessionNumber]; got != 2 {
+		t.Fatalf("retry metadata calls=%d, want 2", got)
 	}
 }
 

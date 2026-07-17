@@ -104,6 +104,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.GET("/discovery/candidate-watches", app.ListCandidateWatches)
 		api.POST("/discovery/candidate-watches", app.UpsertCandidateWatch)
 		api.DELETE("/discovery/candidate-watches/:id", app.DeleteCandidateWatch)
+		api.GET("/discovery/profit-history/:ticker", app.GetDiscoveryProfitHistory)
 		api.GET("/discovery/candidates/:ticker/detail", app.GetDiscoveryCandidateDetail)
 		api.GET("/discovery/candidates", app.ListDiscoveryCandidates)
 		api.GET("/discovery/batches", app.ListDiscoveryBatches)
@@ -221,5 +222,7 @@ func (n telegramNotifier) Send(ctx context.Context, message telegram.Message) er
 	if err != nil {
 		return err
 	}
-	return telegram.NewHTTPNotifier(cfg.BotToken, cfg.ChatID, 10*time.Second).Send(ctx, message)
+	notifier := telegram.NewHTTPNotifier(cfg.BotToken, cfg.ChatID, 10*time.Second)
+	notifier.BaseURL = cfg.APIBaseURL
+	return notifier.Send(ctx, message)
 }

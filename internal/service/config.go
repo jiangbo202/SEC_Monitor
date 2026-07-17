@@ -31,9 +31,10 @@ type ConfigInput struct {
 }
 
 type TelegramConfig struct {
-	Enabled  bool   `json:"enabled"`
-	BotToken string `json:"bot_token"`
-	ChatID   string `json:"chat_id"`
+	Enabled    bool   `json:"enabled"`
+	BotToken   string `json:"bot_token"`
+	ChatID     string `json:"chat_id"`
+	APIBaseURL string `json:"api_base_url"`
 }
 
 type SECFetchSettings struct {
@@ -67,6 +68,7 @@ type IPORadarSettings struct {
 
 type CandidateNotificationSettings struct {
 	Enabled                bool   `json:"enabled"`
+	ShadowMode             bool   `json:"shadow_mode"`
 	NotifyA                bool   `json:"notify_a"`
 	NotifyB                bool   `json:"notify_b"`
 	SendTime               string `json:"send_time"`
@@ -208,6 +210,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "scheduler.timezone", Value: "UTC", ValueType: "string", Category: "scheduler"},
 		{Key: "ui.default_locale", Value: "zh-CN", ValueType: "string", Category: "ui"},
 		{Key: "ui.onboarding_completed", Value: "false", ValueType: "bool", Category: "ui"},
+		{Key: "telegram.api_base_url", Value: "https://api.telegram.org", ValueType: "string", Category: "telegram"},
 		{Key: "notification.important_only", Value: "false", ValueType: "bool", Category: "notification"},
 		{Key: "notification.filing_types", Value: "", ValueType: "string", Category: "notification"},
 		{Key: "notification.keywords", Value: "", ValueType: "string", Category: "notification"},
@@ -225,6 +228,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "ipo.lifecycle_max_ciks", Value: "50", ValueType: "int", Category: "ipo"},
 		{Key: "ipo.lifecycle_recheck_hours", Value: "12", ValueType: "int", Category: "ipo"},
 		{Key: "candidate_notification.enabled", Value: "false", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.shadow_mode", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.notify_a", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.notify_b", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.send_time", Value: "09:30", ValueType: "string", Category: "candidate_notification"},
@@ -246,6 +250,9 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "discovery.min_publish_coverage_pct", Value: "85", ValueType: "float", Category: "discovery"},
 		{Key: "discovery.research_mode", Value: "true", ValueType: "bool", Category: "discovery"},
 		{Key: "discovery.auto_technical_history_warmup", Value: "true", ValueType: "bool", Category: "discovery"},
+		{Key: "discovery.task_timeout_minutes", Value: "60", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.download_idle_timeout_seconds", Value: "90", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.sec_bulk_cache_ttl_hours", Value: "12", ValueType: "int", Category: "discovery"},
 		{Key: "social_heat.enabled", Value: "false", ValueType: "bool", Category: "social_heat"},
 		{Key: "social_heat.provider", Value: "manual", ValueType: "string", Category: "social_heat"},
 		{Key: "social_heat.lookback_hours", Value: "24", ValueType: "int", Category: "social_heat"},
@@ -450,8 +457,15 @@ func (s *ConfigService) Telegram(ctx context.Context) (TelegramConfig, error) {
 	if err != nil {
 		return TelegramConfig{}, err
 	}
+	baseURL, ok, err := s.GetValue(ctx, "telegram.api_base_url")
+	if err != nil {
+		return TelegramConfig{}, err
+	}
+	if !ok || strings.TrimSpace(baseURL) == "" {
+		baseURL = "https://api.telegram.org"
+	}
 	enabled, _ := strconv.ParseBool(enabledRaw)
-	return TelegramConfig{Enabled: enabled, BotToken: token, ChatID: chatID}, nil
+	return TelegramConfig{Enabled: enabled, BotToken: token, ChatID: chatID, APIBaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/")}, nil
 }
 
 func (s *ConfigService) SECFetchSettings(ctx context.Context) (SECFetchSettings, error) {
@@ -603,6 +617,15 @@ func (s *ConfigService) CandidateNotificationSettings(ctx context.Context) (Cand
 	if err != nil {
 		return CandidateNotificationSettings{}, err
 	}
+	shadowRaw, shadowConfigured, err := s.GetValue(ctx, "candidate_notification.shadow_mode")
+	if err != nil {
+		return CandidateNotificationSettings{}, err
+	}
+	if !shadowConfigured {
+		// Keep the existing delivery behavior for installations created before
+		// shadow mode was introduced. Operators opt in explicitly from settings.
+		shadowRaw = "false"
+	}
 	notifyARaw, _, err := s.GetValue(ctx, "candidate_notification.notify_a")
 	if err != nil {
 		return CandidateNotificationSettings{}, err
@@ -628,6 +651,7 @@ func (s *ConfigService) CandidateNotificationSettings(ctx context.Context) (Cand
 		return CandidateNotificationSettings{}, err
 	}
 	enabled, _ := strconv.ParseBool(enabledRaw)
+	shadow, _ := strconv.ParseBool(shadowRaw)
 	notifyA, _ := strconv.ParseBool(notifyARaw)
 	notifyB, _ := strconv.ParseBool(notifyBRaw)
 	actionableOnly, _ := strconv.ParseBool(actionableRaw)
@@ -644,6 +668,7 @@ func (s *ConfigService) CandidateNotificationSettings(ctx context.Context) (Cand
 	}
 	return CandidateNotificationSettings{
 		Enabled:                enabled,
+		ShadowMode:             shadow,
 		NotifyA:                notifyA,
 		NotifyB:                notifyB,
 		SendTime:               valueOrDefault(sendTime, "09:30"),
@@ -785,6 +810,27 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 		parsed, parseErr := strconv.ParseBool(strings.TrimSpace(enabled))
 		if parseErr == nil {
 			cfg.AutoTechnicalHistoryWarmup = parsed
+		}
+	}
+	if value, ok, err := s.GetValue(ctx, "discovery.task_timeout_minutes"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(value) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && parsed > 0 {
+			cfg.TaskTimeoutMin = parsed
+		}
+	}
+	if value, ok, err := s.GetValue(ctx, "discovery.download_idle_timeout_seconds"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(value) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && parsed > 0 {
+			cfg.DownloadIdleTimeoutSec = parsed
+		}
+	}
+	if value, ok, err := s.GetValue(ctx, "discovery.sec_bulk_cache_ttl_hours"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(value) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && parsed > 0 {
+			cfg.SECBulkCacheTTLHours = parsed
 		}
 	}
 	return cfg, nil

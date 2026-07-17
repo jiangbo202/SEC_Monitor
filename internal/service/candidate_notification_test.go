@@ -113,6 +113,35 @@ func TestCandidateNotificationSendRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestCandidateNotificationShadowModeRecordsPreviewWithoutSending(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{
+		{Key: "candidate_notification.enabled", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.shadow_mode", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+		{Key: "candidate_notification.notify_a", Value: "true", ValueType: "bool", Category: "candidate_notification"},
+	}, "test"); err != nil {
+		t.Fatalf("UpsertMany: %v", err)
+	}
+	seedCandidateScores(t, discoveryDB)
+	notifier := &fakeNotifier{}
+
+	result, err := NewCandidateNotificationService(db, discoveryDB, notifier, configs).Send(context.Background(), CandidateNotificationSendInput{Confirm: true})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if result.Preview.SuppressedReason != "candidate_notification_shadow_mode" || result.Preview.Summary.TotalA == 0 {
+		t.Fatalf("preview = %+v", result.Preview)
+	}
+	if result.Batch.ID != 0 || notifier.calls != 0 {
+		t.Fatalf("shadow mode must not deliver: batch=%+v calls=%d", result.Batch, notifier.calls)
+	}
+}
+
 func TestCandidateNotificationSendCreatesBatchAndCallsNotifier(t *testing.T) {
 	db := testDB(t)
 	discoveryDB := testDiscoveryDB(t)

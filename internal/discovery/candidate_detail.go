@@ -16,6 +16,7 @@ type CandidateDetail struct {
 	Universe           *UniverseSnapshot              `json:"universe,omitempty"`
 	Score              CandidateScoreSnapshot         `json:"score"`
 	Financial          *FinancialMetricSnapshot       `json:"financial,omitempty"`
+	ProfitHistory      ProfitHistory                  `json:"profit_history"`
 	Insiders           []InsiderTransactionSnapshot   `json:"insiders"`
 	CapitalRisks       []CapitalRiskSnapshot          `json:"capital_risks"`
 	CapitalRiskSummary CandidateCapitalRiskSummary    `json:"capital_risk_summary"`
@@ -54,7 +55,7 @@ type RecentSECFiling struct {
 }
 
 func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (CandidateDetail, error) {
-	result := CandidateDetail{Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, TechnicalHistory: []CandidateTechnicalHistoryRow{}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
+	result := CandidateDetail{Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, TechnicalHistory: []CandidateTechnicalHistoryRow{}, ProfitHistory: ProfitHistory{Quarterly: []ProfitHistoryPoint{}, Annual: []ProfitHistoryPoint{}}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -83,6 +84,11 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	if err := db.WithContext(ctx).First(&result.Security, result.Score.SecurityID).Error; err != nil {
 		return result, err
 	}
+	profitHistory, err := getProfitHistoryForSecurity(ctx, db, result.Score.SecurityID, result.Score.Ticker, time.Now().UTC())
+	if err != nil {
+		return result, err
+	}
+	result.ProfitHistory = profitHistory
 	if batch.UniverseSourceVersion != "" {
 		var identity SecurityBatchIdentity
 		err := db.WithContext(ctx).First(&identity, "batch_id = ? AND security_id = ?", batch.UniverseSourceVersion, result.Score.SecurityID).Error
@@ -127,6 +133,11 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		return result, err
 	} else {
 		result.DataQuality["financial"] = QualityStatusMissing
+	}
+	if len(result.ProfitHistory.Quarterly) > 0 || len(result.ProfitHistory.Annual) > 0 {
+		result.DataQuality["profit_history"] = QualityStatusValid
+	} else {
+		result.DataQuality["profit_history"] = QualityStatusMissing
 	}
 	if err := db.WithContext(ctx).Where("security_id = ?", result.Score.SecurityID).Order("transaction_date DESC").Limit(20).Find(&result.Insiders).Error; err != nil {
 		return result, err

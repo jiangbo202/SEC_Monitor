@@ -130,6 +130,53 @@ func TestPriceProviderChainReportsChildError(t *testing.T) {
 	}
 }
 
+func TestPriceProviderChainUsesPreviousTradingDayOnlyAfterFreshProviders(t *testing.T) {
+	ny, _ := time.LoadLocation("America/New_York")
+	previous := time.Date(2026, 6, 29, 0, 0, 0, 0, ny)
+	effective := time.Date(2026, 6, 30, 0, 0, 0, 0, ny)
+	expected := []Listing{{Ticker: "FRESH"}, {Ticker: "FALLBACK"}}
+	firstHash := sha256.Sum256([]byte("first-fallback"))
+	secondHash := sha256.Sum256([]byte("second-fallback"))
+	first := &fakeChainPriceProvider{
+		name: "twelvedata",
+		records: []PriceRecord{
+			{Symbol: "FRESH", Source: "twelvedata", TradeDate: previous, CloseMicros: 1_000_000, Volume: 10, Currency: "USD"},
+			{Symbol: "FALLBACK", Source: "twelvedata", TradeDate: previous, CloseMicros: 2_000_000, Volume: 20, Currency: "USD"},
+		},
+		result: ProviderResult{Provider: "twelvedata", SourceVersion: "twelvedata:v1", SHA256: hex.EncodeToString(firstHash[:]), EffectiveDate: effective, Records: 2, Expected: 2, CoveragePct: 100, Timely: true},
+	}
+	second := &fakeChainPriceProvider{
+		name:    "yahoo",
+		records: []PriceRecord{{Symbol: "FRESH", Source: "yahoo", TradeDate: effective, CloseMicros: 1_100_000, Volume: 11, Currency: "USD"}},
+		result:  ProviderResult{Provider: "yahoo", SourceVersion: "yahoo:v1", SHA256: hex.EncodeToString(secondHash[:]), EffectiveDate: effective, Records: 1, Expected: 2, CoveragePct: 50, Timely: true},
+	}
+	chain, err := NewPriceProviderChain(PriceProviderChainOptions{Providers: []PriceProvider{first, second}, Calendar: &stubMarketCalendar{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records, result, err := chain.LoadForDate(context.Background(), expected, "2026-06-30")
+	if err != nil {
+		t.Fatalf("LoadForDate() error = %v", err)
+	}
+	if got := tickersFromListings(second.expected); !reflect.DeepEqual(got, []string{"FALLBACK", "FRESH"}) {
+		t.Fatalf("second provider must retry both non-fresh symbols, got %#v", got)
+	}
+	if len(records) != 2 || result.CoveragePct != 100 {
+		t.Fatalf("records=%#v result=%#v", records, result)
+	}
+	bySymbol := map[string]PriceRecord{}
+	for _, record := range records {
+		bySymbol[record.Symbol] = record
+	}
+	if fresh := bySymbol["FRESH"]; fresh.Source != "yahoo" || !fresh.TradeDate.Equal(effective) {
+		t.Fatalf("fresh replacement = %#v", fresh)
+	}
+	if fallback := bySymbol["FALLBACK"]; fallback.Source != "twelvedata" || !fallback.TradeDate.Equal(previous) {
+		t.Fatalf("fallback preservation = %#v", fallback)
+	}
+}
+
 func diagnosticEvents(events []PriceProviderChainDiagnostic) []string {
 	out := make([]string, 0, len(events))
 	for _, event := range events {
