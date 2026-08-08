@@ -20,6 +20,15 @@ func (p *fakeTechnicalHistoryProvider) LoadHistory(_ context.Context, listings [
 	return append([]PriceRecord(nil), p.records...), nil
 }
 
+func TestNormalizeTechnicalHistoryLookbackUsesMA200Default(t *testing.T) {
+	if got := normalizeTechnicalHistoryLookbackDays(0); got != defaultTechnicalHistoryLookbackDays {
+		t.Fatalf("default lookback = %d, want %d", got, defaultTechnicalHistoryLookbackDays)
+	}
+	if got := normalizeTechnicalHistoryLookbackDays(technicalMA200LookbackDays - 1); got != technicalMA200LookbackDays {
+		t.Fatalf("minimum lookback = %d, want %d", got, technicalMA200LookbackDays)
+	}
+}
+
 func TestBackfillCandidateTechnicalHistoryPersistsOnlyIncompleteCandidates(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	security := Security{CIK: "0000011111", CompanyName: "History Co", CatalogStatus: SecurityCatalogPublished}
@@ -69,5 +78,31 @@ func TestBackfillCandidateTechnicalHistoryPersistsOnlyIncompleteCandidates(t *te
 	}
 	if second.AlreadyReadyCount != 1 || second.RequestedCount != 0 {
 		t.Fatalf("second result = %+v", second)
+	}
+}
+
+func TestBackfillTickerTechnicalHistoryPersistsAndReadsWatchTargetSeries(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	provider := &fakeTechnicalHistoryProvider{records: []PriceRecord{
+		{Symbol: "WATCH", Source: "fake", TradeDate: base, CloseMicros: 10_000_000, Volume: 100, Currency: "USD"},
+		{Symbol: "WATCH", Source: "fake", TradeDate: base.AddDate(0, 0, 1), CloseMicros: 11_000_000, Volume: 200, Currency: "USD"},
+	}}
+	result, err := BackfillTickerTechnicalHistory(context.Background(), db, provider, "watch", base.AddDate(0, 0, 2), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CandidateCount != 1 || result.RequestedCount != 1 || result.PersistedCount != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(provider.called) != 1 || provider.called[0].Ticker != "WATCH" || provider.called[0].ProviderTicker != "WATCH" {
+		t.Fatalf("listings = %+v", provider.called)
+	}
+	history, err := GetTickerTechnicalHistory(context.Background(), db, "watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history.Ticker != "WATCH" || len(history.History) != 2 || history.History[0].TradeDate != "2026-01-03" {
+		t.Fatalf("history = %+v", history)
 	}
 }

@@ -1,8 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"sec_monitor/internal/api/router"
 	"sec_monitor/internal/config"
@@ -22,10 +29,40 @@ type startupDependencies struct {
 }
 
 func main() {
-	if err := run(config.Load(), func(app *gin.Engine, address string) error {
-		return app.Run(address)
-	}); err != nil {
+	if err := run(config.Load(), serveHTTPGracefully); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// serveHTTPGracefully lets Docker stop a container without cutting off active
+// API responses. Background jobs use their own configured deadlines; this
+// only controls the HTTP listener and prevents new requests during shutdown.
+func serveHTTPGracefully(app *gin.Engine, address string) error {
+	server := &http.Server{Addr: address, Handler: app, ReadHeaderTimeout: 10 * time.Second}
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- server.ListenAndServe() }()
+
+	stopSignals := make(chan os.Signal, 1)
+	signal.Notify(stopSignals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stopSignals)
+
+	select {
+	case err := <-serverErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case received := <-stopSignals:
+		log.Printf("received %s, shutting down HTTP server", received)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			return fmt.Errorf("graceful HTTP shutdown: %w", err)
+		}
+		if err := <-serverErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
 	}
 }
 

@@ -21,9 +21,30 @@
       <el-tag class="health-tag-action" type="warning" effect="plain" @click="applyAttention('parse_failed')">{{ t('pages.ipoRadar.attention.parseFailed', { count: health.unsupported_offering_events }) }}</el-tag>
       <el-tag class="health-tag-action" type="warning" effect="plain" @click="applyAttention('lifecycle_stale')">{{ t('pages.ipoRadar.attention.lifecycleStale', { count: health.stale_lifecycle_checks }) }}</el-tag>
       <el-tag class="health-tag-action" :type="health.failed_notification_batches || health.dead_letter_batches ? 'danger' : 'info'" effect="plain" @click="applyAttention('notification_failed')">{{ t('pages.ipoRadar.attention.notificationFailed', { count: health.failed_notification_batches + health.dead_letter_batches }) }}</el-tag>
-      <el-tag type="info" effect="plain">{{ t('pages.ipoRadar.attention.missingMarketMapping', { count: health.missing_market_mapping }) }}</el-tag>
+      <el-tag class="health-tag-action" type="info" effect="plain" @click="applyAttention('missing_market_mapping')">{{ t('pages.ipoRadar.attention.missingMarketMapping', { count: health.missing_market_mapping }) }}</el-tag>
       <el-tag v-if="health.due_retry_batches || health.dead_letter_batches" type="danger" effect="plain">{{ t('pages.ipoRadar.attention.retryQueue', { due: health.due_retry_batches, dead: health.dead_letter_batches }) }}</el-tag>
     </div>
+
+    <el-alert
+      v-if="health?.actions?.length"
+      class="ipo-action-panel"
+      :title="t('pages.ipoRadar.operations.title', { count: health.actions.length })"
+      type="warning"
+      :closable="false"
+      show-icon
+    >
+      <template #default>
+        <div class="ipo-action-list">
+          <div v-for="action in health.actions" :key="action.key" class="ipo-action-item">
+            <div>
+              <el-tag :type="action.severity === 'danger' ? 'danger' : 'warning'" effect="plain">{{ t(`pages.ipoRadar.operations.actions.${action.key}.title`, { count: action.count }) }}</el-tag>
+              <span class="ipo-action-description">{{ t(`pages.ipoRadar.operations.actions.${action.key}.description`) }}</span>
+            </div>
+            <el-button size="small" type="primary" plain @click="handleHealthAction(action)">{{ t(`pages.ipoRadar.operations.actions.${action.key}.button`) }}</el-button>
+          </div>
+        </div>
+      </template>
+    </el-alert>
 
     <el-tabs v-model="activeTab" class="content-tabs" @tab-change="handleTabChange">
       <el-tab-pane :label="t('pages.ipoRadar.tabs.companies')" name="companies">
@@ -41,6 +62,7 @@
               <el-option :label="t('pages.ipoRadar.attention.parseFailedOption')" value="parse_failed" />
               <el-option :label="t('pages.ipoRadar.attention.lifecycleStaleOption')" value="lifecycle_stale" />
               <el-option :label="t('pages.ipoRadar.attention.notificationFailedOption')" value="notification_failed" />
+              <el-option :label="t('pages.ipoRadar.attention.missingMarketMappingOption')" value="missing_market_mapping" />
             </el-select>
           </el-form-item>
           <el-form-item><el-checkbox v-model="companyFilters.include_ended">{{ t('pages.ipoRadar.showEnded') }}</el-checkbox></el-form-item>
@@ -261,12 +283,14 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, IPOCompany, IPOFiling, IPOOfferingEvent, IPORadarHealth, IPORadarRefreshResult, PageResult } from '@/api/types'
+import type { ApiResponse, IPOCompany, IPOFiling, IPOOfferingEvent, IPORadarAction, IPORadarHealth, IPORadarRefreshResult, PageResult } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
+const router = useRouter()
 const ipoStatuses = [
   { value: 'new', label: t('pages.ipoRadar.statuses.new') },
   { value: 'updating', label: t('pages.ipoRadar.statuses.updating') },
@@ -337,6 +361,20 @@ async function applyAttention(attention: string) {
   companyFilters.attention = attention
   companiesPage.value = 1
   await loadCompanies()
+}
+
+async function handleHealthAction(action: IPORadarAction) {
+  if (action.route === 'notification_logs') {
+    await router.push({ name: 'notification-logs', query: { status: action.status || 'failed' } })
+    return
+  }
+  if (action.route === 'refresh') {
+    await refresh()
+    return
+  }
+  if (action.attention) {
+    await applyAttention(action.attention)
+  }
 }
 
 function onCompanySortChange({ prop, order }: { prop?: string, order?: string | null }) {
@@ -509,5 +547,27 @@ onMounted(async () => {
 
 .health-tag-action {
   cursor: pointer;
+}
+
+.ipo-action-panel {
+  margin-bottom: 16px;
+}
+
+.ipo-action-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ipo-action-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ipo-action-description {
+  margin-left: 8px;
+  color: var(--el-text-color-regular);
 }
 </style>

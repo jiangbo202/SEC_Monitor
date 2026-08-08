@@ -16,6 +16,7 @@ import ConfigsView from '@/views/ConfigsView.vue'
 import SystemHealthView from '@/views/SystemHealthView.vue'
 import AuditLogsView from '@/views/AuditLogsView.vue'
 import NotificationLogsView from '@/views/NotificationLogsView.vue'
+import MacroCalendarView from '@/views/MacroCalendarView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -29,6 +30,7 @@ const router = createRouter({
         { path: 'filings', name: 'filings', component: FilingsView },
         { path: 'discovery-candidates', name: 'discovery-candidates', component: DiscoveryCandidatesView },
         { path: 'discovery-logs', name: 'discovery-logs', component: DiscoveryLogsView },
+        { path: 'macro-calendar', name: 'macro-calendar', component: MacroCalendarView },
         { path: 'event-radar', name: 'event-radar', component: EventRadarView },
         { path: 'insider-trading', name: 'insider-trading', component: InsiderTradingView },
         { path: 'ipo-radar', name: 'ipo-radar', component: IPORadarView },

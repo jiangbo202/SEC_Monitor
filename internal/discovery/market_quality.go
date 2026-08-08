@@ -4,7 +4,6 @@ import (
 	"context"
 	"math"
 	"sort"
-	"strings"
 
 	"gorm.io/gorm"
 )
@@ -19,14 +18,22 @@ type CandidateMarketQuality struct {
 }
 
 func hydrateCandidateMarketQuality(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {
+	priceHistories, err := candidateTechnicalPriceHistories(ctx, db, items, technicalMinimumSamples)
+	if err != nil {
+		return err
+	}
+	hydrateCandidateMarketQualityFromPriceHistories(items, priceHistories)
+	return nil
+}
+
+func hydrateCandidateMarketQualityFromPriceHistories(items []CandidateScoreResult, priceHistories map[uint][]PriceSnapshot) {
 	for i := range items {
-		var rows []PriceSnapshot
-		if err := db.WithContext(ctx).Where("symbol = ? AND quality_status = ?", strings.ToUpper(items[i].Ticker), QualityStatusValid).Order("trade_date DESC").Limit(21).Find(&rows).Error; err != nil {
-			return err
+		rows := priceHistories[items[i].SecurityID]
+		if len(rows) > technicalMinimumSamples {
+			rows = rows[len(rows)-technicalMinimumSamples:]
 		}
 		items[i].MarketQuality = buildCandidateMarketQuality(rows)
 	}
-	return nil
 }
 
 func buildCandidateMarketQuality(rows []PriceSnapshot) CandidateMarketQuality {

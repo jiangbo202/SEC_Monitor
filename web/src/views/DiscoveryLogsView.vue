@@ -41,6 +41,145 @@
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-header">
+          <span>行情 Provider 配置与可观测性</span>
+          <el-tag effect="plain">只读取本地记录，不请求行情接口</el-tag>
+        </div>
+      </template>
+      <el-skeleton v-if="observabilityLoading" :rows="3" animated />
+      <template v-else-if="providerObservability">
+        <el-descriptions :column="4" border>
+          <el-descriptions-item label="行情源链路">{{ providerObservability.price_provider_chain || '未配置' }}</el-descriptions-item>
+          <el-descriptions-item label="链路健康">
+            <el-tag :type="providerStatusType(providerObservability.chain_health?.status)" effect="plain">{{ providerObservability.chain_health?.status || '-' }}</el-tag>
+            <span v-if="providerObservability.chain_health"> · 连续失败 {{ providerObservability.chain_health.failure_streak }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="最新运行有效日">{{ formatDate(providerObservability.latest_run?.effective_date) }}</el-descriptions-item>
+          <el-descriptions-item label="最新覆盖率">{{ formatPct(providerObservability.latest_run?.coverage_pct) }}</el-descriptions-item>
+          <el-descriptions-item label="交易日历">
+            {{ providerObservability.calendar_version }}
+            <el-tag v-for="year in providerObservability.calendar_years" :key="year.year" size="small" :type="year.complete ? 'success' : 'warning'" effect="plain" class="calendar-year-tag">
+              {{ year.year }} {{ year.complete ? '完整' : '未完整' }}
+            </el-tag>
+            <span v-if="providerObservability.calendar_years.length === 0">暂无本地日历</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="最近来源构成" :span="4">
+            {{ formatPriceSources(providerObservability.latest_price_source_counts) }}
+          </el-descriptions-item>
+        </el-descriptions>
+        <el-alert class="provider-budget-notice" type="info" :closable="false" :title="providerObservability.budget_notice" show-icon />
+        <el-table :data="providerObservability.providers" border empty-text="尚未配置行情 Provider">
+          <el-table-column prop="provider" label="Provider" width="130" />
+          <el-table-column label="凭据" width="110">
+            <template #default="{ row }"><el-tag :type="row.configured_credential ? 'success' : 'warning'" effect="plain">{{ row.configured_credential ? '已配置' : '缺失' }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="token_count" label="Token 数" width="100" align="right">
+            <template #default="{ row }">{{ row.token_count || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="本地单次预算" width="150" align="right">
+            <template #default="{ row }">{{ formatLocalBudget(row.local_request_budget, row.budget_scope) }}</template>
+          </el-table-column>
+          <el-table-column prop="latest_source_record_count" label="最近写入记录" width="130" align="right" />
+          <el-table-column label="健康状态" width="120">
+            <template #default="{ row }"><el-tag :type="providerStatusType(row.health?.status)" effect="plain">{{ row.health?.status || '-' }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="最后交易日" width="130"><template #default="{ row }">{{ row.health?.last_trade_date || '-' }}</template></el-table-column>
+          <el-table-column label="连续失败" width="100" align="right"><template #default="{ row }">{{ row.health?.failure_streak ?? '-' }}</template></el-table-column>
+        </el-table>
+      </template>
+      <el-empty v-else description="暂无行情可观测性数据" :image-size="48" />
+    </el-card>
+
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-header">
+          <span>公司资料补偿队列</span>
+          <el-space>
+            <el-tag type="info" effect="plain">仅当前候选 · 本地失败记录</el-tag>
+            <el-button type="primary" plain :loading="profileBulkRetrying" :disabled="profileRecoveryQueue.items.length === 0" @click="retryCompanyProfileQueue">一键重试</el-button>
+            <el-button link type="primary" :loading="profileRecoveryLoading" @click="loadProfileRecoveryQueue">刷新</el-button>
+          </el-space>
+        </div>
+      </template>
+      <el-alert type="info" :closable="false" show-icon title="Longbridge 公司资料失败后会按退避时间自动补偿；单只重试仅请求这一家，一键重试按队列顺序受预算执行，均不会重跑 SEC 或市场价格流程。" class="profile-recovery-notice" />
+      <el-empty v-if="!profileRecoveryLoading && profileRecoveryQueue.items.length === 0" description="当前候选没有待补偿的公司资料" :image-size="48" />
+      <el-table v-else :data="profileRecoveryQueue.items" v-loading="profileRecoveryLoading" border>
+        <el-table-column prop="ticker" label="Ticker" width="105" />
+        <el-table-column prop="company_name" label="公司" min-width="180" show-overflow-tooltip />
+        <el-table-column label="状态" width="115">
+          <template #default="{ row }"><el-tag :type="row.retry_due ? 'warning' : 'info'" effect="plain">{{ row.retry_due ? '可自动补偿' : '等待退避' }}</el-tag></template>
+        </el-table-column>
+        <el-table-column prop="retry_count" label="失败次数" width="100" align="right" />
+        <el-table-column label="下次自动重试" width="180"><template #default="{ row }">{{ row.retry_due ? '下次同步优先补偿' : formatDateTime(row.next_retry_at) }}</template></el-table-column>
+        <el-table-column label="最近尝试" width="180"><template #default="{ row }">{{ formatDateTime(row.last_attempt_at) }}</template></el-table-column>
+        <el-table-column prop="last_error" label="最近错误（已脱敏）" min-width="260" show-overflow-tooltip />
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }"><el-button link type="primary" :loading="profileRetryTicker === row.ticker" @click="retryCompanyProfile(row)">立即重试</el-button></template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-header">
+          <span>行情补偿队列</span>
+          <el-space>
+            <el-tag type="info" effect="plain">仅当前 A/B 候选 · 本地诊断</el-tag>
+            <el-button link type="primary" :loading="marketRecoveryLoading" @click="loadMarketRecoveryQueue">刷新</el-button>
+          </el-space>
+        </div>
+      </template>
+      <el-alert type="info" :closable="false" show-icon title="只列出缺价、过期价或本地回退价。单只“补齐日线并重算”只请求该标的、写入本地日线，并发布只替换该标的行情与分数的可追溯市场修正批次；不会重跑 SEC 或全量市场扫描。" class="profile-recovery-notice" />
+      <el-empty v-if="!marketRecoveryLoading && marketRecoveryQueue.items.length === 0" description="当前候选的行情证据正常" :image-size="48" />
+      <el-table v-else :data="marketRecoveryQueue.items" v-loading="marketRecoveryLoading" border>
+        <el-table-column prop="ticker" label="Ticker" width="105" />
+        <el-table-column prop="grade" label="等级" width="90" />
+        <el-table-column prop="issue_label" label="原因" min-width="150" />
+        <el-table-column label="价格日期" width="150"><template #default="{ row }">{{ formatDate(row.price_trade_date) }}</template></el-table-column>
+        <el-table-column prop="price_source" label="当前来源" width="130"><template #default="{ row }">{{ row.price_source || '-' }}</template></el-table-column>
+        <el-table-column label="状态" width="130"><template #default="{ row }"><el-tag type="warning" effect="plain">{{ priceFreshnessLabel(row.price_freshness_status) }}</el-tag></template></el-table-column>
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="{ row }"><el-button link type="primary" :loading="marketRetryTicker === row.ticker" @click="refreshCandidateMarketHistory(row)">补齐并重算</el-button></template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-header">
+          <span>同步工作流</span>
+          <el-tag effect="plain">步骤进度与运行日志</el-tag>
+        </div>
+      </template>
+      <el-table :data="syncRows" v-loading="syncLoading" border empty-text="暂无同步工作流" row-key="id" @expand-change="loadSyncSteps">
+        <el-table-column type="expand" width="48">
+          <template #default="{ row }">
+            <el-empty v-if="syncSteps[row.id]?.length === 0" description="尚未记录步骤" :image-size="48" />
+            <el-timeline v-else class="sync-step-timeline">
+              <el-timeline-item v-for="step in syncSteps[row.id] || []" :key="step.id" :type="syncStepType(step.status)" :timestamp="formatDateTime(step.started_at)">
+                <div class="sync-step-title">{{ phaseLabel(step.phase) }} <el-tag size="small" :type="syncStepType(step.status)" effect="plain">{{ step.status }}</el-tag></div>
+                <div>{{ step.message }}</div>
+                <div v-if="step.record_count" class="sync-step-meta">记录数：{{ step.record_count }} · 耗时：{{ formatDuration(step.started_at, step.completed_at) }}</div>
+              </el-timeline-item>
+            </el-timeline>
+          </template>
+        </el-table-column>
+        <el-table-column prop="status" label="状态" width="105">
+          <template #default="{ row }"><el-tag :type="syncStepType(row.status)" effect="plain">{{ row.status }}</el-tag></template>
+        </el-table-column>
+        <el-table-column prop="kind" label="模式" width="120"><template #default="{ row }">{{ syncKindLabel(row.kind) }}</template></el-table-column>
+        <el-table-column prop="phase" label="当前步骤" width="190"><template #default="{ row }">{{ phaseLabel(row.phase) }}</template></el-table-column>
+        <el-table-column prop="started_at" label="开始时间" width="180"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+        <el-table-column label="耗时" width="100" align="right"><template #default="{ row }">{{ formatDuration(row.started_at, row.completed_at) }}</template></el-table-column>
+        <el-table-column prop="security_batch_id" label="SEC Batch" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="market_batch_id" label="Market Batch" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="error_message" label="错误" min-width="260" show-overflow-tooltip />
+      </el-table>
+      <el-pagination class="pagination" layout="total, prev, pager, next" :total="syncTotal" :page-size="pageSize" v-model:current-page="syncPage" @current-change="loadSyncRuns" />
+    </el-card>
+
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-header">
           <span>Provider Health</span>
           <el-tag effect="plain">当前状态</el-tag>
         </div>
@@ -182,8 +321,9 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, DiscoveryBatch, PageResult, ProviderHealth, ProviderHealthPage, ProviderRun } from '@/api/types'
+import type { ApiResponse, CompanyProfileBulkRetryResult, CompanyProfileRecoveryItem, CompanyProfileRecoveryQueue, DiscoveryBatch, DiscoverySyncRun, DiscoverySyncRunPage, DiscoverySyncStep, MarketPriceRecoveryItem, MarketPriceRecoveryQueue, PageResult, ProviderHealth, ProviderHealthPage, ProviderObservability, ProviderRun } from '@/api/types'
 
 const pageSize = 20
 const loading = ref(false)
@@ -191,12 +331,30 @@ const loading = ref(false)
 const healthLoading = ref(false)
 const healthRows = ref<ProviderHealth[]>([])
 
+const observabilityLoading = ref(false)
+const providerObservability = ref<ProviderObservability | null>(null)
+
+const profileRecoveryLoading = ref(false)
+const profileRecoveryQueue = ref<CompanyProfileRecoveryQueue>({ items: [] })
+const profileRetryTicker = ref('')
+const profileBulkRetrying = ref(false)
+
+const marketRecoveryLoading = ref(false)
+const marketRecoveryQueue = ref<MarketPriceRecoveryQueue>({ batch_id: '', effective_date: '', items: [] })
+const marketRetryTicker = ref('')
+
 const batchLoading = ref(false)
 const batchRows = ref<DiscoveryBatch[]>([])
 const batchTotal = ref(0)
 const batchPage = ref(1)
 const batchFilters = reactive({ kind: '', status: '' })
 const latestMarketBatch = ref<DiscoveryBatch | null>(null)
+
+const syncLoading = ref(false)
+const syncRows = ref<DiscoverySyncRun[]>([])
+const syncTotal = ref(0)
+const syncPage = ref(1)
+const syncSteps = reactive<Record<number, DiscoverySyncStep[]>>({})
 
 const runLoading = ref(false)
 const runRows = ref<ProviderRun[]>([])
@@ -211,6 +369,89 @@ async function loadHealth() {
     healthRows.value = res.data.data.items
   } finally {
     healthLoading.value = false
+  }
+}
+
+async function loadProviderObservability() {
+  observabilityLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<ProviderObservability>>('/discovery/provider-observability')
+    providerObservability.value = res.data.data
+  } finally {
+    observabilityLoading.value = false
+  }
+}
+
+async function loadProfileRecoveryQueue() {
+  profileRecoveryLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<CompanyProfileRecoveryQueue>>('/discovery/company-profiles/recovery-queue')
+    profileRecoveryQueue.value = res.data.data
+  } finally {
+    profileRecoveryLoading.value = false
+  }
+}
+
+async function retryCompanyProfile(row: CompanyProfileRecoveryItem) {
+  profileRetryTicker.value = row.ticker
+  try {
+    await apiClient.post(`/discovery/company-profiles/${encodeURIComponent(row.ticker)}/retry`, null, { params: { cik: row.cik || undefined } })
+    ElMessage.success(`${row.ticker} 公司资料已更新`)
+    await loadProfileRecoveryQueue()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || `${row.ticker} 公司资料重试失败`)
+    await loadProfileRecoveryQueue()
+  } finally {
+    profileRetryTicker.value = ''
+  }
+}
+
+async function retryCompanyProfileQueue() {
+  try {
+    await ElMessageBox.confirm(
+      `将按当前队列顺序重试 ${profileRecoveryQueue.value.items.length} 家公司；请求数受系统配置的公司资料预算限制，连续相同上游错误会自动停止。`,
+      '一键重试公司资料',
+      { confirmButtonText: '开始重试', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  profileBulkRetrying.value = true
+  try {
+    const res = await apiClient.post<ApiResponse<CompanyProfileBulkRetryResult>>('/discovery/company-profiles/recovery-queue/retry')
+    const result = res.data.data
+    const message = result.message || `已尝试 ${result.attempted} 家，成功 ${result.fetched} 家，失败 ${result.failed} 家`
+    if (result.stopped || result.failed > 0) ElMessage.warning(message)
+    else ElMessage.success(message)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '公司资料一键重试失败')
+  } finally {
+    profileBulkRetrying.value = false
+    await loadProfileRecoveryQueue()
+  }
+}
+
+async function loadMarketRecoveryQueue() {
+  marketRecoveryLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<MarketPriceRecoveryQueue>>('/discovery/candidates/market-price-recovery-queue')
+    marketRecoveryQueue.value = res.data.data
+  } finally {
+    marketRecoveryLoading.value = false
+  }
+}
+
+async function refreshCandidateMarketHistory(row: MarketPriceRecoveryItem) {
+  marketRetryTicker.value = row.ticker
+  try {
+    const res = await apiClient.post<ApiResponse<{ history: { persisted_count: number }, reprice: { batch_id: string } }>>(`/discovery/candidates/${encodeURIComponent(row.ticker)}/market-history-refresh`)
+    ElMessage.success(`${row.ticker} 已补齐 ${res.data.data.history?.persisted_count || 0} 条日线并发布市场修正批次`)
+    await loadMarketRecoveryQueue()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || `${row.ticker} 行情补齐失败`)
+    await loadMarketRecoveryQueue()
+  } finally {
+    marketRetryTicker.value = ''
   }
 }
 
@@ -247,10 +488,29 @@ async function loadRuns() {
   }
 }
 
+async function loadSyncRuns() {
+  syncLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<DiscoverySyncRunPage>>('/discovery/sync-runs', {
+      params: { page: syncPage.value, page_size: pageSize }
+    })
+    syncRows.value = res.data.data.items
+    syncTotal.value = res.data.data.total
+  } finally {
+    syncLoading.value = false
+  }
+}
+
+async function loadSyncSteps(row: DiscoverySyncRun, expandedRows: DiscoverySyncRun[]) {
+  if (!expandedRows.some((item) => item.id === row.id) || syncSteps[row.id]) return
+  const res = await apiClient.get<ApiResponse<DiscoverySyncStep[]>>(`/discovery/sync-runs/${row.id}/steps`)
+  syncSteps[row.id] = res.data.data
+}
+
 async function loadAll() {
   loading.value = true
   try {
-    await Promise.all([loadHealth(), loadLatestMarketBatch(), loadBatches(), loadRuns()])
+    await Promise.all([loadHealth(), loadProviderObservability(), loadProfileRecoveryQueue(), loadMarketRecoveryQueue(), loadLatestMarketBatch(), loadSyncRuns(), loadBatches(), loadRuns()])
   } finally {
     loading.value = false
   }
@@ -305,6 +565,18 @@ function formatPriceSources(counts?: Record<string, number> | null) {
     .join(' / ')
 }
 
+function formatLocalBudget(budget: number, scope: string) {
+  if (scope === 'provider_managed') return '供应商侧管理'
+  if (scope === 'download') return '下载源，无固定上限'
+  if (scope === 'unknown') return '-'
+  return budget > 0 ? `${budget} 请求` : '未限额'
+}
+
+function priceFreshnessLabel(status?: string) {
+  const labels: Record<string, string> = { missing: '缺失', stale: '过期', future: '日期异常', previous_trading_day: '上一交易日' }
+  return labels[status || ''] || status || '-'
+}
+
 function formatDuration(startedAt?: string | null, completedAt?: string | null) {
   if (!startedAt || !completedAt) return '-'
   const started = new Date(startedAt)
@@ -334,6 +606,30 @@ function providerStatusType(status?: string) {
   return 'info'
 }
 
+function syncStepType(status?: string) {
+  if (status === 'published' || status === 'completed') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'warning') return 'warning'
+  return 'info'
+}
+
+function syncKindLabel(kind?: string) {
+  if (kind === 'incremental') return '每日增量'
+  if (kind === 'full') return '全量校准'
+  if (kind === 'market') return '仅行情'
+  if (kind === 'market-force') return '强制补齐收盘价'
+  return kind || '-'
+}
+
+function phaseLabel(phase?: string) {
+  const labels: Record<string, string> = {
+    prepare: '准备与缓存清理', build_sources: '装载数据源', security_universe: 'SEC 全量宇宙',
+    incremental_sec_refresh: 'SEC 增量财务', incremental_listing_discovery: '新增上市标的发现', market_prescreen: '行情与市值预筛',
+    technical_history: '技术指标历史', publish_summary: '候选摘要与健康检查', completed: '已完成', failed: '失败'
+  }
+  return labels[phase || ''] || phase || '-'
+}
+
 onMounted(loadAll)
 </script>
 
@@ -351,5 +647,32 @@ onMounted(loadAll)
 
 .inline-filters {
   margin-bottom: -18px;
+}
+
+.sync-step-timeline {
+  margin: 8px 0 0;
+}
+
+.sync-step-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.sync-step-meta {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.provider-budget-notice {
+  margin: 12px 0;
+}
+
+.profile-recovery-notice {
+  margin-bottom: 12px;
+}
+
+.calendar-year-tag {
+  margin-left: 6px;
 }
 </style>

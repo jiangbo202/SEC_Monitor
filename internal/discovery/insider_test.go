@@ -197,6 +197,34 @@ func TestSECForm4InsiderSourceDownloadsRecentAllowedOwnershipXML(t *testing.T) {
 	}
 }
 
+func TestSECForm4InsiderSourceFallsBackFromXSLWrapperToRawOwnershipXML(t *testing.T) {
+	asOf := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	requested := []string{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requested = append(requested, r.URL.Path)
+		body := `<ownershipDocument><documentType>4</documentType><issuer><issuerCik>0000001234</issuerCik><issuerTradingSymbol>ACME</issuerTradingSymbol></issuer></ownershipDocument>`
+		if strings.Contains(r.URL.Path, "/xslF345X05/") {
+			body = `<html><head><title>SEC Form 4</title></head><body>rendered wrapper</body></html>`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r}, nil
+	})}
+	source := SECForm4InsiderSource{
+		Metadata:   fakeMetadataSource{records: []SecuritySourceRecord{{CIK: "0000001234", FilingMetadata: []FilingMetadata{{CIK: "0000001234", Accession: "0000001234-26-000004", Form: "4", FiledAt: asOf.AddDate(0, 0, -1), PrimaryDocument: "xslF345X05/ownership.xml"}}}}, version: testSourceVersion("metadata", "form4-xsl", asOf)},
+		Downloader: &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1 << 20},
+		BaseURL:    "https://www.sec.gov/Archives/edgar/data",
+	}
+	transactions, coverage, _, err := source.LoadInsiderTransactionsWithCoverage(context.Background(), map[string]struct{}{"0000001234": {}}, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transactions) != 0 || len(coverage) != 1 || coverage[0].Status != InsiderCoverageCoveredNoTransactions || coverage[0].DownloadedDocuments != 2 || coverage[0].ParsedDocuments != 1 {
+		t.Fatalf("coverage = %#v transactions = %#v", coverage, transactions)
+	}
+	if len(requested) != 2 || !strings.Contains(requested[0], "/xslF345X05/ownership.xml") || !strings.HasSuffix(requested[1], "/ownership.xml") || strings.Contains(requested[1], "/xslF345X05/") {
+		t.Fatalf("requested = %#v", requested)
+	}
+}
+
 func TestSECForm4InsiderSourceSkipsMalformedOwnershipDocument(t *testing.T) {
 	asOf := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
 	requested := []string{}
@@ -222,7 +250,9 @@ func TestSECForm4InsiderSourceSkipsMalformedOwnershipDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadInsiderTransactions: %v", err)
 	}
-	if len(requested) != 2 || len(transactions) != 0 {
+	// The XSL wrapper now gets one safe retry at the accession-root filename;
+	// this fixture deliberately makes that fallback malformed too.
+	if len(requested) != 3 || len(transactions) != 0 {
 		t.Fatalf("requested=%d transactions=%#v", len(requested), transactions)
 	}
 	if version.SHA256 == "" || !strings.Contains(version.Version, InsiderParserVersion) {
@@ -280,6 +310,40 @@ func TestSECForm4InsiderSourceSkipsAllPermanentlyMissingDocuments(t *testing.T) 
 	}
 	if len(transactions) != 0 || version.SHA256 == "" || !strings.Contains(version.Version, InsiderParserVersion) {
 		t.Fatalf("transactions=%#v version=%#v", transactions, version)
+	}
+}
+
+func TestSECForm4InsiderSourceReportsCoverageWithoutTreatingNoFilingAsMissing(t *testing.T) {
+	asOf := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
+	source := SECForm4InsiderSource{
+		Metadata: fakeMetadataSource{records: []SecuritySourceRecord{
+			{CIK: "0000001234"},
+			{CIK: "0000005678", FilingMetadata: []FilingMetadata{{CIK: "0000005678", Accession: "0000005678-26-000001", Form: "4", FiledAt: asOf.AddDate(0, 0, -1), PrimaryDocument: "missing.xml"}}},
+		}, version: testSourceVersion("metadata", "form4-coverage", asOf)},
+		Downloader: &Downloader{Client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("missing")), Header: make(http.Header), Request: r}, nil
+		})}, CacheDir: t.TempDir(), MaxBytes: 1 << 20},
+		BaseURL: "https://www.sec.gov/Archives/edgar/data",
+	}
+	transactions, coverage, version, err := source.LoadInsiderTransactionsWithCoverage(context.Background(), map[string]struct{}{"0000001234": {}, "0000005678": {}, "0000009999": {}}, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transactions) != 0 || !strings.Contains(version.Version, InsiderCoverageVersion) {
+		t.Fatalf("transactions=%#v version=%#v", transactions, version)
+	}
+	byCIK := map[string]InsiderCoverage{}
+	for _, item := range coverage {
+		byCIK[item.CIK] = item
+	}
+	if got := byCIK["0000001234"]; got.Status != InsiderCoverageCoveredNoFilings {
+		t.Fatalf("no filing coverage=%#v", got)
+	}
+	if got := byCIK["0000005678"]; got.Status != InsiderCoverageUnavailable || got.PermanentDocumentFailures != 1 {
+		t.Fatalf("permanent missing coverage=%#v", got)
+	}
+	if got := byCIK["0000009999"]; got.Status != InsiderCoverageUnavailable {
+		t.Fatalf("missing metadata coverage=%#v", got)
 	}
 }
 

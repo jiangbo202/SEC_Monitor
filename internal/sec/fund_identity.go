@@ -82,7 +82,7 @@ func (c *HTTPClient) ResolveFundTicker(ctx context.Context, ticker string) (Fund
 	}
 	c.setHeaders(req)
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.do(req, "fund ticker lookup")
 	if err != nil {
 		return FundResolution{}, err
 	}
@@ -162,7 +162,7 @@ func (c *HTTPClient) lookupFundNameFromCBOE(ctx context.Context, ticker string) 
 		return "", err
 	}
 	c.setHeaders(req)
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.do(req, "fund filing search")
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +211,7 @@ func (c *HTTPClient) resolveFundTickerFromSearch(ctx context.Context, ticker, qu
 		return FundResolution{}, err
 	}
 	c.setHeaders(req)
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.do(req, "fund filing document")
 	if err != nil {
 		return FundResolution{}, err
 	}
@@ -426,7 +426,7 @@ func (c *HTTPClient) fetchFundIndex(ctx context.Context, indexURL string) (fundI
 		return fundIndexParseResult{}, err
 	}
 	c.setHeaders(req)
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.do(req, "fund filing index")
 	if err != nil {
 		return fundIndexParseResult{}, err
 	}

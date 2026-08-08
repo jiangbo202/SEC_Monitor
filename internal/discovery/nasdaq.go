@@ -26,6 +26,7 @@ type SecuritySourceRecord struct {
 	TestIssue                      bool
 	ETF                            bool
 	SIC                            int
+	SICDescription                 string
 	StateOfIncorporation           string
 	LatestAnnualForm               string
 	RecentForms                    []string

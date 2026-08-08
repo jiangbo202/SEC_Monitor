@@ -17,7 +17,18 @@ import (
 	"time"
 )
 
-const InsiderParserVersion = "form4-parser-v1"
+const (
+	InsiderParserVersion   = "form4-parser-v2"
+	InsiderCoverageVersion = "form4-coverage-v1"
+)
+
+const (
+	InsiderCoverageCoveredNoFilings      = "covered_no_filings"
+	InsiderCoverageCoveredNoTransactions = "covered_no_transactions"
+	InsiderCoverageCoveredTransactions   = "covered_transactions"
+	InsiderCoveragePartial               = "partial"
+	InsiderCoverageUnavailable           = "unavailable"
+)
 
 const (
 	InsiderRoleCEO     = "ceo"
@@ -56,6 +67,26 @@ type InsiderTransactionSource interface {
 	LoadInsiderTransactions(context.Context, map[string]struct{}, time.Time) ([]InsiderTransaction, SourceVersion, error)
 }
 
+// InsiderTransactionCoverageSource is an optional extension for sources that
+// can prove what was examined. An empty Form 4 result is useful evidence only
+// when we know the issuer's eligible filings were actually covered.
+type InsiderTransactionCoverageSource interface {
+	LoadInsiderTransactionsWithCoverage(context.Context, map[string]struct{}, time.Time) ([]InsiderTransaction, []InsiderCoverage, SourceVersion, error)
+}
+
+type InsiderCoverage struct {
+	CIK                       string
+	EligibleFilings           int
+	DownloadedDocuments       int
+	ParsedDocuments           int
+	TransactionCount          int
+	PermanentDocumentFailures int
+	TransientDocumentFailures int
+	MalformedDocuments        int
+	Status                    string
+	CheckedAt                 time.Time
+}
+
 type SECForm4InsiderSource struct {
 	Metadata     SecurityMetadataSource
 	Downloader   *Downloader
@@ -64,12 +95,17 @@ type SECForm4InsiderSource struct {
 }
 
 func (s SECForm4InsiderSource) LoadInsiderTransactions(ctx context.Context, allowed map[string]struct{}, asOf time.Time) ([]InsiderTransaction, SourceVersion, error) {
+	transactions, _, version, err := s.LoadInsiderTransactionsWithCoverage(ctx, allowed, asOf)
+	return transactions, version, err
+}
+
+func (s SECForm4InsiderSource) LoadInsiderTransactionsWithCoverage(ctx context.Context, allowed map[string]struct{}, asOf time.Time) ([]InsiderTransaction, []InsiderCoverage, SourceVersion, error) {
 	if s.Metadata == nil || s.Downloader == nil {
-		return nil, SourceVersion{}, fmt.Errorf("SEC Form 4 metadata source and downloader are required")
+		return nil, nil, SourceVersion{}, fmt.Errorf("SEC Form 4 metadata source and downloader are required")
 	}
 	records, metadataVersion, err := s.Metadata.Load(ctx)
 	if err != nil {
-		return nil, SourceVersion{}, err
+		return nil, nil, SourceVersion{}, err
 	}
 	lookback := s.LookbackDays
 	if lookback <= 0 {
@@ -86,25 +122,31 @@ func (s SECForm4InsiderSource) LoadInsiderTransactions(ctx context.Context, allo
 	}
 	downloads := []downloadedDoc{}
 	transactions := []InsiderTransaction{}
-	eligibleDownloads := 0
-	failedDownloads := 0
-	var lastDownloadErr error
+	coverageByCIK := make(map[string]*InsiderCoverage, len(allowed))
+	for cik := range allowed {
+		coverageByCIK[cik] = &InsiderCoverage{CIK: cik, Status: InsiderCoverageUnavailable, CheckedAt: asOf}
+	}
 	for _, record := range records {
-		if _, ok := allowed[record.CIK]; !ok {
+		coverage, ok := coverageByCIK[record.CIK]
+		if !ok {
 			continue
 		}
+		// The record itself proves submissions metadata was available for this
+		// issuer, even when it contains no Form 4 in the requested window.
+		coverage.Status = InsiderCoverageCoveredNoFilings
 		for _, filing := range record.FilingMetadata {
-			if _, ok := allowed[filing.CIK]; !ok {
+			if filing.CIK != record.CIK {
 				continue
 			}
 			if !eligibleForm4Filing(filing, cutoff, asOf) {
 				continue
 			}
+			coverage.EligibleFilings++
 			sourceURL, cacheKey, err := form4DocumentLocation(baseURL, filing)
 			if err != nil {
+				coverage.MalformedDocuments++
 				continue
 			}
-			eligibleDownloads++
 			// Form 4 attachments are immutable once accessioned. Reusing the
 			// local copy avoids thousands of unnecessary SEC requests on every
 			// daily universe refresh.
@@ -115,49 +157,109 @@ func (s SECForm4InsiderSource) LoadInsiderTransactions(ctx context.Context, allo
 					// document name after the attachment is removed or replaced.
 					// A permanent 404/410 is not a source outage and must not make
 					// every daily universe refresh fail.
+					coverage.PermanentDocumentFailures++
 					continue
 				}
 				// A historical Form 4 attachment can disappear temporarily or
 				// suffer a transient SEC/network failure. Keep the daily universe
 				// usable when other ownership documents remain available.
-				failedDownloads++
-				lastDownloadErr = err
+				coverage.TransientDocumentFailures++
 				continue
 			}
-			file, err := os.Open(download.Path)
-			if err != nil {
-				return nil, SourceVersion{}, err
-			}
-			parsed, parseErr := ParseForm4OwnershipXML(file, filing.Accession, sourceURL)
-			closeErr := file.Close()
+			coverage.DownloadedDocuments++
+			parsed, parseErr := parseCachedForm4Document(download, filing.Accession, sourceURL)
 			if parseErr != nil {
-				// EDGAR's submissions metadata occasionally points at an HTML
-				// wrapper or a non-ownership attachment. One malformed filing must
-				// not invalidate the whole small-cap universe run.
+				// submissions.json commonly names an xslF345* wrapper. SEC serves
+				// HTML at that path even though the raw ownership XML is stored at
+				// the filing root with the same filename. Retry only this safe,
+				// deterministic alternate path before declaring the filing malformed.
+				if fallbackURL, fallbackCacheKey, ok := form4RawOwnershipFallbackLocation(baseURL, filing); ok {
+					fallback, fallbackErr := s.Downloader.DownloadWithCacheTTL(ctx, fallbackURL, fallbackCacheKey, nil, -1)
+					if fallbackErr == nil {
+						coverage.DownloadedDocuments++
+						parsed, parseErr = parseCachedForm4Document(fallback, filing.Accession, fallbackURL)
+						if parseErr == nil {
+							sourceURL, download = fallbackURL, fallback
+						}
+					} else if IsDownloadHTTPStatus(fallbackErr, http.StatusNotFound) || IsDownloadHTTPStatus(fallbackErr, http.StatusGone) {
+						coverage.PermanentDocumentFailures++
+						continue
+					} else {
+						coverage.TransientDocumentFailures++
+						continue
+					}
+				}
+			}
+			if parseErr != nil {
+				// One malformed ownership document must not invalidate the whole
+				// small-cap universe run.
+				coverage.MalformedDocuments++
 				continue
 			}
-			if closeErr != nil {
-				return nil, SourceVersion{}, closeErr
-			}
+			coverage.ParsedDocuments++
+			coverage.TransactionCount += len(parsed)
 			transactions = append(transactions, parsed...)
 			downloads = append(downloads, downloadedDoc{Filing: filing, Result: download})
 		}
 	}
-	if eligibleDownloads > 0 && len(downloads) == 0 && failedDownloads > 0 {
-		return nil, SourceVersion{}, fmt.Errorf("download all eligible Form 4 documents: %w", lastDownloadErr)
-	}
+	coverages := normalizeInsiderCoverage(coverageByCIK)
 	sort.Slice(transactions, func(i, j int) bool { return canonicalLess(transactions[i], transactions[j]) })
 	versionHash := sha256.New()
-	versionHash.Write([]byte(metadataVersion.SHA256 + "\n" + InsiderParserVersion + "\n"))
+	versionHash.Write([]byte(metadataVersion.SHA256 + "\n" + InsiderParserVersion + "\n" + InsiderCoverageVersion + "\n"))
 	for _, doc := range downloads {
 		versionHash.Write([]byte(doc.Filing.Accession + "\n" + doc.Result.SHA256 + "\n"))
 	}
 	digest := hex.EncodeToString(versionHash.Sum(nil))
-	version := metadataVersion.Version + "+" + InsiderParserVersion
-	if version == "+"+InsiderParserVersion {
-		version = digest + "+" + InsiderParserVersion
+	for _, coverage := range coverages {
+		versionHash.Write([]byte(fmt.Sprintf("%s:%s:%d:%d:%d:%d:%d:%d\n", coverage.CIK, coverage.Status, coverage.EligibleFilings, coverage.ParsedDocuments, coverage.TransactionCount, coverage.PermanentDocumentFailures, coverage.TransientDocumentFailures, coverage.MalformedDocuments)))
 	}
-	return transactions, SourceVersion{Source: "insiders:sec-form4", Version: version, SHA256: digest, EffectiveAt: metadataVersion.EffectiveAt}, nil
+	digest = hex.EncodeToString(versionHash.Sum(nil))
+	version := metadataVersion.Version + "+" + InsiderParserVersion + "+" + InsiderCoverageVersion
+	if version == "+"+InsiderParserVersion+"+"+InsiderCoverageVersion {
+		version = digest + "+" + InsiderParserVersion + "+" + InsiderCoverageVersion
+	}
+	return transactions, coverages, SourceVersion{Source: "insiders:sec-form4", Version: version, SHA256: digest, EffectiveAt: metadataVersion.EffectiveAt}, nil
+}
+
+func parseCachedForm4Document(download DownloadResult, accession, sourceURL string) ([]InsiderTransaction, error) {
+	file, err := os.Open(download.Path)
+	if err != nil {
+		return nil, err
+	}
+	parsed, parseErr := ParseForm4OwnershipXML(file, accession, sourceURL)
+	closeErr := file.Close()
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return parsed, nil
+}
+
+func normalizeInsiderCoverage(byCIK map[string]*InsiderCoverage) []InsiderCoverage {
+	result := make([]InsiderCoverage, 0, len(byCIK))
+	for _, coverage := range byCIK {
+		if coverage == nil {
+			continue
+		}
+		if coverage.EligibleFilings == 0 {
+			if coverage.Status != InsiderCoverageUnavailable {
+				coverage.Status = InsiderCoverageCoveredNoFilings
+			}
+		} else if coverage.ParsedDocuments == 0 && (coverage.PermanentDocumentFailures > 0 || coverage.TransientDocumentFailures > 0 || coverage.MalformedDocuments > 0) {
+			coverage.Status = InsiderCoverageUnavailable
+		} else if coverage.PermanentDocumentFailures > 0 || coverage.TransientDocumentFailures > 0 || coverage.MalformedDocuments > 0 {
+			coverage.Status = InsiderCoveragePartial
+		} else if coverage.TransactionCount == 0 {
+			coverage.Status = InsiderCoverageCoveredNoTransactions
+		} else {
+			coverage.Status = InsiderCoverageCoveredTransactions
+		}
+		result = append(result, *coverage)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CIK < result[j].CIK })
+	return result
 }
 
 func ParseForm4OwnershipXML(r io.Reader, accession, sourceURL string) ([]InsiderTransaction, error) {
@@ -240,6 +342,28 @@ func form4DocumentLocation(baseURL string, filing FilingMetadata) (string, strin
 		return "", "", fmt.Errorf("invalid Form 4 cache key")
 	}
 	return sourceURL, cacheKey, nil
+}
+
+// form4RawOwnershipFallbackLocation turns SEC's rendered XSL path into the
+// raw XML filename at the accession root. It never accepts an arbitrary path:
+// only a two-or-more segment xslF345*/filename primary document qualifies.
+func form4RawOwnershipFallbackLocation(baseURL string, filing FilingMetadata) (string, string, bool) {
+	primary, ok := safeForm4PrimaryDocument(filing.PrimaryDocument)
+	if !ok {
+		return "", "", false
+	}
+	parts := strings.Split(primary, "/")
+	if len(parts) < 2 || !strings.HasPrefix(strings.ToLower(parts[0]), "xslf345") {
+		return "", "", false
+	}
+	fallback := parts[len(parts)-1]
+	copy := filing
+	copy.PrimaryDocument = fallback
+	sourceURL, cacheKey, err := form4DocumentLocation(baseURL, copy)
+	if err != nil {
+		return "", "", false
+	}
+	return sourceURL, cacheKey + "-raw", true
 }
 
 // safeForm4PrimaryDocument accepts SEC's common xslF345*/document.xml paths

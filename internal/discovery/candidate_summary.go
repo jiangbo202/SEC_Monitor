@@ -131,35 +131,31 @@ func currentPublishedPrescreenBatch(ctx context.Context, db *gorm.DB) (UniverseB
 
 func listCandidateSummaryItems(ctx context.Context, db *gorm.DB, batchID, grade, eligibilityColumn string, limit int, options CandidateSummaryOptions) (int, []CandidateScoreSnapshot, error) {
 	items := []CandidateScoreSnapshot{}
-	query := db.WithContext(ctx).Model(&CandidateScoreSnapshot{}).Where("batch_id = ? AND grade = ? AND "+eligibilityColumn+" = ?", batchID, grade, true)
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
+	// Notifications are a stronger claim than the full research universe. Only
+	// candidates with complete, current evidence may enter a notification
+	// summary; research-only candidates remain visible in the UI and export.
+	page, err := ListCandidateScores(ctx, db, CandidateScoreQuery{
+		Grade: grade, Page: 1, PageSize: maxDiscoveryPageSize, ResearchReadiness: CandidateResearchReadinessReady,
+	})
+	if err != nil {
 		return 0, items, err
 	}
-	if options.ActionableOnly || options.MinReviewPriorityScore > 0 {
-		page, err := ListCandidateScores(ctx, db, CandidateScoreQuery{Grade: grade, Page: 1, PageSize: maxDiscoveryPageSize})
-		if err != nil {
-			return 0, items, err
+	for _, item := range page.Items {
+		if !candidateSummaryMatchesEligibility(item, grade) {
+			continue
 		}
-		for _, item := range page.Items {
-			if !candidateSummaryMatchesEligibility(item, grade) {
-				continue
-			}
-			if options.ActionableOnly && grade == CandidateGradeB && !candidateSummaryActionableB(item) {
-				continue
-			}
-			if options.MinReviewPriorityScore > 0 && item.ReviewPriorityScore < options.MinReviewPriorityScore {
-				continue
-			}
-			items = append(items, item.CandidateScoreSnapshot)
-			if len(items) >= limit {
-				break
-			}
+		if options.ActionableOnly && grade == CandidateGradeB && !candidateSummaryActionableB(item) {
+			continue
 		}
-		return int(total), items, nil
+		if options.MinReviewPriorityScore > 0 && item.ReviewPriorityScore < options.MinReviewPriorityScore {
+			continue
+		}
+		items = append(items, item.CandidateScoreSnapshot)
+		if len(items) >= limit {
+			break
+		}
 	}
-	err := query.Order("total_score DESC").Order("market_cap_usd ASC").Order("ticker ASC").Limit(limit).Find(&items).Error
-	return int(total), items, err
+	return int(page.Total), items, nil
 }
 
 func candidateSummaryMatchesEligibility(item CandidateScoreResult, grade string) bool {

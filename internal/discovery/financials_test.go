@@ -3,9 +3,24 @@ package discovery
 import (
 	"archive/zip"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestParseSECFinancialFactsJSONParsesOneIssuerAndRejectsMismatch(t *testing.T) {
+	body := `{"cik":1234,"facts":{"us-gaap":{"Revenues":{"units":{"USD":[{"val":15000000,"start":"2026-01-01","end":"2026-03-31","filed":"2026-05-01","form":"10-Q","accn":"0000001234-26-000001"}]}}}}}`
+	facts, err := ParseSECFinancialFactsJSON(strings.NewReader(body), "0000001234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 || facts[0].Metric != FinancialMetricRevenue {
+		t.Fatalf("facts = %#v", facts)
+	}
+	if _, err := ParseSECFinancialFactsJSON(strings.NewReader(body), "0000009999"); err == nil {
+		t.Fatal("expected CIK mismatch error")
+	}
+}
 
 func TestParseSECFinancialFactsZIPExtractsV1Concepts(t *testing.T) {
 	body := `{"cik":1234,"facts":{"us-gaap":{
@@ -226,6 +241,25 @@ func TestBuildFinancialSummaryCapsRunwayWhenCompanyIsNotBurningCash(t *testing.T
 		t.Fatalf("cash runway must be JSON-safe finite value: %#v", summary)
 	}
 	assertFloatNear(t, summary.CashRunwayMonths, MaxCashRunwayMonths, 0.001)
+	if !containsString(summary.QualityFlags, "cash_flow_positive_runway_not_applicable") {
+		t.Fatalf("positive cash flow should disclose runway semantics: %#v", summary.QualityFlags)
+	}
+}
+
+func TestBuildFinancialSummaryFlagsFragileRevenueGrowth(t *testing.T) {
+	facts := []FinancialFact{
+		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-03-31", 500_000),
+		financialDuration(FinancialMetricRevenue, "2025-10-01", "2025-12-31", 5_000_000),
+		financialDuration(FinancialMetricRevenue, "2026-01-01", "2026-03-31", 4_000_000),
+		financialDuration(FinancialMetricRevenue, "2024-01-01", "2024-12-31", 15_000_000),
+		financialDuration(FinancialMetricRevenue, "2025-01-01", "2025-12-31", 14_000_000),
+	}
+	summary := BuildFinancialSummary(facts, time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC))
+	for _, flag := range []string{"low_revenue_base", "low_prior_revenue_base", "extreme_revenue_growth", "quarterly_growth_not_confirmed_qoq", "quarterly_growth_conflicts_annual"} {
+		if !containsString(summary.QualityFlags, flag) {
+			t.Fatalf("quality flags=%#v missing %s", summary.QualityFlags, flag)
+		}
+	}
 }
 
 func assertFinancialFact(t *testing.T, facts []FinancialFact, metric, concept string, amountUSD int64) {

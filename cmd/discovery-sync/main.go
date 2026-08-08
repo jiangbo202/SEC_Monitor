@@ -20,6 +20,7 @@ import (
 
 type syncService interface {
 	Run(context.Context) (service.DiscoverySyncResult, error)
+	RunIncremental(context.Context) (service.DiscoverySyncResult, error)
 	RunMarketOnly(context.Context) (service.DiscoverySyncResult, error)
 }
 
@@ -72,7 +73,9 @@ func run(ctx context.Context, cfg config.Config, output io.Writer, deps syncDepe
 	syncer := deps.newSyncService(db, cfg.Discovery, configs)
 	var result service.DiscoverySyncResult
 	phase := strings.ToLower(strings.TrimSpace(os.Getenv("DISCOVERY_SYNC_PHASE")))
-	if phase == "market" || phase == "market-only" {
+	if phase == "incremental" || phase == "daily" {
+		result, err = syncer.RunIncremental(ctx)
+	} else if phase == "market" || phase == "market-only" {
 		result, err = syncer.RunMarketOnly(ctx)
 	} else {
 		result, err = syncer.Run(ctx)

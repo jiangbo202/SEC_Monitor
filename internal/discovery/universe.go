@@ -23,6 +23,11 @@ const (
 	universeChunkSize          = 1000
 	maxResearchCoverageDropPct = 15.0
 	recentSECFilingLimit       = 20
+	// Daily close providers can lag the 16:00 New York regular-session close
+	// by a few minutes. Keeping a small buffer avoids treating an intraday or
+	// not-yet-final bar as the official close.
+	marketCloseAvailabilityHour   = 16
+	marketCloseAvailabilityMinute = 15
 )
 
 const (
@@ -68,6 +73,10 @@ type Coordinator struct {
 	// to discovery output and does not promote the provider health state.
 	ResearchMode          bool
 	MinPublishCoveragePct float64
+	// ForceLivePriceFetch is reserved for an explicit operator action. It
+	// bypasses the normal pre-close local-cache reuse so a missed prior close
+	// can be repaired without waiting for the next US market close.
+	ForceLivePriceFetch bool
 	// AfterStageChunk is a test/operations fault-injection hook. It runs only
 	// after a chunk transaction commits and before the next chunk begins.
 	AfterStageChunk      func(kind string, chunk int) error
@@ -121,6 +130,16 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 			allowed[record.CIK] = struct{}{}
 		}
 	}
+	// Form 4 ownership documents are issuer-level files and are substantially
+	// more numerous than financial facts. Daily evidence refreshes only need to
+	// cover the existing A/B research pool; rescanning every exchange-listed
+	// issuer can mean hundreds of thousands of immutable documents. On a first
+	// run, when no prior candidate batch exists, fall back to the full universe
+	// so the pipeline remains self-contained.
+	insiderAllowed, err := c.previousCandidateInsiderAllowlist(ctx, allowed)
+	if err != nil {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insider-allowlist", err)
+	}
 	facts, shareVersion, err := c.Shares.LoadLatestShares(ctx, allowed)
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "shares", fmt.Errorf("load share facts: %w", err))
@@ -134,9 +153,14 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 		}
 	}
 	var insiderTransactions []InsiderTransaction
+	var insiderCoverage []InsiderCoverage
 	var insiderVersion SourceVersion
 	if c.Insiders != nil {
-		insiderTransactions, insiderVersion, err = c.Insiders.LoadInsiderTransactions(ctx, allowed, now)
+		if source, ok := c.Insiders.(InsiderTransactionCoverageSource); ok {
+			insiderTransactions, insiderCoverage, insiderVersion, err = source.LoadInsiderTransactionsWithCoverage(ctx, insiderAllowed, now)
+		} else {
+			insiderTransactions, insiderVersion, err = c.Insiders.LoadInsiderTransactions(ctx, insiderAllowed, now)
+		}
 		if err != nil {
 			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insiders", fmt.Errorf("load insider transactions: %w", err))
 		}
@@ -193,7 +217,7 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
 	}
-	contentSHA, err := hashSecurityInputs(records, facts, financialFacts, insiderTransactions, events, overrides)
+	contentSHA, err := hashSecurityInputs(records, facts, financialFacts, insiderTransactions, insiderCoverage, events, overrides)
 	if err != nil {
 		return UniverseBatch{}, err
 	}
@@ -202,7 +226,7 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 		return batch, err
 	}
 
-	classifications, selections, stageErr := c.stageSecurity(ctx, batch, records, facts, financialFacts, insiderTransactions, events, overrides, now)
+	classifications, selections, stageErr := c.stageSecurity(ctx, batch, records, facts, financialFacts, insiderTransactions, insiderCoverage, events, overrides, now)
 	if stageErr == nil {
 		stageErr = validateSecurityStage(c.DB.WithContext(ctx), batch.BatchID, classifications, selections)
 	}
@@ -210,6 +234,44 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 		return c.failBatch(ctx, batch, stageErr)
 	}
 	return c.publish(ctx, batch, classifications)
+}
+
+func (c *Coordinator) previousCandidateInsiderAllowlist(ctx context.Context, fallback map[string]struct{}) (map[string]struct{}, error) {
+	if len(fallback) == 0 {
+		return fallback, nil
+	}
+	batch, err := currentPublishedBatch(ctx, c.DB, BatchKindPrescreen)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return fallback, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var securityIDs []uint
+	if err := c.DB.WithContext(ctx).
+		Model(&CandidateScoreSnapshot{}).
+		Where("batch_id = ? AND grade IN ?", batch.BatchID, []string{CandidateGradeA, CandidateGradeB}).
+		Distinct("security_id").
+		Pluck("security_id", &securityIDs).Error; err != nil {
+		return nil, err
+	}
+	if len(securityIDs) == 0 {
+		return fallback, nil
+	}
+	var ciks []string
+	if err := c.DB.WithContext(ctx).Model(&Security{}).Where("id IN ?", securityIDs).Pluck("cik", &ciks).Error; err != nil {
+		return nil, err
+	}
+	selected := make(map[string]struct{}, len(ciks))
+	for _, cik := range ciks {
+		if _, ok := fallback[cik]; ok {
+			selected[cik] = struct{}{}
+		}
+	}
+	if len(selected) == 0 {
+		return fallback, nil
+	}
+	return selected, nil
 }
 
 func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, error) {
@@ -234,13 +296,23 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindPrescreen, now, "security-pointer", err)
 	}
-	date, err := nyCivilDate(now)
-	if err != nil {
-		return UniverseBatch{}, err
-	}
+	var date string
+	var useLocalOnlyPrices bool
 	if c.ResearchMode {
-		date = securityBatch.EffectiveDate
-	} else if securityBatch.EffectiveDate != date {
+		date, useLocalOnlyPrices, err = marketPriceRunPlan(ctx, c.Calendar, now)
+		if err != nil {
+			return c.recordEarlyFailure(ctx, BatchKindPrescreen, now, "market-calendar", err)
+		}
+		if c.ForceLivePriceFetch {
+			useLocalOnlyPrices = false
+		}
+	} else {
+		date, err = nyCivilDate(now)
+		if err != nil {
+			return UniverseBatch{}, err
+		}
+	}
+	if !c.ResearchMode && securityBatch.EffectiveDate != date {
 		return UniverseBatch{}, fmt.Errorf("security batch date %s does not match price run date %s", securityBatch.EffectiveDate, date)
 	}
 	effectiveAt, err := parseNYCivilDate(date)
@@ -270,17 +342,16 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 		cause := fmt.Errorf("validate provider health: %w", err)
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "calendar-or-health-invalid", now, cause)
 	}
-	trading, calendarErr := c.Calendar.IsTradingDate(ctx, date)
-	if calendarErr != nil || !trading {
-		if calendarErr == nil {
-			calendarErr = fmt.Errorf("%s is not a trading date", date)
-		}
-		if !c.ResearchMode {
+	if !c.ResearchMode {
+		trading, calendarErr := c.Calendar.IsTradingDate(ctx, date)
+		if calendarErr != nil || !trading {
+			if calendarErr == nil {
+				calendarErr = fmt.Errorf("%s is not a trading date", date)
+			}
 			cause := fmt.Errorf("validate price run calendar: %w", calendarErr)
 			return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "calendar-invalid", now, cause)
 		}
 	}
-
 	expected, err := c.currentPriceRequestListings(ctx, securityBatch.BatchID)
 	if err != nil {
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "security-stage-invalid", now, err)
@@ -289,9 +360,14 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	var result ProviderResult
 	var loadErr error
 	if c.ResearchMode && len(expected) == 0 {
-		result, err = emptyResearchProviderResult(providerName, securityBatch, now)
+		result, err = emptyResearchProviderResult(providerName, date)
+	} else if useLocalOnlyPrices {
+		// Weekends and exchange holidays have no new official close. Reusing the
+		// last valid local close is both more accurate than querying providers
+		// for a nonexistent session and prevents needless API-credit usage.
+		records, result, loadErr = c.mergeResearchLocalPriceFallback(ctx, providerName, date, expected, nil, ProviderResult{Provider: providerName}, nil, now)
 	} else if dated, ok := c.Prices.(DatedPriceProvider); ok {
-		records, result, loadErr = dated.LoadForDate(ctx, expected, securityBatch.EffectiveDate)
+		records, result, loadErr = dated.LoadForDate(ctx, expected, date)
 	} else {
 		records, result, loadErr = c.Prices.Load(ctx, expected)
 	}
@@ -299,8 +375,8 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 		cause := fmt.Errorf("prepare empty research market prices: %w", err)
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "load-failed", now, cause)
 	}
-	if c.ResearchMode && len(expected) > 0 {
-		records, result, err = c.mergeResearchLocalPriceFallback(ctx, providerName, securityBatch.EffectiveDate, expected, records, result, loadErr, now)
+	if c.ResearchMode && len(expected) > 0 && !useLocalOnlyPrices {
+		records, result, err = c.mergeResearchLocalPriceFallback(ctx, providerName, date, expected, records, result, loadErr, now)
 		loadErr = nil
 	}
 	if err != nil {
@@ -327,6 +403,15 @@ func (c *Coordinator) SyncMarketPrices(ctx context.Context) (UniverseBatch, erro
 	var inherited []SourceVersion
 	if err := json.Unmarshal([]byte(securityBatch.SourceVersionsJSON), &inherited); err != nil {
 		cause := fmt.Errorf("decode security batch source versions: %w", err)
+		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "source-versions-invalid", now, cause)
+	}
+	// SEC metadata may have been published on a different calendar day than
+	// the market close. The price batch intentionally references that frozen
+	// security universe, but its evidence timestamp must be aligned to the
+	// market batch's effective trading date.
+	inherited, err = alignSourceVersionsToBatchDate(date, inherited)
+	if err != nil {
+		cause := fmt.Errorf("align security source versions: %w", err)
 		return c.recordPreflightFailure(ctx, BatchKindPrescreen, date, securityBatch, providerName, "source-versions-invalid", now, cause)
 	}
 	versions, err := normalizeSourceVersions(date, append(inherited, securityVersion, priceVersion)...)
@@ -448,6 +533,38 @@ func nyCivilDate(value time.Time) (string, error) {
 	return value.In(location).Format(time.DateOnly), nil
 }
 
+// marketPriceRunPlan separates the market-price target from the SEC batch
+// date. SEC filing data can be refreshed over a weekend, while the next valid
+// official US close is still Friday. Before the regular close (plus a small
+// provider-finalization buffer), and on non-trading days, local valid prices
+// are reused without spending provider quota. After the close, the target is
+// the current New York trading date and providers are queried for that close.
+func marketPriceRunPlan(ctx context.Context, calendar MarketCalendar, now time.Time) (effectiveDate string, useLocalOnly bool, err error) {
+	if calendar == nil {
+		return "", false, errors.New("market calendar is required")
+	}
+	newYork, locationErr := time.LoadLocation("America/New_York")
+	if locationErr != nil {
+		return "", false, locationErr
+	}
+	localNow := now.In(newYork)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, newYork)
+	todayText := today.Format(time.DateOnly)
+	trading, calendarErr := calendar.IsTradingDate(ctx, todayText)
+	if calendarErr != nil {
+		return "", false, fmt.Errorf("check market calendar for %s: %w", todayText, calendarErr)
+	}
+	closeAvailableAt := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), marketCloseAvailabilityHour, marketCloseAvailabilityMinute, 0, 0, newYork)
+	if trading && !localNow.Before(closeAvailableAt) {
+		return todayText, false, nil
+	}
+	previous, previousErr := previousTradingDate(ctx, calendar, today)
+	if previousErr != nil {
+		return "", false, fmt.Errorf("find latest completed trading date: %w", previousErr)
+	}
+	return previous.Format(time.DateOnly), true, nil
+}
+
 func parseNYCivilDate(value string) (time.Time, error) {
 	location, err := time.LoadLocation("America/New_York")
 	if err != nil {
@@ -460,20 +577,16 @@ func parseNYCivilDate(value string) (time.Time, error) {
 	return parsed, nil
 }
 
-func emptyResearchProviderResult(provider string, securityBatch UniverseBatch, now time.Time) (ProviderResult, error) {
-	date := strings.TrimSpace(securityBatch.EffectiveDate)
+func emptyResearchProviderResult(provider, date string) (ProviderResult, error) {
+	date = strings.TrimSpace(date)
 	if date == "" {
-		var err error
-		date, err = nyCivilDate(now)
-		if err != nil {
-			return ProviderResult{}, err
-		}
+		return ProviderResult{}, errors.New("market effective date is required")
 	}
 	effectiveDate, err := parseNYCivilDate(date)
 	if err != nil {
 		return ProviderResult{}, err
 	}
-	seed := provider + "\x00research-empty\x00" + securityBatch.BatchID + "\x00" + date
+	seed := provider + "\x00research-empty\x00" + date
 	sha := sha256.Sum256([]byte(seed))
 	return ProviderResult{
 		Provider:           provider,
@@ -515,6 +628,13 @@ func (c *Coordinator) mergeResearchLocalPriceFallback(ctx context.Context, provi
 	}
 	previous, err := previousTradingDate(ctx, c.Calendar, effective)
 	if err != nil {
+		// Local fallback is an enrichment for research-mode coverage. When the
+		// provider already returned usable records, reaching the workflow
+		// deadline while looking up cached rows must not discard those records
+		// or fail the whole market batch.
+		if len(live) > 0 && isContextExpiry(err) {
+			return live, liveResult, nil
+		}
 		return nil, ProviderResult{}, fmt.Errorf("find local fallback trading date: %w", err)
 	}
 	covered := make(map[string]struct{}, len(live))
@@ -525,20 +645,26 @@ func (c *Coordinator) mergeResearchLocalPriceFallback(ctx context.Context, provi
 	}
 	fallback, err := c.localPriceFallbackRecords(ctx, expected, covered, previous, effective)
 	if err != nil {
+		if len(live) > 0 && isContextExpiry(err) {
+			return live, liveResult, nil
+		}
 		return nil, ProviderResult{}, fmt.Errorf("load local price fallback: %w", err)
 	}
 	if len(live) == 0 && len(fallback) == 0 && loadErr != nil {
 		return nil, ProviderResult{}, loadErr
+	}
+	merged := append(append([]PriceRecord(nil), live...), fallback...)
+	if len(merged) == 0 {
+		if loadErr != nil {
+			return nil, ProviderResult{}, loadErr
+		}
+		return nil, ProviderResult{}, errors.New("no live or local fallback market prices available")
 	}
 	// Preserve the provider's original evidence version when it already covered
 	// everything it returned and no local evidence was required. Apart from
 	// avoiding needless writes, this keeps deterministic retry IDs stable.
 	if len(fallback) == 0 && loadErr == nil {
 		return live, liveResult, nil
-	}
-	merged := append(append([]PriceRecord(nil), live...), fallback...)
-	if len(merged) == 0 {
-		return nil, ProviderResult{}, errors.New("no live or local fallback market prices available")
 	}
 	childVersions := []string{"local-cache:none"}
 	if strings.TrimSpace(liveResult.SourceVersion) != "" {
@@ -563,6 +689,10 @@ func (c *Coordinator) mergeResearchLocalPriceFallback(ctx context.Context, provi
 	}
 	result.SHA256 = sha
 	return merged, result, nil
+}
+
+func isContextExpiry(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 func (c *Coordinator) localPriceFallbackRecords(ctx context.Context, expected []Listing, covered map[string]struct{}, previous, effective time.Time) ([]PriceRecord, error) {
@@ -792,6 +922,7 @@ func (c *Coordinator) resetRetryableBatch(ctx context.Context, batch UniverseBat
 			&SocialHeatSnapshot{},
 			&CapitalRiskSnapshot{},
 			&FinancialMetricSnapshot{},
+			&InsiderCoverageSnapshot{},
 			&BatchShareSelection{},
 			&ClassificationSnapshot{},
 			&SecurityBatchIdentity{},
@@ -825,7 +956,7 @@ func (c *Coordinator) resetRetryableBatch(ctx context.Context, batch UniverseBat
 	})
 }
 
-func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, financials []FinancialFact, insiders []InsiderTransaction, events []CapitalEvent, overrides []ManualSecurityOverride) (string, error) {
+func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, financials []FinancialFact, insiders []InsiderTransaction, insiderCoverage []InsiderCoverage, events []CapitalEvent, overrides []ManualSecurityOverride) (string, error) {
 	recordCopy := append([]SecuritySourceRecord(nil), records...)
 	sort.Slice(recordCopy, func(i, j int) bool { return canonicalLess(recordCopy[i], recordCopy[j]) })
 	factCopy := append([]ShareFact(nil), facts...)
@@ -834,6 +965,8 @@ func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, finan
 	sort.Slice(financialCopy, func(i, j int) bool { return canonicalLess(financialCopy[i], financialCopy[j]) })
 	insiderCopy := append([]InsiderTransaction(nil), insiders...)
 	sort.Slice(insiderCopy, func(i, j int) bool { return canonicalLess(insiderCopy[i], insiderCopy[j]) })
+	coverageCopy := append([]InsiderCoverage(nil), insiderCoverage...)
+	sort.Slice(coverageCopy, func(i, j int) bool { return canonicalLess(coverageCopy[i], coverageCopy[j]) })
 	eventCopy := append([]CapitalEvent(nil), events...)
 	sort.Slice(eventCopy, func(i, j int) bool { return canonicalLess(eventCopy[i], eventCopy[j]) })
 	overrideCopy := canonicalManualOverrides(overrides)
@@ -842,9 +975,10 @@ func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, finan
 		Facts      []ShareFact               `json:"facts"`
 		Financials []FinancialFact           `json:"financials"`
 		Insiders   []InsiderTransaction      `json:"insiders"`
+		Coverage   []InsiderCoverage         `json:"insider_coverage"`
 		Events     []CapitalEvent            `json:"events"`
 		Overrides  []canonicalManualOverride `json:"overrides"`
-	}{recordCopy, factCopy, financialCopy, insiderCopy, eventCopy, overrideCopy})
+	}{recordCopy, factCopy, financialCopy, insiderCopy, coverageCopy, eventCopy, overrideCopy})
 }
 
 func sourceVersionForOverrides(rows []ManualSecurityOverride, at time.Time) (SourceVersion, error) {
@@ -939,7 +1073,11 @@ func normalizeFinancialFacts(input []FinancialFact) ([]FinancialFact, error) {
 func normalizeInsiderTransactions(input []InsiderTransaction) ([]InsiderTransaction, error) {
 	seen := map[string]InsiderTransaction{}
 	for _, row := range input {
-		key := strings.Join([]string{row.CIK, row.Accession, row.OwnerName, row.TransactionDate.UTC().Format(time.RFC3339Nano), row.TransactionCode, row.AcquiredDisposedCode, fmt.Sprintf("%f", row.Shares), fmt.Sprintf("%f", row.PricePerShareUSD), fmt.Sprintf("%t", row.Derivative)}, "\x00")
+		// One Form 4 can contain multiple same-day rows with identical share
+		// count and price but different post-transaction ownership (for example
+		// sequential sales from separate lots). Keep the ownership balances in
+		// the identity so legitimate rows are not treated as corrupt duplicates.
+		key := strings.Join([]string{row.CIK, row.Accession, row.OwnerName, row.TransactionDate.UTC().Format(time.RFC3339Nano), row.TransactionCode, row.AcquiredDisposedCode, fmt.Sprintf("%f", row.Shares), fmt.Sprintf("%f", row.PricePerShareUSD), fmt.Sprintf("%f", row.SharesOwnedAfter), fmt.Sprintf("%f", row.SharesOwnedBefore), fmt.Sprintf("%t", row.Derivative)}, "\x00")
 		if prior, ok := seen[key]; ok {
 			if !reflect.DeepEqual(prior, row) {
 				return nil, fmt.Errorf("insider transaction identity has conflicting duplicates: %s", row.Accession)
@@ -994,7 +1132,7 @@ func hashCanonicalContent(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, records []SecuritySourceRecord, facts []ShareFact, financialFacts []FinancialFact, insiderTransactions []InsiderTransaction, events []CapitalEvent, overrides []ManualSecurityOverride, now time.Time) (int, int, error) {
+func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, records []SecuritySourceRecord, facts []ShareFact, financialFacts []FinancialFact, insiderTransactions []InsiderTransaction, insiderCoverage []InsiderCoverage, events []CapitalEvent, overrides []ManualSecurityOverride, now time.Time) (int, int, error) {
 	listingRows := make([]ListingIdentitySnapshot, 0, len(records))
 	mapped := make([]SecuritySourceRecord, 0, len(records))
 	for _, record := range records {
@@ -1059,7 +1197,7 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 		included       bool
 		status, reason string
 	}
-	classificationByCIK := make(map[string]listingClassification, len(groups))
+	classificationBySourceKey := make(map[string]listingClassification, len(records))
 	securityIDByCIK := make(map[string]uint, len(groups))
 	// Each group can write up to five rows (security, identity,
 	// classification, share evidence, selection). Keep transactions below the
@@ -1089,12 +1227,18 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 				if providerTicker == "" {
 					providerTicker = strings.ToUpper(strings.TrimSpace(source.Ticker))
 				}
-				identity := SecurityBatchIdentity{BatchID: batch.BatchID, SecurityID: security.ID, CIK: source.CIK, Ticker: strings.ToUpper(strings.TrimSpace(source.Ticker)), ProviderTicker: providerTicker, Exchange: source.Exchange, MappingStatus: source.MappingStatus, CompanyName: source.CompanyName, SIC: source.SIC, StateOfIncorporation: source.StateOfIncorporation, LatestAnnualForm: source.LatestAnnualForm, CreatedAt: now}
+				identity := SecurityBatchIdentity{BatchID: batch.BatchID, SecurityID: security.ID, CIK: source.CIK, Ticker: strings.ToUpper(strings.TrimSpace(source.Ticker)), ProviderTicker: providerTicker, Exchange: source.Exchange, MappingStatus: source.MappingStatus, CompanyName: source.CompanyName, SIC: source.SIC, SICDescription: source.SICDescription, StateOfIncorporation: source.StateOfIncorporation, LatestAnnualForm: source.LatestAnnualForm, CreatedAt: now}
 				if err := tx.Create(&identity).Error; err != nil {
 					return err
 				}
 				classification := ClassifySecurity(source, overrides)
-				classificationByCIK[source.CIK] = listingClassification{classification.Included, classification.Status, classification.ReasonCode}
+				for _, listing := range group.Listings {
+					listingResult := classification
+					if isAttachedNonCommonListing(listing) {
+						listingResult = excluded(ReasonNonCommonSecurity, "security_name", listing.SecurityName)
+					}
+					classificationBySourceKey[listingIdentitySourceKey(listing)] = listingClassification{listingResult.Included, listingResult.Status, listingResult.ReasonCode}
+				}
 				evidence, _ := json.Marshal(classification.Evidence)
 				row := ClassificationSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Included: classification.Included, Status: classification.Status, Confidence: classification.Confidence, ReasonCode: classification.ReasonCode, RuleVersion: ClassificationRuleVersion, EvidenceJSON: string(evidence), CreatedAt: now}
 				if err := tx.Create(&row).Error; err != nil {
@@ -1140,7 +1284,7 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 		}
 		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			for _, row := range listingRows[start:end] {
-				classification, ok := classificationByCIK[row.CIK]
+				classification, ok := classificationBySourceKey[strings.ToUpper(strings.TrimSpace(row.SourceKey))]
 				if !ok {
 					continue
 				}
@@ -1158,8 +1302,19 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 			return classifications, selections, err
 		}
 	}
+	// Company facts includes prior 10-Q/10-K cover-page share counts. Persist
+	// those immutable facts as well as the current batch selection so dilution
+	// research can start immediately instead of waiting a year of daily runs.
+	if err := c.persistHistoricalShareSnapshots(ctx, securityIDByCIK, factsByCIK, now); err != nil {
+		return classifications, selections, err
+	}
 	if len(insidersByCIK) > 0 {
 		if err := c.persistInsiderSnapshots(ctx, securityIDByCIK, insidersByCIK, now); err != nil {
+			return classifications, selections, err
+		}
+	}
+	if len(insiderCoverage) > 0 {
+		if err := c.persistInsiderCoverageSnapshots(ctx, batch.BatchID, securityIDByCIK, insiderCoverage, now); err != nil {
 			return classifications, selections, err
 		}
 	}
@@ -1172,6 +1327,51 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 		}
 	}
 	return classifications, selections, nil
+}
+
+func (c *Coordinator) persistHistoricalShareSnapshots(ctx context.Context, securityIDByCIK map[string]uint, factsByCIK map[string][]ShareFact, now time.Time) error {
+	rows := make([]ShareSnapshot, 0)
+	for cik, facts := range factsByCIK {
+		securityID, ok := securityIDByCIK[cik]
+		if !ok {
+			continue
+		}
+		for _, fact := range facts {
+			if !eligibleHistoricalShareFact(fact, now) {
+				continue
+			}
+			rows = append(rows, ShareSnapshot{SecurityID: securityID, Instant: fact.Instant, Accession: fact.Accession, Concept: fact.Concept, Form: fact.Form, SourceURL: fact.SourceURL, QualityStatus: QualityStatusValid, Shares: fact.Shares, FiledAt: fact.FiledAt, AcceptedAt: fact.AcceptedAt, CreatedAt: now})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return canonicalLess(rows[i], rows[j]) })
+	for start := 0; start < len(rows); start += universeChunkSize {
+		end := start + universeChunkSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunk := rows[start:end]
+		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
+		}); err != nil {
+			return err
+		}
+		if c.AfterStageChunk != nil {
+			if err := c.AfterStageChunk("historical-shares", start/universeChunkSize); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func eligibleHistoricalShareFact(fact ShareFact, asOf time.Time) bool {
+	if !eligibleShareFact(fact, asOf) {
+		return false
+	}
+	// eligibleShareFact permits a zero acceptance timestamp for later
+	// conflict handling, but an unaccepted historical fact cannot be used in
+	// point-in-time dilution evidence.
+	return !fact.AcceptedAt.IsZero() && !fact.AcceptedAt.After(asOf)
 }
 
 func (c *Coordinator) persistRecentSECFilingSnapshots(ctx context.Context, securityIDByCIK map[string]uint, groups []metadataGroup, now time.Time) error {
@@ -1380,6 +1580,47 @@ func (c *Coordinator) persistInsiderSnapshots(ctx context.Context, securityIDByC
 	return nil
 }
 
+func (c *Coordinator) persistInsiderCoverageSnapshots(ctx context.Context, batchID string, securityIDByCIK map[string]uint, coverage []InsiderCoverage, now time.Time) error {
+	rows := make([]InsiderCoverageSnapshot, 0, len(coverage))
+	for _, item := range coverage {
+		securityID, ok := securityIDByCIK[item.CIK]
+		if !ok {
+			continue
+		}
+		checkedAt := item.CheckedAt
+		if checkedAt.IsZero() {
+			checkedAt = now
+		}
+		rows = append(rows, InsiderCoverageSnapshot{
+			BatchID: batchID, SecurityID: securityID, CIK: item.CIK, Status: item.Status,
+			EligibleFilings: item.EligibleFilings, DownloadedDocuments: item.DownloadedDocuments,
+			ParsedDocuments: item.ParsedDocuments, TransactionCount: item.TransactionCount,
+			PermanentDocumentFailures: item.PermanentDocumentFailures,
+			TransientDocumentFailures: item.TransientDocumentFailures,
+			MalformedDocuments:        item.MalformedDocuments, CheckedAt: checkedAt, CreatedAt: now,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool { return canonicalLess(rows[i], rows[j]) })
+	for start := 0; start < len(rows); start += universeChunkSize {
+		end := start + universeChunkSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunk := rows[start:end]
+		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Create(&chunk).Error
+		}); err != nil {
+			return err
+		}
+		if c.AfterStageChunk != nil {
+			if err := c.AfterStageChunk("insider-coverage", start/universeChunkSize); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (c *Coordinator) persistCapitalRiskSnapshots(ctx context.Context, batchID string, securityIDByCIK map[string]uint, eventsByCIK map[string][]CapitalEvent, now time.Time) error {
 	rows := make([]CapitalRiskSnapshot, 0)
 	for cik, events := range eventsByCIK {
@@ -1447,8 +1688,8 @@ func groupMetadata(records []SecuritySourceRecord) ([]metadataGroup, error) {
 	for _, cik := range ciks {
 		rows := byCIK[cik]
 		sort.Slice(rows, func(i, j int) bool { return rows[i].Ticker < rows[j].Ticker })
-		primary := rows[0]
-		if len(rows) > 1 || len(tickerCIKs[primary.Ticker]) > 1 {
+		primary, attachedNonCommon := selectPrimaryCommonListing(rows)
+		if len(rows) > 1 && !attachedNonCommon || len(tickerCIKs[primary.Ticker]) > 1 {
 			primary.MappingStatus = MappingStatusConflict
 		}
 		for i := range rows {
@@ -1459,6 +1700,40 @@ func groupMetadata(records []SecuritySourceRecord) ([]metadataGroup, error) {
 		groups = append(groups, metadataGroup{Primary: primary, Listings: rows})
 	}
 	return groups, nil
+}
+
+// selectPrimaryCommonListing treats a company common share and its attached
+// warrants/rights/units as one issuer, not conflicting issuer identities.
+// The exchange directory provides the security name, which is safer than
+// inferring a warrant solely from ticker suffixes (for example, W is itself a
+// valid common-stock ticker). Any second listing that is not explicitly a
+// non-common security remains a mapping conflict and is never guessed.
+func selectPrimaryCommonListing(rows []SecuritySourceRecord) (SecuritySourceRecord, bool) {
+	if len(rows) == 0 {
+		return SecuritySourceRecord{}, false
+	}
+	common := make([]SecuritySourceRecord, 0, len(rows))
+	for _, row := range rows {
+		if !isAttachedNonCommonListing(row) {
+			common = append(common, row)
+		}
+	}
+	if len(rows) > 1 && len(common) == 1 {
+		return common[0], true
+	}
+	return rows[0], len(rows) == 1
+}
+
+func isAttachedNonCommonListing(record SecuritySourceRecord) bool {
+	return containsWholeTerm(record.SecurityName, nonCommonSecurityTerms)
+}
+
+func listingIdentitySourceKey(record SecuritySourceRecord) string {
+	key := strings.ToUpper(strings.TrimSpace(record.SourceKey))
+	if key != "" {
+		return key
+	}
+	return strings.ToUpper(strings.TrimSpace(record.Ticker))
 }
 
 func validateSecurityStage(db *gorm.DB, batchID string, classifications, selections int) error {
@@ -1490,6 +1765,9 @@ func (c *Coordinator) publish(ctx context.Context, batch UniverseBatch, count in
 		}
 		if result.RowsAffected != 1 {
 			return errors.New("draft batch changed before publish")
+		}
+		if err := persistCandidateSignalEvents(ctx, tx, batch, now); err != nil {
+			return fmt.Errorf("persist candidate signal events: %w", err)
 		}
 		pointer := CurrentBatchPointer{Kind: batch.Kind, BatchID: batch.BatchID, UpdatedAt: now}
 		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "kind"}}, DoUpdates: clause.AssignmentColumns([]string{"batch_id", "updated_at"})}).Create(&pointer).Error
@@ -1865,16 +2143,25 @@ func (c *Coordinator) persistCandidateScoreSnapshots(ctx context.Context, securi
 	for _, identity := range identities {
 		identityBySecurity[identity.SecurityID] = identity
 	}
+	businessModels, err := activeCandidateBusinessModels(ctx, c.DB, securityIDs)
+	if err != nil {
+		return err
+	}
 	rows := make([]CandidateScoreSnapshot, 0, len(universeRows))
 	for _, snapshot := range universeRows {
 		if snapshot.SecurityID == 0 || snapshot.QualityStatus != QualityStatusValid || snapshot.MarketCapUSD <= 0 {
 			continue
 		}
-		sectorScore := SectorRatingForSIC(identityBySecurity[snapshot.SecurityID].SIC).Score
+		sectorRating := SectorRatingForSIC(identityBySecurity[snapshot.SecurityID].SIC)
+		var override *CandidateBusinessModelOverride
+		if row, ok := businessModels[snapshot.SecurityID]; ok {
+			override = &row
+		}
 		score := ScoreDiscoveryCandidate(DiscoveryScoreInput{
 			SecurityID: snapshot.SecurityID, Ticker: snapshot.Ticker, MarketCapUSD: snapshot.MarketCapUSD,
 			Financial: metricBySecurity[snapshot.SecurityID], Insiders: insidersBySecurity[snapshot.SecurityID],
-			Risks: risksBySecurity[snapshot.SecurityID], GrossMarginPct: metricBySecurity[snapshot.SecurityID].GrossMarginPct, SectorScore: sectorScore, AsOf: now,
+			Risks: risksBySecurity[snapshot.SecurityID], GrossMarginPct: metricBySecurity[snapshot.SecurityID].GrossMarginPct, SectorScore: sectorRating.Score,
+			BusinessModel: candidateBusinessModelEvidence(override, sectorRating.Category == "生物医药"), AsOf: now,
 		})
 		rows = append(rows, CandidateScoreToSnapshot(marketBatchID, score, now))
 	}

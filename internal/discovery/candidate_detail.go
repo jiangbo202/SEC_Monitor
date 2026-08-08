@@ -13,18 +13,32 @@ import (
 type CandidateDetail struct {
 	BatchID            string                         `json:"batch_id"`
 	Security           Security                       `json:"security"`
+	CompanyProfile     CompanyProfile                 `json:"company_profile"`
+	AnalystRating      AnalystRatingView              `json:"analyst_rating"`
 	Universe           *UniverseSnapshot              `json:"universe,omitempty"`
 	Score              CandidateScoreSnapshot         `json:"score"`
+	ScoreHistory       []CandidateScoreHistoryPoint   `json:"score_history"`
+	SignalEvents       []CandidateSignalEvent         `json:"signal_events"`
 	Financial          *FinancialMetricSnapshot       `json:"financial,omitempty"`
 	ProfitHistory      ProfitHistory                  `json:"profit_history"`
 	Insiders           []InsiderTransactionSnapshot   `json:"insiders"`
+	InsiderCoverage    *InsiderCoverageSnapshot       `json:"insider_coverage,omitempty"`
 	CapitalRisks       []CapitalRiskSnapshot          `json:"capital_risks"`
 	CapitalRiskSummary CandidateCapitalRiskSummary    `json:"capital_risk_summary"`
 	RecentFilings      []RecentSECFiling              `json:"recent_filings"`
 	Sector             SectorExplanation              `json:"sector"`
+	BusinessModel      CandidateBusinessModelEvidence `json:"business_model"`
+	Valuation          CandidateValuation             `json:"valuation"`
+	Research           *CandidateWatch                `json:"research,omitempty"`
+	ResearchVersions   []CandidateResearchMemoVersion `json:"research_versions"`
+	ResearchReadiness  CandidateResearchReadiness     `json:"research_readiness"`
+	ResearchNextStep   CandidateResearchNextStep      `json:"research_next_step"`
 	Technical          CandidateTechnicalAnalysis     `json:"technical"`
+	Investability      CandidateInvestability         `json:"investability"`
+	DilutionTrend      CandidateDilutionTrend         `json:"dilution_trend"`
 	TechnicalHistory   []CandidateTechnicalHistoryRow `json:"technical_history"`
 	DataQuality        map[string]string              `json:"data_quality"`
+	DataLineage        CandidateDataLineage           `json:"data_lineage"`
 	Evidence           []Evidence                     `json:"evidence"`
 }
 
@@ -55,7 +69,7 @@ type RecentSECFiling struct {
 }
 
 func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (CandidateDetail, error) {
-	result := CandidateDetail{Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, TechnicalHistory: []CandidateTechnicalHistoryRow{}, ProfitHistory: ProfitHistory{Quarterly: []ProfitHistoryPoint{}, Annual: []ProfitHistoryPoint{}}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
+	result := CandidateDetail{ScoreHistory: []CandidateScoreHistoryPoint{}, SignalEvents: []CandidateSignalEvent{}, Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, ResearchVersions: []CandidateResearchMemoVersion{}, TechnicalHistory: []CandidateTechnicalHistoryRow{}, ProfitHistory: ProfitHistory{Quarterly: []ProfitHistoryPoint{}, Annual: []ProfitHistoryPoint{}}, AnalystRating: AnalystRatingView{History: []AnalystRatingSnapshot{}}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -74,6 +88,15 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		return result, gorm.ErrRecordNotFound
 	}
 	result.BatchID = batch.BatchID
+	var research CandidateWatch
+	if err := db.WithContext(ctx).First(&research, "ticker = ? AND status = ?", symbol, CandidateWatchStatusActive).Error; err == nil {
+		result.Research = &research
+		if err := db.WithContext(ctx).Where("ticker = ?", symbol).Order("version DESC").Limit(20).Find(&result.ResearchVersions).Error; err != nil {
+			return result, err
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return result, err
+	}
 	evidenceBatchID := strings.TrimSpace(batch.UniverseSourceVersion)
 	if evidenceBatchID == "" {
 		evidenceBatchID = batch.BatchID
@@ -82,6 +105,12 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		return result, err
 	}
 	if err := db.WithContext(ctx).First(&result.Security, result.Score.SecurityID).Error; err != nil {
+		return result, err
+	}
+	if result.ScoreHistory, err = candidateScoreHistory(ctx, db, result.Score.SecurityID); err != nil {
+		return result, err
+	}
+	if result.SignalEvents, err = candidateSignalEvents(ctx, db, result.Score.SecurityID); err != nil {
 		return result, err
 	}
 	profitHistory, err := getProfitHistoryForSecurity(ctx, db, result.Score.SecurityID, result.Score.Ticker, time.Now().UTC())
@@ -98,11 +127,39 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 			return result, err
 		}
 	}
+	profile, profileErr := GetCompanyProfile(ctx, db, result.Score.Ticker, result.Security.CIK)
+	if profileErr != nil {
+		return result, profileErr
+	}
+	result.CompanyProfile = profile
+	analystRating, analystRatingErr := GetAnalystRating(ctx, db, result.Score.Ticker)
+	if analystRatingErr != nil {
+		return result, analystRatingErr
+	}
+	result.AnalystRating = analystRating
+	if analystRating.Latest != nil {
+		result.DataQuality["analyst_rating"] = analystRating.Latest.Status
+	} else {
+		result.DataQuality["analyst_rating"] = QualityStatusMissing
+	}
 	result.Sector = ExplainSectorScore(result.Score, result.Security)
+	businessModels, err := activeCandidateBusinessModels(ctx, db, []uint{result.Score.SecurityID})
+	if err != nil {
+		return result, err
+	}
+	var businessModelOverride *CandidateBusinessModelOverride
+	if row, ok := businessModels[result.Score.SecurityID]; ok {
+		businessModelOverride = &row
+	}
+	result.BusinessModel = candidateBusinessModelEvidence(businessModelOverride, result.Sector.Category == "生物医药")
 	technicalItems := []CandidateScoreResult{{CandidateScoreSnapshot: result.Score}}
 	if technicalItems, err = hydrateCandidatePriceEvidence(ctx, db, batch, technicalItems); err != nil {
 		return result, err
 	}
+	if err = hydrateCandidateValuations(ctx, db, batch, batch.UniverseSourceVersion, technicalItems); err != nil {
+		return result, err
+	}
+	result.Valuation = technicalItems[0].Valuation
 	if err = hydrateCandidateTechnicalAnalysis(ctx, db, technicalItems); err != nil {
 		return result, err
 	}
@@ -113,9 +170,18 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	}
 	result.TechnicalHistory = candidateTechnicalHistoryRows(technicalHistory)
 	var universe UniverseSnapshot
+	var shareEvidence *ShareSnapshot
 	if err := db.WithContext(ctx).First(&universe, "batch_id = ? AND security_id = ?", batch.BatchID, result.Score.SecurityID).Error; err == nil {
 		result.Universe = &universe
 		result.DataQuality["universe"] = stringOrDefault(universe.QualityStatus, QualityStatusMissing)
+		if universe.ShareSnapshotID != nil {
+			var share ShareSnapshot
+			if shareErr := db.WithContext(ctx).First(&share, *universe.ShareSnapshotID).Error; shareErr == nil {
+				shareEvidence = &share
+			} else if !errors.Is(shareErr, gorm.ErrRecordNotFound) {
+				return result, shareErr
+			}
+		}
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return result, err
 	} else {
@@ -147,11 +213,44 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	} else {
 		result.DataQuality["insider"] = QualityStatusMissing
 	}
+	var insiderCoverage InsiderCoverageSnapshot
+	if err := db.WithContext(ctx).First(&insiderCoverage, "batch_id = ? AND security_id = ?", evidenceBatchID, result.Score.SecurityID).Error; err == nil {
+		result.InsiderCoverage = &insiderCoverage
+		if insiderCoverage.Status == InsiderCoveragePartial || insiderCoverage.Status == InsiderCoverageUnavailable {
+			result.DataQuality["insider_coverage"] = insiderCoverage.Status
+		} else {
+			result.DataQuality["insider_coverage"] = QualityStatusValid
+		}
+	} else if errors.Is(err, gorm.ErrRecordNotFound) {
+		result.DataQuality["insider_coverage"] = "legacy_not_evaluated"
+	} else {
+		return result, err
+	}
 	var allCapitalRisks []CapitalRiskSnapshot
 	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id = ?", evidenceBatchID, result.Score.SecurityID).Order("active DESC, severity DESC, effective_at DESC").Find(&allCapitalRisks).Error; err != nil {
 		return result, err
 	}
 	result.CapitalRiskSummary, result.CapitalRisks = summarizeCandidateCapitalRisks(allCapitalRisks, time.Now().UTC())
+	technicalItems[0].CapitalRiskSummaries = make([]CapitalRiskSummary, 0, len(result.CapitalRisks))
+	for _, risk := range result.CapitalRisks {
+		technicalItems[0].CapitalRiskSummaries = append(technicalItems[0].CapitalRiskSummaries, CapitalRiskSummary{Kind: risk.Kind, Severity: risk.Severity, BlocksA: risk.BlocksA, BlocksB: risk.BlocksB, Reason: risk.Reason, EffectiveAt: risk.EffectiveAt})
+	}
+	if err = hydrateCandidateMarketQuality(ctx, db, technicalItems); err != nil {
+		return result, err
+	}
+	if err = hydrateCandidateDilutionTrends(ctx, db, batch, technicalItems); err != nil {
+		return result, err
+	}
+	result.Investability = buildCandidateInvestability(technicalItems[0])
+	result.DilutionTrend = technicalItems[0].DilutionTrend
+	technicalItems[0].BusinessModel = result.BusinessModel
+	technicalItems[0].Investability = result.Investability
+	technicalItems[0].DilutionTrend = result.DilutionTrend
+	if err = hydrateCandidateResearchReadiness(ctx, db, batch, technicalItems); err != nil {
+		return result, err
+	}
+	result.ResearchReadiness = technicalItems[0].ResearchReadiness
+	result.ResearchNextStep = recommendCandidateResearchNextStep(result.ResearchReadiness, result.Technical)
 	result.DataQuality["capital_risk"] = QualityStatusValid
 	if result.Technical.Status == TechnicalStatusReady {
 		result.DataQuality["technical"] = QualityStatusValid
@@ -168,6 +267,7 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	} else {
 		result.DataQuality["recent_filings"] = QualityStatusMissing
 	}
+	result.DataLineage = buildCandidateDataLineage(result, batch, evidenceBatchID, technicalItems[0], shareEvidence)
 	result.Evidence = candidateDetailEvidence(result)
 	return result, nil
 }
@@ -197,6 +297,9 @@ func applyIdentityToSecurity(security *Security, identity SecurityBatchIdentity)
 	}
 	if identity.SIC != 0 {
 		security.SIC = identity.SIC
+	}
+	if strings.TrimSpace(identity.SICDescription) != "" {
+		security.SICDescription = identity.SICDescription
 	}
 	if strings.TrimSpace(identity.StateOfIncorporation) != "" {
 		security.StateOfIncorporation = identity.StateOfIncorporation
@@ -229,6 +332,9 @@ func candidateDetailEvidence(detail CandidateDetail) []Evidence {
 	}
 	if len(detail.Insiders) > 0 {
 		evidence = append(evidence, Evidence{Field: "qualified_insider_buys", Value: fmt.Sprintf("%d", len(detail.Insiders)), Source: "insider_transaction_snapshots"})
+	}
+	if detail.InsiderCoverage != nil {
+		evidence = append(evidence, Evidence{Field: "insider_coverage", Value: detail.InsiderCoverage.Status, Source: "insider_coverage_snapshots"})
 	}
 	if detail.CapitalRiskSummary.TotalEvents > 0 {
 		evidence = append(evidence, Evidence{Field: "capital_risk_events", Value: fmt.Sprintf("%d", detail.CapitalRiskSummary.TotalEvents), Source: "capital_risk_snapshots"})

@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -46,10 +48,11 @@ type FilingItem struct {
 }
 
 type RefreshResult struct {
-	TargetsChecked int  `json:"targets_checked"`
-	NewFilings     int  `json:"new_filings"`
-	FailedTargets  int  `json:"failed_targets"`
-	SyncRunID      uint `json:"sync_run_id"`
+	TargetsChecked  int  `json:"targets_checked"`
+	NewFilings      int  `json:"new_filings"`
+	FailedTargets   int  `json:"failed_targets"`
+	DeferredTargets int  `json:"deferred_targets"`
+	SyncRunID       uint `json:"sync_run_id"`
 }
 
 type fundFilingFilterResult struct {
@@ -58,7 +61,24 @@ type fundFilingFilterResult struct {
 	reasonSummary string
 }
 
-const fundFilingIdentityIncompleteRetryAfter = time.Hour
+const (
+	fundFilingIdentityIncompleteRetryAfter = time.Hour
+	// A failed SEC index request must not poison the identity cache forever.
+	// Keep a short cooldown so repeated scheduled runs do not hammer EDGAR,
+	// while allowing the next regular run to repair a transient failure.
+	fundFilingIdentityTransientRetryAfter = 2 * time.Minute
+)
+
+type fundFilingRetryContextKey struct{}
+
+const terminalTargetFailureCooldown = 24 * time.Hour
+
+type targetFailureMetadata struct {
+	Kind        string
+	Retryable   bool
+	Attempts    int
+	NextRetryAt *time.Time
+}
 
 type SyncRunFilter struct {
 	Status   string
@@ -190,6 +210,10 @@ func (s *FilingService) RefreshTarget(ctx context.Context, targetID uint) (Refre
 	if err := s.db.WithContext(ctx).First(&target, targetID).Error; err != nil {
 		return RefreshResult{}, mapNotFound(err)
 	}
+	// A user explicitly pressing "retry" expects a fresh attempt against an
+	// earlier transient SEC index failure, instead of receiving the short-lived
+	// cached failure again.
+	ctx = context.WithValue(ctx, fundFilingRetryContextKey{}, true)
 	return s.refreshTargets(ctx, "target", []model.WatchTarget{target})
 }
 
@@ -231,6 +255,30 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 	notificationCandidates := make([]NotificationCandidate, 0)
 	for _, target := range targets {
 		detailStartedAt := time.Now().UTC()
+		if strings.EqualFold(trigger, "scheduler") {
+			deferred, message, err := s.shouldDeferTerminalTargetFailure(ctx, target.ID, detailStartedAt)
+			if err != nil {
+				s.finishSyncRun(ctx, run.ID, result, "failed", err.Error())
+				return result, err
+			}
+			if deferred {
+				finishedAt := time.Now().UTC()
+				detail := model.SyncRunDetail{
+					SyncRunID:      run.ID,
+					TargetID:       target.ID,
+					Ticker:         target.Ticker,
+					Status:         "deferred",
+					StartedAt:      detailStartedAt,
+					FinishedAt:     &finishedAt,
+					DurationMS:     finishedAt.Sub(detailStartedAt).Milliseconds(),
+					WarningMessage: message,
+				}
+				_ = s.db.WithContext(ctx).Create(&detail).Error
+				result.DeferredTargets++
+				s.markTargetSync(ctx, target.ID, "deferred", message, 0)
+				continue
+			}
+		}
 		detail := model.SyncRunDetail{
 			SyncRunID: run.ID,
 			TargetID:  target.ID,
@@ -243,11 +291,11 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 		cik := target.CIK
 		companyName := target.CompanyName
 		if cik == "" {
-			foundCIK, foundName, err := s.sec.LookupCIK(ctx, target.Ticker)
+			foundCIK, foundName, attempts, err := s.lookupCIKWithRetry(ctx, target.Ticker)
 			if err != nil {
 				result.FailedTargets++
 				s.markTargetSync(ctx, target.ID, "failed", err.Error(), 0)
-				s.finishSyncRunDetail(ctx, detail.ID, "failed", 0, detailStartedAt, err.Error(), "")
+				s.finishSyncRunDetailFailure(ctx, detail.ID, 0, detailStartedAt, err, "cik_lookup", attempts, "")
 				continue
 			}
 			cik = foundCIK
@@ -257,11 +305,11 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 			_ = s.db.WithContext(ctx).Model(&target).Updates(map[string]any{"cik": cik, "company_name": companyName}).Error
 		}
 
-		filings, err := s.listFilingsWithRetry(ctx, sec.FilingQuery{Ticker: target.Ticker, CIK: cik, FetchFullHistory: settings.FetchFullHistory})
+		filings, attempts, err := s.listFilingsWithRetry(ctx, sec.FilingQuery{Ticker: target.Ticker, CIK: cik, FetchFullHistory: settings.FetchFullHistory})
 		if err != nil {
 			result.FailedTargets++
 			s.markTargetSync(ctx, target.ID, "failed", err.Error(), 0)
-			s.finishSyncRunDetail(ctx, detail.ID, "failed", 0, detailStartedAt, err.Error(), "")
+			s.finishSyncRunDetailFailure(ctx, detail.ID, 0, detailStartedAt, err, "filings", attempts, "")
 			continue
 		}
 		filings = applyFetchSettings(filings, target.LastSyncAt == nil, settings, time.Now().UTC())
@@ -271,7 +319,7 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 			result.FailedTargets++
 			errorMessage := "fund identity unavailable: " + err.Error()
 			s.markTargetSync(ctx, target.ID, "failed", errorMessage, 0)
-			s.finishSyncRunDetail(ctx, detail.ID, "failed", 0, detailStartedAt, errorMessage, "")
+			s.finishSyncRunDetailFailure(ctx, detail.ID, 0, detailStartedAt, errors.New(errorMessage), "fund_identity", 1, "")
 			continue
 		}
 		filings = fundFilterResult.filings
@@ -316,7 +364,7 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 	}
 
 	status := "success"
-	if result.FailedTargets > 0 {
+	if result.FailedTargets > 0 || result.DeferredTargets > 0 {
 		status = "partial"
 	}
 	if len(notificationCandidates) > 0 {
@@ -542,12 +590,13 @@ func (s *FilingService) markTargetSync(ctx context.Context, targetID uint, statu
 func (s *FilingService) finishSyncRun(ctx context.Context, id uint, result RefreshResult, status string, errorMessage string) {
 	finishedAt := time.Now().UTC()
 	_ = s.db.WithContext(ctx).Model(&model.SyncRun{}).Where("id = ?", id).Updates(map[string]any{
-		"finished_at":     &finishedAt,
-		"status":          status,
-		"targets_checked": result.TargetsChecked,
-		"new_filings":     result.NewFilings,
-		"failed_targets":  result.FailedTargets,
-		"error_message":   errorMessage,
+		"finished_at":      &finishedAt,
+		"status":           status,
+		"targets_checked":  result.TargetsChecked,
+		"new_filings":      result.NewFilings,
+		"failed_targets":   result.FailedTargets,
+		"deferred_targets": result.DeferredTargets,
+		"error_message":    errorMessage,
 	}).Error
 }
 
@@ -564,6 +613,64 @@ func (s *FilingService) finishSyncRunDetail(ctx context.Context, id uint, status
 		"error_message":   errorMessage,
 		"warning_message": warningMessage,
 	}).Error
+}
+
+func (s *FilingService) finishSyncRunDetailFailure(ctx context.Context, id uint, newFilings int, startedAt time.Time, runErr error, phase string, attempts int, warningMessage string) {
+	if id == 0 {
+		return
+	}
+	metadata := classifyTargetFailure(runErr, attempts)
+	// Exact fund-identity mismatches are terminal, but transport failures while
+	// reading a filing index (timeouts, 429s, 5xx) are still recoverable.
+	if phase == "fund_identity" && !metadata.Retryable {
+		metadata.Kind = "fund_identity"
+		metadata.Retryable = false
+		metadata.NextRetryAt = nil
+	}
+	finishedAt := time.Now().UTC()
+	_ = s.db.WithContext(ctx).Model(&model.SyncRunDetail{}).Where("id = ?", id).Updates(map[string]any{
+		"finished_at":     &finishedAt,
+		"status":          "failed",
+		"new_filings":     newFilings,
+		"duration_ms":     finishedAt.Sub(startedAt).Milliseconds(),
+		"error_message":   runErr.Error(),
+		"warning_message": warningMessage,
+		"failure_kind":    metadata.Kind,
+		"retryable":       metadata.Retryable,
+		"attempt_count":   metadata.Attempts,
+		"next_retry_at":   metadata.NextRetryAt,
+	}).Error
+}
+
+func (s *FilingService) shouldDeferTerminalTargetFailure(ctx context.Context, targetID uint, now time.Time) (bool, string, error) {
+	var previous model.SyncRunDetail
+	err := s.db.WithContext(ctx).
+		Where("target_id = ? AND status = ? AND retryable = ? AND failure_kind IN ?", targetID, "failed", false, []string{"not_found", "fund_identity", "configuration"}).
+		Order("finished_at DESC, id DESC").
+		First(&previous).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", err
+	}
+	if previous.FinishedAt == nil || now.Sub(*previous.FinishedAt) >= terminalTargetFailureCooldown {
+		return false, "", nil
+	}
+	return true, fmt.Sprintf("自动同步暂缓：上次 %s 失败仍在冷却期；可在同步历史中手动重试", targetFailureKindLabel(previous.FailureKind)), nil
+}
+
+func targetFailureKindLabel(kind string) string {
+	switch kind {
+	case "not_found":
+		return "未找到数据"
+	case "fund_identity":
+		return "基金身份识别"
+	case "configuration":
+		return "配置"
+	default:
+		return "标的"
+	}
 }
 
 func (s *FilingService) filterFundFilings(ctx context.Context, target model.WatchTarget, filings []sec.FilingResult) (fundFilingFilterResult, error) {
@@ -702,6 +809,14 @@ func (s *FilingService) cachedFundFilingMatch(ctx context.Context, identity sec.
 			// publication. Re-parse this accession after the short cooldown.
 			return false, "", false, nil
 		}
+		if fundFilingMetadataFailureIsTransient(cached.ParseMessage) {
+			forceRetry, _ := ctx.Value(fundFilingRetryContextKey{}).(bool)
+			if forceRetry || !cached.CheckedAt.Add(fundFilingIdentityTransientRetryAfter).After(time.Now().UTC()) {
+				// The cached failure was caused by a temporary upstream condition.
+				// Re-run the parser so a later successful SEC response replaces it.
+				return false, "", false, nil
+			}
+		}
 		return false, "", true, fmt.Errorf("cached fund filing metadata is unavailable: %s", cached.ParseMessage)
 	}
 	var seriesIDs, classIDs []string
@@ -722,6 +837,23 @@ func (s *FilingService) cachedFundFilingMatch(ctx context.Context, identity sec.
 	default:
 		return false, "", false, nil
 	}
+}
+
+func fundFilingMetadataFailureIsTransient(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(message, "timeout") ||
+		strings.Contains(message, "deadline exceeded") ||
+		strings.Contains(message, "temporary") ||
+		strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "connection refused") ||
+		strings.Contains(message, "unexpected eof") ||
+		strings.HasSuffix(message, ": eof") ||
+		strings.Contains(message, "http 429") ||
+		strings.Contains(message, "status: 429") ||
+		strings.Contains(message, "status: 500") ||
+		strings.Contains(message, "status: 502") ||
+		strings.Contains(message, "status: 503") ||
+		strings.Contains(message, "status: 504")
 }
 
 func matchFundFilingRelationships(identity sec.FundIdentity, relationships []sec.FundFilingRelationship) (bool, string) {
@@ -845,17 +977,147 @@ func (s *FilingService) createFilingAndAssociate(ctx context.Context, filing mod
 	return created, result.RowsAffected == 1, stored, nil
 }
 
-func (s *FilingService) listFilingsWithRetry(ctx context.Context, query sec.FilingQuery) ([]sec.FilingResult, error) {
+// RetryRecoverableFailures performs one bounded compensation pass for the
+// transient target failures of a completed run. Rate-limited items retain a
+// future retry time and are intentionally left for the next scheduled run.
+func (s *FilingService) RetryRecoverableFailures(ctx context.Context, syncRunID uint) (RefreshResult, error) {
+	if syncRunID == 0 {
+		return RefreshResult{}, nil
+	}
+	now := time.Now().UTC()
+	var details []model.SyncRunDetail
+	if err := s.db.WithContext(ctx).
+		Where("sync_run_id = ? AND status = ? AND retryable = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)", syncRunID, "failed", true, now).
+		Order("id ASC").
+		Find(&details).Error; err != nil {
+		return RefreshResult{}, err
+	}
+	if len(details) == 0 {
+		return RefreshResult{}, nil
+	}
+	targetIDs := make([]uint, 0, len(details))
+	seen := make(map[uint]struct{}, len(details))
+	for _, detail := range details {
+		if detail.TargetID == 0 {
+			continue
+		}
+		if _, exists := seen[detail.TargetID]; exists {
+			continue
+		}
+		seen[detail.TargetID] = struct{}{}
+		targetIDs = append(targetIDs, detail.TargetID)
+	}
+	if len(targetIDs) == 0 {
+		return RefreshResult{}, nil
+	}
+	var targets []model.WatchTarget
+	if err := s.db.WithContext(ctx).Where("id IN ? AND status = ?", targetIDs, "enabled").Order("id ASC").Find(&targets).Error; err != nil {
+		return RefreshResult{}, err
+	}
+	if len(targets) == 0 {
+		return RefreshResult{}, nil
+	}
+	return s.refreshTargets(ctx, "recovery", targets)
+}
+
+func (s *FilingService) lookupCIKWithRetry(ctx context.Context, ticker string) (string, string, int, error) {
+	var cik, companyName string
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		cik, companyName, err = s.sec.LookupCIK(ctx, ticker)
+		if err == nil {
+			return cik, companyName, attempt, nil
+		}
+		if !classifyTargetFailure(err, attempt).Retryable || attempt == 3 {
+			return "", "", attempt, err
+		}
+		if err := waitForRetry(ctx, time.Duration(attempt)*200*time.Millisecond); err != nil {
+			return "", "", attempt, err
+		}
+	}
+	return "", "", 3, err
+}
+
+func (s *FilingService) listFilingsWithRetry(ctx context.Context, query sec.FilingQuery) ([]sec.FilingResult, int, error) {
 	var filings []sec.FilingResult
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 1; attempt <= 3; attempt++ {
 		filings, err = s.sec.ListFilings(ctx, query)
 		if err == nil {
-			return filings, nil
+			return filings, attempt, nil
 		}
-		time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+		if !classifyTargetFailure(err, attempt).Retryable || attempt == 3 {
+			return nil, attempt, err
+		}
+		if err := waitForRetry(ctx, time.Duration(attempt)*200*time.Millisecond); err != nil {
+			return nil, attempt, err
+		}
 	}
-	return nil, err
+	return nil, 3, err
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func classifyTargetFailure(runErr error, attempts int) targetFailureMetadata {
+	metadata := targetFailureMetadata{Kind: "unknown", Attempts: attempts}
+	if metadata.Attempts < 1 {
+		metadata.Attempts = 1
+	}
+	if runErr == nil {
+		return metadata
+	}
+	now := time.Now().UTC()
+	setRetryable := func(kind string, delay time.Duration) targetFailureMetadata {
+		metadata.Kind = kind
+		metadata.Retryable = true
+		next := now.Add(delay)
+		metadata.NextRetryAt = &next
+		return metadata
+	}
+	var requestErr *sec.RequestError
+	if errors.As(runErr, &requestErr) {
+		switch requestErr.StatusCode {
+		case http.StatusTooManyRequests:
+			return setRetryable("rate_limited", 5*time.Minute)
+		case http.StatusRequestTimeout, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return setRetryable("upstream", 0)
+		case http.StatusNotFound:
+			metadata.Kind = "not_found"
+			return metadata
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusBadRequest:
+			metadata.Kind = "configuration"
+			return metadata
+		}
+		if errors.Is(requestErr.Cause, context.DeadlineExceeded) {
+			return setRetryable("timeout", 0)
+		}
+	}
+	if errors.Is(runErr, context.DeadlineExceeded) {
+		return setRetryable("timeout", 0)
+	}
+	message := strings.ToLower(runErr.Error())
+	switch {
+	case strings.Contains(message, "rate limit"), strings.Contains(message, "http 429"):
+		return setRetryable("rate_limited", 5*time.Minute)
+	case strings.Contains(message, "timeout"), strings.Contains(message, "deadline exceeded"), strings.Contains(message, "temporary"):
+		return setRetryable("timeout", 0)
+	case strings.Contains(message, "http 404"), strings.Contains(message, "not found"):
+		metadata.Kind = "not_found"
+	case strings.Contains(message, "fund identity"), strings.Contains(message, "filing_identity_incomplete"):
+		metadata.Kind = "fund_identity"
+	case strings.Contains(message, "user-agent"), strings.Contains(message, "invalid"), strings.Contains(message, "configuration"):
+		metadata.Kind = "configuration"
+	}
+	return metadata
 }
 
 func filingOrder(sortBy string, sortOrder string) string {

@@ -243,6 +243,11 @@ func TestLoadTableDrivenEnvOverrides(t *testing.T) {
 				t.Fatalf("user agents = sec:%q discovery:%q", cfg.SEC.UserAgent, cfg.Discovery.UserAgent)
 			}
 		}},
+		{name: "sec request policy", key: "SEC_REQUESTS_PER_SECOND", value: "6", assert: func(t *testing.T, cfg Config) {
+			if cfg.SEC.RequestsPerSecond != 6 {
+				t.Fatalf("SEC requests per second = %d, want 6", cfg.SEC.RequestsPerSecond)
+			}
+		}},
 		{name: "retention days", key: "DATA_RETENTION_DAYS", value: "45", assert: func(t *testing.T, cfg Config) {
 			if cfg.System.DataRetentionDays != 45 {
 				t.Fatalf("retention = %d", cfg.System.DataRetentionDays)
@@ -265,12 +270,17 @@ func TestLoadTableDrivenEnvOverrides(t *testing.T) {
 
 func TestLoadFallsBackForInvalidTypedValues(t *testing.T) {
 	t.Setenv("SEC_TIMEOUT_MS", "bad")
+	t.Setenv("SEC_REQUESTS_PER_SECOND", "0")
+	t.Setenv("SEC_MAX_RETRIES", "bad")
 	t.Setenv("DATA_RETENTION_DAYS", "bad")
 	t.Setenv("STORAGE_BY_DAY", "bad")
 
 	cfg := Load()
 	if cfg.SEC.TimeoutMS != 10000 {
 		t.Fatalf("timeout = %d", cfg.SEC.TimeoutMS)
+	}
+	if cfg.SEC.RequestsPerSecond != 8 || cfg.SEC.MaxRetries != 2 {
+		t.Fatalf("SEC retry policy = %+v", cfg.SEC)
 	}
 	if cfg.System.DataRetentionDays != 30 {
 		t.Fatalf("retention = %d", cfg.System.DataRetentionDays)

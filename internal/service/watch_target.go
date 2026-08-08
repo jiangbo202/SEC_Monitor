@@ -33,12 +33,13 @@ type WatchTargetInput struct {
 }
 
 type WatchTargetFilter struct {
-	Ticker     string
-	Status     string
-	TargetType string
-	Group      string
-	Page       int
-	PageSize   int
+	Ticker           string
+	Status           string
+	TargetType       string
+	Group            string
+	UpcomingEarnings bool
+	Page             int
+	PageSize         int
 }
 
 func NewWatchTargetService(db *gorm.DB, audit *AuditService) *WatchTargetService {
@@ -156,6 +157,9 @@ func (s *WatchTargetService) List(ctx context.Context, filter WatchTargetFilter)
 	if filter.Group != "" {
 		query = query.Where("`group` = ?", strings.TrimSpace(filter.Group))
 	}
+	if filter.UpcomingEarnings {
+		query = query.Joins("JOIN earnings_previews ON earnings_previews.target_id = watch_targets.id").Where("earnings_previews.status = ? AND earnings_previews.report_at >= ?", "scheduled", time.Now().UTC().Truncate(24*time.Hour))
+	}
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -163,7 +167,10 @@ func (s *WatchTargetService) List(ctx context.Context, filter WatchTargetFilter)
 	}
 
 	var targets []model.WatchTarget
-	err := query.Order("created_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&targets).Error
+	// The earnings filter adds a JOIN and both tables carry created_at/id.
+	// Qualify the target columns so this query remains valid with SQLite (and
+	// other SQL engines) instead of silently making the quick filter unusable.
+	err := query.Order("watch_targets.created_at DESC, watch_targets.id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&targets).Error
 	return newPageResult(targets, total, page, pageSize), err
 }
 

@@ -57,7 +57,7 @@ func TestParseSECTickerExchange(t *testing.T) {
 }
 
 func TestParseSECSubmissions(t *testing.T) {
-	body := `{"name":"Acme","cik":"1234","entityType":"operating","sic":"3571","stateOfIncorporation":"DE","tickers":["ACME"],"exchanges":["Nasdaq"],"filings":{"recent":{"form":["10-Q","10-K/A","10-K","8-K"],"accessionNumber":["1","2","3","4"],"filingDate":["2026-05-01","2026-04-01","2025-03-01","2026-06-01"],"reportDate":["","","",""],"primaryDocument":["a","b","c","d"],"items":["","","","2.01,9.01"]}}}`
+	body := `{"name":"Acme","cik":"1234","entityType":"operating","sic":"3571","sicDescription":"ELECTRONIC COMPUTERS","stateOfIncorporation":"DE","tickers":["ACME"],"exchanges":["Nasdaq"],"filings":{"recent":{"form":["10-Q","10-K/A","10-K","8-K"],"accessionNumber":["1","2","3","4"],"filingDate":["2026-05-01","2026-04-01","2025-03-01","2026-06-01"],"reportDate":["","","",""],"primaryDocument":["a","b","c","d"],"items":["","","","2.01,9.01"]}}}`
 	p := zipFile(t, map[string]string{
 		"CIK0000001234.json":                 body,
 		"CIK0000001234-submissions-001.json": `{"accessionNumber":["ignored"]}`,
@@ -74,8 +74,22 @@ func TestParseSECSubmissions(t *testing.T) {
 	}
 	x := m["0000001234"]
 	wantCompleted := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	if x.CompanyName != "Acme" || x.SIC != 3571 || x.LatestAnnualForm != "10-K/A" || !x.HasBusinessCombinationItem201 || x.BusinessCombinationCompletedAt == nil || !x.BusinessCombinationCompletedAt.Equal(wantCompleted) || len(x.RecentForms) != 4 {
+	if x.CompanyName != "Acme" || x.SIC != 3571 || x.SICDescription != "ELECTRONIC COMPUTERS" || x.LatestAnnualForm != "10-K/A" || !x.HasBusinessCombinationItem201 || x.BusinessCombinationCompletedAt == nil || !x.BusinessCombinationCompletedAt.Equal(wantCompleted) || len(x.RecentForms) != 4 {
 		t.Fatalf("metadata = %#v", x)
+	}
+}
+
+func TestParseSECSubmissionJSONForIncrementalIssuer(t *testing.T) {
+	body := `{"name":"Daily Acme","cik":1234,"sic":"3571","stateOfIncorporation":"DE","filings":{"recent":{"form":["10-K","10-Q"],"accessionNumber":["0000001234-26-000001","0000001234-26-000002"],"filingDate":["2026-03-01","2026-05-01"],"acceptanceDateTime":["2026-03-01T12:00:00.000Z","2026-05-01T12:00:00.000Z"]}}}`
+	record, err := ParseSECSubmissionJSON(strings.NewReader(body), "0000001234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.CompanyName != "Daily Acme" || record.SIC != 3571 || record.LatestAnnualForm != "10-K" || len(record.FilingMetadata) != 2 || record.FilingMetadata[0].AcceptedAt.IsZero() {
+		t.Fatalf("record = %#v", record)
+	}
+	if _, err := ParseSECSubmissionJSON(strings.NewReader(body), "0000009999"); err == nil {
+		t.Fatal("expected requested CIK validation error")
 	}
 }
 
@@ -154,6 +168,17 @@ func TestParseSECCompanyFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(facts) != 1 || facts[0].Shares != 12 || facts[0].Concept != "dei:EntityCommonStockSharesOutstanding" || facts[0].SourceURL == "" {
+		t.Fatalf("facts = %#v", facts)
+	}
+}
+
+func TestParseSECCompanyFactsSharesJSONForIncrementalIssuer(t *testing.T) {
+	body := `{"cik":1234,"facts":{"dei":{"EntityCommonStockSharesOutstanding":{"units":{"shares":[{"val":1200000,"end":"2026-05-31","filed":"2026-06-01","form":"10-Q","accn":"0000001234-26-000001"}]}}}}}`
+	facts, err := ParseSECCompanyFactsSharesJSON(strings.NewReader(body), "0000001234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 || facts[0].Shares != 1_200_000 || facts[0].CIK != "0000001234" {
 		t.Fatalf("facts = %#v", facts)
 	}
 }

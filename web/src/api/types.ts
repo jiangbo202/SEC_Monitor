@@ -4,6 +4,20 @@ export interface ApiResponse<T> {
   data: T
 }
 
+export interface LongbridgeQuoteProbeResult {
+  provider: string
+  endpoint: string
+  symbol: string
+  status: 'ok' | 'failed'
+  error_kind?: string
+  message?: string
+  elapsed_millis: number
+  quote_received: boolean
+  quote_timestamp?: number
+  last_done?: string
+  volume?: number
+}
+
 export interface PageResult<T> {
   items: T[]
   total: number
@@ -30,6 +44,47 @@ export interface WatchTarget {
   last_new_filings?: number
   created_at: string
   updated_at: string
+  technical?: CandidateTechnicalAnalysis
+}
+
+export interface EarningsPreview {
+  id: number
+  target_id: number
+  ticker: string
+  company_name?: string
+  provider: string
+  status: 'scheduled' | 'no_coverage' | 'unavailable' | string
+  event_key?: string
+  report_at?: string | null
+  session?: string
+  event_content?: string
+  fiscal_year?: number
+  fiscal_period?: string
+  currency?: string
+  eps_estimate?: number | null
+  eps_actual?: number | null
+  eps_surprise?: number | null
+  revenue_estimate?: number | null
+  revenue_actual?: number | null
+  revenue_surprise?: number | null
+  provider_updated_at?: string | null
+  fetched_at?: string | null
+  changed_at?: string | null
+  change_summary?: string
+  last_error?: string
+}
+
+export interface EarningsPreviewView {
+  preview?: EarningsPreview | null
+  message: string
+}
+
+export interface EarningsPreviewRefreshResult {
+  target_id: number
+  preview?: EarningsPreview
+  fetched: boolean
+  changed: boolean
+  message: string
 }
 
 export interface FundIdentity {
@@ -156,6 +211,15 @@ export interface IPORadarHealthSync {
   new_filings: number
 }
 
+export interface IPORadarAction {
+  key: string
+  severity: 'warning' | 'danger' | string
+  count: number
+  attention?: string
+  route?: string
+  status?: string
+}
+
 export interface IPORadarHealth {
   pending_listing: number
   missing_market_mapping: number
@@ -165,6 +229,7 @@ export interface IPORadarHealth {
   due_retry_batches: number
   dead_letter_batches: number
   latest_sync?: IPORadarHealthSync | null
+  actions: IPORadarAction[]
 }
 
 export interface CandidateScore {
@@ -190,6 +255,8 @@ export interface CandidateScore {
   active_blocks_b: boolean
   reason_code: string
   scoring_version: string
+  business_model_at_score?: string
+  revenue_score_cap_reason?: string
   created_at: string
   score_effective_date?: string
   price_close_usd?: number
@@ -217,7 +284,75 @@ export interface CandidateScore {
   revenue_growth_explanation?: RevenueGrowthExplanation
   capital_risk_summaries?: CapitalRiskSummary[]
   market_quality?: CandidateMarketQuality
+  investability?: CandidateInvestability
+  dilution_trend?: CandidateDilutionTrend
   technical?: CandidateTechnicalAnalysis
+  research_readiness?: CandidateResearchReadiness
+  business_model?: CandidateBusinessModelEvidence
+  valuation?: CandidateValuation
+  followed?: boolean
+}
+
+export interface CandidateValuation {
+  status: 'ready' | 'partial' | 'insufficient' | string
+  reasons: string[]
+  market_cap_usd?: number | null
+  cash_usd?: number | null
+  total_debt_usd?: number | null
+  enterprise_value_usd?: number | null
+  ttm_revenue_usd?: number | null
+  ttm_gross_profit_usd?: number | null
+  ev_sales?: number | null
+  ev_gross_profit?: number | null
+  price_to_sales?: number | null
+  net_cash_to_market_cap?: number | null
+  price_trade_date: string
+  financial_period_end: string
+  share_instant: string
+}
+
+export interface CandidateBusinessModelEvidence {
+  model: 'commercial' | 'clinical_pre_revenue' | 'mixed_or_licensing' | 'unknown' | 'not_applicable' | string
+  revenue_repeatable_confirmed: boolean
+  revenue_score_cap: number
+  revenue_score_cap_reason: string
+  requires_review: boolean
+  reason: string
+  source_url: string
+  operator: string
+  confirmed_at?: string | null
+  review_due_at?: string | null
+}
+
+export interface CandidateResearchReadiness {
+  status: 'ready' | 'research_only' | 'blocked' | string
+  reasons: string[]
+  financial_staleness_days: number
+  financial_period_end: string
+  insider_evidence_status: string
+}
+
+export interface CandidateResearchNextStep {
+  status: 'ready' | 'research_only' | 'blocked' | string
+  priority: 'normal' | 'review' | 'blocked' | string
+  action: string
+  rationale: string
+  reasons: string[]
+}
+
+export interface DiscoveryInsiderCoverage {
+  batch_id: string
+  security_id: number
+  cik: string
+  status: string
+  eligible_filings: number
+  downloaded_documents: number
+  parsed_documents: number
+  transaction_count: number
+  permanent_document_failures: number
+  transient_document_failures: number
+  malformed_documents: number
+  checked_at: string
 }
 
 export interface CandidateMarketQuality {
@@ -227,6 +362,27 @@ export interface CandidateMarketQuality {
   momentum_pct: number
   max_drawdown_pct: number
   status: string
+}
+
+export interface CandidateInvestability {
+  status: 'tradable' | 'constrained' | 'blocked' | 'unknown' | string
+  reasons: string[]
+  sample_days: number
+  average_dollar_volume_usd: number
+  suggested_max_daily_notional_usd: number
+  max_adv_participation_pct: number
+  spread_evidence_status: string
+}
+
+export interface CandidateDilutionTrend {
+  status: 'stable' | 'elevated_dilution' | 'high_dilution' | 'shares_reduced' | 'missing' | string
+  reasons: string[]
+  share_change_pct: number
+  latest_shares: number
+  prior_shares: number
+  latest_instant: string
+  prior_instant: string
+  observation_days: number
 }
 
 export interface TechnicalHistoryBackfillResult {
@@ -254,6 +410,9 @@ export interface CandidateTechnicalAnalysis {
   trade_date: string
   close_usd: number
   ma20_usd: number
+  ma50_usd: number
+  ma200_usd: number
+  ma200_available: boolean
   prior_close_usd: number
   prior_ma20_usd: number
   distance_to_ma20_pct: number
@@ -261,16 +420,70 @@ export interface CandidateTechnicalAnalysis {
   distance_to_20d_high_pct: number
   average_volume_20: number
   volume_ratio_20: number
+  dollar_volume_usd: number
+  average_dollar_volume_20: number
+  dollar_volume_ratio_20: number
+  liquidity_status: 'unknown' | 'low' | 'limited' | 'normal' | string
+  high_50d_usd: number
+  distance_to_50d_high_pct: number
+  high_200d_usd: number
+  distance_to_200d_high_pct: number
+  relative_strength: CandidateRelativeStrength
+  anchored_vwap: CandidateAnchoredVWAP
   signals: CandidateTechnicalSignal[]
+	trade_setup: CandidateTradeSetup
+}
+
+export interface CandidateTradeSetup {
+  status: 'unavailable' | 'watching' | 'entry_candidate' | 'exit_warning' | 'invalidated' | string
+  bias: 'bullish' | 'neutral' | 'defensive' | string
+  entry_trigger: string
+  stop_loss_usd: number
+  risk_pct: number
+  take_profit_zone_low_usd: number
+  take_profit_zone_high_usd: number
+  exit_reason: string
+  reasons: string[]
+}
+
+export interface CandidateAnchoredVWAP {
+  status: 'ready' | 'anchor_unavailable' | 'anchor_outside_local_history' | 'insufficient_price_history' | string
+  anchor_event_type: string
+  anchor_label: string
+  anchor_trade_date: string
+  price_trade_date: string
+  trading_days: number
+  approximate_vwap_usd: number
+  distance_pct: number
+  price_source: string
+}
+
+export interface CandidateRelativeStrength {
+  status: 'ready' | 'partial' | 'missing' | 'insufficient_candidate_history' | 'insufficient_benchmark_history' | string
+  benchmark_ticker: string
+  matched_sample_days: number
+  candidate_return_20d_pct?: number | null
+  benchmark_return_20d_pct?: number | null
+  excess_return_20d_pct?: number | null
+  candidate_return_60d_pct?: number | null
+  benchmark_return_60d_pct?: number | null
+  excess_return_60d_pct?: number | null
 }
 
 export interface CandidateTechnicalHistoryRow {
   trade_date: string
   close_usd: number
   volume: number
+  dollar_volume_usd: number
   source: string
   source_version: string
   backfilled: boolean
+}
+
+export interface TickerTechnicalHistory {
+  ticker: string
+  technical: CandidateTechnicalAnalysis
+  history: CandidateTechnicalHistoryRow[]
 }
 
 export interface CandidateSelectionCriteria {
@@ -286,6 +499,70 @@ export interface CandidateSelectionCriteria {
   revenue_growth_selection: string
   qualified_insider_requirement: string
   active_capital_risk_requirement: string
+}
+
+export type SmallCapEligibilityStatus = 'pass' | 'fail' | 'unavailable'
+
+export interface SmallCapEligibilityCondition {
+  key: string
+  label: string
+  applies_to: string
+  requirement: string
+  actual: string
+  status: SmallCapEligibilityStatus
+  detail?: string
+}
+
+export interface SmallCapEligibilityConditionChange {
+  key: string
+  label: string
+  previous_actual: string
+  current_actual: string
+  previous_status: SmallCapEligibilityStatus
+  current_status: SmallCapEligibilityStatus
+}
+
+export interface SmallCapEligibilityComparison {
+  previous_checked_at: string
+  previous_grade: string
+  previous_market_as_of?: string
+  previous_security_as_of?: string
+  changes: SmallCapEligibilityConditionChange[]
+}
+
+export interface SmallCapEligibilityCheckResult {
+  ticker: string
+  company_name: string
+  security_id?: number
+  market_batch_id?: string
+  security_batch_id?: string
+  market_as_of?: string
+  security_as_of?: string
+  in_small_cap_pool: boolean
+  eligible_a: boolean
+  eligible_b: boolean
+  grade: string
+  summary: string
+  conditions: SmallCapEligibilityCondition[]
+  checked_at: string
+  criteria: CandidateSelectionCriteria
+  comparison?: SmallCapEligibilityComparison
+}
+
+export interface SmallCapEligibilityCheckHistoryItem {
+  id: number
+  requested_ticker: string
+  ticker: string
+  company_name: string
+  security_id?: number
+  market_batch_id?: string
+  security_batch_id?: string
+  in_small_cap_pool: boolean
+  eligible_a: boolean
+  eligible_b: boolean
+  grade: string
+  result: SmallCapEligibilityCheckResult
+  created_at: string
 }
 
 export interface ReviewPriorityReason {
@@ -328,11 +605,102 @@ export interface CandidateWatch {
   thesis: string
   risk_notes: string
   invalidation: string
+  market_concern: string
+  falsifiable_judgment: string
+  catalyst: string
+  catalyst_source: string
+  catalyst_date?: string | null
   next_review_at?: string | null
   source_batch_id: string
+  baseline_batch_id?: string
+  baseline_captured_at?: string | null
+  baseline_json?: string
+  baseline?: CandidateWatchMetricSnapshot
+  current?: CandidateWatchMetricSnapshot
+  metric_changes?: CandidateWatchMetricChanges
   latest_score?: CandidateScore
   created_at: string
   updated_at: string
+}
+
+export interface CandidateWatchMetricSnapshot {
+  batch_id: string
+  score_effective_date: string
+  captured_at: string
+  price_close_usd: number
+  price_volume: number
+  price_trade_date?: string | null
+  price_source?: string
+  market_cap_usd: number
+  total_score: number
+  grade: string
+  revenue_growth_pct: number
+  cash_runway_months: number
+  quality_tier: string
+  research_readiness: string
+  sector_category: string
+}
+
+export interface CandidateWatchMetricChanges {
+  price_change_pct?: number | null
+  market_cap_change_pct?: number | null
+  volume_change_pct?: number | null
+  score_change?: number | null
+  revenue_growth_change_pct?: number | null
+  cash_runway_change_months?: number | null
+}
+
+export interface CandidateReviewQueueItem extends CandidateWatch {
+  review_state: 'overdue' | 'due_today' | 'upcoming' | string
+  days_until_review: number
+  current_candidate: boolean
+}
+
+export interface CandidateReviewQueue {
+  as_of: string
+  overdue_count: number
+  due_today_count: number
+  upcoming_count: number
+  items: CandidateReviewQueueItem[]
+}
+
+export interface CandidateResearchMemoVersion {
+  id: number
+  ticker: string
+  version: number
+  security_id: number
+  author: string
+  thesis: string
+  market_concern: string
+  falsifiable_judgment: string
+  catalyst: string
+  catalyst_source: string
+  catalyst_date?: string | null
+  risk_notes: string
+  invalidation: string
+  next_review_at?: string | null
+  created_at: string
+}
+
+export interface CandidateResearchPosition {
+  id: number
+  ticker: string
+  security_id: number
+  max_weight_pct: number
+  reference_cost_usd?: number | null
+  max_daily_volume_participation_pct: number
+  event_risk_note: string
+  liquidity_note: string
+  note: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CandidateResearchPortfolio {
+  total_max_weight_pct: number
+  position_count: number
+  sector_weights: Record<string, number>
+  items: CandidateResearchPosition[]
 }
 
 export interface CandidateOverview {
@@ -378,7 +746,84 @@ export interface DiscoverySecurity {
   cik: string
   company_name: string
   sic: number
+	 sic_description?: string
+	 state_of_incorporation?: string
+	 latest_annual_form?: string
   catalog_status: string
+}
+
+export interface CompanyProfile {
+  ticker: string
+  company_name: string
+  cik: string
+  exchange?: string
+  sic: number
+  sic_description?: string
+  sector_category?: string
+  state_of_incorporation?: string
+  latest_annual_form?: string
+  business_summary: string
+  summary_source: string
+  profile_provider?: string
+  profile_fetched_at?: string | null
+  profile_freshness?: 'fresh' | 'stale' | string
+  website?: string
+  founded?: string
+  listing_date?: string
+  market?: string
+  address?: string
+  employees?: string
+  manager?: string
+  year_end?: string
+  metadata_as_of?: string | null
+  status: 'available' | 'partial' | string
+}
+
+export interface CompanyProfileRecoveryItem {
+  ticker: string
+  company_name: string
+  cik: string
+  security_id: number
+  retry_count: number
+  last_attempt_at?: string | null
+  next_retry_at?: string | null
+  last_error: string
+  retry_due: boolean
+}
+
+export interface CompanyProfileRecoveryQueue {
+  items: CompanyProfileRecoveryItem[]
+}
+
+export interface CompanyProfileBulkRetryResult {
+  queue_count: number
+  budget: number
+  attempted: number
+  fetched: number
+  failed: number
+  stopped: boolean
+  stop_reason?: string
+  skipped: boolean
+  message: string
+}
+
+export interface MarketPriceRecoveryItem {
+  ticker: string
+  security_id: number
+  grade: string
+  market_cap_usd: number
+  issue: 'missing' | 'stale' | 'future' | 'local_fallback' | string
+  issue_label: string
+  price_trade_date?: string | null
+  price_freshness_status: string
+  price_age_calendar_days: number
+  price_source: string
+}
+
+export interface MarketPriceRecoveryQueue {
+  batch_id: string
+  effective_date: string
+  items: MarketPriceRecoveryItem[]
 }
 
 export interface DiscoveryFinancialMetric {
@@ -460,22 +905,116 @@ export interface ProfitHistory {
   annual: ProfitHistoryPoint[]
 }
 
+export interface CandidateLineageItem {
+  key: string
+  label: string
+  source: string
+  as_of: string
+  status: string
+  detail: string
+}
+
+export interface CandidateDataLineage {
+  score_batch_id: string
+  evidence_batch_id: string
+  batch_effective_date: string
+  items: CandidateLineageItem[]
+}
+
+export interface CandidateScoreHistoryPoint {
+  batch_id: string
+  effective_date: string
+  grade: string
+  total_score: number
+  score_delta?: number | null
+  eligible_a: boolean
+  eligible_b: boolean
+  revenue_growth_pct: number
+  cash_runway_months: number
+  market_cap_usd: number
+  active_blocks_a: boolean
+  active_blocks_b: boolean
+  scoring_version: string
+  change_status: string
+  change_reasons: CandidateChangeReason[]
+}
+
+export interface CandidateSignalEvent {
+  id: number
+  batch_id: string
+  ticker: string
+  grade: string
+  event_type: string
+  scoring_version: string
+  total_score: number
+  signal_date: string
+  baseline_trade_date: string
+  baseline_close_micros: number
+  price_source: string
+}
+
 export interface CandidateDetail {
   batch_id: string
   security: DiscoverySecurity
+  company_profile: CompanyProfile
+  analyst_rating: AnalystRatingView
   score: CandidateScore
+	 score_history: CandidateScoreHistoryPoint[]
+  signal_events: CandidateSignalEvent[]
   financial?: DiscoveryFinancialMetric
 
   profit_history?: ProfitHistory
   insiders: DiscoveryInsiderTransaction[]
+  insider_coverage?: DiscoveryInsiderCoverage | null
   capital_risks: DiscoveryCapitalRisk[]
   capital_risk_summary: CandidateCapitalRiskSummary
   sector: SectorExplanation
+  business_model: CandidateBusinessModelEvidence
+  valuation: CandidateValuation
+  research?: CandidateWatch | null
+  research_versions: CandidateResearchMemoVersion[]
+  research_readiness: CandidateResearchReadiness
+  research_next_step: CandidateResearchNextStep
   technical: CandidateTechnicalAnalysis
+	investability: CandidateInvestability
+  dilution_trend: CandidateDilutionTrend
 	technical_history: CandidateTechnicalHistoryRow[]
   data_quality: Record<string, string>
+	data_lineage: CandidateDataLineage
   evidence: DiscoveryEvidence[]
   recent_filings: RecentSECFiling[]
+}
+
+export interface AnalystRatingSnapshot {
+  id: number
+  security_id: number
+  provider: string
+  ticker: string
+  status: 'available' | 'no_coverage' | string
+  recommendation: string
+  strong_buy_count: number
+  buy_count: number
+  hold_count: number
+  underperform_count: number
+  sell_count: number
+  no_opinion_count: number
+  analyst_count: number
+  target_average_micros: number
+  target_high_micros: number
+  target_low_micros: number
+  reference_price_micros: number
+  currency: string
+  provider_updated_at_text: string
+  change_summary?: string
+  notification_status?: string
+  fetched_at: string
+  notified_at?: string | null
+}
+
+export interface AnalystRatingView {
+  latest?: AnalystRatingSnapshot | null
+  history: AnalystRatingSnapshot[]
+  message: string
 }
 
 export interface CandidateCapitalRiskSummary {
@@ -532,6 +1071,11 @@ export interface CandidateHealth {
   insider_data_status: 'available' | 'missing' | string
   candidates_with_insider_records: number
   insider_record_coverage_pct: number
+  candidates_with_insider_coverage?: number
+  insider_coverage_pct?: number
+  insider_coverage_partial?: number
+  insider_coverage_unavailable?: number
+  insider_coverage_no_filings?: number
   qualified_insider_candidates: number
   no_qualified_insider_candidates: number
   candidates_with_recent_filings: number
@@ -544,6 +1088,9 @@ export interface CandidateHealth {
   missing_market_cap: number
   active_risk_events: number
   pending_financial_recalculations?: number
+  ready_candidates?: number
+  research_only_candidates?: number
+  blocked_candidates?: number
   issues: string[]
 }
 
@@ -555,6 +1102,61 @@ export interface DiscoveryWorkflowResult {
   summary: CandidateSummary
   health: CandidateHealth
   technical_history_warmup?: TechnicalHistoryWarmupResult
+}
+
+// DiscoverySyncRun is a lightweight lifecycle record. Unlike a published
+// batch, it is created before the SEC phase starts so the page can show an
+// active or failed run even if no market batch is produced.
+export interface DiscoverySyncRun {
+  id: number
+  kind: 'full' | 'incremental' | 'market' | string
+  status: 'running' | 'published' | 'failed' | string
+  phase: 'security_universe' | 'market_prescreen' | 'technical_history' | 'completed' | 'failed' | string
+  started_at: string
+  completed_at?: string | null
+  security_batch_id?: string
+  market_batch_id?: string
+  error_message?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DiscoverySyncStep {
+  id: number
+  run_id: number
+  sequence: number
+  phase: string
+  status: 'running' | 'completed' | 'failed' | 'warning' | 'skipped' | string
+  message: string
+  record_count: number
+  started_at: string
+  completed_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DiscoverySyncRunPage {
+  page: number
+  page_size: number
+  total: number
+  items: DiscoverySyncRun[]
+}
+
+export interface DiscoveryStorageHealth {
+  database_path: string
+  database_bytes: number
+  cache_path: string
+  cache_bytes: number
+  cache_files: number
+  status: 'ok' | 'warning' | 'error' | string
+  issues: string[]
+}
+
+export interface DiscoveryCacheCleanupPreview {
+  retention_days: number
+  cutoff: string
+  file_count: number
+  bytes: number
 }
 
 export interface TechnicalHistoryWarmupResult {
@@ -631,6 +1233,34 @@ export interface ProviderHealthPage {
   items: ProviderHealth[]
 }
 
+export interface CalendarCoverage {
+  year: number
+  complete: boolean
+}
+
+export interface ProviderObservabilityItem {
+  provider: string
+  configured: boolean
+  configured_credential: boolean
+  token_count: number
+  local_request_budget: number
+  budget_scope: string
+  latest_source_record_count: number
+  health?: ProviderHealth | null
+}
+
+export interface ProviderObservability {
+  generated_at: string
+  price_provider_chain: string
+  calendar_version: string
+  calendar_years: CalendarCoverage[]
+  latest_run?: ProviderRun | null
+  chain_health?: ProviderHealth | null
+  latest_price_source_counts: Record<string, number>
+  providers: ProviderObservabilityItem[]
+  budget_notice: string
+}
+
 export interface CandidateReport {
   date: string
   batch: {
@@ -668,7 +1298,53 @@ export interface CandidateEffectivenessReport {
   generated_at: string
   benchmark_ticker: string
   benchmark_available: boolean
+  cohort_source: 'signal_events' | 'legacy_first_entry' | string
   cohorts: CandidateEffectivenessCohort[]
+}
+
+export interface TradePlanSimulation {
+  id: number
+  ticker: string
+  rule_version: string
+  signal_date: string
+  entry_date?: string | null
+  entry_trigger: string
+  entry_price_usd: number
+  stop_loss_usd: number
+  take_profit_usd: number
+  initial_risk_pct: number
+  status: string
+  exit_date?: string | null
+  exit_price_usd: number
+  exit_reason: string
+  last_mark_price_usd: number
+  return_pct: number
+  r_multiple: number
+  max_drawdown_pct: number
+  holding_days: number
+  created_at: string
+  updated_at: string
+}
+
+export interface TradePlanSimulationReport {
+  generated_at: string
+  rule_version: string
+  execution_convention: string
+  total_count: number
+  closed_count: number
+  open_count: number
+  win_rate_pct?: number | null
+  average_return_pct?: number | null
+  average_r_multiple?: number | null
+  max_drawdown_pct?: number | null
+  status_counts: Record<string, number>
+  items: TradePlanSimulation[]
+}
+
+export interface TradePlanSimulationRebuildResult extends TradePlanSimulationReport {
+  created_count: number
+  updated_count: number
+  skipped_count: number
 }
 
 export interface SystemConfig {
@@ -688,6 +1364,10 @@ export interface TaskConfig {
   last_run_at?: string | null
   next_run_at?: string | null
   running: boolean
+  running_since?: string | null
+  last_status: string
+  last_error_message: string
+  consecutive_failures: number
 }
 
 export interface OperationLog {
@@ -759,6 +1439,7 @@ export interface SyncRun {
   targets_checked: number
   new_filings: number
   failed_targets: number
+  deferred_targets: number
   error_message?: string
   warning_message?: string
   created_at: string
@@ -776,7 +1457,11 @@ export interface SyncRunDetail {
   finished_at?: string | null
   duration_ms: number
   error_message?: string
-	warning_message?: string
+  warning_message?: string
+  failure_kind?: string
+  retryable: boolean
+  attempt_count: number
+  next_retry_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -794,6 +1479,105 @@ export interface SystemHealthIssue {
   message: string
 }
 
+export interface SQLiteBackupHealth {
+  directory: string
+  complete_pairs: number
+  incomplete_pairs: number
+  latest_completed?: string | null
+}
+
+export interface SQLiteBackupVerification {
+	 directory: string
+	 files: Record<string, string>
+	 verified_at: string
+}
+
+export interface SQLiteRecoveryReadiness {
+  status: 'ready' | 'unavailable' | 'failed'
+  checked_at: string
+  backup: SQLiteBackupHealth
+  verification?: SQLiteBackupVerification | null
+  reason?: string
+}
+
+export interface SQLiteCompactionRun {
+  id: number
+  status: string
+  started_at: string
+  completed_at?: string | null
+  duration_ms: number
+  main_before_bytes: number
+  main_after_bytes: number
+  discovery_before_bytes: number
+  discovery_after_bytes: number
+  error_message?: string
+}
+
+export interface SQLiteCompactionDatabaseResult {
+  name: string
+  path: string
+  before_bytes: number
+  after_bytes: number
+  reclaimed_bytes: number
+}
+
+export interface SQLiteCompactionResult {
+  run_id: number
+  status: string
+  started_at: string
+  completed_at: string
+  duration_ms: number
+  databases: SQLiteCompactionDatabaseResult[]
+  reclaimed_bytes: number
+  error_message?: string
+}
+
+export interface RecoveryDrill {
+  id: number
+  status: string
+  backup_timestamp?: string | null
+  started_at: string
+  completed_at?: string | null
+  duration_ms: number
+  error_message?: string
+}
+
+export interface LifecycleCleanupPreview {
+  retention_days: number
+  cutoff: string
+  sync_runs: number
+  sync_run_details: number
+  operational_alert_deliveries: number
+	 recovery_drills: number
+  lifecycle_cleanup_runs: number
+  discovery_sync_runs: number
+  discovery_sync_steps: number
+  superseded_market_repairs: number
+  market_repair_universe_rows: number
+  market_repair_score_rows: number
+  total: number
+  deleted_at?: string
+}
+
+export interface StorageHealth {
+  path: string
+  used_bytes: number
+  total_bytes: number
+  used_pct: number
+}
+
+export interface DataSourceHealth {
+  source: string
+  kind: 'sec' | 'market' | string
+  status: 'ok' | 'warning' | 'critical' | 'unknown' | string
+  last_checked_at?: string | null
+  failure_streak: number
+  coverage_pct?: number | null
+  detail?: string
+  error_message?: string
+  recommended_action?: 'scheduler' | 'configs' | 'discovery_logs' | string
+}
+
 export interface SystemHealth {
   status: string
   issues: SystemHealthIssue[]
@@ -807,4 +1591,85 @@ export interface SystemHealth {
   database_path: string
   database_size_bytes: number
   latest_sync?: SyncRun
+  backup?: SQLiteBackupHealth
+	 recovery_drill?: RecoveryDrill
+  storage?: StorageHealth
+  data_sources?: DataSourceHealth[]
+}
+
+export interface OperationalIssue {
+  key: string
+  category: string
+  severity: 'warning' | 'critical' | string
+  title: string
+  detail: string
+  action?: 'scheduler' | 'sync-runs' | 'discovery-logs' | string
+  observed_at: string
+}
+
+export interface OperationalTaskStatus {
+  task_name: string
+  enabled: boolean
+  running: boolean
+  last_status: string
+  last_run_at?: string | null
+  next_run_at?: string | null
+  running_since?: string | null
+  consecutive_failures: number
+  expected_within_mins: number
+}
+
+export interface OperationalReport {
+  generated_at: string
+  status: 'ok' | 'warning' | 'critical' | string
+  issues: OperationalIssue[]
+  tasks: OperationalTaskStatus[]
+  retryable_targets: number
+  deferred_targets: number
+  company_profile_retry_due: number
+  market_price_recovery: number
+  low_coverage_providers: number
+	 slow_sec_targets: number
+	 slow_discovery_steps: number
+  provider_warnings: number
+  summary: string
+}
+
+export interface OperationalAlertResult {
+  report: OperationalReport
+  sent: boolean
+  suppressed: boolean
+  reason?: string
+}
+
+export interface MacroObservation {
+  id: number
+  release_id: number
+  indicator_code: string
+  indicator_name: string
+  frequency: string
+  unit: string
+  actual_value?: number | null
+  previous_value?: number | null
+  previous_revised: boolean
+  source_field: string
+  source_url: string
+  provider_updated_at?: string | null
+  fetched_at: string
+}
+
+export interface MacroRelease {
+  id: number
+  provider: string
+  category: string
+  title: string
+  reference_period: string
+  release_stage: string
+  status: 'scheduled' | 'published' | string
+  scheduled_at?: string | null
+  published_at?: string | null
+  source_url: string
+  fetched_at: string
+  last_error?: string
+  observations: MacroObservation[]
 }

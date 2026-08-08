@@ -3,16 +3,17 @@ package model
 import "time"
 
 type SyncRun struct {
-	ID             uint       `gorm:"primaryKey" json:"id"`
-	StartedAt      time.Time  `gorm:"index" json:"started_at"`
-	FinishedAt     *time.Time `json:"finished_at"`
-	Status         string     `gorm:"size:32;not null;index" json:"status"`
-	Trigger        string     `gorm:"size:32;not null;index" json:"trigger"`
-	TargetsChecked int        `json:"targets_checked"`
-	NewFilings     int        `json:"new_filings"`
-	FailedTargets  int        `json:"failed_targets"`
-	ErrorMessage   string     `gorm:"type:text" json:"error_message"`
-	WarningMessage string     `gorm:"type:text" json:"warning_message,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	StartedAt       time.Time  `gorm:"index" json:"started_at"`
+	FinishedAt      *time.Time `json:"finished_at"`
+	Status          string     `gorm:"size:32;not null;index" json:"status"`
+	Trigger         string     `gorm:"size:32;not null;index" json:"trigger"`
+	TargetsChecked  int        `json:"targets_checked"`
+	NewFilings      int        `json:"new_filings"`
+	FailedTargets   int        `json:"failed_targets"`
+	DeferredTargets int        `json:"deferred_targets"`
+	ErrorMessage    string     `gorm:"type:text" json:"error_message"`
+	WarningMessage  string     `gorm:"type:text" json:"warning_message,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }

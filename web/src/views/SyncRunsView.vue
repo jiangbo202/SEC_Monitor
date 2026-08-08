@@ -13,6 +13,7 @@
           <el-option label="Success" value="success" />
           <el-option label="Partial" value="partial" />
           <el-option label="Failed" value="failed" />
+          <el-option :label="t('status.deferred')" value="deferred" />
           <el-option label="Running" value="running" />
         </el-select>
       </el-form-item>
@@ -29,6 +30,13 @@
               </template>
             </el-table-column>
             <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" align="right" />
+            <el-table-column :label="t('pages.syncRuns.failureKind')" width="135">
+              <template #default="{ row: detail }">{{ failureKindLabel(detail.failure_kind) }}</template>
+            </el-table-column>
+            <el-table-column prop="attempt_count" :label="t('pages.syncRuns.attempts')" width="80" align="right" />
+            <el-table-column :label="t('pages.syncRuns.nextRetryAt')" width="170">
+              <template #default="{ row: detail }">{{ formatDateTime(detail.next_retry_at) }}</template>
+            </el-table-column>
             <el-table-column prop="duration_ms" :label="t('common.duration')" width="100">
               <template #default="{ row: detail }">{{ formatDuration(detail.duration_ms) }}</template>
             </el-table-column>
@@ -39,7 +47,7 @@
             <el-table-column :label="t('common.actions')" width="150">
               <template #default="{ row: detail }">
                 <el-button
-                  v-if="detail.status === 'failed'"
+                  v-if="detail.status === 'failed' || detail.status === 'deferred'"
                   size="small"
                   type="primary"
                   :loading="retryingTargetId === detail.target_id"
@@ -48,7 +56,7 @@
                   {{ t('common.retry') }}
                 </el-button>
                 <el-button v-else size="small" @click="$router.push(`/targets?ticker=${encodeURIComponent(detail.ticker)}`)">{{ t('common.target') }}</el-button>
-                <el-dropdown v-if="detail.status === 'failed'" trigger="click" @command="(command: string) => handleDetailCommand(command, detail)">
+                <el-dropdown v-if="detail.status === 'failed' || detail.status === 'deferred'" trigger="click" @command="(command: string) => handleDetailCommand(command, detail)">
                   <el-button size="small" :icon="MoreFilled" />
                   <template #dropdown>
                     <el-dropdown-menu>
@@ -80,6 +88,7 @@
       <el-table-column prop="targets_checked" :label="t('common.target')" width="80" align="right" />
       <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" align="right" />
       <el-table-column prop="failed_targets" :label="t('status.failed')" width="80" align="right" />
+      <el-table-column prop="deferred_targets" :label="t('status.deferred')" width="80" align="right" />
       <el-table-column prop="warning_message" :label="t('pages.syncRuns.warning')" min-width="200" show-overflow-tooltip />
       <el-table-column prop="error_message" :label="t('common.error')" min-width="220" />
     </el-table>
@@ -109,7 +118,7 @@ const currentRun = ref<SyncRun | null>(null)
 
 const selectedRunFailedDetails = computed(() => {
   if (!currentRun.value) return []
-  return (details.value[currentRun.value.id] || []).filter((item) => item.status === 'failed')
+  return (details.value[currentRun.value.id] || []).filter((item) => item.status === 'failed' || item.status === 'deferred')
 })
 
 function formatDateTime(value?: string | null) {
@@ -154,6 +163,7 @@ function formatDuration(value: number) {
 function syncStatusType(status?: string) {
   if (status === 'success') return 'success'
   if (status === 'partial') return 'warning'
+  if (status === 'deferred') return 'warning'
   if (status === 'failed') return 'danger'
   return 'info'
 }
@@ -161,9 +171,17 @@ function syncStatusType(status?: string) {
 function syncStatusLabel(status?: string) {
   if (status === 'success') return t('status.success')
   if (status === 'partial') return t('status.partial')
+  if (status === 'deferred') return t('status.deferred')
   if (status === 'failed') return t('status.failed')
   if (status === 'running') return t('status.running')
   return '-'
+}
+
+function failureKindLabel(kind?: string) {
+  if (!kind) return '-'
+  const key = `pages.syncRuns.failureKinds.${kind}`
+  const translated = t(key)
+  return translated === key ? kind : translated
 }
 
 function triggerLabel(trigger?: string) {

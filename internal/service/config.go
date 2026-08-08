@@ -77,6 +77,15 @@ type CandidateNotificationSettings struct {
 	MinReviewPriorityScore int    `json:"min_review_priority_score"`
 }
 
+type TradeSetupNotificationSettings struct {
+	Enabled           bool `json:"enabled"`
+	ShadowMode        bool `json:"shadow_mode"`
+	NotifyEntry       bool `json:"notify_entry"`
+	NotifyExit        bool `json:"notify_exit"`
+	NotifyInvalidated bool `json:"notify_invalidated"`
+	MaxPerRun         int  `json:"max_per_run"`
+}
+
 type SocialHeatSettings struct {
 	Enabled       bool
 	Provider      string
@@ -87,10 +96,13 @@ type SocialHeatSettings struct {
 const maskedSecretMarker = "******"
 
 var sensitiveConfigKeys = map[string]struct{}{
-	"telegram.bot_token":            {},
-	"discovery.tiingo_api_token":    {},
-	"discovery.tiingo_api_tokens":   {},
-	"discovery.twelve_data_api_key": {},
+	"telegram.bot_token":                {},
+	"discovery.tiingo_api_token":        {},
+	"discovery.tiingo_api_tokens":       {},
+	"discovery.twelve_data_api_key":     {},
+	"discovery.longbridge_app_key":      {},
+	"discovery.longbridge_app_secret":   {},
+	"discovery.longbridge_access_token": {},
 }
 
 func NewConfigService(db *gorm.DB, audit *AuditService, system ...config.SystemConfig) *ConfigService {
@@ -201,11 +213,19 @@ func sanitizeStoredNotificationErrors(tx *gorm.DB) error {
 
 func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 	return s.UpsertMissing(ctx, []ConfigInput{
+		{Key: "sec.user_agent", Value: "", ValueType: "string", Category: "sec"},
 		{Key: "sec.initial_fetch_days", Value: "30", ValueType: "int", Category: "sec"},
 		{Key: "sec.sync_window_days", Value: "30", ValueType: "int", Category: "sec"},
 		{Key: "sec.max_fetch_count", Value: "300", ValueType: "int", Category: "sec"},
 		{Key: "sec.fetch_full_history", Value: "false", ValueType: "bool", Category: "sec"},
 		{Key: "system.data_retention_days", Value: "30", ValueType: "int", Category: "system"},
+		// Operational history is separate from filing retention. It may be
+		// pruned safely because it contains run diagnostics only, never filings
+		// or published small-cap research output.
+		{Key: "system.operation_history_retention_days", Value: "90", ValueType: "int", Category: "system"},
+		{Key: "system.backup_retention_days", Value: "7", ValueType: "int", Category: "system"},
+		{Key: "system.backup_dir", Value: "", ValueType: "string", Category: "system"},
+		{Key: "system.storage_warning_pct", Value: "80", ValueType: "int", Category: "system"},
 		{Key: "system.storage_by_day", Value: "false", ValueType: "bool", Category: "system"},
 		{Key: "scheduler.timezone", Value: "UTC", ValueType: "string", Category: "scheduler"},
 		{Key: "ui.default_locale", Value: "zh-CN", ValueType: "string", Category: "ui"},
@@ -235,6 +255,12 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "candidate_notification.max_per_grade", Value: "5", ValueType: "int", Category: "candidate_notification"},
 		{Key: "candidate_notification.actionable_only", Value: "true", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.min_review_priority_score", Value: "0", ValueType: "int", Category: "candidate_notification"},
+		{Key: "trade_setup_notification.enabled", Value: "false", ValueType: "bool", Category: "trade_setup_notification"},
+		{Key: "trade_setup_notification.shadow_mode", Value: "false", ValueType: "bool", Category: "trade_setup_notification"},
+		{Key: "trade_setup_notification.notify_entry", Value: "true", ValueType: "bool", Category: "trade_setup_notification"},
+		{Key: "trade_setup_notification.notify_exit", Value: "true", ValueType: "bool", Category: "trade_setup_notification"},
+		{Key: "trade_setup_notification.notify_invalidated", Value: "true", ValueType: "bool", Category: "trade_setup_notification"},
+		{Key: "trade_setup_notification.max_per_run", Value: "10", ValueType: "int", Category: "trade_setup_notification"},
 		{Key: "discovery.price_provider", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.stooq_urls", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.tiingo_api_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
@@ -247,12 +273,30 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "discovery.twelve_data_request_interval_ms", Value: "8000", ValueType: "int", Category: "discovery"},
 		{Key: "discovery.yahoo_base_url", Value: "https://query1.finance.yahoo.com", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.yahoo_request_budget", Value: "45", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.longbridge_app_key", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.longbridge_app_secret", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.longbridge_access_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.longbridge_company_profile_enabled", Value: "true", ValueType: "bool", Category: "discovery"},
+		{Key: "discovery.longbridge_company_profile_request_budget", Value: "20", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.longbridge_company_profile_ttl_days", Value: "30", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.longbridge_analyst_rating_enabled", Value: "true", ValueType: "bool", Category: "discovery"},
+		{Key: "discovery.longbridge_analyst_rating_request_budget", Value: "20", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.longbridge_analyst_rating_target_change_pct", Value: "5", ValueType: "float", Category: "discovery"},
+		{Key: "analyst_rating.notify_enabled", Value: "false", ValueType: "bool", Category: "analyst_rating"},
+		// 财报预告只使用 Longbridge 的公开市场日历/共识结果，并写入本地
+		// 缓存。默认关闭推送，避免首次同步把已有监控标的一次性发送给用户。
+		{Key: "earnings_preview.enabled", Value: "true", ValueType: "bool", Category: "earnings_preview"},
+		{Key: "earnings_preview.lookahead_days", Value: "90", ValueType: "int", Category: "earnings_preview"},
+		{Key: "earnings_preview.max_calendar_pages", Value: "20", ValueType: "int", Category: "earnings_preview"},
+		{Key: "earnings_preview.notify_enabled", Value: "false", ValueType: "bool", Category: "earnings_preview"},
+		{Key: "earnings_preview.reminder_days", Value: "7,3,1,0", ValueType: "string", Category: "earnings_preview"},
 		{Key: "discovery.min_publish_coverage_pct", Value: "85", ValueType: "float", Category: "discovery"},
 		{Key: "discovery.research_mode", Value: "true", ValueType: "bool", Category: "discovery"},
 		{Key: "discovery.auto_technical_history_warmup", Value: "true", ValueType: "bool", Category: "discovery"},
 		{Key: "discovery.task_timeout_minutes", Value: "60", ValueType: "int", Category: "discovery"},
 		{Key: "discovery.download_idle_timeout_seconds", Value: "90", ValueType: "int", Category: "discovery"},
 		{Key: "discovery.sec_bulk_cache_ttl_hours", Value: "12", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.cache_retention_days", Value: "14", ValueType: "int", Category: "discovery"},
 		{Key: "social_heat.enabled", Value: "false", ValueType: "bool", Category: "social_heat"},
 		{Key: "social_heat.provider", Value: "manual", ValueType: "string", Category: "social_heat"},
 		{Key: "social_heat.lookback_hours", Value: "24", ValueType: "int", Category: "social_heat"},
@@ -678,6 +722,41 @@ func (s *ConfigService) CandidateNotificationSettings(ctx context.Context) (Cand
 	}, nil
 }
 
+func (s *ConfigService) TradeSetupNotificationSettings(ctx context.Context) (TradeSetupNotificationSettings, error) {
+	keys := []string{
+		"trade_setup_notification.enabled",
+		"trade_setup_notification.shadow_mode",
+		"trade_setup_notification.notify_entry",
+		"trade_setup_notification.notify_exit",
+		"trade_setup_notification.notify_invalidated",
+		"trade_setup_notification.max_per_run",
+	}
+	values := make(map[string]string, len(keys))
+	for _, key := range keys {
+		value, _, err := s.GetValue(ctx, key)
+		if err != nil {
+			return TradeSetupNotificationSettings{}, err
+		}
+		values[key] = value
+	}
+	maxPerRun, _ := strconv.Atoi(values["trade_setup_notification.max_per_run"])
+	if maxPerRun <= 0 {
+		maxPerRun = 10
+	}
+	if maxPerRun > 50 {
+		maxPerRun = 50
+	}
+	enabled, _ := strconv.ParseBool(values["trade_setup_notification.enabled"])
+	shadow, _ := strconv.ParseBool(values["trade_setup_notification.shadow_mode"])
+	notifyEntry, _ := strconv.ParseBool(values["trade_setup_notification.notify_entry"])
+	notifyExit, _ := strconv.ParseBool(values["trade_setup_notification.notify_exit"])
+	notifyInvalidated, _ := strconv.ParseBool(values["trade_setup_notification.notify_invalidated"])
+	return TradeSetupNotificationSettings{
+		Enabled: enabled, ShadowMode: shadow, NotifyEntry: notifyEntry, NotifyExit: notifyExit,
+		NotifyInvalidated: notifyInvalidated, MaxPerRun: maxPerRun,
+	}, nil
+}
+
 func (s *ConfigService) SocialHeatSettings(ctx context.Context) (SocialHeatSettings, error) {
 	enabledRaw, _, err := s.GetValue(ctx, "social_heat.enabled")
 	if err != nil {
@@ -788,6 +867,63 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 			cfg.YahooRequestBudget = parsed
 		}
 	}
+	if appKey, ok, err := s.GetValue(ctx, "discovery.longbridge_app_key"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(appKey) != "" && !IsMaskedSecret(appKey) {
+		cfg.LongbridgeAppKey = strings.TrimSpace(appKey)
+	}
+	if appSecret, ok, err := s.GetValue(ctx, "discovery.longbridge_app_secret"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(appSecret) != "" && !IsMaskedSecret(appSecret) {
+		cfg.LongbridgeAppSecret = strings.TrimSpace(appSecret)
+	}
+	if accessToken, ok, err := s.GetValue(ctx, "discovery.longbridge_access_token"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(accessToken) != "" && !IsMaskedSecret(accessToken) {
+		cfg.LongbridgeAccessToken = strings.TrimSpace(accessToken)
+	}
+	if enabled, ok, err := s.GetValue(ctx, "discovery.longbridge_company_profile_enabled"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(enabled) != "" {
+		if parsed, parseErr := strconv.ParseBool(strings.TrimSpace(enabled)); parseErr == nil {
+			cfg.LongbridgeCompanyProfileEnabled = parsed
+		}
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.longbridge_company_profile_request_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget)); parseErr == nil && parsed >= 0 {
+			cfg.LongbridgeCompanyProfileRequestBudget = parsed
+		}
+	}
+	if ttlDays, ok, err := s.GetValue(ctx, "discovery.longbridge_company_profile_ttl_days"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(ttlDays) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(ttlDays)); parseErr == nil && parsed > 0 {
+			cfg.LongbridgeCompanyProfileTTLDays = parsed
+		}
+	}
+	if enabled, ok, err := s.GetValue(ctx, "discovery.longbridge_analyst_rating_enabled"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(enabled) != "" {
+		if parsed, parseErr := strconv.ParseBool(strings.TrimSpace(enabled)); parseErr == nil {
+			cfg.LongbridgeAnalystRatingEnabled = parsed
+		}
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.longbridge_analyst_rating_request_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget)); parseErr == nil && parsed >= 0 {
+			cfg.LongbridgeAnalystRatingRequestBudget = parsed
+		}
+	}
+	if threshold, ok, err := s.GetValue(ctx, "discovery.longbridge_analyst_rating_target_change_pct"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(threshold) != "" {
+		if parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(threshold), 64); parseErr == nil && parsed >= 0 {
+			cfg.LongbridgeAnalystRatingTargetChangePct = parsed
+		}
+	}
 	if coverage, ok, err := s.GetValue(ctx, "discovery.min_publish_coverage_pct"); err != nil {
 		return cfg, err
 	} else if ok && strings.TrimSpace(coverage) != "" {
@@ -831,6 +967,14 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 	} else if ok && strings.TrimSpace(value) != "" {
 		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && parsed > 0 {
 			cfg.SECBulkCacheTTLHours = parsed
+		}
+	}
+	if value, ok, err := s.GetValue(ctx, "discovery.cache_retention_days"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(value) != "" {
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(value))
+		if parseErr == nil && parsed > 0 {
+			cfg.CacheRetentionDays = parsed
 		}
 	}
 	return cfg, nil

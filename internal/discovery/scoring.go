@@ -10,7 +10,7 @@ const (
 	CandidateGradeExcluded = "excluded"
 )
 
-const DiscoveryScoringVersion = "small-cap-discovery-score-v1"
+const DiscoveryScoringVersion = "small-cap-discovery-score-v2-biotech-calibrated"
 
 const (
 	CandidateAMarketCapMaxExclusiveUSD = int64(500_000_000)
@@ -65,6 +65,7 @@ type DiscoveryScoreInput struct {
 	Risks          []CapitalRiskSnapshot
 	GrossMarginPct float64
 	SectorScore    int
+	BusinessModel  CandidateBusinessModelEvidence
 	AsOf           time.Time
 }
 
@@ -91,6 +92,8 @@ type DiscoveryScore struct {
 	ActiveBlocksB          bool
 	ReasonCode             string
 	ScoringVersion         string
+	BusinessModelAtScore   string
+	RevenueScoreCapReason  string
 }
 
 func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
@@ -106,7 +109,8 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 		SecurityID: input.SecurityID, Ticker: input.Ticker, MarketCapUSD: input.MarketCapUSD,
 		RevenueGrowthPct: growth, CashRunwayMonths: input.Financial.CashRunwayMonths,
 		RecentQualifiedInsider: recentInsider, ActiveBlocksA: blocksA, ActiveBlocksB: blocksB,
-		ScoringVersion: DiscoveryScoringVersion,
+		ScoringVersion: DiscoveryScoringVersion, BusinessModelAtScore: input.BusinessModel.Model,
+		RevenueScoreCapReason: input.BusinessModel.RevenueScoreCapReason,
 	}
 	if growthAvailable {
 		switch {
@@ -117,6 +121,9 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 		case growth > 0:
 			score.RevenueGrowthScore = 10
 		}
+	}
+	if input.BusinessModel.RevenueScoreCap > 0 && score.RevenueGrowthScore > input.BusinessModel.RevenueScoreCap {
+		score.RevenueGrowthScore = input.BusinessModel.RevenueScoreCap
 	}
 	if input.Financial.RunwayAvailable {
 		switch {
@@ -144,7 +151,10 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 	}
 	score.TotalScore = score.RevenueGrowthScore + score.CashRunwayScore + score.InsiderScore + score.GrossMarginScore + score.DilutionRiskScore + score.SectorScore
 
-	score.EligibleA = input.MarketCapUSD >= MinimumSmallCapUSD && input.MarketCapUSD < CandidateAMarketCapMaxExclusiveUSD &&
+	modelAllowsA := input.BusinessModel.Model != CandidateBusinessModelClinicalPreRevenue &&
+		!(input.BusinessModel.Model == CandidateBusinessModelMixedOrLicensing && !input.BusinessModel.RevenueRepeatableConfirmed) &&
+		input.BusinessModel.Model != CandidateBusinessModelUnknown
+	score.EligibleA = modelAllowsA && input.MarketCapUSD >= MinimumSmallCapUSD && input.MarketCapUSD < CandidateAMarketCapMaxExclusiveUSD &&
 		growthAvailable && growth > CandidateARevenueGrowthMinPct &&
 		input.Financial.RunwayAvailable && input.Financial.CashRunwayMonths >= CandidateARunwayMinMonths &&
 		recentInsider && !blocksA && !blocksB
@@ -187,7 +197,8 @@ func CandidateScoreToSnapshot(batchID string, score DiscoveryScore, now time.Tim
 		RevenueGrowthPct: score.RevenueGrowthPct, CashRunwayMonths: score.CashRunwayMonths,
 		RecentQualifiedInsider: score.RecentQualifiedInsider, ActiveBlocksA: score.ActiveBlocksA,
 		ActiveBlocksB: score.ActiveBlocksB, ReasonCode: score.ReasonCode,
-		ScoringVersion: score.ScoringVersion, CreatedAt: now,
+		ScoringVersion: score.ScoringVersion, BusinessModelAtScore: score.BusinessModelAtScore,
+		RevenueScoreCapReason: score.RevenueScoreCapReason, CreatedAt: now,
 	}
 }
 

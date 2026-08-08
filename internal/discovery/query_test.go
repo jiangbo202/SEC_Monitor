@@ -2,10 +2,40 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestPagedResponsesExposeDistinctPageAndPageSizeFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "universe", value: UniversePage{Page: 2, PageSize: 25}},
+		{name: "candidate_scores", value: CandidateScorePage{Page: 2, PageSize: 25}},
+		{name: "batches", value: BatchPage{Page: 2, PageSize: 25}},
+		{name: "provider_runs", value: ProviderRunPage{Page: 2, PageSize: 25}},
+		{name: "candidate_watches", value: CandidateWatchPage{Page: 2, PageSize: 25}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["page"] != float64(2) || payload["page_size"] != float64(25) {
+				t.Fatalf("payload=%s, want page=2 and page_size=25", encoded)
+			}
+		})
+	}
+}
 
 func TestUniverseQueryReadsOnlyCurrentPublishedBatch(t *testing.T) {
 	db := openMigratedTestDatabase(t)
@@ -291,6 +321,46 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	}
 	if recommended.Total != 1 || recommended.Items[0].Ticker != "STRB" {
 		t.Fatalf("recommended candidates = %#v", recommended)
+	}
+}
+
+func TestSortCandidateScoreResultsDefaultsToVisibleTotalScore(t *testing.T) {
+	items := []CandidateScoreResult{
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "LOW", Grade: CandidateGradeB, TotalScore: 70, MarketCapUSD: 100_000_000}, ReviewPriorityScore: 99},
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "BA", Grade: CandidateGradeB, TotalScore: 90, MarketCapUSD: 200_000_000}, ReviewPriorityScore: 10},
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "AA", Grade: CandidateGradeA, TotalScore: 90, MarketCapUSD: 300_000_000}, ReviewPriorityScore: 1},
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "AB", Grade: CandidateGradeA, TotalScore: 90, MarketCapUSD: 400_000_000}, ReviewPriorityScore: 100},
+	}
+
+	sortCandidateScoreResults(items, "", "")
+	got := []string{items[0].Ticker, items[1].Ticker, items[2].Ticker, items[3].Ticker}
+	want := []string{"AA", "AB", "BA", "LOW"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("default candidate order = %#v, want %#v", got, want)
+	}
+}
+
+func TestFilterCandidateScoreResultsExcludesResearchReadiness(t *testing.T) {
+	items := []CandidateScoreResult{
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "READY"}, ResearchReadiness: CandidateResearchReadiness{Status: CandidateResearchReadinessReady}},
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "REVIEW"}, ResearchReadiness: CandidateResearchReadiness{Status: CandidateResearchReadinessResearchOnly}},
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "BLOCK"}, ResearchReadiness: CandidateResearchReadiness{Status: CandidateResearchReadinessBlocked}},
+	}
+	filtered := filterCandidateScoreResults(items, CandidateScoreQuery{ExcludeResearchReadiness: []string{CandidateResearchReadinessBlocked}})
+	if len(filtered) != 2 || filtered[0].Ticker != "READY" || filtered[1].Ticker != "REVIEW" {
+		t.Fatalf("filtered candidates = %#v", filtered)
+	}
+}
+
+func TestFilterCandidateScoreResultsByPriceFreshness(t *testing.T) {
+	items := []CandidateScoreResult{
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "CURRENT"}, PriceFreshnessStatus: PriceFreshnessCurrent},
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "STALE"}, PriceFreshnessStatus: PriceFreshnessStale},
+		{CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "MISSING"}, PriceFreshnessStatus: PriceFreshnessMissing},
+	}
+	filtered := filterCandidateScoreResults(items, CandidateScoreQuery{PriceFreshnessStatuses: []string{PriceFreshnessStale, PriceFreshnessMissing}})
+	if len(filtered) != 2 || filtered[0].Ticker != "STALE" || filtered[1].Ticker != "MISSING" {
+		t.Fatalf("filtered candidates = %#v", filtered)
 	}
 }
 
@@ -636,12 +706,19 @@ func TestCandidateWatchLifecycle(t *testing.T) {
 	if watch.Ticker != "WCH" || watch.SecurityID != security.ID || watch.CIK != security.CIK || watch.CompanyName != security.CompanyName || watch.Status != "active" || watch.SourceBatchID != batch.BatchID {
 		t.Fatalf("watch = %#v", watch)
 	}
+	if watch.BaselineCapturedAt == nil || watch.BaselineBatchID != batch.BatchID || watch.BaselineJSON == "" {
+		t.Fatalf("watch baseline was not captured = %#v", watch)
+	}
+	originalBaseline := watch.BaselineJSON
 	watch, err = UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "WCH", Note: "updated"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if watch.Note != "updated" {
 		t.Fatalf("updated watch = %#v", watch)
+	}
+	if watch.BaselineJSON != originalBaseline {
+		t.Fatalf("ordinary watch update must retain original baseline: %#v", watch)
 	}
 	page, err := ListCandidateWatches(context.Background(), db, CandidateWatchQuery{Page: 1, PageSize: 10})
 	if err != nil {
@@ -652,6 +729,13 @@ func TestCandidateWatchLifecycle(t *testing.T) {
 	}
 	if page.Items[0].LatestScore == nil || page.Items[0].LatestScore.TotalScore != 72 || page.Items[0].LatestScore.QualityTier == "" {
 		t.Fatalf("latest score not attached = %#v", page.Items[0])
+	}
+	if page.Items[0].Baseline == nil || page.Items[0].Current == nil || page.Items[0].Baseline.TotalScore != 72 || page.Items[0].Current.TotalScore != 72 {
+		t.Fatalf("watch comparison = %#v", page.Items[0])
+	}
+	candidates, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{Page: 1, PageSize: 10, FollowedOnly: true})
+	if err != nil || candidates.Total != 1 || len(candidates.Items) != 1 || !candidates.Items[0].Followed || candidates.Items[0].Ticker != "WCH" {
+		t.Fatalf("followed candidates=%#v err=%v", candidates, err)
 	}
 	watch, err = UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "WCH", Note: "paused", Status: CandidateWatchStatusArchived})
 	if err != nil {
@@ -681,20 +765,119 @@ func TestCandidateWatchLifecycle(t *testing.T) {
 	}
 }
 
+func TestCandidateWatchMetricComparisonsRetainBaselineAndCalculateChanges(t *testing.T) {
+	capturedAt := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	baseline := CandidateWatchMetricSnapshot{
+		BatchID: "baseline", CapturedAt: capturedAt, PriceCloseUSD: 10, PriceVolume: 1_000,
+		MarketCapUSD: 100_000_000, TotalScore: 60, RevenueGrowthPct: 30, CashRunwayMonths: 12,
+	}
+	encoded, err := json.Marshal(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []CandidateWatchResult{{
+		CandidateWatch: CandidateWatch{Ticker: "CMP", BaselineJSON: string(encoded)},
+		LatestScore: &CandidateScoreResult{CandidateScoreSnapshot: CandidateScoreSnapshot{
+			BatchID: "current", Ticker: "CMP", MarketCapUSD: 120_000_000,
+			TotalScore: 68, RevenueGrowthPct: 42, CashRunwayMonths: 10,
+		}, PriceCloseUSD: 12, PriceVolume: 1_500},
+	}}
+	attachCandidateWatchMetricComparisons(items)
+	item := items[0]
+	if item.Baseline == nil || item.Current == nil || item.MetricChanges.PriceChangePct == nil || *item.MetricChanges.PriceChangePct != 20 {
+		t.Fatalf("price comparison = %#v", item)
+	}
+	if item.MetricChanges.MarketCapChangePct == nil || *item.MetricChanges.MarketCapChangePct != 20 || item.MetricChanges.ScoreChange == nil || *item.MetricChanges.ScoreChange != 8 {
+		t.Fatalf("metric changes = %#v", item.MetricChanges)
+	}
+	if item.MetricChanges.RevenueGrowthChangePct == nil || *item.MetricChanges.RevenueGrowthChangePct != 12 || item.MetricChanges.CashRunwayChangeMonths == nil || *item.MetricChanges.CashRunwayChangeMonths != -2 {
+		t.Fatalf("fundamental changes = %#v", item.MetricChanges)
+	}
+}
+
+func TestListCandidateReviewQueueUsesConfiguredCalendarAndKeepsExitedWatches(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0000006411", CompanyName: "Review Co", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := UniverseBatch{BatchID: "review-queue-market", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now()}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "TODAY", Grade: CandidateGradeB, EligibleB: true, TotalScore: 74, MarketCapUSD: 160_000_000}).Error; err != nil {
+		t.Fatal(err)
+	}
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, shanghai)
+	due := func(days int) *time.Time {
+		value := time.Date(2026, 7, 28+days, 0, 0, 0, 0, time.UTC)
+		return &value
+	}
+	watches := []CandidateWatch{
+		{Ticker: "OVERDUE", Status: CandidateWatchStatusActive, ResearchStatus: CandidateResearchStatusResearching, NextReviewAt: due(-2)},
+		{Ticker: "TODAY", SecurityID: security.ID, Status: CandidateWatchStatusActive, ResearchStatus: CandidateResearchStatusConviction, NextReviewAt: due(0)},
+		{Ticker: "UPCOMING", Status: CandidateWatchStatusActive, ResearchStatus: CandidateResearchStatusInbox, NextReviewAt: due(7)},
+		{Ticker: "TOO-FAR", Status: CandidateWatchStatusActive, ResearchStatus: CandidateResearchStatusInbox, NextReviewAt: due(8)},
+		{Ticker: "ARCHIVED", Status: CandidateWatchStatusArchived, ResearchStatus: CandidateResearchStatusInbox, NextReviewAt: due(0)},
+	}
+	if err := db.Create(&watches).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	queue, err := ListCandidateReviewQueue(context.Background(), db, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queue.AsOf != "2026-07-28" || queue.OverdueCount != 1 || queue.DueTodayCount != 1 || queue.UpcomingCount != 1 || len(queue.Items) != 3 {
+		t.Fatalf("queue = %#v", queue)
+	}
+	if queue.Items[0].Ticker != "OVERDUE" || queue.Items[0].ReviewState != "overdue" || queue.Items[0].DaysUntilReview != -2 {
+		t.Fatalf("overdue item = %#v", queue.Items[0])
+	}
+	if queue.Items[1].Ticker != "TODAY" || queue.Items[1].ReviewState != "due_today" || !queue.Items[1].CurrentCandidate || queue.Items[1].LatestScore == nil {
+		t.Fatalf("today item = %#v", queue.Items[1])
+	}
+	if queue.Items[2].Ticker != "UPCOMING" || queue.Items[2].ReviewState != "upcoming" || queue.Items[2].DaysUntilReview != 7 || queue.Items[2].CurrentCandidate {
+		t.Fatalf("upcoming item = %#v", queue.Items[2])
+	}
+}
+
 func TestCandidateWatchResearchFieldsSupportPartialUpdates(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	thesis := "收入增长可持续"
 	risk := "现金消耗加快"
+	marketConcern := "市场担忧下一轮融资"
+	falsifiableJudgment := "若下一份 10-Q 显示现金 runway 仍超过 12 个月，则该担忧不成立"
+	catalyst := "下一次季度财报"
+	catalystSource := "https://www.sec.gov/edgar/browse/?CIK=RSCH"
+	catalystDate := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
 	nextReview := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
 	researching := CandidateResearchStatusResearching
 	watch, err := UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{
-		Ticker: "RSCH", ResearchStatus: &researching, Thesis: &thesis, RiskNotes: &risk, NextReviewAt: &nextReview,
+		Ticker: "RSCH", ResearchStatus: &researching, Thesis: &thesis, RiskNotes: &risk,
+		MarketConcern: &marketConcern, FalsifiableJudgment: &falsifiableJudgment,
+		Catalyst: &catalyst, CatalystSource: &catalystSource, CatalystDate: &catalystDate,
+		NextReviewAt: &nextReview,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if watch.ResearchStatus != researching || watch.Thesis != thesis || watch.RiskNotes != risk || watch.NextReviewAt == nil || !watch.NextReviewAt.Equal(nextReview) {
+	if watch.ResearchStatus != researching || watch.Thesis != thesis || watch.RiskNotes != risk ||
+		watch.MarketConcern != marketConcern || watch.FalsifiableJudgment != falsifiableJudgment ||
+		watch.Catalyst != catalyst || watch.CatalystSource != catalystSource || watch.CatalystDate == nil || !watch.CatalystDate.Equal(catalystDate) ||
+		watch.NextReviewAt == nil || !watch.NextReviewAt.Equal(nextReview) {
 		t.Fatalf("created research watch = %#v", watch)
+	}
+	var versionCount int64
+	if err := db.Model(&CandidateResearchMemoVersion{}).Where("ticker = ?", "RSCH").Count(&versionCount).Error; err != nil || versionCount != 1 {
+		t.Fatalf("initial memo versions=%d err=%v, want 1", versionCount, err)
 	}
 
 	conviction := CandidateResearchStatusConviction
@@ -702,8 +885,14 @@ func TestCandidateWatchResearchFieldsSupportPartialUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if watch.ResearchStatus != conviction || watch.Thesis != thesis || watch.RiskNotes != risk || watch.NextReviewAt == nil || !watch.NextReviewAt.Equal(nextReview) || watch.Note != "reviewed" {
+	if watch.ResearchStatus != conviction || watch.Thesis != thesis || watch.RiskNotes != risk ||
+		watch.MarketConcern != marketConcern || watch.FalsifiableJudgment != falsifiableJudgment ||
+		watch.Catalyst != catalyst || watch.CatalystSource != catalystSource || watch.CatalystDate == nil || !watch.CatalystDate.Equal(catalystDate) ||
+		watch.NextReviewAt == nil || !watch.NextReviewAt.Equal(nextReview) || watch.Note != "reviewed" {
 		t.Fatalf("partial update research watch = %#v", watch)
+	}
+	if err := db.Model(&CandidateResearchMemoVersion{}).Where("ticker = ?", "RSCH").Count(&versionCount).Error; err != nil || versionCount != 1 {
+		t.Fatalf("status-only change should not create memo version=%d err=%v", versionCount, err)
 	}
 
 	invalid := "unknown"
@@ -713,6 +902,17 @@ func TestCandidateWatchResearchFieldsSupportPartialUpdates(t *testing.T) {
 	watch, err = UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "RSCH", ClearNextReviewAt: true})
 	if err != nil || watch.NextReviewAt != nil {
 		t.Fatalf("clear review date watch=%#v err=%v", watch, err)
+	}
+	if err := db.Model(&CandidateResearchMemoVersion{}).Where("ticker = ?", "RSCH").Count(&versionCount).Error; err != nil || versionCount != 2 {
+		t.Fatalf("review clear should create memo version=%d err=%v", versionCount, err)
+	}
+	watch, err = UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "RSCH", ClearCatalystDate: true})
+	if err != nil || watch.CatalystDate != nil || watch.Catalyst != catalyst || watch.MarketConcern != marketConcern {
+		t.Fatalf("clear catalyst date watch=%#v err=%v", watch, err)
+	}
+	var latest CandidateResearchMemoVersion
+	if err := db.Where("ticker = ?", "RSCH").Order("version DESC").First(&latest).Error; err != nil || latest.Version != 3 || latest.CatalystDate != nil || latest.Author != "local_user" {
+		t.Fatalf("latest memo version=%#v err=%v", latest, err)
 	}
 }
 
@@ -831,6 +1031,14 @@ func TestCandidatePriceFreshnessUsesLatestCompletedNYSESession(t *testing.T) {
 			expected: "2026-07-06",
 			actual:   "2026-07-02",
 			now:      time.Date(2026, 7, 6, 10, 0, 0, 0, ny),
+			want:     PriceFreshnessCurrent,
+			wantAge:  0,
+		},
+		{
+			name:     "weekend batch keeps Friday close current",
+			expected: "2026-07-18",
+			actual:   "2026-07-17",
+			now:      time.Date(2026, 7, 19, 9, 43, 0, 0, ny),
 			want:     PriceFreshnessCurrent,
 			wantAge:  0,
 		},

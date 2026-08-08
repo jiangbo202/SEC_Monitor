@@ -39,6 +39,15 @@ type SECBulkSource struct {
 	CacheTTL                                   time.Duration
 }
 
+// SECTickerMappingSource is the lightweight SEC side of the daily listing
+// discovery pass.  Unlike SECBulkSource.Load, it deliberately downloads only
+// company_tickers_exchange.json and never touches submissions.zip.
+type SECTickerMappingSource struct{ Bulk SECBulkSource }
+
+func (s SECTickerMappingSource) Load(ctx context.Context) ([]SecuritySourceRecord, SourceVersion, error) {
+	return s.Bulk.LoadTickerMappings(ctx)
+}
+
 type tickerFile struct {
 	Fields []string            `json:"fields"`
 	Data   [][]json.RawMessage `json:"data"`
@@ -127,14 +136,15 @@ var secZIPName = regexp.MustCompile(`^CIK([0-9]{10})\.json$`)
 var secSubmissionZIPName = regexp.MustCompile(`^CIK([0-9]{10})(?:-submissions-[0-9]+)?\.json$`)
 
 type submission struct {
-	Name       string          `json:"name"`
-	CIK        json.RawMessage `json:"cik"`
-	EntityType string          `json:"entityType"`
-	SIC        string          `json:"sic"`
-	State      string          `json:"stateOfIncorporation"`
-	Tickers    []string        `json:"tickers"`
-	Exchanges  []string        `json:"exchanges"`
-	Filings    struct {
+	Name           string          `json:"name"`
+	CIK            json.RawMessage `json:"cik"`
+	EntityType     string          `json:"entityType"`
+	SIC            string          `json:"sic"`
+	SICDescription string          `json:"sicDescription"`
+	State          string          `json:"stateOfIncorporation"`
+	Tickers        []string        `json:"tickers"`
+	Exchanges      []string        `json:"exchanges"`
+	Filings        struct {
 		Recent recentFilings `json:"recent"`
 	} `json:"filings"`
 }
@@ -230,7 +240,7 @@ func ParseSECSubmissionsZIP(z *zip.Reader, limits ZIPParseLimits) (map[string]Se
 			}
 		}
 		name := strings.TrimSpace(s.Name)
-		rec := SecuritySourceRecord{CIK: cik, CompanyName: name, SecurityName: name, StateOfIncorporation: strings.TrimSpace(s.State)}
+		rec := SecuritySourceRecord{CIK: cik, CompanyName: name, SecurityName: name, SICDescription: strings.TrimSpace(s.SICDescription), StateOfIncorporation: strings.TrimSpace(s.State)}
 		if s.SIC != "" {
 			if strings.Trim(s.SIC, "0123456789") != "" {
 				return nil, fmt.Errorf("submission CIK %s invalid SIC", cik)
@@ -403,6 +413,100 @@ func normalizeCIK(raw json.RawMessage) (string, error) {
 	return fmt.Sprintf("%010d", v), nil
 }
 
+// ParseSECSubmissionJSON parses the per-issuer submissions endpoint used by
+// the daily listing discovery pass.  The validation mirrors the archive
+// parser: an issuer document must identify the CIK requested by the caller.
+func ParseSECSubmissionJSON(r io.Reader, expectedCIK string) (SecuritySourceRecord, error) {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	var s submission
+	if err := dec.Decode(&s); err != nil {
+		return SecuritySourceRecord{}, err
+	}
+	if err := requireJSONEOF(dec); err != nil {
+		return SecuritySourceRecord{}, err
+	}
+	cik, err := normalizeCIK(s.CIK)
+	if err != nil || cik != expectedCIK {
+		return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s does not match requested issuer", cik)
+	}
+	nforms := len(s.Filings.Recent.Form)
+	for name, col := range map[string][]string{"accessionNumber": s.Filings.Recent.AccessionNumber, "filingDate": s.Filings.Recent.FilingDate, "reportDate": s.Filings.Recent.ReportDate, "acceptanceDateTime": s.Filings.Recent.AcceptanceDate, "primaryDocument": s.Filings.Recent.PrimaryDocument, "items": s.Filings.Recent.Items} {
+		if s.Filings.Recent.present[name] && len(col) != nforms {
+			return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s recent %s length mismatch", cik, name)
+		}
+	}
+	record := SecuritySourceRecord{CIK: cik, CompanyName: strings.TrimSpace(s.Name), SecurityName: strings.TrimSpace(s.Name), SICDescription: strings.TrimSpace(s.SICDescription), StateOfIncorporation: strings.TrimSpace(s.State)}
+	if s.SIC != "" {
+		if strings.Trim(s.SIC, "0123456789") != "" {
+			return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s invalid SIC", cik)
+		}
+		record.SIC, err = strconv.Atoi(s.SIC)
+		if err != nil || record.SIC < 0 || record.SIC > 9999 {
+			return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s invalid SIC", cik)
+		}
+	}
+	forms := map[string]bool{}
+	var annualDate, businessCombinationDate time.Time
+	for i, form := range s.Filings.Recent.Form {
+		if !forms[form] {
+			forms[form] = true
+			record.RecentForms = append(record.RecentForms, form)
+		}
+		var filed time.Time
+		if len(s.Filings.Recent.FilingDate) > 0 {
+			filed, err = time.Parse("2006-01-02", s.Filings.Recent.FilingDate[i])
+			if err != nil {
+				return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s invalid filing date", cik)
+			}
+		}
+		if s.Filings.Recent.present["accessionNumber"] {
+			accession := strings.TrimSpace(s.Filings.Recent.AccessionNumber[i])
+			if accession == "" {
+				return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s empty accession number", cik)
+			}
+			metadata := FilingMetadata{CIK: cik, Accession: accession, Form: form, FiledAt: filed}
+			if s.Filings.Recent.present["items"] {
+				metadata.Items = strings.TrimSpace(s.Filings.Recent.Items[i])
+			}
+			if s.Filings.Recent.present["primaryDocument"] {
+				metadata.PrimaryDocument = strings.TrimSpace(s.Filings.Recent.PrimaryDocument[i])
+			}
+			if s.Filings.Recent.present["reportDate"] && s.Filings.Recent.ReportDate[i] != "" {
+				metadata.ReportAt, err = time.Parse("2006-01-02", s.Filings.Recent.ReportDate[i])
+				if err != nil {
+					return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s invalid report date", cik)
+				}
+			}
+			if s.Filings.Recent.present["acceptanceDateTime"] {
+				if !secAccessionNumber.MatchString(accession) {
+					return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s invalid accession number", cik)
+				}
+				metadata.AcceptedAt, err = time.Parse(time.RFC3339Nano, s.Filings.Recent.AcceptanceDate[i])
+				if err != nil {
+					return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s invalid acceptance date time", cik)
+				}
+			}
+			record.FilingMetadata = append(record.FilingMetadata, metadata)
+		} else if s.Filings.Recent.present["acceptanceDateTime"] {
+			return SecuritySourceRecord{}, fmt.Errorf("submission CIK %s acceptance date time requires accession number", cik)
+		}
+		if (form == "10-K" || form == "10-K/A" || form == "20-F" || form == "40-F") && (record.LatestAnnualForm == "" || filed.After(annualDate)) {
+			record.LatestAnnualForm, annualDate = form, filed
+		}
+		if (form == "8-K" || form == "8-K/A") && len(s.Filings.Recent.Items) > 0 && containsItem201(s.Filings.Recent.Items[i]) {
+			record.HasBusinessCombinationItem201 = true
+			if !filed.IsZero() && (businessCombinationDate.IsZero() || filed.After(businessCombinationDate)) {
+				businessCombinationDate = filed
+			}
+		}
+	}
+	if !businessCombinationDate.IsZero() {
+		record.BusinessCombinationCompletedAt = &businessCombinationDate
+	}
+	return record, nil
+}
+
 func ParseSECCompanyFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits ZIPParseLimits) ([]ShareFact, error) {
 	if err := validateParseLimits(limits); err != nil {
 		return nil, err
@@ -521,6 +625,66 @@ type companyFactsDocument struct {
 			CommonStockSharesOutstanding companyFactsConcept `json:"CommonStockSharesOutstanding"`
 		} `json:"us-gaap"`
 	} `json:"facts"`
+}
+
+// ParseSECCompanyFactsSharesJSON parses just the share-count concepts from an
+// issuer's compact Company Facts endpoint.  It is the small, on-demand
+// counterpart of ParseSECCompanyFactsZIP.
+func ParseSECCompanyFactsSharesJSON(r io.Reader, expectedCIK string) ([]ShareFact, error) {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	var doc companyFactsDocument
+	if err := dec.Decode(&doc); err != nil {
+		return nil, err
+	}
+	if err := requireJSONEOF(dec); err != nil {
+		return nil, err
+	}
+	cik, err := normalizeCIK(doc.CIK)
+	if err != nil || cik != expectedCIK {
+		return nil, fmt.Errorf("companyfacts CIK %s does not match requested issuer", cik)
+	}
+	seen := map[string]ShareFact{}
+	for _, spec := range []struct {
+		ns, concept string
+		data        companyFactsConcept
+	}{{"dei", "EntityCommonStockSharesOutstanding", doc.Facts.DEI.EntityCommonStockSharesOutstanding}, {"us-gaap", "CommonStockSharesOutstanding", doc.Facts.USGAAP.CommonStockSharesOutstanding}} {
+		for unit, facts := range spec.data.Units {
+			if unit != "shares" {
+				return nil, fmt.Errorf("companyfacts %s/%s:%s: invalid unit %q", cik, spec.ns, spec.concept, unit)
+			}
+			for _, item := range facts {
+				shares, err := parseShares(item.Val)
+				if err != nil {
+					continue
+				}
+				instant, err := time.Parse("2006-01-02", item.End)
+				if err != nil {
+					return nil, fmt.Errorf("companyfacts %s: invalid end date", cik)
+				}
+				filed, err := time.Parse("2006-01-02", item.Filed)
+				if err != nil {
+					return nil, fmt.Errorf("companyfacts %s: invalid filed date", cik)
+				}
+				key := cik + "|" + spec.ns + ":" + spec.concept + "|" + item.End + "|" + item.Accn
+				source := "https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik + ".json"
+				if item.Accn != "" {
+					source = "https://www.sec.gov/Archives/edgar/data/" + strings.TrimLeft(cik, "0") + "/" + strings.ReplaceAll(item.Accn, "-", "") + "/"
+				}
+				fact := ShareFact{CIK: cik, Concept: spec.ns + ":" + spec.concept, Unit: "shares", Form: item.Form, Accession: item.Accn, Instant: instant, FiledAt: filed, Shares: shares, SourceURL: source}
+				if old, ok := seen[key]; ok && old != fact {
+					return nil, fmt.Errorf("companyfacts %s conflicting duplicate fact", cik)
+				}
+				seen[key] = fact
+			}
+		}
+	}
+	result := make([]ShareFact, 0, len(seen))
+	for _, item := range seen {
+		result = append(result, item)
+	}
+	sortShareFacts(result)
+	return result, nil
 }
 
 func sortShareFacts(facts []ShareFact) {
@@ -682,6 +846,186 @@ func (s SECBulkSource) Load(ctx context.Context) ([]SecuritySourceRecord, Source
 	return mappings, bulkVersion("sec-bulk", a, b), nil
 }
 
+// LoadTickerMappings loads SEC's compact ticker/CIK directory.  It is used by
+// the daily discovery workflow to find newly listed issuers without pulling
+// the multi-gigabyte SEC archives used by weekly calibration.
+func (s SECBulkSource) LoadTickerMappings(ctx context.Context) ([]SecuritySourceRecord, SourceVersion, error) {
+	if err := s.validateDownloader(); err != nil {
+		return nil, SourceVersion{}, err
+	}
+	if strings.TrimSpace(s.TickerURL) == "" {
+		return nil, SourceVersion{}, fmt.Errorf("SEC ticker URL is required")
+	}
+	download, err := s.Downloader.DownloadWithCacheTTL(ctx, s.TickerURL, "company_tickers_exchange.json", nil, s.CacheTTL)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	file, err := os.Open(download.Path)
+	if err != nil {
+		return nil, SourceVersion{}, err
+	}
+	records, parseErr := ParseSECTickerExchange(file)
+	closeErr := file.Close()
+	if parseErr != nil {
+		return nil, SourceVersion{}, parseErr
+	}
+	if closeErr != nil {
+		return nil, SourceVersion{}, closeErr
+	}
+	return records, bulkVersion("sec-ticker-exchange", download), nil
+}
+
+// IncrementalIssuerData is the bounded SEC enrichment payload for newly
+// discovered issuers.  Per-issuer failures are warnings: a directory entry is
+// still useful for later retries and must not abort the whole daily run.
+type IncrementalIssuerData struct {
+	Records        []SecuritySourceRecord
+	Shares         []ShareFact
+	FinancialFacts []FinancialFact
+	Version        SourceVersion
+	Warnings       []string
+}
+
+// LoadIncrementalIssuerData fetches only the submissions and companyfacts JSON
+// documents for the supplied issuers.  This is intentionally independent of
+// submissions.zip/companyfacts.zip so a new IPO or listing can appear in the
+// daily candidate universe before the next weekly archive calibration.
+func (s SECBulkSource) LoadIncrementalIssuerData(ctx context.Context, records []SecuritySourceRecord) (IncrementalIssuerData, error) {
+	if err := s.validateDownloader(); err != nil {
+		return IncrementalIssuerData{}, err
+	}
+	result := IncrementalIssuerData{Records: make([]SecuritySourceRecord, 0, len(records))}
+	rows := append([]SecuritySourceRecord(nil), records...)
+	sort.Slice(rows, func(i, j int) bool { return canonicalLess(rows[i], rows[j]) })
+	hash := sha256.New()
+	// A common share and its attached warrants/rights legitimately share one
+	// issuer CIK. Fetch issuer-scoped SEC JSON once, then apply the parsed
+	// metadata to every listing record. Apart from reducing EDGAR traffic, this
+	// keeps an identity-repair run from downloading the same companyfacts file
+	// once for the common share and again for each attached security.
+	issuerByCIK := make(map[string]SecuritySourceRecord, len(rows))
+	for _, base := range rows {
+		if !validCIK(base.CIK) {
+			continue
+		}
+		cik := base.CIK
+		if issuer, exists := issuerByCIK[cik]; exists {
+			result.Records = append(result.Records, mergeIncrementalIssuerRecord(base, issuer))
+			continue
+		}
+		merged := base
+		issuerByCIK[cik] = merged
+		submissionsURL := "https://data.sec.gov/submissions/CIK" + cik + ".json"
+		// Daily listing discovery must remain cache-first. New issuer files are
+		// immutable enough within the configured SEC cache window, and retrying
+		// identity repairs should not re-fetch every issuer document again.
+		submissionDownload, err := s.Downloader.DownloadWithCacheTTL(ctx, submissionsURL, "submissions-incremental-"+cik+".json", nil, s.CacheTTL)
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s submissions: %v", base.Ticker, err))
+			result.Records = append(result.Records, merged)
+			continue
+		}
+		file, err := os.Open(submissionDownload.Path)
+		if err != nil {
+			return IncrementalIssuerData{}, err
+		}
+		submission, parseErr := ParseSECSubmissionJSON(file, cik)
+		closeErr := file.Close()
+		if parseErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s submissions parse: %v", base.Ticker, parseErr))
+		} else if closeErr != nil {
+			return IncrementalIssuerData{}, closeErr
+		} else {
+			issuerByCIK[cik] = submission
+			merged = mergeIncrementalIssuerRecord(base, submission)
+			io.WriteString(hash, cik+" submissions "+submissionDownload.SHA256+"\n")
+		}
+
+		factsURL := "https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik + ".json"
+		factsDownload, err := s.Downloader.DownloadWithCacheTTL(ctx, factsURL, "companyfacts-incremental-"+cik+".json", nil, s.CacheTTL)
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s companyfacts: %v", base.Ticker, err))
+			result.Records = append(result.Records, merged)
+			continue
+		}
+		file, err = os.Open(factsDownload.Path)
+		if err != nil {
+			return IncrementalIssuerData{}, err
+		}
+		financials, parseErr := ParseSECFinancialFactsJSON(file, cik)
+		closeErr = file.Close()
+		if parseErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s financial facts parse: %v", base.Ticker, parseErr))
+		} else if closeErr != nil {
+			return IncrementalIssuerData{}, closeErr
+		} else {
+			result.FinancialFacts = append(result.FinancialFacts, financials...)
+		}
+		file, err = os.Open(factsDownload.Path)
+		if err != nil {
+			return IncrementalIssuerData{}, err
+		}
+		shares, shareErr := ParseSECCompanyFactsSharesJSON(file, cik)
+		closeErr = file.Close()
+		if shareErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s share facts parse: %v", base.Ticker, shareErr))
+		} else if closeErr != nil {
+			return IncrementalIssuerData{}, closeErr
+		} else {
+			shares, enrichErr := EnrichShareFactsWithAcceptance(shares, merged.FilingMetadata)
+			if enrichErr != nil {
+				return IncrementalIssuerData{}, enrichErr
+			}
+			result.Shares = append(result.Shares, shares...)
+		}
+		io.WriteString(hash, cik+" companyfacts "+factsDownload.SHA256+"\n")
+		result.Records = append(result.Records, merged)
+	}
+	normalized, err := normalizeMetadataRecords(result.Records)
+	if err != nil {
+		return IncrementalIssuerData{}, err
+	}
+	result.Records = normalized
+	result.Shares, err = normalizeShareFacts(result.Shares)
+	if err != nil {
+		return IncrementalIssuerData{}, err
+	}
+	result.FinancialFacts, err = normalizeFinancialFacts(result.FinancialFacts)
+	if err != nil {
+		return IncrementalIssuerData{}, err
+	}
+	digest := hex.EncodeToString(hash.Sum(nil))
+	if digest == hex.EncodeToString(sha256.New().Sum(nil)) {
+		fallback, hashErr := hashCanonicalContent(result.Records)
+		if hashErr != nil {
+			return IncrementalIssuerData{}, hashErr
+		}
+		digest = fallback
+	}
+	result.Version = SourceVersion{Source: "sec-individual-new-listings", Version: digest + "+" + FinancialParserVersion, SHA256: digest, EffectiveAt: time.Now().UTC()}
+	return result, nil
+}
+
+func mergeIncrementalIssuerRecord(base, sec SecuritySourceRecord) SecuritySourceRecord {
+	result := sec
+	result.SourceKey = base.SourceKey
+	result.Ticker = base.Ticker
+	result.ProviderTicker = base.ProviderTicker
+	result.Exchange = base.Exchange
+	result.SecurityName = base.SecurityName
+	result.TestIssue = base.TestIssue
+	result.ETF = base.ETF
+	result.MappingStatus = base.MappingStatus
+	result.EvidenceJSON = base.EvidenceJSON
+	if result.CompanyName == "" {
+		result.CompanyName = base.CompanyName
+	}
+	if result.SecurityName == "" {
+		result.SecurityName = base.SecurityName
+	}
+	return result
+}
+
 // LoadLatestShares returns company facts enriched with SEC acceptance times.
 // Facts absent from submissions recent retain a zero acceptance time so the
 // point-in-time selector can fail closed only when such a fact is preferred.
@@ -752,6 +1096,49 @@ func (s SECBulkSource) LoadFinancialFacts(ctx context.Context, allowed map[strin
 	version := bulkVersion("sec-financialfacts", c)
 	version.Version = version.Version + "+" + FinancialParserVersion
 	return facts, version, nil
+}
+
+// LoadIncrementalFinancialFacts fetches only the affected issuers from the
+// SEC Company Facts API.  It deliberately bypasses the archive cache: a dirty
+// event represents a newly observed report and must not wait for the weekly
+// full-calibration archive refresh.
+func (s SECBulkSource) LoadIncrementalFinancialFacts(ctx context.Context, allowed map[string]struct{}) ([]FinancialFact, SourceVersion, error) {
+	if err := s.validateDownloader(); err != nil {
+		return nil, SourceVersion{}, err
+	}
+	ciks := make([]string, 0, len(allowed))
+	for cik := range allowed {
+		if validCIK(cik) {
+			ciks = append(ciks, cik)
+		}
+	}
+	sort.Strings(ciks)
+	all := make([]FinancialFact, 0)
+	h := sha256.New()
+	for _, cik := range ciks {
+		url := "https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik + ".json"
+		download, err := s.Downloader.Download(ctx, url, "companyfacts-incremental-"+cik+".json", nil)
+		if err != nil {
+			return nil, SourceVersion{}, fmt.Errorf("download companyfacts %s: %w", cik, err)
+		}
+		file, err := os.Open(download.Path)
+		if err != nil {
+			return nil, SourceVersion{}, err
+		}
+		facts, parseErr := ParseSECFinancialFactsJSON(file, cik)
+		closeErr := file.Close()
+		if parseErr != nil {
+			return nil, SourceVersion{}, fmt.Errorf("parse companyfacts %s: %w", cik, parseErr)
+		}
+		if closeErr != nil {
+			return nil, SourceVersion{}, closeErr
+		}
+		all = append(all, facts...)
+		io.WriteString(h, cik+"\n"+download.SHA256+"\n")
+	}
+	sortFinancialFacts(all)
+	digest := hex.EncodeToString(h.Sum(nil))
+	return all, SourceVersion{Source: "sec-companyfacts-incremental", Version: digest + "+" + FinancialParserVersion, SHA256: digest, EffectiveAt: time.Now().UTC()}, nil
 }
 
 func limitEntries(l ZIPParseLimits) int {

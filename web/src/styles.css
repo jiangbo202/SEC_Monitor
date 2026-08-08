@@ -334,6 +334,24 @@ h1 {
   align-items: flex-start;
 }
 
+.panel-heading-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.operational-metrics {
+  margin-bottom: 12px;
+}
+
+.operational-summary {
+  white-space: pre-line;
+  color: #5f6978;
+  line-height: 1.65;
+  margin: 8px 0 14px;
+}
+
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));

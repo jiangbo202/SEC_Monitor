@@ -45,7 +45,7 @@ func (c *HTTPClient) ListListedCompanies(ctx context.Context) ([]ListedCompany, 
 		return nil, err
 	}
 	c.setHeaders(req)
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.do(req, "listed companies")
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (c *HTTPClient) FetchFilingDocument(ctx context.Context, filingURL string) 
 		return "", err
 	}
 	c.setHeaders(req)
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.do(req, "filing document")
 	if err != nil {
 		return "", err
 	}

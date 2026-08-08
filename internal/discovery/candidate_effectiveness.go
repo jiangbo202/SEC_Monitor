@@ -15,6 +15,7 @@ type CandidateEffectivenessReport struct {
 	GeneratedAt        time.Time                      `json:"generated_at"`
 	BenchmarkTicker    string                         `json:"benchmark_ticker"`
 	BenchmarkAvailable bool                           `json:"benchmark_available"`
+	CohortSource       string                         `json:"cohort_source"`
 	Cohorts            []CandidateEffectivenessCohort `json:"cohorts"`
 }
 
@@ -36,6 +37,9 @@ type CandidateEffectivenessWindow struct {
 
 type candidateCohortSeed struct {
 	CandidateScoreSnapshot
+	EventType     string
+	BaselineDate  time.Time
+	BaselineClose float64
 }
 
 func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEffectivenessReport, error) {
@@ -53,10 +57,11 @@ func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEff
 	if ctx == nil {
 		return report, errors.New("context is required")
 	}
-	seeds, err := firstCandidateCohortSeeds(ctx, db)
+	seeds, source, err := candidateCohortSeeds(ctx, db)
 	if err != nil {
 		return report, err
 	}
+	report.CohortSource = source
 	for index := range report.Cohorts {
 		grade := report.Cohorts[index].Grade
 		selected := make([]candidateCohortSeed, 0, len(seeds))
@@ -84,7 +89,44 @@ func emptyCandidateEffectivenessWindows() []CandidateEffectivenessWindow {
 	return items
 }
 
-func firstCandidateCohortSeeds(ctx context.Context, db *gorm.DB) ([]candidateCohortSeed, error) {
+func candidateCohortSeeds(ctx context.Context, db *gorm.DB) ([]candidateCohortSeed, string, error) {
+	seeds, err := signalEventCohortSeeds(ctx, db)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(seeds) > 0 {
+		return seeds, "signal_events", nil
+	}
+	seeds, err = legacyFirstCandidateCohortSeeds(ctx, db)
+	return seeds, "legacy_first_entry", err
+}
+
+func signalEventCohortSeeds(ctx context.Context, db *gorm.DB) ([]candidateCohortSeed, error) {
+	var events []CandidateSignalEvent
+	if err := db.WithContext(ctx).
+		Where("event_type IN ?", []string{CandidateSignalEnteredA, CandidateSignalEnteredB, CandidateSignalUpgradedQuality}).
+		Order("signal_date ASC").Order("id ASC").
+		Find(&events).Error; err != nil {
+		return nil, err
+	}
+	seeds := make([]candidateCohortSeed, 0, len(events))
+	for _, event := range events {
+		if event.BaselineCloseMicros <= 0 || strings.TrimSpace(event.Ticker) == "" {
+			continue
+		}
+		seeds = append(seeds, candidateCohortSeed{
+			CandidateScoreSnapshot: CandidateScoreSnapshot{
+				BatchID: event.BatchID, SecurityID: event.SecurityID, Ticker: event.Ticker, Grade: event.Grade,
+				TotalScore: event.TotalScore, EligibleA: event.Grade == CandidateGradeA, EligibleB: event.Grade == CandidateGradeB,
+			},
+			EventType: event.EventType, BaselineDate: event.BaselineTradeDate,
+			BaselineClose: float64(event.BaselineCloseMicros) / 1_000_000,
+		})
+	}
+	return seeds, nil
+}
+
+func legacyFirstCandidateCohortSeeds(ctx context.Context, db *gorm.DB) ([]candidateCohortSeed, error) {
 	var rows []candidateCohortSeed
 	err := db.WithContext(ctx).
 		Table("candidate_score_snapshots AS score").
@@ -116,9 +158,13 @@ func buildCandidateCohortWindows(ctx context.Context, db *gorm.DB, seeds []candi
 		benchmarkReturns := []float64{}
 		maxDrawdown := 0.0
 		for _, seed := range seeds {
-			baseDate, baseClose, ok, err := candidatePerformanceBaseline(ctx, db, CandidateScoreResult{CandidateScoreSnapshot: seed.CandidateScoreSnapshot})
-			if err != nil {
-				return result, benchmarkAvailable, err
+			baseDate, baseClose, ok := seed.BaselineDate, seed.BaselineClose, !seed.BaselineDate.IsZero() && seed.BaselineClose > 0
+			if !ok {
+				var err error
+				baseDate, baseClose, ok, err = candidatePerformanceBaseline(ctx, db, CandidateScoreResult{CandidateScoreSnapshot: seed.CandidateScoreSnapshot})
+				if err != nil {
+					return result, benchmarkAvailable, err
+				}
 			}
 			if !ok {
 				continue

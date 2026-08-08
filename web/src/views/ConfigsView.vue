@@ -95,6 +95,37 @@
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
+            <span>交易计划通知</span>
+            <el-tag effect="plain">{{ tradeSetupNotificationForm.enabled ? '已启用' : '未启用' }}</el-tag>
+          </div>
+        </template>
+        <el-form :model="tradeSetupNotificationForm" label-width="150px">
+          <el-form-item label="启用通知">
+            <el-switch v-model="tradeSetupNotificationForm.enabled" />
+          </el-form-item>
+          <el-form-item label="影子模式">
+            <el-switch v-model="tradeSetupNotificationForm.shadow_mode" />
+            <span class="form-help">仅生成预检结果与状态变化，不发送 Telegram，也不推进通知基线。</span>
+          </el-form-item>
+          <el-form-item label="入场候选">
+            <el-switch v-model="tradeSetupNotificationForm.notify_entry" />
+          </el-form-item>
+          <el-form-item label="离场预警">
+            <el-switch v-model="tradeSetupNotificationForm.notify_exit" />
+          </el-form-item>
+          <el-form-item label="趋势失效">
+            <el-switch v-model="tradeSetupNotificationForm.notify_invalidated" />
+          </el-form-item>
+          <el-form-item label="每次通知上限">
+            <el-input-number v-model="tradeSetupNotificationForm.max_per_run" :min="1" :max="50" />
+          </el-form-item>
+        </el-form>
+        <el-alert title="仅监控已启用标的的日线状态变化。首次扫描只提示入场候选，离场类状态先建立基线；请在“调度任务”中启用 trade_setup_notification_sync 后自动执行。" type="info" :closable="false" show-icon />
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
             <span>{{ t('pages.configs.schedulerSettings') }}</span>
             <el-tag effect="plain">{{ schedulerForm.timezone }}</el-tag>
           </div>
@@ -126,6 +157,8 @@
           <el-form-item :label="t('pages.configs.discoveryPriceProvider')">
             <el-select v-model="discoveryForm.price_provider" style="width: 220px">
               <el-option :label="t('pages.configs.discoveryProviderAuto')" value="" />
+              <el-option label="Longbridge → Tiingo → Twelve Data → Yahoo" value="longbridge,tiingo,twelvedata,yahoo" />
+              <el-option label="Longbridge" value="longbridge" />
               <el-option label="Tiingo" value="tiingo" />
               <el-option label="Tiingo → Twelve Data → Yahoo" value="tiingo,twelvedata,yahoo" />
               <el-option label="Tiingo → Yahoo" value="tiingo,yahoo" />
@@ -142,6 +175,75 @@
               :rows="2"
               :placeholder="t('pages.configs.stooqUrlsPlaceholder')"
             />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.longbridgeAppKey')">
+            <el-input v-model="discoveryForm.longbridge_app_key" show-password :placeholder="t('pages.configs.longbridgeSecretPlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.longbridgeAppSecret')">
+            <el-input v-model="discoveryForm.longbridge_app_secret" show-password :placeholder="t('pages.configs.longbridgeSecretPlaceholder')" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.longbridgeAccessToken')">
+            <el-input v-model="discoveryForm.longbridge_access_token" show-password :placeholder="t('pages.configs.longbridgeSecretPlaceholder')" />
+          </el-form-item>
+          <el-form-item label="Longbridge 行情连接">
+            <el-button :loading="longbridgeProbeLoading" @click="probeLongbridgeQuote">测试行情连接</el-button>
+            <span class="form-help">仅请求 AAPL.US 一次；使用已保存的凭证，不触发候选同步或其他行情源。</span>
+          </el-form-item>
+          <el-alert
+            v-if="longbridgeProbe"
+            :title="longbridgeProbeTitle"
+            :description="longbridgeProbeDescription"
+            :type="longbridgeProbe.status === 'ok' ? 'success' : 'error'"
+            :closable="false"
+            show-icon
+          />
+          <el-form-item label="Longbridge 公司资料补充">
+            <el-switch v-model="discoveryForm.longbridge_company_profile_enabled" />
+            <span class="form-help">候选同步后增量补充公司简介；详情页仅读取本地缓存。</span>
+          </el-form-item>
+          <el-form-item label="公司资料单次预算">
+            <el-input-number v-model="discoveryForm.longbridge_company_profile_request_budget" :min="0" :max="200" controls-position="right" />
+            <span class="form-help">每次小盘工作流最多请求的 Longbridge 公司概览数量。</span>
+          </el-form-item>
+          <el-form-item label="公司资料缓存有效期（天）">
+            <el-input-number v-model="discoveryForm.longbridge_company_profile_ttl_days" :min="1" :max="365" controls-position="right" />
+          </el-form-item>
+          <el-divider content-position="left">Longbridge 分析师共识</el-divider>
+          <el-form-item label="分析师共识同步">
+            <el-switch v-model="discoveryForm.longbridge_analyst_rating_enabled" />
+            <span class="form-help">候选工作流结束后，按预算补充机构评级聚合共识；详情页只读取本地快照。</span>
+          </el-form-item>
+          <el-form-item label="分析师共识单次预算">
+            <el-input-number v-model="discoveryForm.longbridge_analyst_rating_request_budget" :min="0" :max="200" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="目标价推送阈值">
+            <el-input-number v-model="discoveryForm.longbridge_analyst_rating_target_change_pct" :min="0" :max="100" :step="0.5" controls-position="right" />
+            <span class="form-help">平均目标价相对上次快照变动达到该百分比时，才标记为更新。</span>
+          </el-form-item>
+          <el-form-item label="评级更新 Telegram 推送">
+            <el-switch v-model="discoveryForm.analyst_rating_notify_enabled" />
+            <span class="form-help">仅在评级、覆盖数量或目标价出现有效变化时推送；首次建立快照不推送。</span>
+          </el-form-item>
+          <el-divider content-position="left">监控标的财报预告</el-divider>
+          <el-form-item label="财报预告同步">
+            <el-switch v-model="earningsPreviewForm.enabled" />
+            <span class="form-help">读取 Longbridge 财报日历并保存到本地；列表和详情页不会实时请求外部接口。</span>
+          </el-form-item>
+          <el-form-item label="向前查询天数">
+            <el-input-number v-model="earningsPreviewForm.lookahead_days" :min="7" :max="180" controls-position="right" />
+            <span class="form-help">默认 90 天。范围越大，日历分页请求越多。</span>
+          </el-form-item>
+          <el-form-item label="日历分页上限">
+            <el-input-number v-model="earningsPreviewForm.max_calendar_pages" :min="1" :max="100" controls-position="right" />
+            <span class="form-help">每次同步最多读取的 Longbridge 财报日历页数。</span>
+          </el-form-item>
+          <el-form-item label="财报预告 Telegram 推送">
+            <el-switch v-model="earningsPreviewForm.notify_enabled" />
+            <span class="form-help">预告日期或预期值发生有效变化，或到达提醒日时推送；首次建立缓存不推送变更通知。</span>
+          </el-form-item>
+          <el-form-item label="提醒提前天数">
+            <el-input v-model="earningsPreviewForm.reminder_days" placeholder="7,3,1,0" />
+            <span class="form-help">以英文逗号分隔；0 表示预计财报日当天。</span>
           </el-form-item>
           <el-form-item :label="t('pages.configs.tiingoApiToken')">
             <el-input
@@ -226,8 +328,11 @@
           <el-form-item :label="t('pages.configs.discoverySECBulkCacheTTLHours')">
             <el-input-number v-model="discoveryForm.sec_bulk_cache_ttl_hours" :min="1" :max="72" :step="1" controls-position="right" />
           </el-form-item>
+          <el-form-item label="SEC 缓存保留天数">
+            <el-input-number v-model="discoveryForm.cache_retention_days" :min="1" :max="90" :step="1" controls-position="right" />
+          </el-form-item>
         </el-form>
-        <el-alert :title="t('pages.configs.discoveryDatasourceHint')" type="info" :closable="false" show-icon />
+        <el-alert :title="t('pages.configs.discoveryDatasourceHint')" description="过期缓存只会在同步开始或“小盘候选”页手动清理时删除；不会删除研究库中的候选、评分、公告或研究记录。" type="info" :closable="false" show-icon />
       </el-card>
 
       <el-card shadow="never">
@@ -269,6 +374,10 @@
           </div>
         </template>
         <el-form :model="secForm" label-width="150px">
+          <el-form-item label="SEC User-Agent">
+            <el-input v-model="secForm.user_agent" placeholder="例如 SEC Monitor admin@your-domain.com" />
+            <span class="form-help">用于 SEC 请求识别；保存后重启服务生效。</span>
+          </el-form-item>
           <el-form-item :label="t('pages.configs.syncWindowDays')">
             <el-input-number v-model="secForm.sync_window_days" :min="0" :max="3650" />
           </el-form-item>
@@ -309,6 +418,20 @@
           <el-form-item :label="t('pages.configs.storageByDay')">
             <el-switch v-model="systemForm.storage_by_day" />
           </el-form-item>
+          <el-form-item :label="t('pages.configs.backupRetentionDays')">
+            <el-input-number v-model="systemForm.backup_retention_days" :min="1" :max="365" />
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.operationHistoryRetentionDays')">
+            <el-input-number v-model="systemForm.operation_history_retention_days" :min="7" :max="3650" />
+            <span class="form-help">{{ t('pages.configs.operationHistoryRetentionHint') }}</span>
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.backupDirectory')">
+            <el-input v-model="systemForm.backup_dir" :placeholder="t('pages.configs.backupDirectoryPlaceholder')" />
+            <span class="form-help">{{ t('pages.configs.backupDirectoryHint') }}</span>
+          </el-form-item>
+          <el-form-item :label="t('pages.configs.storageWarningPct')">
+            <el-input-number v-model="systemForm.storage_warning_pct" :min="1" :max="100" />
+          </el-form-item>
         </el-form>
         <div class="config-risk-list">
           <el-alert
@@ -331,6 +454,27 @@
           <el-descriptions-item :label="t('pages.configs.expectedDelete')">{{ cleanupPreview.delete_count }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.configs.oldestSync')">{{ formatDateTime(cleanupPreview.oldest_pulled_at) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.configs.newestSync')">{{ formatDateTime(cleanupPreview.newest_pulled_at) }}</el-descriptions-item>
+        </el-descriptions>
+        <el-divider />
+        <div class="panel-header">
+          <span>{{ t('pages.configs.operationHistoryCleanup') }}</span>
+          <el-tag effect="plain">{{ t('pages.configs.operationHistorySafe') }}</el-tag>
+        </div>
+        <p class="form-help">{{ t('pages.configs.operationHistoryCleanupHint') }}</p>
+        <div class="cleanup-actions">
+          <el-button :loading="previewingLifecycle" @click="loadLifecycleCleanupPreview">{{ t('pages.configs.cleanupPreview') }}</el-button>
+          <el-button type="danger" :disabled="!lifecycleCleanupPreview || lifecycleCleanupPreview.total === 0" :loading="cleaningLifecycle" @click="cleanupLifecycle">{{ t('pages.configs.cleanupExecute') }}</el-button>
+        </div>
+        <el-descriptions v-if="lifecycleCleanupPreview" class="cleanup-preview" :column="2" border>
+          <el-descriptions-item :label="t('pages.configs.retentionDays')">{{ lifecycleCleanupPreview.retention_days }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.configs.cleanupCutoff')">{{ formatDateTime(lifecycleCleanupPreview.cutoff) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.configs.syncRunHistory')">{{ lifecycleCleanupPreview.sync_runs }} / {{ lifecycleCleanupPreview.sync_run_details }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.configs.discoveryRunHistory')">{{ lifecycleCleanupPreview.discovery_sync_runs }} / {{ lifecycleCleanupPreview.discovery_sync_steps }}</el-descriptions-item>
+			<el-descriptions-item :label="t('pages.configs.marketRepairSnapshots')">{{ lifecycleCleanupPreview.superseded_market_repairs }} / {{ lifecycleCleanupPreview.market_repair_universe_rows }} / {{ lifecycleCleanupPreview.market_repair_score_rows }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.configs.operationalAlerts')">{{ lifecycleCleanupPreview.operational_alert_deliveries }}</el-descriptions-item>
+			<el-descriptions-item :label="t('pages.configs.recoveryDrills')">{{ lifecycleCleanupPreview.recovery_drills }}</el-descriptions-item>
+			<el-descriptions-item :label="t('pages.configs.cleanupRunHistory')">{{ lifecycleCleanupPreview.lifecycle_cleanup_runs }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.configs.expectedDelete')">{{ lifecycleCleanupPreview.total }}</el-descriptions-item>
         </el-descriptions>
       </el-card>
 
@@ -357,7 +501,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, CleanupPreview, SystemConfig } from '@/api/types'
+import type { ApiResponse, CleanupPreview, LifecycleCleanupPreview, LongbridgeQuoteProbeResult, SystemConfig } from '@/api/types'
 import { type Locale, useI18n } from '@/i18n'
 
 const { store, t } = useI18n()
@@ -366,9 +510,14 @@ const saving = ref(false)
 const previewing = ref(false)
 const cleaning = ref(false)
 const cleanupPreview = ref<CleanupPreview | null>(null)
+const previewingLifecycle = ref(false)
+const cleaningLifecycle = ref(false)
+const lifecycleCleanupPreview = ref<LifecycleCleanupPreview | null>(null)
+const longbridgeProbeLoading = ref(false)
+const longbridgeProbe = ref<LongbridgeQuoteProbeResult | null>(null)
 
-const secForm = reactive({ initial_fetch_days: 30, sync_window_days: 30, max_fetch_count: 300, fetch_full_history: false })
-const systemForm = reactive({ data_retention_days: 30, storage_by_day: false })
+const secForm = reactive({ user_agent: '', initial_fetch_days: 30, sync_window_days: 30, max_fetch_count: 300, fetch_full_history: false })
+const systemForm = reactive({ data_retention_days: 30, storage_by_day: false, backup_retention_days: 7, operation_history_retention_days: 90, backup_dir: '', storage_warning_pct: 80 })
 const uiForm = reactive<{ default_locale: Locale }>({ default_locale: 'zh-CN' })
 const notificationForm = reactive({
   important_only: false,
@@ -388,11 +537,29 @@ const candidateNotificationForm = reactive({
   actionable_only: true,
   min_review_priority_score: 0
 })
+const tradeSetupNotificationForm = reactive({
+  enabled: false,
+  shadow_mode: false,
+  notify_entry: true,
+  notify_exit: true,
+  notify_invalidated: true,
+  max_per_run: 10
+})
 const schedulerForm = reactive({ timezone: 'UTC' })
 const timezoneOptions = ['Asia/Shanghai', 'UTC', 'America/New_York', 'America/Los_Angeles']
 const discoveryForm = reactive({
   price_provider: '',
   stooq_urls: '',
+  longbridge_app_key: '',
+  longbridge_app_secret: '',
+  longbridge_access_token: '',
+  longbridge_company_profile_enabled: true,
+  longbridge_company_profile_request_budget: 20,
+  longbridge_company_profile_ttl_days: 30,
+  longbridge_analyst_rating_enabled: true,
+  longbridge_analyst_rating_request_budget: 20,
+  longbridge_analyst_rating_target_change_pct: 5,
+  analyst_rating_notify_enabled: false,
   tiingo_api_token: '',
   tiingo_api_tokens: '',
   tiingo_request_budget: 45,
@@ -407,7 +574,15 @@ const discoveryForm = reactive({
   auto_technical_history_warmup: true,
   task_timeout_minutes: 60,
   download_idle_timeout_seconds: 90,
-  sec_bulk_cache_ttl_hours: 12
+  sec_bulk_cache_ttl_hours: 12,
+  cache_retention_days: 14
+})
+const earningsPreviewForm = reactive({
+  enabled: true,
+  lookahead_days: 90,
+  max_calendar_pages: 20,
+  notify_enabled: false,
+  reminder_days: '7,3,1,0'
 })
 const ipoForm = reactive({
   enabled: true,
@@ -466,6 +641,8 @@ const candidateNotificationSummary = computed(() => {
 })
 
 const discoveryDatasourceSummary = computed(() => {
+  if (discoveryForm.price_provider === 'longbridge,tiingo,twelvedata,yahoo') return 'Longbridge → Tiingo → Twelve Data → Yahoo'
+  if (discoveryForm.price_provider === 'longbridge') return 'Longbridge'
   if (discoveryForm.price_provider === 'tiingo') return 'Tiingo'
   if (discoveryForm.price_provider === 'tiingo,twelvedata,yahoo') return 'Tiingo → Twelve Data → Yahoo'
   if (discoveryForm.price_provider === 'tiingo,yahoo') return 'Tiingo → Yahoo'
@@ -474,6 +651,20 @@ const discoveryDatasourceSummary = computed(() => {
   if (discoveryForm.price_provider === 'yahoo') return 'Yahoo'
   if (discoveryForm.price_provider === 'stooq') return 'Stooq'
   return t('pages.configs.discoveryProviderAuto')
+})
+
+const longbridgeProbeTitle = computed(() => {
+  if (!longbridgeProbe.value) return ''
+  return longbridgeProbe.value.status === 'ok'
+    ? `行情连接成功：${longbridgeProbe.value.symbol}，耗时 ${longbridgeProbe.value.elapsed_millis}ms`
+    : `行情连接失败：${longbridgeProbe.value.error_kind || 'unknown'}`
+})
+
+const longbridgeProbeDescription = computed(() => {
+  if (!longbridgeProbe.value) return ''
+  const result = longbridgeProbe.value
+  const quote = result.quote_received ? `返回价格 ${result.last_done || '-'}，成交量 ${result.volume?.toLocaleString() || '0'}。` : ''
+  return `${result.endpoint}；${result.message || '-'}${quote ? `；${quote}` : ''}`
 })
 
 const systemRiskHints = computed(() => {
@@ -504,12 +695,17 @@ async function load() {
   try {
     const res = await apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs')
     const configs = res.data.data
+    secForm.user_agent = configValue(configs, 'sec.user_agent', '')
     secForm.initial_fetch_days = Number(configValue(configs, 'sec.initial_fetch_days', '30'))
     secForm.sync_window_days = Number(configValue(configs, 'sec.sync_window_days', '30'))
     secForm.max_fetch_count = Number(configValue(configs, 'sec.max_fetch_count', '300'))
     secForm.fetch_full_history = configValue(configs, 'sec.fetch_full_history', 'false') === 'true'
     systemForm.data_retention_days = Number(configValue(configs, 'system.data_retention_days', '30'))
     systemForm.storage_by_day = configValue(configs, 'system.storage_by_day', 'false') === 'true'
+		systemForm.backup_retention_days = Number(configValue(configs, 'system.backup_retention_days', '7'))
+		systemForm.operation_history_retention_days = Number(configValue(configs, 'system.operation_history_retention_days', '90'))
+    systemForm.backup_dir = configValue(configs, 'system.backup_dir', '')
+    systemForm.storage_warning_pct = Number(configValue(configs, 'system.storage_warning_pct', '80'))
     uiForm.default_locale = localeValue(configValue(configs, 'ui.default_locale', 'zh-CN'))
     notificationForm.important_only = configValue(configs, 'notification.important_only', 'false') === 'true'
     notificationForm.filing_types = configValue(configs, 'notification.filing_types', '')
@@ -525,9 +721,25 @@ async function load() {
     candidateNotificationForm.max_per_grade = Number(configValue(configs, 'candidate_notification.max_per_grade', '5'))
     candidateNotificationForm.actionable_only = configValue(configs, 'candidate_notification.actionable_only', 'true') === 'true'
     candidateNotificationForm.min_review_priority_score = Number(configValue(configs, 'candidate_notification.min_review_priority_score', '0'))
+		tradeSetupNotificationForm.enabled = configValue(configs, 'trade_setup_notification.enabled', 'false') === 'true'
+		tradeSetupNotificationForm.shadow_mode = configValue(configs, 'trade_setup_notification.shadow_mode', 'false') === 'true'
+		tradeSetupNotificationForm.notify_entry = configValue(configs, 'trade_setup_notification.notify_entry', 'true') === 'true'
+		tradeSetupNotificationForm.notify_exit = configValue(configs, 'trade_setup_notification.notify_exit', 'true') === 'true'
+		tradeSetupNotificationForm.notify_invalidated = configValue(configs, 'trade_setup_notification.notify_invalidated', 'true') === 'true'
+		tradeSetupNotificationForm.max_per_run = Number(configValue(configs, 'trade_setup_notification.max_per_run', '10'))
     schedulerForm.timezone = configValue(configs, 'scheduler.timezone', 'UTC')
     discoveryForm.price_provider = configValue(configs, 'discovery.price_provider', '')
     discoveryForm.stooq_urls = configValue(configs, 'discovery.stooq_urls', '')
+    discoveryForm.longbridge_app_key = configValue(configs, 'discovery.longbridge_app_key', '')
+    discoveryForm.longbridge_app_secret = configValue(configs, 'discovery.longbridge_app_secret', '')
+    discoveryForm.longbridge_access_token = configValue(configs, 'discovery.longbridge_access_token', '')
+    discoveryForm.longbridge_company_profile_enabled = configValue(configs, 'discovery.longbridge_company_profile_enabled', 'true') === 'true'
+    discoveryForm.longbridge_company_profile_request_budget = Number(configValue(configs, 'discovery.longbridge_company_profile_request_budget', '20'))
+    discoveryForm.longbridge_company_profile_ttl_days = Number(configValue(configs, 'discovery.longbridge_company_profile_ttl_days', '30'))
+    discoveryForm.longbridge_analyst_rating_enabled = configValue(configs, 'discovery.longbridge_analyst_rating_enabled', 'true') === 'true'
+    discoveryForm.longbridge_analyst_rating_request_budget = Number(configValue(configs, 'discovery.longbridge_analyst_rating_request_budget', '20'))
+    discoveryForm.longbridge_analyst_rating_target_change_pct = Number(configValue(configs, 'discovery.longbridge_analyst_rating_target_change_pct', '5'))
+    discoveryForm.analyst_rating_notify_enabled = configValue(configs, 'analyst_rating.notify_enabled', 'false') === 'true'
     discoveryForm.tiingo_api_token = configValue(configs, 'discovery.tiingo_api_token', '')
     discoveryForm.tiingo_api_tokens = configValue(configs, 'discovery.tiingo_api_tokens', '')
     discoveryForm.tiingo_request_budget = Number(configValue(configs, 'discovery.tiingo_request_budget', '45'))
@@ -543,6 +755,12 @@ async function load() {
     discoveryForm.task_timeout_minutes = Number(configValue(configs, 'discovery.task_timeout_minutes', '60'))
     discoveryForm.download_idle_timeout_seconds = Number(configValue(configs, 'discovery.download_idle_timeout_seconds', '90'))
     discoveryForm.sec_bulk_cache_ttl_hours = Number(configValue(configs, 'discovery.sec_bulk_cache_ttl_hours', '12'))
+    discoveryForm.cache_retention_days = Number(configValue(configs, 'discovery.cache_retention_days', '14'))
+    earningsPreviewForm.enabled = configValue(configs, 'earnings_preview.enabled', 'true') === 'true'
+    earningsPreviewForm.lookahead_days = Number(configValue(configs, 'earnings_preview.lookahead_days', '90'))
+    earningsPreviewForm.max_calendar_pages = Number(configValue(configs, 'earnings_preview.max_calendar_pages', '20'))
+    earningsPreviewForm.notify_enabled = configValue(configs, 'earnings_preview.notify_enabled', 'false') === 'true'
+    earningsPreviewForm.reminder_days = configValue(configs, 'earnings_preview.reminder_days', '7,3,1,0')
     ipoForm.enabled = configValue(configs, 'ipo.enabled', 'true') === 'true'
     ipoForm.form_types = configValue(configs, 'ipo.form_types', 'S-1,S-1/A,F-1,F-1/A,S-1MEF')
     ipoForm.lookback_days = Number(configValue(configs, 'ipo.lookback_days', '7'))
@@ -559,12 +777,17 @@ async function save() {
   saving.value = true
   try {
     await apiClient.put('/system-configs', [
+      { key: 'sec.user_agent', value: secForm.user_agent, value_type: 'string', category: 'sec', encrypted: false },
       { key: 'sec.initial_fetch_days', value: String(secForm.initial_fetch_days), value_type: 'int', category: 'sec', encrypted: false },
       { key: 'sec.sync_window_days', value: String(secForm.sync_window_days), value_type: 'int', category: 'sec', encrypted: false },
       { key: 'sec.max_fetch_count', value: String(secForm.max_fetch_count), value_type: 'int', category: 'sec', encrypted: false },
       { key: 'sec.fetch_full_history', value: String(secForm.fetch_full_history), value_type: 'bool', category: 'sec', encrypted: false },
       { key: 'system.data_retention_days', value: String(systemForm.data_retention_days), value_type: 'int', category: 'system', encrypted: false },
       { key: 'system.storage_by_day', value: String(systemForm.storage_by_day), value_type: 'bool', category: 'system', encrypted: false },
+      { key: 'system.backup_retention_days', value: String(systemForm.backup_retention_days), value_type: 'int', category: 'system', encrypted: false },
+			{ key: 'system.operation_history_retention_days', value: String(systemForm.operation_history_retention_days), value_type: 'int', category: 'system', encrypted: false },
+      { key: 'system.backup_dir', value: systemForm.backup_dir, value_type: 'string', category: 'system', encrypted: false },
+      { key: 'system.storage_warning_pct', value: String(systemForm.storage_warning_pct), value_type: 'int', category: 'system', encrypted: false },
       { key: 'ui.default_locale', value: uiForm.default_locale, value_type: 'string', category: 'ui', encrypted: false },
       { key: 'notification.important_only', value: String(notificationForm.important_only), value_type: 'bool', category: 'notification', encrypted: false },
       { key: 'notification.filing_types', value: notificationForm.filing_types, value_type: 'string', category: 'notification', encrypted: false },
@@ -580,9 +803,25 @@ async function save() {
       { key: 'candidate_notification.max_per_grade', value: String(candidateNotificationForm.max_per_grade), value_type: 'int', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.actionable_only', value: String(candidateNotificationForm.actionable_only), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.min_review_priority_score', value: String(candidateNotificationForm.min_review_priority_score), value_type: 'int', category: 'candidate_notification', encrypted: false },
+			{ key: 'trade_setup_notification.enabled', value: String(tradeSetupNotificationForm.enabled), value_type: 'bool', category: 'trade_setup_notification', encrypted: false },
+			{ key: 'trade_setup_notification.shadow_mode', value: String(tradeSetupNotificationForm.shadow_mode), value_type: 'bool', category: 'trade_setup_notification', encrypted: false },
+			{ key: 'trade_setup_notification.notify_entry', value: String(tradeSetupNotificationForm.notify_entry), value_type: 'bool', category: 'trade_setup_notification', encrypted: false },
+			{ key: 'trade_setup_notification.notify_exit', value: String(tradeSetupNotificationForm.notify_exit), value_type: 'bool', category: 'trade_setup_notification', encrypted: false },
+			{ key: 'trade_setup_notification.notify_invalidated', value: String(tradeSetupNotificationForm.notify_invalidated), value_type: 'bool', category: 'trade_setup_notification', encrypted: false },
+			{ key: 'trade_setup_notification.max_per_run', value: String(tradeSetupNotificationForm.max_per_run), value_type: 'int', category: 'trade_setup_notification', encrypted: false },
       { key: 'scheduler.timezone', value: schedulerForm.timezone, value_type: 'string', category: 'scheduler', encrypted: false },
       { key: 'discovery.price_provider', value: discoveryForm.price_provider, value_type: 'string', category: 'discovery', encrypted: false },
       { key: 'discovery.stooq_urls', value: discoveryForm.stooq_urls, value_type: 'string', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_app_key', value: discoveryForm.longbridge_app_key, value_type: 'string', category: 'discovery', encrypted: true },
+      { key: 'discovery.longbridge_app_secret', value: discoveryForm.longbridge_app_secret, value_type: 'string', category: 'discovery', encrypted: true },
+      { key: 'discovery.longbridge_access_token', value: discoveryForm.longbridge_access_token, value_type: 'string', category: 'discovery', encrypted: true },
+      { key: 'discovery.longbridge_company_profile_enabled', value: String(discoveryForm.longbridge_company_profile_enabled), value_type: 'bool', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_company_profile_request_budget', value: String(discoveryForm.longbridge_company_profile_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_company_profile_ttl_days', value: String(discoveryForm.longbridge_company_profile_ttl_days), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_analyst_rating_enabled', value: String(discoveryForm.longbridge_analyst_rating_enabled), value_type: 'bool', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_analyst_rating_request_budget', value: String(discoveryForm.longbridge_analyst_rating_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_analyst_rating_target_change_pct', value: String(discoveryForm.longbridge_analyst_rating_target_change_pct), value_type: 'float', category: 'discovery', encrypted: false },
+      { key: 'analyst_rating.notify_enabled', value: String(discoveryForm.analyst_rating_notify_enabled), value_type: 'bool', category: 'analyst_rating', encrypted: false },
       { key: 'discovery.tiingo_api_token', value: discoveryForm.tiingo_api_token, value_type: 'string', category: 'discovery', encrypted: true },
       { key: 'discovery.tiingo_api_tokens', value: discoveryForm.tiingo_api_tokens, value_type: 'string', category: 'discovery', encrypted: true },
       { key: 'discovery.tiingo_request_budget', value: String(discoveryForm.tiingo_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
@@ -598,6 +837,12 @@ async function save() {
       { key: 'discovery.task_timeout_minutes', value: String(discoveryForm.task_timeout_minutes), value_type: 'int', category: 'discovery', encrypted: false },
       { key: 'discovery.download_idle_timeout_seconds', value: String(discoveryForm.download_idle_timeout_seconds), value_type: 'int', category: 'discovery', encrypted: false },
       { key: 'discovery.sec_bulk_cache_ttl_hours', value: String(discoveryForm.sec_bulk_cache_ttl_hours), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.cache_retention_days', value: String(discoveryForm.cache_retention_days), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'earnings_preview.enabled', value: String(earningsPreviewForm.enabled), value_type: 'bool', category: 'earnings_preview', encrypted: false },
+      { key: 'earnings_preview.lookahead_days', value: String(earningsPreviewForm.lookahead_days), value_type: 'int', category: 'earnings_preview', encrypted: false },
+      { key: 'earnings_preview.max_calendar_pages', value: String(earningsPreviewForm.max_calendar_pages), value_type: 'int', category: 'earnings_preview', encrypted: false },
+      { key: 'earnings_preview.notify_enabled', value: String(earningsPreviewForm.notify_enabled), value_type: 'bool', category: 'earnings_preview', encrypted: false },
+      { key: 'earnings_preview.reminder_days', value: earningsPreviewForm.reminder_days, value_type: 'string', category: 'earnings_preview', encrypted: false },
       { key: 'ipo.enabled', value: String(ipoForm.enabled), value_type: 'bool', category: 'ipo', encrypted: false },
       { key: 'ipo.form_types', value: ipoForm.form_types, value_type: 'string', category: 'ipo', encrypted: false },
       { key: 'ipo.lookback_days', value: String(ipoForm.lookback_days), value_type: 'int', category: 'ipo', encrypted: false },
@@ -612,6 +857,26 @@ async function save() {
     await load()
   } finally {
     saving.value = false
+  }
+}
+
+async function probeLongbridgeQuote() {
+  longbridgeProbeLoading.value = true
+  try {
+    const res = await apiClient.post<ApiResponse<LongbridgeQuoteProbeResult>>(
+      '/discovery/providers/longbridge/probe',
+      null,
+      { timeout: 30_000 },
+    )
+    longbridgeProbe.value = res.data.data
+    if (res.data.data.status === 'ok') ElMessage.success('Longbridge 行情连接正常')
+    else ElMessage.error(res.data.data.message || 'Longbridge 行情连接失败')
+  } catch (err: any) {
+    const message = err?.response?.data?.message || 'Longbridge 行情连接测试失败'
+    longbridgeProbe.value = { provider: 'longbridge', endpoint: 'wss://openapi-quote.longbridge.com', symbol: 'AAPL.US', status: 'failed', error_kind: 'request', message, elapsed_millis: 0, quote_received: false }
+    ElMessage.error(message)
+  } finally {
+    longbridgeProbeLoading.value = false
   }
 }
 
@@ -641,6 +906,30 @@ async function cleanup() {
   } finally {
     cleaning.value = false
   }
+}
+
+async function loadLifecycleCleanupPreview() {
+	previewingLifecycle.value = true
+	try {
+		await save()
+		const res = await apiClient.get<ApiResponse<LifecycleCleanupPreview>>('/system/lifecycle-cleanup-preview')
+		lifecycleCleanupPreview.value = res.data.data
+	} finally {
+		previewingLifecycle.value = false
+	}
+}
+
+async function cleanupLifecycle() {
+	if (!lifecycleCleanupPreview.value) return
+	await ElMessageBox.confirm(t('messages.confirmCleanup', { count: lifecycleCleanupPreview.value.total }), t('messages.cleanupTitle'), { type: 'warning' })
+	cleaningLifecycle.value = true
+	try {
+		const res = await apiClient.post<ApiResponse<LifecycleCleanupPreview>>('/system/lifecycle-cleanup')
+		ElMessage.success(t('messages.deletedFilings', { count: res.data.data.total }))
+		await loadLifecycleCleanupPreview()
+	} finally {
+		cleaningLifecycle.value = false
+	}
 }
 
 function formatDateTime(value?: string | null) {

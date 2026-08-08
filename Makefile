@@ -1,4 +1,4 @@
-.PHONY: start stop restart status logs backend frontend test lint build docker-build docker-up docker-down docker-logs docker-discovery-sync docker-discovery-market-sync
+.PHONY: start stop restart status logs backend frontend test lint build docker-build docker-up docker-down docker-logs docker-discovery-sync docker-discovery-incremental-sync docker-discovery-market-sync
 
 start:
 	./scripts/local.sh start
@@ -46,6 +46,9 @@ docker-logs:
 
 docker-discovery-sync:
 	docker compose exec sec-monitor /app/discovery-sync
+
+docker-discovery-incremental-sync:
+	docker compose exec -e DISCOVERY_SYNC_PHASE=incremental sec-monitor /app/discovery-sync
 
 docker-discovery-market-sync:
 	docker compose exec -e DISCOVERY_SYNC_PHASE=market sec-monitor /app/discovery-sync

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"sec_monitor/internal/sec"
 	"sec_monitor/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -32,5 +33,13 @@ func Error(c *gin.Context, err error) {
 		status = http.StatusBadRequest
 		code = "validation_failed"
 	}
-	c.JSON(status, gin.H{"code": code, "message": err.Error()})
+	if errors.Is(err, service.ErrTaskAlreadyRunning) || errors.Is(err, service.ErrTaskResourceBusy) {
+		status = http.StatusConflict
+		code = "task_busy"
+	}
+	message := err.Error()
+	if providerMessage := sec.UserMessage(err); providerMessage != "" {
+		message = providerMessage
+	}
+	c.JSON(status, gin.H{"code": code, "message": message})
 }

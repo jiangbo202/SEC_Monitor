@@ -634,6 +634,37 @@ func TestAppHandlerGetsDiscoveryCandidateDetail(t *testing.T) {
 	}
 }
 
+func TestAppHandlerGetsDiscoveryCompanyProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	security := discovery.Security{CIK: "0000001357", CompanyName: "Profile API Co", CatalogStatus: discovery.SecurityCatalogPublished}
+	if err := discoveryDB.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.UniverseBatch{BatchID: "metadata", Kind: discovery.BatchKindSecurity, Status: discovery.BatchStatusPublished, StartedAt: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.SecurityBatchIdentity{BatchID: "metadata", SecurityID: security.ID, CIK: security.CIK, Ticker: "PAPI", CompanyName: "Profile API Co", Exchange: "Nasdaq", SIC: 7372, SICDescription: "SERVICES-PREPACKAGED SOFTWARE", CreatedAt: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &AppHandler{DiscoveryDB: discoveryDB}
+	r := gin.New()
+	r.GET("/discovery/company-profiles/:ticker", h.GetDiscoveryCompanyProfile)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/discovery/company-profiles/PAPI?cik=0000001357", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"sic_description":"SERVICES-PREPACKAGED SOFTWARE"`) || !strings.Contains(rec.Body.String(), `"status":"available"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAppHandlerPreviewsDiscoveryCandidateSummary(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -700,6 +731,7 @@ func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
 	r := gin.New()
 	r.GET("/discovery/candidates/health", h.GetDiscoveryCandidateHealth)
 	r.POST("/discovery/candidates/refresh", h.RefreshDiscoveryCandidates)
+	r.POST("/discovery/candidates/market-refresh-force", h.ForceRefreshDiscoveryMarketPrices)
 	r.GET("/discovery/candidates/report", h.GetDiscoveryCandidateReport)
 	r.GET("/discovery/candidates/effectiveness", h.GetDiscoveryCandidateEffectiveness)
 	r.GET("/exports/candidates.csv", h.ExportDiscoveryCandidatesCSV)
@@ -711,6 +743,7 @@ func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
 	}{
 		{method: http.MethodGet, path: "/discovery/candidates/health", want: `"total_candidates":1`},
 		{method: http.MethodPost, path: "/discovery/candidates/refresh", want: `"status":"published"`},
+		{method: http.MethodPost, path: "/discovery/candidates/market-refresh-force", want: `"status":"published"`},
 		{method: http.MethodGet, path: "/discovery/candidates/report?date=2026-06-30", want: `"ticker":"OPS"`},
 		{method: http.MethodGet, path: "/discovery/candidates/effectiveness", want: `"benchmark_ticker":"IWM"`},
 		{method: http.MethodGet, path: "/exports/candidates.csv?grade=A", want: "ticker,grade,total_score"},
@@ -722,6 +755,17 @@ func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
 			t.Fatalf("%s %s status=%d body=%s", tc.method, tc.path, rec.Code, rec.Body.String())
 		}
 	}
+
+	t.Run("refresh outlives canceled HTTP request", func(t *testing.T) {
+		requestContext, cancel := context.WithCancel(context.Background())
+		req := httptest.NewRequest(http.MethodPost, "/discovery/candidates/refresh", nil).WithContext(requestContext)
+		cancel()
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"published"`) {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func TestAppHandlerPreviewsDiscoveryCandidateNotification(t *testing.T) {
@@ -1041,6 +1085,7 @@ func TestAppHandlerListsDiscoveryRunDiagnostics(t *testing.T) {
 	r.GET("/discovery/batches", h.ListDiscoveryBatches)
 	r.GET("/discovery/provider-runs", h.ListDiscoveryProviderRuns)
 	r.GET("/discovery/provider-health", h.ListDiscoveryProviderHealth)
+	r.GET("/discovery/provider-observability", h.GetDiscoveryProviderObservability)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/discovery/batches?kind=market-prescreen&status=failed", nil)
@@ -1061,6 +1106,54 @@ func TestAppHandlerListsDiscoveryRunDiagnostics(t *testing.T) {
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"provider":"tiingo"`) || !strings.Contains(rec.Body.String(), `"last_trade_date":"2026-06-30"`) {
 		t.Fatalf("provider health status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/discovery/provider-observability", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"calendar_version"`) || !strings.Contains(rec.Body.String(), `"latest_price_source_counts"`) {
+		t.Fatalf("provider observability status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAppHandlerDataSourceHealthSummarizesSECAndMarketProviders(t *testing.T) {
+	mainDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main db: %v", err)
+	}
+	if err := mainDB.AutoMigrate(&model.TaskConfig{}); err != nil {
+		t.Fatalf("migrate task config: %v", err)
+	}
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	now := time.Date(2026, 7, 28, 1, 0, 0, 0, time.UTC)
+	if err := mainDB.Create(&model.TaskConfig{TaskName: "sec_filing_sync", CronExpr: "0 * * * *", Enabled: true, LastRunAt: &now, LastStatus: "failed", LastErrorMessage: "SEC returned HTTP 429", ConsecutiveFailures: 3}).Error; err != nil {
+		t.Fatalf("seed SEC task: %v", err)
+	}
+	if err := discoveryDB.Create(&discovery.ProviderHealth{Provider: "longbridge", Status: discovery.ProviderStatusDegraded, FailureStreak: 1, UpdatedAt: now}).Error; err != nil {
+		t.Fatalf("seed provider health: %v", err)
+	}
+	if err := discoveryDB.Create(&discovery.ProviderRun{BatchID: "market-batch", Provider: "longbridge", Status: discovery.ProviderStatusDegraded, EffectiveDate: now, CoveragePct: 72.5, ErrorMessage: "quote request timed out", CreatedAt: now}).Error; err != nil {
+		t.Fatalf("seed provider run: %v", err)
+	}
+
+	items, issues := (&AppHandler{DB: mainDB, DiscoveryDB: discoveryDB}).dataSourceHealth(context.Background())
+	if len(items) != 2 {
+		t.Fatalf("data source items = %+v, want SEC and market provider", items)
+	}
+	if items[0].Source != "SEC EDGAR" || items[0].Status != "critical" || items[0].FailureStreak != 3 || items[0].RecommendedAction != "scheduler" {
+		t.Fatalf("SEC item = %+v", items[0])
+	}
+	if items[1].Source != "longbridge" || items[1].Status != "warning" || items[1].CoveragePct == nil || *items[1].CoveragePct != 72.5 || items[1].RecommendedAction != "discovery_logs" {
+		t.Fatalf("market item = %+v", items[1])
+	}
+	if len(issues) != 2 {
+		t.Fatalf("source issues = %+v, want two", issues)
 	}
 }
 
@@ -1316,6 +1409,19 @@ func TestAppHandlerRunTaskWithoutSchedulerTableDriven(t *testing.T) {
 				t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestAppHandlerRunTaskReturnsConflictWhenSchedulerIsBusy(t *testing.T) {
+	r, _, sched := testApp(t)
+	sched.runErr = service.TaskAlreadyRunning("sec_filing_sync")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/tasks/1/run", nil))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"task_busy"`) {
+		t.Fatalf("body = %s, want task_busy", rec.Body.String())
 	}
 }
 

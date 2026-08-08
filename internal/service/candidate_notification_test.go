@@ -12,6 +12,7 @@ import (
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func TestCandidateNotificationPreviewUsesSettingsWithoutSending(t *testing.T) {
@@ -261,7 +262,7 @@ func TestCandidateNotificationSendForceAllowsDuplicateBatchToday(t *testing.T) {
 
 func testDiscoveryDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatalf("open discovery db: %v", err)
 	}

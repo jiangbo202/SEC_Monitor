@@ -56,6 +56,19 @@ type IPORadarHealth struct {
 	DueRetryBatches           int                 `json:"due_retry_batches"`
 	DeadLetterBatches         int                 `json:"dead_letter_batches"`
 	LatestSync                *IPORadarSyncHealth `json:"latest_sync"`
+	Actions                   []IPORadarAction    `json:"actions"`
+}
+
+// IPORadarAction is an operator-facing next step derived from the IPO health
+// counters. Keys intentionally remain stable so that API clients can localize
+// the copy while the service owns the priority and routing semantics.
+type IPORadarAction struct {
+	Key       string `json:"key"`
+	Severity  string `json:"severity"`
+	Count     int    `json:"count"`
+	Attention string `json:"attention,omitempty"`
+	Route     string `json:"route,omitempty"`
+	Status    string `json:"status,omitempty"`
 }
 
 type IPORadarSyncHealth struct {
@@ -180,7 +193,32 @@ func (s *IPORadarService) Health(ctx context.Context, now time.Time) (IPORadarHe
 	} else if err == nil {
 		health.LatestSync = &IPORadarSyncHealth{StartedAt: latest.StartedAt, FinishedAt: latest.FinishedAt, Status: latest.Status, NewFilings: latest.NewFilings}
 	}
+	health.Actions = buildIPORadarActions(health)
 	return health, nil
+}
+
+func buildIPORadarActions(health IPORadarHealth) []IPORadarAction {
+	actions := make([]IPORadarAction, 0, 7)
+	add := func(key, severity string, count int, attention, route, status string) {
+		if count <= 0 {
+			return
+		}
+		actions = append(actions, IPORadarAction{
+			Key: key, Severity: severity, Count: count, Attention: attention, Route: route, Status: status,
+		})
+	}
+	// Delivery failures are first because a dead-lettered IPO alert cannot
+	// recover without an explicit operator action.
+	add("review_dead_letters", "danger", health.DeadLetterBatches, "", "notification_logs", "dead_letter")
+	add("retry_notifications", "danger", health.DueRetryBatches, "", "notification_logs", "failed")
+	add("verify_listing", "warning", health.PendingListing, "listing_pending", "", "")
+	add("complete_market_mapping", "warning", health.MissingMarketMapping, "missing_market_mapping", "", "")
+	add("recheck_lifecycle", "warning", health.StaleLifecycleChecks, "lifecycle_stale", "", "")
+	add("review_offering_parse", "warning", health.UnsupportedOfferingEvents, "parse_failed", "", "")
+	if health.LatestSync != nil && health.LatestSync.Status == "failed" {
+		add("retry_sync", "danger", 1, "", "refresh", "")
+	}
+	return actions
 }
 
 var ipoNotificationSources = []string{"ipo", "ipo_offering"}
@@ -348,7 +386,7 @@ func (s *IPORadarService) allCompanies(ctx context.Context, now time.Time) ([]IP
 
 func validIPOCompanyAttention(attention string) bool {
 	switch attention {
-	case "", "listing_pending", "parse_failed", "lifecycle_stale", "notification_failed":
+	case "", "listing_pending", "parse_failed", "lifecycle_stale", "notification_failed", "missing_market_mapping":
 		return true
 	default:
 		return false
@@ -357,7 +395,7 @@ func validIPOCompanyAttention(attention string) bool {
 
 func (s *IPORadarService) attentionCompanyCIKs(ctx context.Context, attention string, ciks []string, now time.Time) (map[string]bool, time.Time, error) {
 	matched := map[string]bool{}
-	if attention == "" || attention == "listing_pending" || attention == "lifecycle_stale" {
+	if attention == "" || attention == "listing_pending" || attention == "lifecycle_stale" || attention == "missing_market_mapping" {
 		if attention != "lifecycle_stale" {
 			return matched, time.Time{}, nil
 		}
@@ -405,6 +443,8 @@ func matchesIPOCompanyAttention(item IPOCompanyItem, attention string, matchedCI
 		return matchedCIKs[item.CIK]
 	case "lifecycle_stale":
 		return ipoLifecycleCheckStale(item, staleBefore)
+	case "missing_market_mapping":
+		return activeIPOCompanyStatus(item.Status) && strings.TrimSpace(item.AutomaticTicker) == ""
 	default:
 		return false
 	}
@@ -532,6 +572,10 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		// Current S-1/F-1 registration amendments from an SEC-confirmed listed
 		// company are not a new IPO opportunity. In particular, do not let one
 		// seed a full historical company backfill years after the actual listing.
+		// A newly filed 424B4 is deliberately not covered by this exclusion: it
+		// can carry a material offering-price event for an already listed issuer.
+		// Its generic IPO-filing alert remains suppressed below, while the
+		// dedicated offering alert can still be evaluated.
 		if confirmedListed && isRegistration {
 			continue
 		}

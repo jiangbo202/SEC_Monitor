@@ -48,6 +48,15 @@ func TestOpenDatabaseEnablesForeignKeysForMemoryAndFileDSNs(t *testing.T) {
 	}
 }
 
+func TestSQLiteSettingsEnableWALAndBoundedBusyWait(t *testing.T) {
+	settings := withSQLiteSettings("file:test.db?mode=rwc")
+	for _, want := range []string{"_foreign_keys=on", "_journal_mode=WAL", "_synchronous=NORMAL", "_busy_timeout=5000"} {
+		if !strings.Contains(settings, want) {
+			t.Fatalf("settings %q missing %q", settings, want)
+		}
+	}
+}
+
 func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 
@@ -57,6 +66,8 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 	}{
 		{name: "securities", model: &Security{}},
 		{name: "listings", model: &Listing{}},
+		{name: "company_profile_snapshots", model: &CompanyProfileSnapshot{}},
+		{name: "analyst_rating_snapshots", model: &AnalystRatingSnapshot{}},
 		{name: "classification_snapshots", model: &ClassificationSnapshot{}},
 		{name: "provider_runs", model: &ProviderRun{}},
 		{name: "provider_healths", model: &ProviderHealth{}},
@@ -67,9 +78,12 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 		{name: "financial_metric_snapshots", model: &FinancialMetricSnapshot{}},
 		{name: "insider_transaction_snapshots", model: &InsiderTransactionSnapshot{}},
 		{name: "candidate_score_snapshots", model: &CandidateScoreSnapshot{}},
+		{name: "small_cap_eligibility_check_histories", model: &SmallCapEligibilityCheckHistory{}},
 		{name: "candidate_recalc_events", model: &CandidateRecalcEvent{}},
 		{name: "candidate_watches", model: &CandidateWatch{}},
+		{name: "candidate_research_memo_versions", model: &CandidateResearchMemoVersion{}},
 		{name: "universe_batches", model: &UniverseBatch{}},
+		{name: "discovery_sync_runs", model: &DiscoverySyncRun{}},
 		{name: "universe_snapshots", model: &UniverseSnapshot{}},
 		{name: "manual_security_overrides", model: &ManualSecurityOverride{}},
 	}

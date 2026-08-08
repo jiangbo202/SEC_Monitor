@@ -41,6 +41,60 @@
         show-icon
       />
     </div>
+    <el-alert
+      v-if="dashboardLoadWarnings.length"
+      class="dashboard-load-warning"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="t('pages.dashboard.partialDataTitle')"
+      :description="t('pages.dashboard.partialDataDescription', { sections: dashboardLoadWarnings.join('、') })"
+    >
+      <template #default><el-button link type="primary" @click="load">{{ t('common.refresh') }}</el-button></template>
+    </el-alert>
+
+    <el-card shadow="never" class="dashboard-panel dashboard-operations-panel">
+      <template #header>
+        <div class="panel-header">
+          <span>{{ t('pages.dashboard.operationalTodo') }}</span>
+          <div class="panel-header-actions">
+            <el-tag :type="operationalStatusType(operational?.status)" effect="plain">{{ operationalStatusLabel(operational?.status) }}</el-tag>
+            <el-link type="primary" @click="router.push('/system-health')">{{ t('pages.dashboard.viewOperationalHealth') }}</el-link>
+          </div>
+        </div>
+      </template>
+      <template v-if="operational">
+        <div class="operational-brief">
+          <div>
+            <span class="operational-brief-kicker">{{ operationalStatusLabel(operational.status) }}</span>
+            <strong>{{ operationalIssueSummary }}</strong>
+          </div>
+        </div>
+        <div v-if="operationalMetrics.length" class="operational-metric-grid">
+          <div v-for="metric in operationalMetrics" :key="metric.key" class="operational-metric" :class="`is-${metric.tone}`">
+            <span>{{ metric.label }}</span>
+            <strong>{{ metric.value }}</strong>
+          </div>
+        </div>
+        <div v-if="operational.issues.length" class="operational-issue-list">
+          <div v-for="issue in operational.issues.slice(0, 4)" :key="issue.key" class="operational-issue-row">
+            <div class="operational-issue-content">
+              <el-tag :type="issue.severity === 'critical' ? 'danger' : 'warning'" size="small" effect="plain">{{ operationalIssueSeverityLabel(issue.severity) }}</el-tag>
+              <div>
+                <strong>{{ issue.title }}</strong>
+                <span>{{ issue.detail }}</span>
+              </div>
+            </div>
+            <el-button v-if="issue.action" link type="primary" @click="openOperationalAction(issue.action)">{{ t('pages.dashboard.handleOperationalIssue') }}</el-button>
+          </div>
+          <el-link v-if="operational.issues.length > 4" class="operational-more-link" type="primary" @click="router.push('/system-health')">
+            {{ t('pages.dashboard.moreOperationalIssues', { count: operational.issues.length - 4 }) }}
+          </el-link>
+        </div>
+        <el-empty v-else :description="t('pages.dashboard.noOperationalIssues')" :image-size="54" />
+      </template>
+      <el-skeleton v-else :rows="3" animated />
+    </el-card>
 
     <div class="section-label">{{ t('pages.dashboard.targetMonitor') }}</div>
     <div class="kpi-grid">
@@ -241,13 +295,15 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { Aim, Bell, DataAnalysis, Document, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, Filing, IPOCompany, IPOFiling, IPORadarHealth, IPORadarRefreshResult, NotificationBatch, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
+import type { ApiResponse, Filing, IPOCompany, IPOFiling, IPORadarHealth, IPORadarRefreshResult, NotificationBatch, OperationalReport, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
+const router = useRouter()
 const loading = ref(false)
 const refreshing = ref(false)
 const refreshingIpo = ref(false)
@@ -263,6 +319,8 @@ const recentIpoFilings = ref<IPOFiling[]>([])
 const dashboardFilings = ref<Filing[]>([])
 const recentNotifications = ref<NotificationBatch[]>([])
 const ipoHealth = ref<IPORadarHealth | null>(null)
+const operational = ref<OperationalReport | null>(null)
+const dashboardLoadWarnings = ref<string[]>([])
 
 function notificationSourceLabel(value: string) {
   if (value === 'ipo') return t('pages.notificationLogs.sources.ipo')
@@ -350,6 +408,24 @@ const healthAlerts = computed(() => {
   return alerts.slice(0, 3)
 })
 
+const operationalIssueSummary = computed(() => {
+  const count = operational.value?.issues.length || 0
+  return count > 0
+    ? t('pages.dashboard.operationalIssueSummary', { count })
+    : t('pages.dashboard.noOperationalIssues')
+})
+
+const operationalMetrics = computed(() => {
+  if (!operational.value) return []
+  const report = operational.value
+  return [
+    { key: 'retryable', label: t('pages.dashboard.retryableTargets'), value: report.retryable_targets, tone: 'danger' },
+    { key: 'profiles', label: t('pages.dashboard.profileRetryDue'), value: report.company_profile_retry_due, tone: 'warning' },
+    { key: 'market', label: t('pages.dashboard.marketRecovery'), value: report.market_price_recovery, tone: 'warning' },
+    { key: 'providers', label: t('pages.dashboard.providerWarnings'), value: report.provider_warnings, tone: 'warning' },
+  ].filter((item) => item.value > 0)
+})
+
 const latestSyncAgeHours = computed(() => {
   if (!latestFilingSync.value?.started_at) return 0
   const started = new Date(latestFilingSync.value.started_at)
@@ -384,42 +460,75 @@ const notificationRateType = computed(() => {
 
 async function load() {
   loading.value = true
+  dashboardLoadWarnings.value = []
+  // The dashboard's operational card is intentionally non-blocking: a local
+  // diagnostics failure must not hide targets, SEC filings, or IPO activity.
+  void loadOperationalReport()
   try {
     const [targets, enabledTargets, filings, ipoFilings, ipoCompanyRes, ipoHealthRes, syncRuns, notifications, telegramConfigs, taskConfigs, uiConfigs] = await Promise.all([
-      apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { page: 1, page_size: 10 } }),
-      apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { status: 'enabled', page: 1, page_size: 200 } }),
-      apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { page: 1, page_size: 100, sort_by: 'pulled_at', sort_order: 'desc' } }),
-      apiClient.get<ApiResponse<PageResult<IPOFiling>>>('/ipo-filings', { params: { page: 1, page_size: 6 } }),
-      apiClient.get<ApiResponse<PageResult<IPOCompany>>>('/ipo-companies', { params: { page: 1, page_size: 500 } }),
-      apiClient.get<ApiResponse<IPORadarHealth>>('/ipo-health'),
-      apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { page: 1, page_size: 20 } }),
-      apiClient.get<ApiResponse<PageResult<NotificationBatch>>>('/notification-batches', { params: { page: 1, page_size: 5 } }),
-      apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config'),
-      apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs'),
-      apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs', { params: { category: 'ui' } })
+      safeDashboardRequest(t('nav.targets'), apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { page: 1, page_size: 10 } })),
+      safeDashboardRequest(t('pages.dashboard.targetHealth'), apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { status: 'enabled', page: 1, page_size: 200 } })),
+      safeDashboardRequest(t('nav.filings'), apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { page: 1, page_size: 100, sort_by: 'pulled_at', sort_order: 'desc' } })),
+      safeDashboardRequest(t('pages.dashboard.ipoRadar'), apiClient.get<ApiResponse<PageResult<IPOFiling>>>('/ipo-filings', { params: { page: 1, page_size: 6 } })),
+      safeDashboardRequest(t('pages.dashboard.ipoRadar'), apiClient.get<ApiResponse<PageResult<IPOCompany>>>('/ipo-companies', { params: { page: 1, page_size: 500 } })),
+      safeDashboardRequest(t('pages.dashboard.ipoRadar'), apiClient.get<ApiResponse<IPORadarHealth>>('/ipo-health')),
+      safeDashboardRequest(t('pages.dashboard.syncStatus'), apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { page: 1, page_size: 20 } })),
+      safeDashboardRequest(t('pages.dashboard.recentNotifications'), apiClient.get<ApiResponse<PageResult<NotificationBatch>>>('/notification-batches', { params: { page: 1, page_size: 5 } })),
+      safeDashboardRequest('Telegram', apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config')),
+      safeDashboardRequest(t('pages.scheduler.title'), apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs')),
+      safeDashboardRequest(t('pages.configs.title'), apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs', { params: { category: 'ui' } }))
     ])
-    targetTotal.value = targets.data.data.total
-    enabledTargetTotal.value = enabledTargets.data.data.total
-    filingTotal.value = filings.data.data.total
-    ipoFilingTotal.value = ipoFilings.data.data.total
-    ipoCompanies.value = ipoCompanyRes.data.data.items
-    ipoHealth.value = ipoHealthRes.data.data
-    syncTotal.value = syncRuns.data.data.total
-    notificationTotal.value = notifications.data.data.total
-    dashboardFilings.value = filings.data.data.items
-    recentFilings.value = filings.data.data.items.slice(0, 6)
-    recentIpoFilings.value = ipoFilings.data.data.items
-    latestFilingSync.value = syncRuns.data.data.items.find((item) => ['manual', 'scheduler', 'target'].includes(item.trigger)) || null
-    latestIpoSync.value = syncRuns.data.data.items.find((item) => item.trigger === 'ipo_manual' || item.trigger === 'ipo_scheduler') || null
-    recentNotifications.value = notifications.data.data.items
-    successfulTargets.value = enabledTargets.data.data.items.filter((item) => item.last_sync_status === 'success').length
-    failedTargets.value = enabledTargets.data.data.items.filter((item) => item.last_sync_status === 'failed').length
-    failedTargetItems.value = enabledTargets.data.data.items.filter((item) => item.last_sync_status === 'failed').slice(0, 5)
-    telegramEnabled.value = configValue(telegramConfigs.data.data, 'telegram.enabled') === 'true'
-    schedulerEnabled.value = taskConfigs.data.data.some((item) => item.enabled)
-    onboardingVisible.value = configValue(uiConfigs.data.data, 'ui.onboarding_completed') !== 'true'
+    if (targets) targetTotal.value = targets.total
+    if (enabledTargets) {
+      enabledTargetTotal.value = enabledTargets.total
+      successfulTargets.value = enabledTargets.items.filter((item) => item.last_sync_status === 'success').length
+      failedTargets.value = enabledTargets.items.filter((item) => item.last_sync_status === 'failed').length
+      failedTargetItems.value = enabledTargets.items.filter((item) => item.last_sync_status === 'failed').slice(0, 5)
+    }
+    if (filings) {
+      filingTotal.value = filings.total
+      dashboardFilings.value = filings.items
+      recentFilings.value = filings.items.slice(0, 6)
+    }
+    if (ipoFilings) {
+      ipoFilingTotal.value = ipoFilings.total
+      recentIpoFilings.value = ipoFilings.items
+    }
+    if (ipoCompanyRes) ipoCompanies.value = ipoCompanyRes.items
+    if (ipoHealthRes) ipoHealth.value = ipoHealthRes
+    if (syncRuns) {
+      syncTotal.value = syncRuns.total
+      latestFilingSync.value = syncRuns.items.find((item) => ['manual', 'scheduler', 'target'].includes(item.trigger)) || null
+      latestIpoSync.value = syncRuns.items.find((item) => item.trigger === 'ipo_manual' || item.trigger === 'ipo_scheduler') || null
+    }
+    if (notifications) {
+      notificationTotal.value = notifications.total
+      recentNotifications.value = notifications.items
+    }
+    if (telegramConfigs) telegramEnabled.value = configValue(telegramConfigs, 'telegram.enabled') === 'true'
+    if (taskConfigs) schedulerEnabled.value = taskConfigs.some((item) => item.enabled)
+    if (uiConfigs) onboardingVisible.value = configValue(uiConfigs, 'ui.onboarding_completed') !== 'true'
   } finally {
     loading.value = false
+  }
+}
+
+async function safeDashboardRequest<T>(section: string, request: Promise<{ data: ApiResponse<T> }>): Promise<T | null> {
+  try {
+    return (await request).data.data
+  } catch {
+    if (!dashboardLoadWarnings.value.includes(section)) dashboardLoadWarnings.value.push(section)
+    return null
+  }
+}
+
+async function loadOperationalReport() {
+  try {
+    const res = await apiClient.get<ApiResponse<OperationalReport>>('/operational-health')
+    operational.value = res.data.data
+  } catch {
+    // Keep the most recently rendered report. Operational diagnostics are
+    // supplemental and should never break the primary dashboard refresh.
   }
 }
 
@@ -441,6 +550,8 @@ async function refreshFilings() {
     const res = await apiClient.post<ApiResponse<{ new_filings: number }>>('/filings/refresh')
     ElMessage.success(t('messages.newFilingsAdded', { count: res.data.data.new_filings }))
     await load()
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || error?.message || t('messages.taskTriggerFailed'))
   } finally {
     refreshing.value = false
   }
@@ -452,6 +563,8 @@ async function refreshIpoFilings() {
     const res = await apiClient.post<ApiResponse<IPORadarRefreshResult>>('/ipo-filings/refresh', null, { timeout: 120000 })
     ElMessage.success(t('messages.ipoRefreshDone', { count: res.data.data.new_filings, notified: res.data.data.notified }))
     await load()
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || error?.message || t('messages.taskTriggerFailed'))
   } finally {
     refreshingIpo.value = false
   }
@@ -507,5 +620,156 @@ function notificationStatusLabel(status?: string) {
 	return status || '-'
 }
 
+function operationalStatusType(status?: string) {
+  if (status === 'ok') return 'success'
+  if (status === 'critical') return 'danger'
+  return 'warning'
+}
+
+function operationalStatusLabel(status?: string) {
+  if (status === 'ok') return t('pages.dashboard.operationalHealthy')
+  if (status === 'critical') return t('pages.dashboard.operationalCritical')
+  return t('pages.dashboard.operationalWarning')
+}
+
+function operationalIssueSeverityLabel(severity?: string) {
+  return severity === 'critical' ? t('pages.dashboard.operationalCritical') : t('pages.dashboard.operationalWarning')
+}
+
+function openOperationalAction(action: string) {
+  const routes: Record<string, string> = {
+    scheduler: '/scheduler',
+    'sync-runs': '/sync-runs',
+    'discovery-logs': '/discovery-logs',
+    'system-health': '/system-health',
+  }
+  router.push(routes[action] || '/system-health')
+}
+
 onMounted(load)
 </script>
+
+<style scoped>
+.dashboard-operations-panel :deep(.el-card__body) {
+  padding-top: 14px;
+}
+
+.operational-brief {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.operational-brief > div {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+
+.operational-brief-kicker {
+  flex: none;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.operational-brief strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operational-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.operational-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #e8edf5;
+  border-radius: 8px;
+  background: #fafcff;
+}
+
+.operational-metric span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.operational-metric strong {
+  color: #334155;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.operational-metric.is-danger strong { color: #dc2626; }
+.operational-metric.is-warning strong { color: #d97706; }
+
+.operational-issue-list {
+  border-top: 1px solid #eef2f7;
+}
+
+.operational-issue-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 56px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.operational-issue-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.operational-issue-content > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.operational-issue-content strong {
+  color: #1f2937;
+  font-size: 14px;
+}
+
+.operational-issue-content span {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operational-more-link {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .operational-brief,
+  .operational-brief > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .operational-issue-row { align-items: flex-start; padding: 10px 0; }
+  .operational-issue-content { align-items: flex-start; }
+  .operational-issue-content span { white-space: normal; }
+}
+</style>

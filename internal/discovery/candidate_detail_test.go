@@ -8,20 +8,28 @@ import (
 
 func TestGetCandidateDetailReturnsCurrentEvidence(t *testing.T) {
 	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
 	security := Security{CIK: "0000012345", CompanyName: "", SIC: 0, CatalogStatus: SecurityCatalogPublished}
 	if err := db.Create(&security).Error; err != nil {
 		t.Fatal(err)
 	}
-	securityBatch := UniverseBatch{BatchID: "security-current", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now()}
+	securityBatch := UniverseBatch{BatchID: "security-current", Kind: BatchKindSecurity, Status: BatchStatusPublished, EffectiveDate: "2026-07-21", StartedAt: now.Add(-2 * time.Hour)}
 	if err := db.Create(&securityBatch).Error; err != nil {
 		t.Fatal(err)
 	}
-	batch := UniverseBatch{BatchID: "current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: time.Now()}
+	previous := UniverseBatch{BatchID: "previous", Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-07-20", StartedAt: now.Add(-time.Hour)}
+	if err := db.Create(&previous).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CandidateScoreSnapshot{BatchID: previous.BatchID, SecurityID: security.ID, Ticker: "DTCO", Grade: CandidateGradeB, EligibleB: true, TotalScore: 80, RevenueGrowthPct: 41, CashRunwayMonths: 15}).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := UniverseBatch{BatchID: "current", Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-07-21", StartedAt: now}
 	batch.UniverseSourceVersion = securityBatch.BatchID
 	if err := db.Create(&batch).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&SecurityBatchIdentity{BatchID: securityBatch.BatchID, SecurityID: security.ID, CIK: security.CIK, Ticker: "DTCO", CompanyName: "Detail Co", SIC: 2834, StateOfIncorporation: "DE", LatestAnnualForm: "10-K", MappingStatus: MappingStatusCurrent, CreatedAt: time.Now()}).Error; err != nil {
+	if err := db.Create(&SecurityBatchIdentity{BatchID: securityBatch.BatchID, SecurityID: security.ID, CIK: security.CIK, Ticker: "DTCO", CompanyName: "Detail Co", SIC: 2834, SICDescription: "BIOLOGICAL PRODUCTS", StateOfIncorporation: "DE", LatestAnnualForm: "10-K", MappingStatus: MappingStatusCurrent, CreatedAt: time.Now()}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
@@ -31,6 +39,9 @@ func TestGetCandidateDetailReturnsCurrentEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.Create(&CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "DTCO", Grade: CandidateGradeA, EligibleA: true, TotalScore: 88, RevenueGrowthPct: 54, CashRunwayMonths: 18, RecentQualifiedInsider: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CandidateSignalEvent{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "DTCO", Grade: CandidateGradeA, EventType: CandidateSignalEnteredA, TotalScore: 88, SignalDate: now, BaselineTradeDate: now, BaselineCloseMicros: 10_000_000, PriceSource: "test"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&FinancialMetricSnapshot{BatchID: securityBatch.BatchID, SecurityID: security.ID, RevenueGrowthAvailable: true, RunwayAvailable: true, QuarterlyRevenueYoYPct: 54, CashRunwayMonths: 18, QualityFlagsJSON: `["low_revenue_base"]`}).Error; err != nil {
@@ -61,6 +72,9 @@ func TestGetCandidateDetailReturnsCurrentEvidence(t *testing.T) {
 	if detail.Security.SIC != 2834 || detail.Sector.Category != "生物医药" {
 		t.Fatalf("detail sector = %#v security=%#v", detail.Sector, detail.Security)
 	}
+	if detail.CompanyProfile.SICDescription != "BIOLOGICAL PRODUCTS" || detail.CompanyProfile.Exchange != "" || detail.CompanyProfile.Status != "available" {
+		t.Fatalf("company profile = %#v", detail.CompanyProfile)
+	}
 	if detail.Financial == nil || detail.Financial.QuarterlyRevenueYoYPct != 54 {
 		t.Fatalf("financial = %#v", detail.Financial)
 	}
@@ -79,6 +93,30 @@ func TestGetCandidateDetailReturnsCurrentEvidence(t *testing.T) {
 	if detail.DataQuality["financial"] != QualityStatusValid || detail.DataQuality["universe"] != QualityStatusValid {
 		t.Fatalf("quality = %#v", detail.DataQuality)
 	}
+	if detail.DataLineage.ScoreBatchID != batch.BatchID || detail.DataLineage.EvidenceBatchID != securityBatch.BatchID {
+		t.Fatalf("lineage batches = %#v", detail.DataLineage)
+	}
+	if item, ok := candidateLineageItem(detail.DataLineage, "financial"); !ok || item.Status != QualityStatusValid || item.Source != "SEC Company Facts → 本地财务指标快照" {
+		t.Fatalf("financial lineage = %#v, exists=%v", item, ok)
+	}
+	if item, ok := candidateLineageItem(detail.DataLineage, "filings"); !ok || item.Status != QualityStatusValid || item.AsOf != newer.UTC().Format(time.DateOnly) {
+		t.Fatalf("filing lineage = %#v, exists=%v", item, ok)
+	}
+	if len(detail.ScoreHistory) != 2 || detail.ScoreHistory[0].BatchID != batch.BatchID || detail.ScoreHistory[0].ScoreDelta == nil || *detail.ScoreHistory[0].ScoreDelta != 8 || detail.ScoreHistory[0].ChangeStatus != "improved" {
+		t.Fatalf("score history = %#v", detail.ScoreHistory)
+	}
+	if len(detail.SignalEvents) != 1 || detail.SignalEvents[0].EventType != CandidateSignalEnteredA {
+		t.Fatalf("signal events = %#v", detail.SignalEvents)
+	}
+}
+
+func candidateLineageItem(lineage CandidateDataLineage, key string) (CandidateLineageItem, bool) {
+	for _, item := range lineage.Items {
+		if item.Key == key {
+			return item, true
+		}
+	}
+	return CandidateLineageItem{}, false
 }
 
 func TestSummarizeCandidateCapitalRisksSeparatesInactiveHistory(t *testing.T) {

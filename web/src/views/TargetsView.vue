@@ -2,7 +2,10 @@
   <section class="page">
     <div class="page-header">
       <h1>{{ t('pages.targets.title') }}</h1>
-      <el-button type="primary" @click="openCreate">{{ t('pages.targets.add') }}</el-button>
+      <el-space>
+        <el-button :loading="simulationLoading" @click="openTradePlanSimulations">交易模拟复盘</el-button>
+        <el-button type="primary" @click="openCreate">{{ t('pages.targets.add') }}</el-button>
+      </el-space>
     </div>
     <el-form :inline="true" :model="filters" class="toolbar">
       <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
@@ -12,6 +15,11 @@
           <el-option :label="t('common.enabled')" value="enabled" />
           <el-option :label="t('common.disabled')" value="disabled" />
         </el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-button :type="filters.upcoming_earnings ? 'primary' : 'default'" plain @click="toggleUpcomingEarnings">
+          即将财报 <el-badge :value="upcomingEarningsCount" :hidden="upcomingEarningsCount === 0" class="quick-filter-badge" />
+        </el-button>
       </el-form-item>
       <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
     </el-form>
@@ -54,6 +62,50 @@
         <template #default="{ row }">{{ formatDateTime(row.last_sync_at) }}</template>
       </el-table-column>
       <el-table-column prop="last_new_filings" :label="t('common.newCount')" width="80" align="right" />
+      <el-table-column label="技术信号" min-width="180">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <template v-if="row.technical?.status === 'ready'">
+                <div>价格日期：{{ row.technical.trade_date || '-' }}</div>
+                <div>收盘价：{{ formatPrice(row.technical.close_usd) }}</div>
+                <div>MA20：{{ formatPrice(row.technical.ma20_usd) }}（{{ formatSignedPct(row.technical.distance_to_ma20_pct) }}）</div>
+                <div>前 20 日最高收盘价：{{ formatPrice(row.technical.prior_20d_high_usd) }}（{{ formatSignedPct(row.technical.distance_to_20d_high_pct) }}）</div>
+                <div>距 50 / 200 日高点：{{ formatSignedPct(row.technical.distance_to_50d_high_pct) }} / {{ formatSignedPct(row.technical.distance_to_200d_high_pct) }}</div>
+                <div>当日估算成交额：{{ formatNotional(row.technical.dollar_volume_usd) }}</div>
+                <div>20 日均成交额：{{ formatNotional(row.technical.average_dollar_volume_20) }}（{{ formatRatio(row.technical.dollar_volume_ratio_20) }}）</div>
+                <div>流动性：{{ liquidityLabel(row.technical.liquidity_status) }}</div>
+              </template>
+              <span v-else>{{ targetTechnicalStatusDescription(row) }}</span>
+            </template>
+            <el-space wrap>
+              <el-tag v-for="signal in row.technical?.signals || []" :key="signal.kind" type="success" effect="plain">{{ signal.label }}</el-tag>
+              <el-tag v-if="row.technical?.status === 'ready'" :type="liquidityTagType(row.technical.liquidity_status)" effect="plain">流动性：{{ liquidityShortLabel(row.technical.liquidity_status) }}</el-tag>
+              <el-tag v-if="!(row.technical?.signals || []).length" :type="row.technical?.status === 'ready' ? 'info' : 'warning'" effect="plain">
+                {{ row.technical?.status === 'ready' ? '暂无突破' : targetTechnicalStatusLabel(row) }}
+              </el-tag>
+            </el-space>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column label="交易计划" min-width="130">
+        <template #default="{ row }">
+          <el-tooltip :content="tradeSetupSummary(row.technical)" placement="top">
+            <el-tag :type="tradeSetupTagType(row.technical?.trade_setup?.status)" effect="plain">
+              {{ tradeSetupLabel(row.technical?.trade_setup?.status) }}
+            </el-tag>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column label="财报预告" min-width="175">
+        <template #default="{ row }">
+          <el-tooltip :content="earningsPreviewTooltip(earningsPreviewFor(row))" placement="top" effect="dark">
+            <el-tag :type="earningsPreviewTagType(earningsPreviewFor(row))" effect="plain">
+              {{ earningsPreviewLabel(earningsPreviewFor(row)) }}
+            </el-tag>
+          </el-tooltip>
+        </template>
+      </el-table-column>
       <el-table-column prop="last_sync_error" :label="t('pages.targets.syncError')" min-width="180" show-overflow-tooltip />
       <el-table-column prop="updated_at" :label="t('common.update')" width="170">
         <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
@@ -134,6 +186,49 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="simulationVisible" title="交易计划模拟复盘" width="1120px" top="6vh">
+      <el-alert
+        :title="simulationReport?.execution_convention || '日线模拟结果'"
+        type="info"
+        :closable="false"
+        show-icon
+        class="summary-alert"
+      />
+      <div class="target-detail-actions">
+        <el-button type="primary" :loading="simulationRebuilding" @click="rebuildTradePlanSimulations">重建日线模拟</el-button>
+        <span v-if="simulationReport" class="muted">规则版本 {{ simulationReport.rule_version }} · 生成于 {{ formatDateTime(simulationReport.generated_at) }}</span>
+      </div>
+      <el-descriptions v-if="simulationReport" :column="5" border size="small" class="simulation-summary">
+        <el-descriptions-item label="模拟数">{{ simulationReport.total_count }}</el-descriptions-item>
+        <el-descriptions-item label="已平仓">{{ simulationReport.closed_count }}</el-descriptions-item>
+        <el-descriptions-item label="进行中">{{ simulationReport.open_count }}</el-descriptions-item>
+        <el-descriptions-item label="胜率">{{ formatPct(simulationReport.win_rate_pct) }}</el-descriptions-item>
+        <el-descriptions-item label="平均收益">{{ formatSignedPct(simulationReport.average_return_pct) }}</el-descriptions-item>
+        <el-descriptions-item label="平均 R">{{ formatRMultiple(simulationReport.average_r_multiple) }}</el-descriptions-item>
+        <el-descriptions-item label="最大回撤">{{ formatSignedPct(simulationReport.max_drawdown_pct) }}</el-descriptions-item>
+        <el-descriptions-item label="止损">{{ simulationReport.status_counts.stop_loss || 0 }}</el-descriptions-item>
+        <el-descriptions-item label="目标退出">{{ simulationReport.status_counts.take_profit || 0 }}</el-descriptions-item>
+        <el-descriptions-item label="趋势退出">{{ simulationReport.status_counts.trend_exit || 0 }}</el-descriptions-item>
+      </el-descriptions>
+      <el-table :data="simulationReport?.items || []" border max-height="480" empty-text="暂无可复盘的日线模拟记录">
+        <el-table-column prop="ticker" label="Ticker" width="100" />
+        <el-table-column label="信号 / 入场" width="190">
+          <template #default="{ row }">{{ formatDate(row.signal_date) }}<br><small>{{ formatDate(row.entry_date) }} · {{ formatPrice(row.entry_price_usd) }}</small></template>
+        </el-table-column>
+        <el-table-column label="计划" min-width="190">
+          <template #default="{ row }"><div>{{ row.entry_trigger || '-' }}</div><small>止损 {{ formatPrice(row.stop_loss_usd) }} · 目标 {{ formatPrice(row.take_profit_usd) }}</small></template>
+        </el-table-column>
+        <el-table-column label="结果" min-width="170">
+          <template #default="{ row }"><el-tag :type="simulationStatusType(row.status)" effect="plain">{{ simulationStatusLabel(row.status) }}</el-tag><div><small>{{ row.exit_reason || `标记价 ${formatPrice(row.last_mark_price_usd)}` }}</small></div></template>
+        </el-table-column>
+        <el-table-column label="收益 / R" width="125" align="right">
+          <template #default="{ row }">{{ formatSignedPct(row.return_pct) }}<br><small>{{ formatRMultiple(row.r_multiple) }}</small></template>
+        </el-table-column>
+        <el-table-column label="最大回撤" width="115" align="right"><template #default="{ row }">{{ formatSignedPct(row.max_drawdown_pct) }}</template></el-table-column>
+        <el-table-column label="持仓天数" width="100" align="right"><template #default="{ row }">{{ row.holding_days }}</template></el-table-column>
+      </el-table>
+    </el-dialog>
+
     <el-drawer v-model="detailVisible" :title="detailTarget ? `${detailTarget.ticker} ${t('common.details')}` : t('pages.targets.detail')" size="720px">
       <div v-if="detailTarget" class="target-detail">
         <el-alert
@@ -180,8 +275,114 @@
           </div>
         </div>
 
+        <div class="target-detail-section">
+          <div class="panel-header target-detail-section-title">
+            <span>公司概览（SEC + Longbridge）</span>
+            <el-button v-if="detailTarget.target_type === 'stock'" size="small" :loading="detailCompanyProfileRefreshing" @click="refreshTargetCompanyProfile">刷新公司资料</el-button>
+          </div>
+          <el-descriptions v-if="detailCompanyProfile" :column="2" border size="small">
+            <el-descriptions-item :label="t('common.company')">{{ detailCompanyProfile.company_name || detailTarget.company_name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="交易所">{{ detailCompanyProfile.exchange || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="CIK">{{ detailCompanyProfile.cik || detailTarget.cik || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="注册州/地区">{{ detailCompanyProfile.state_of_incorporation || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="SEC 行业（SIC）" :span="2">
+              {{ detailCompanyProfile.sic_description || (detailCompanyProfile.sic ? `SIC ${detailCompanyProfile.sic}` : '-') }}
+            </el-descriptions-item>
+            <el-descriptions-item label="业务概览" :span="2">{{ detailCompanyProfile.business_summary }}</el-descriptions-item>
+            <el-descriptions-item v-if="detailCompanyProfile.website" label="官网"><a :href="companyProfileWebsiteURL(detailCompanyProfile.website)" target="_blank" rel="noopener">{{ detailCompanyProfile.website }}</a></el-descriptions-item>
+            <el-descriptions-item v-if="detailCompanyProfile.founded" label="成立时间">{{ detailCompanyProfile.founded }}</el-descriptions-item>
+            <el-descriptions-item v-if="detailCompanyProfile.listing_date" label="上市时间">{{ detailCompanyProfile.listing_date }}</el-descriptions-item>
+            <el-descriptions-item v-if="detailCompanyProfile.market" label="上市市场">{{ detailCompanyProfile.market }}</el-descriptions-item>
+            <el-descriptions-item v-if="detailCompanyProfile.employees" label="员工数">{{ detailCompanyProfile.employees }}</el-descriptions-item>
+            <el-descriptions-item v-if="detailCompanyProfile.manager" label="管理者">{{ detailCompanyProfile.manager }}</el-descriptions-item>
+            <el-descriptions-item v-if="detailCompanyProfile.year_end" label="财年截止日">{{ detailCompanyProfile.year_end }}</el-descriptions-item>
+            <el-descriptions-item v-if="detailCompanyProfile.address" label="公司地址" :span="2">{{ detailCompanyProfile.address }}</el-descriptions-item>
+            <el-descriptions-item label="来源" :span="2">
+              {{ detailCompanyProfile.summary_source }}<span v-if="detailCompanyProfile.profile_fetched_at"> · Longbridge 更新于 {{ formatDateTime(detailCompanyProfile.profile_fetched_at) }}</span><span v-else-if="detailCompanyProfile.metadata_as_of"> · SEC 同步于 {{ formatDateTime(detailCompanyProfile.metadata_as_of) }}</span>
+            </el-descriptions-item>
+          </el-descriptions>
+          <el-alert v-else type="info" :closable="false" show-icon title="尚未找到本地 SEC 公司元数据；将在下一次 SEC 安全宇宙同步后自动补齐。" />
+        </div>
+
+        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+          <div class="panel-header target-detail-section-title">
+            <span>机构与分析师共识（Longbridge）</span>
+            <el-button size="small" :loading="detailAnalystRatingRefreshing" @click="refreshTargetAnalystRating">刷新分析师评级</el-button>
+          </div>
+          <template v-if="detailAnalystRating?.latest?.status === 'available'">
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="共识评级"><el-tag :type="analystRecommendationTagType(detailAnalystRating.latest.recommendation)" effect="plain">{{ analystRecommendationLabel(detailAnalystRating.latest.recommendation) }}</el-tag></el-descriptions-item>
+              <el-descriptions-item label="覆盖数">{{ detailAnalystRating.latest.analyst_count }}</el-descriptions-item>
+              <el-descriptions-item label="平均目标价">{{ formatAnalystPrice(detailAnalystRating.latest.target_average_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
+              <el-descriptions-item label="目标价区间">{{ formatAnalystPrice(detailAnalystRating.latest.target_low_micros, detailAnalystRating.latest.currency) }} - {{ formatAnalystPrice(detailAnalystRating.latest.target_high_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
+              <el-descriptions-item label="评级分布" :span="2">强烈买入 {{ detailAnalystRating.latest.strong_buy_count }} · 买入 {{ detailAnalystRating.latest.buy_count }} · 持有 {{ detailAnalystRating.latest.hold_count }} · 跑输 {{ detailAnalystRating.latest.underperform_count }} · 卖出 {{ detailAnalystRating.latest.sell_count }}</el-descriptions-item>
+              <el-descriptions-item label="来源" :span="2">Longbridge · {{ analystProviderTimeText(detailAnalystRating.latest) }}</el-descriptions-item>
+            </el-descriptions>
+            <div class="analyst-rating-provenance-title">结果溯源明细</div>
+            <el-table :data="analystRatingProvenanceRows(detailAnalystRating.latest)" size="small" border class="analyst-rating-provenance-table">
+              <el-table-column prop="result" label="分析结果" min-width="120" />
+              <el-table-column prop="value" label="当前值" min-width="165" show-overflow-tooltip />
+              <el-table-column prop="source" label="数据来源 / 原始聚合字段" min-width="240" show-overflow-tooltip />
+              <el-table-column prop="providerUpdatedAt" label="提供方时间" width="145" show-overflow-tooltip />
+              <el-table-column prop="fetchedAt" label="本地同步时间" width="165" />
+              <el-table-column prop="note" label="说明" min-width="190" show-overflow-tooltip />
+            </el-table>
+            <div v-if="detailAnalystRating.history?.length > 1" class="analyst-rating-provenance-title">快照变更历史（仅在聚合值变化时新增）</div>
+            <el-table v-if="detailAnalystRating.history?.length > 1" :data="detailAnalystRating.history.slice(0, 12)" size="small" border class="analyst-rating-history-table">
+              <el-table-column label="同步时间" width="165"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
+              <el-table-column label="评级" width="105"><template #default="{ row }">{{ analystRecommendationLabel(row.recommendation) }}</template></el-table-column>
+              <el-table-column prop="analyst_count" label="覆盖数" width="80" align="right" />
+              <el-table-column label="平均目标价" width="125" align="right"><template #default="{ row }">{{ formatAnalystPrice(row.target_average_micros, row.currency) }}</template></el-table-column>
+              <el-table-column prop="change_summary" label="有效变化" min-width="165" show-overflow-tooltip />
+            </el-table>
+          </template>
+          <el-alert v-else type="info" :closable="false" show-icon :title="detailAnalystRating?.message || '尚未同步分析师共识'" description="可手动刷新当前标的，不会执行 SEC 同步或行情全量请求。小盘股没有分析师覆盖属于正常情况。" />
+        </div>
+
+        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+          <div class="panel-header target-detail-section-title">
+            <span>财报预告（Longbridge）</span>
+            <el-button size="small" :loading="detailEarningsRefreshing" @click="refreshTargetEarningsPreview">刷新财报预告</el-button>
+          </div>
+          <template v-if="detailEarningsPreview?.preview?.status === 'scheduled'">
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="下次财报日">{{ formatDate(detailEarningsPreview.preview.report_at) }}（{{ daysUntilEarnings(detailEarningsPreview.preview.report_at) }}）</el-descriptions-item>
+              <el-descriptions-item label="发布时段">{{ detailEarningsPreview.preview.session || '提供方未标注' }}</el-descriptions-item>
+              <el-descriptions-item label="财季">{{ earningsFiscalPeriod(detailEarningsPreview.preview) }}</el-descriptions-item>
+              <el-descriptions-item label="币种">{{ detailEarningsPreview.preview.currency || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="EPS 预期">{{ formatEarningsValue(detailEarningsPreview.preview.eps_estimate, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
+              <el-descriptions-item label="收入预期">{{ formatEarningsValue(detailEarningsPreview.preview.revenue_estimate, detailEarningsPreview.preview.currency, true) }}</el-descriptions-item>
+              <el-descriptions-item label="最近实际 EPS">{{ formatEarningsValue(detailEarningsPreview.preview.eps_actual, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
+              <el-descriptions-item label="最近实际收入">{{ formatEarningsValue(detailEarningsPreview.preview.revenue_actual, detailEarningsPreview.preview.currency, true) }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailEarningsPreview.preview.change_summary" label="最近变化" :span="2">{{ detailEarningsPreview.preview.change_summary }}</el-descriptions-item>
+              <el-descriptions-item label="来源与本地更新时间" :span="2">Longbridge 财报日历 / 财务共识 · {{ formatDateTime(detailEarningsPreview.preview.fetched_at) }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailEarningsPreview.preview.event_content" label="提供方说明" :span="2">{{ detailEarningsPreview.preview.event_content }}</el-descriptions-item>
+            </el-descriptions>
+            <el-alert type="info" :closable="false" show-icon class="target-technical-alert" title="财报日、发布时段与预期值由提供方维护，可能调整；实际披露结果仍以公司公告及 SEC 文件为准。" />
+          </template>
+          <el-alert v-else type="info" :closable="false" show-icon :title="detailEarningsPreview?.message || '尚未同步财报预告'" :description="detailEarningsPreview?.preview?.last_error || '可手动刷新当前标的；不会执行 SEC 同步或行情全量请求。'" />
+        </div>
+
         <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
           <ProfitHistoryChart :history="detailProfitHistory" />
+        </div>
+
+        <div class="target-detail-section">
+          <div class="panel-header target-detail-section-title">
+            <span>本地日线与成交额</span>
+            <el-button size="small" :loading="detailTechnicalBackfilling" @click="backfillTargetTechnicalHistory">
+              回填/刷新价格历史
+            </el-button>
+          </div>
+          <el-alert
+            v-if="detailTechnicalHistory.length === 0"
+            title="尚未保存该标的的本地日线；点击右侧按钮可回填约 220 个交易日，用于展示 MA20、MA50、MA200 与每日估算成交额。"
+            type="info"
+            :closable="false"
+            show-icon
+            class="target-technical-alert"
+          />
+          <TechnicalPriceHistoryChart :ticker="detailTarget.ticker" :rows="detailTechnicalHistory" />
         </div>
 
         <div class="panel-header target-detail-section-title">
@@ -235,7 +436,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
-import type { ApiResponse, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerLookup, WatchTarget } from '@/api/types'
+import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
+import type { AnalystRatingView, ApiResponse, CandidateTechnicalHistoryRow, CompanyProfile, EarningsPreview, EarningsPreviewRefreshResult, EarningsPreviewView, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerLookup, TickerTechnicalHistory, TradePlanSimulationRebuildResult, TradePlanSimulationReport, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -245,6 +447,7 @@ const lookingUp = ref(false)
 const syncingId = ref<number | null>(null)
 const route = useRoute()
 const rows = ref<WatchTarget[]>([])
+const earningsPreviews = ref<Record<number, EarningsPreview>>({})
 const total = ref(0)
 const page = ref(1)
 const pageSize = 20
@@ -255,9 +458,21 @@ const detailTarget = ref<WatchTarget | null>(null)
 const detailFilings = ref<Filing[]>([])
 const detailSyncDetails = ref<SyncRunDetail[]>([])
 const detailProfitHistory = ref<ProfitHistory | null>(null)
+const detailTechnicalHistory = ref<CandidateTechnicalHistoryRow[]>([])
+const detailCompanyProfile = ref<CompanyProfile | null>(null)
+const detailCompanyProfileRefreshing = ref(false)
+const detailAnalystRating = ref<AnalystRatingView | null>(null)
+const detailAnalystRatingRefreshing = ref(false)
+const detailEarningsPreview = ref<EarningsPreviewView | null>(null)
+const detailEarningsRefreshing = ref(false)
+const detailTechnicalBackfilling = ref(false)
+const simulationVisible = ref(false)
+const simulationLoading = ref(false)
+const simulationRebuilding = ref(false)
+const simulationReport = ref<TradePlanSimulationReport | null>(null)
 const systemConfigs = ref<SystemConfig[]>([])
 const editingId = ref<number | null>(null)
-const filters = reactive({ ticker: '', status: '', group: '' })
+const filters = reactive({ ticker: '', status: '', group: '', upcoming_earnings: false })
 const form = reactive({
   ticker: '', company_name: '', cik: '', target_type: 'stock', fund_series_id: '', fund_class_id: '', identity_source: '', group: '', status: 'enabled'
 })
@@ -293,9 +508,53 @@ async function load() {
     const res = await apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { ...filters, page: page.value, page_size: pageSize } })
     rows.value = res.data.data.items
     total.value = res.data.data.total
+		void loadEarningsPreviews()
+  } catch (error) {
+    // Keep a failed quick filter from looking like it simply returned the
+    // previously loaded, unfiltered table.
+    rows.value = []
+    total.value = 0
+    const message = axios.isAxiosError(error) ? error.response?.data?.message : ''
+    ElMessage.error(typeof message === 'string' && message.trim() ? message : '加载监控标的失败，请稍后重试')
   } finally {
     loading.value = false
   }
+}
+
+const upcomingEarningsCount = computed(() => Object.values(earningsPreviews.value).filter((preview) => preview.status === 'scheduled' && earningsDays(preview.report_at) !== null && (earningsDays(preview.report_at) || 0) >= 0).length)
+function toggleUpcomingEarnings() { filters.upcoming_earnings = !filters.upcoming_earnings; page.value = 1; load() }
+
+async function loadEarningsPreviews() {
+  try {
+    const response = await apiClient.get<ApiResponse<EarningsPreview[]>>('/watch-targets/earnings-previews')
+    earningsPreviews.value = Object.fromEntries(response.data.data.map((item) => [item.target_id, item]))
+  } catch {
+    // Earnings previews are optional provider data; the main watch list remains
+    // available when Longbridge or its local cache is temporarily unavailable.
+    earningsPreviews.value = {}
+  }
+}
+
+async function openTradePlanSimulations() {
+	simulationLoading.value = true
+	try {
+		const response = await apiClient.get<ApiResponse<TradePlanSimulationReport>>('/watch-targets/trade-plan-simulations')
+		simulationReport.value = response.data.data
+		simulationVisible.value = true
+	} finally {
+		simulationLoading.value = false
+	}
+}
+
+async function rebuildTradePlanSimulations() {
+	simulationRebuilding.value = true
+	try {
+		const response = await apiClient.post<ApiResponse<TradePlanSimulationRebuildResult>>('/watch-targets/trade-plan-simulations/rebuild')
+		simulationReport.value = response.data.data
+		ElMessage.success(`已创建 ${response.data.data.created_count} 笔模拟，更新 ${response.data.data.updated_count} 笔`)
+	} finally {
+		simulationRebuilding.value = false
+	}
 }
 
 function configValue(key: string, fallback: string) {
@@ -536,6 +795,10 @@ async function openDetail(row: WatchTarget) {
 async function loadTargetDetailData(row: WatchTarget) {
 	detailLoading.value = true
 	detailProfitHistory.value = null
+	detailTechnicalHistory.value = []
+	detailCompanyProfile.value = null
+	detailAnalystRating.value = null
+	detailEarningsPreview.value = null
 	try {
     const [filings, syncDetails, configs] = await Promise.all([
       apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', {
@@ -547,7 +810,31 @@ async function loadTargetDetailData(row: WatchTarget) {
     detailFilings.value = filings.data.data.items
     detailSyncDetails.value = syncDetails.data.data
     systemConfigs.value = configs.data.data
+		try {
+			const profile = await apiClient.get<ApiResponse<CompanyProfile>>(`/discovery/company-profiles/${encodeURIComponent(row.ticker)}`, { params: { cik: row.cik || undefined } })
+			detailCompanyProfile.value = profile.data.data
+		} catch {
+			detailCompanyProfile.value = null
+		}
+		try {
+			const technical = await apiClient.get<ApiResponse<TickerTechnicalHistory>>(`/watch-targets/${row.id}/technical-history`)
+			detailTechnicalHistory.value = technical.data.data.history || []
+		} catch {
+			detailTechnicalHistory.value = []
+		}
 		if (row.target_type === 'stock') {
+			try {
+				const earnings = await apiClient.get<ApiResponse<EarningsPreviewView>>(`/watch-targets/${row.id}/earnings-preview`)
+				detailEarningsPreview.value = earnings.data.data
+			} catch {
+				detailEarningsPreview.value = null
+			}
+			try {
+				const rating = await apiClient.get<ApiResponse<AnalystRatingView>>(`/discovery/analyst-ratings/${encodeURIComponent(row.ticker)}`)
+				detailAnalystRating.value = rating.data.data
+			} catch {
+				detailAnalystRating.value = null
+			}
 			try {
 				const history = await apiClient.get<ApiResponse<ProfitHistory>>(`/discovery/profit-history/${encodeURIComponent(row.ticker)}`)
 				detailProfitHistory.value = history.data.data
@@ -558,6 +845,106 @@ async function loadTargetDetailData(row: WatchTarget) {
   } finally {
     detailLoading.value = false
   }
+}
+
+async function refreshTargetEarningsPreview() {
+  const target = detailTarget.value
+  if (!target) return
+  detailEarningsRefreshing.value = true
+  try {
+    const response = await apiClient.post<ApiResponse<EarningsPreviewRefreshResult>>(`/watch-targets/${target.id}/earnings-preview/refresh`)
+    detailEarningsPreview.value = { preview: response.data.data.preview, message: response.data.data.message }
+    if (response.data.data.preview) earningsPreviews.value[target.id] = response.data.data.preview
+    ElMessage.success(response.data.data.message || '已更新财报预告')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '刷新财报预告失败')
+  } finally {
+    detailEarningsRefreshing.value = false
+  }
+}
+
+async function backfillTargetTechnicalHistory() {
+  const target = detailTarget.value
+  if (!target) return
+  detailTechnicalBackfilling.value = true
+  try {
+    const response = await apiClient.post<ApiResponse<{ persisted_count: number }>>(`/watch-targets/${target.id}/technical-history-backfill`, { lookback_days: 0 })
+    ElMessage.success(`已保存 ${response.data.data.persisted_count} 条本地日线数据`)
+    const history = await apiClient.get<ApiResponse<TickerTechnicalHistory>>(`/watch-targets/${target.id}/technical-history`)
+    detailTechnicalHistory.value = history.data.data.history || []
+  } finally {
+    detailTechnicalBackfilling.value = false
+  }
+}
+
+async function refreshTargetCompanyProfile() {
+  const target = detailTarget.value
+  if (!target) return
+  detailCompanyProfileRefreshing.value = true
+  try {
+    const response = await apiClient.post<ApiResponse<{ profile: CompanyProfile }>>(`/discovery/company-profiles/${encodeURIComponent(target.ticker)}/refresh`, null, { params: { cik: target.cik || undefined } })
+    detailCompanyProfile.value = response.data.data.profile
+    ElMessage.success('已更新 Longbridge 公司资料')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '刷新公司资料失败')
+  } finally {
+    detailCompanyProfileRefreshing.value = false
+  }
+}
+
+async function refreshTargetAnalystRating() {
+  const target = detailTarget.value
+  if (!target) return
+  detailAnalystRatingRefreshing.value = true
+  try {
+    const response = await apiClient.post<ApiResponse<{ rating: AnalystRatingView }>>(`/discovery/analyst-ratings/${encodeURIComponent(target.ticker)}/refresh`, null, { params: { cik: target.cik || undefined } })
+    detailAnalystRating.value = response.data.data.rating
+    ElMessage.success('已更新 Longbridge 分析师共识')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '刷新分析师评级失败')
+  } finally {
+    detailAnalystRatingRefreshing.value = false
+  }
+}
+
+function analystRecommendationLabel(value?: string) {
+  const labels: Record<string, string> = { strong_buy: '强烈买入', buy: '买入', hold: '持有', underperform: '跑输', sell: '卖出', strong_sell: '强烈卖出', no_opinion: '无观点', unknown: '未评级' }
+  return labels[value || 'unknown'] || value || '未评级'
+}
+
+function analystRecommendationTagType(value?: string) {
+  if (value === 'strong_buy' || value === 'buy') return 'success'
+  if (value === 'sell' || value === 'strong_sell' || value === 'underperform') return 'danger'
+  return 'info'
+}
+
+function formatAnalystPrice(micros?: number, currency?: string) {
+  if (!micros) return '-'
+  return `${currency || '$'}${(micros / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+}
+
+function analystRatingProvenanceRows(snapshot: AnalystRatingView['latest']) {
+  if (!snapshot) return []
+  const providerUpdatedAt = snapshot.provider_updated_at_text || '提供方未返回精确更新时间'
+  const fetchedAt = formatDateTime(snapshot.fetched_at)
+  const distribution = `强烈买入 ${snapshot.strong_buy_count} · 买入 ${snapshot.buy_count} · 持有 ${snapshot.hold_count} · 跑输 ${snapshot.underperform_count} · 卖出 ${snapshot.sell_count}`
+  return [
+    { result: '共识评级', value: analystRecommendationLabel(snapshot.recommendation), source: 'Longbridge InstitutionRating / Summary.Recommend', providerUpdatedAt, fetchedAt, note: '提供方汇总结论，不代表单一机构或分析师。' },
+    { result: '覆盖数与分布', value: `${snapshot.analyst_count} 位覆盖；${distribution}`, source: 'Longbridge InstitutionRating / Latest.Evaluate', providerUpdatedAt, fetchedAt, note: '覆盖数及各评级档位均为提供方聚合口径。' },
+    { result: '平均目标价', value: formatAnalystPrice(snapshot.target_average_micros, snapshot.currency), source: 'Longbridge InstitutionRating / Summary.Target', providerUpdatedAt, fetchedAt, note: '目标价为聚合值，非本系统估值计算。' },
+    { result: '目标区间与参考价', value: `${formatAnalystPrice(snapshot.target_low_micros, snapshot.currency)} - ${formatAnalystPrice(snapshot.target_high_micros, snapshot.currency)}；参考 ${formatAnalystPrice(snapshot.reference_price_micros, snapshot.currency)}`, source: 'Longbridge InstitutionRating / Latest.Target', providerUpdatedAt, fetchedAt, note: '区间和参考收盘价以提供方返回值为准。' }
+  ]
+}
+
+function analystProviderTimeText(snapshot: AnalystRatingView['latest']) {
+  if (!snapshot) return '-'
+  return snapshot.provider_updated_at_text || `提供方未返回；本地同步于 ${formatDateTime(snapshot.fetched_at)}`
+}
+
+function companyProfileWebsiteURL(value?: string) {
+  const website = (value || '').trim()
+  if (!website) return '#'
+  return /^https?:\/\//i.test(website) ? website : `https://${website}`
 }
 
 async function remove(row: WatchTarget) {
@@ -578,6 +965,160 @@ function formatDate(value?: string | null) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toISOString().slice(0, 10)
+}
+
+function earningsPreviewFor(row: WatchTarget) {
+  return earningsPreviews.value[row.id]
+}
+
+function earningsPreviewLabel(preview?: EarningsPreview) {
+  if (!preview) return '未同步'
+  if (preview.status === 'scheduled') return `${formatDate(preview.report_at)} · ${daysUntilEarnings(preview.report_at)}`
+  if (preview.status === 'no_coverage') return '暂无覆盖'
+  return '暂不可用'
+}
+
+function earningsPreviewTagType(preview?: EarningsPreview): 'success' | 'warning' | 'info' | 'danger' {
+  if (!preview) return 'info'
+  if (preview.status === 'scheduled') {
+    const days = earningsDays(preview.report_at)
+    return days !== null && days >= 0 && days <= 7 ? 'warning' : 'success'
+  }
+  return preview.status === 'unavailable' ? 'danger' : 'info'
+}
+
+function earningsPreviewTooltip(preview?: EarningsPreview) {
+  if (!preview) return '尚未同步；可在详情中点击“刷新财报预告”。'
+  if (preview.status === 'scheduled') {
+    return `预计：${formatDate(preview.report_at)}${preview.session ? `，${preview.session}` : ''}\nEPS 预期：${formatEarningsValue(preview.eps_estimate, preview.currency, false)}\n收入预期：${formatEarningsValue(preview.revenue_estimate, preview.currency, true)}\n来源：Longbridge（本地更新 ${formatDateTime(preview.fetched_at)}）`
+  }
+  return preview.last_error || 'Longbridge 当前未返回该标的的未来财报日；这不表示公司不会发布财报。'
+}
+
+function earningsDays(value?: string | null) {
+  if (!value) return null
+  const report = new Date(value)
+  if (Number.isNaN(report.getTime())) return null
+  const today = new Date()
+  const start = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
+  const end = Date.UTC(report.getUTCFullYear(), report.getUTCMonth(), report.getUTCDate())
+  return Math.round((end - start) / 86400000)
+}
+
+function daysUntilEarnings(value?: string | null) {
+  const days = earningsDays(value)
+  if (days === null) return '日期待确认'
+  if (days === 0) return '今日'
+  return days > 0 ? `${days} 天后` : '已过期，待提供方更新'
+}
+
+function earningsFiscalPeriod(preview: EarningsPreview) {
+  if (preview.fiscal_year && preview.fiscal_period) return `${preview.fiscal_year} ${preview.fiscal_period}`
+  return preview.fiscal_period || '-'
+}
+
+function formatEarningsValue(value?: number | null, currency?: string, compact = false) {
+  if (!Number.isFinite(value)) return '-'
+  const prefix = currency || '$'
+  const numeric = Number(value)
+  if (compact && Math.abs(numeric) >= 1_000_000_000) return `${prefix}${(numeric / 1_000_000_000).toFixed(2)}B`
+  if (compact && Math.abs(numeric) >= 1_000_000) return `${prefix}${(numeric / 1_000_000).toFixed(2)}M`
+  return `${prefix}${numeric.toLocaleString(undefined, { maximumFractionDigits: compact ? 2 : 4 })}`
+}
+
+function formatPrice(value?: number | null) {
+  return Number.isFinite(value) && Number(value) > 0 ? `$${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'
+}
+
+function formatSignedPct(value?: number | null) {
+  return Number.isFinite(value) ? `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(1)}%` : '-'
+}
+
+function formatPct(value?: number | null) {
+	return Number.isFinite(value) ? `${Number(value).toFixed(1)}%` : '-'
+}
+
+function formatRMultiple(value?: number | null) {
+	return Number.isFinite(value) ? `${Number(value).toFixed(2)}R` : '-'
+}
+
+function formatRatio(value?: number | null) {
+  return Number.isFinite(value) && Number(value) > 0 ? `${Number(value).toFixed(2)}x` : '-'
+}
+
+function formatNotional(value?: number | null) {
+  return Number.isFinite(value) && Number(value) > 0 ? `$${new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 2 }).format(Number(value))}` : '-'
+}
+
+function liquidityLabel(status?: string) {
+  if (status === 'low') return '低流动性（20 日均额 < $1M）'
+  if (status === 'limited') return '受限（20 日均额 < $5M）'
+  if (status === 'normal') return '正常'
+  return '历史不足'
+}
+
+function liquidityShortLabel(status?: string) {
+  if (status === 'low') return '低'
+  if (status === 'limited') return '受限'
+  if (status === 'normal') return '正常'
+  return '未知'
+}
+
+function liquidityTagType(status?: string) {
+  if (status === 'low') return 'danger'
+  if (status === 'limited') return 'warning'
+  return 'success'
+}
+
+function tradeSetupLabel(status?: string) {
+  if (status === 'entry_candidate') return '入场候选'
+  if (status === 'watching') return '观察中'
+  if (status === 'exit_warning') return '离场预警'
+  if (status === 'invalidated') return '趋势失效'
+  return '计划不可用'
+}
+
+function tradeSetupTagType(status?: string) {
+  if (status === 'entry_candidate') return 'success'
+  if (status === 'exit_warning') return 'warning'
+  if (status === 'invalidated') return 'danger'
+  return 'info'
+}
+
+function tradeSetupSummary(technical?: WatchTarget['technical']) {
+  const setup = technical?.trade_setup
+  if (!setup || setup.status === 'unavailable') return setup?.reasons?.[0] || '日线历史不足'
+  const stop = formatPrice(setup.stop_loss_usd)
+  if (setup.status === 'entry_candidate') return `${setup.entry_trigger}；计划止损 ${stop}（风险 ${formatSignedPct(setup.risk_pct)}）`
+  if (setup.exit_reason) return setup.exit_reason
+  return setup.reasons?.[0] || '等待触发条件'
+}
+
+function simulationStatusLabel(status?: string) {
+	if (status === 'open') return '进行中'
+	if (status === 'stop_loss') return '止损退出'
+	if (status === 'take_profit') return '目标退出'
+	if (status === 'trend_exit') return '趋势退出'
+	return status || '-'
+}
+
+function simulationStatusType(status?: string) {
+	if (status === 'take_profit') return 'success'
+	if (status === 'open') return 'info'
+	if (status === 'trend_exit') return 'warning'
+	return 'danger'
+}
+
+function targetTechnicalStatusLabel(target: WatchTarget) {
+  if (target.technical?.status === 'data_insufficient') return '历史不足'
+  if (target.technical?.status === 'missing') return '无行情数据'
+  return '暂无技术数据'
+}
+
+function targetTechnicalStatusDescription(target: WatchTarget) {
+  const technical = target.technical
+  if (technical?.status === 'data_insufficient') return `技术分析至少需要 ${technical.required_sample_days || 21} 个交易日，当前仅有 ${technical.sample_days || 0} 个。`
+  return '尚未保存可用本地日线；请在详情中回填价格历史后计算技术信号。'
 }
 
 function syncStatusType(status?: string) {

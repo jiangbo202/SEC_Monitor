@@ -145,6 +145,37 @@ func TestScoreDiscoveryCandidatePrefersQuarterlyRevenueGrowth(t *testing.T) {
 	}
 }
 
+func TestScoreDiscoveryCandidateCalibratesBiotechRevenueSignals(t *testing.T) {
+	base := DiscoveryScoreInput{
+		SecurityID: 44, Ticker: "BIOX", MarketCapUSD: 240_000_000, SectorScore: 9,
+		Financial: FinancialMetricSnapshot{RevenueGrowthAvailable: true, RunwayAvailable: true, QuarterlyRevenueYoYPct: 120, CashRunwayMonths: 18},
+		Insiders:  []InsiderTransactionSnapshot{{Role: InsiderRoleCEO, TransactionDate: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), Qualified: true}},
+		AsOf:      time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC),
+	}
+	tests := []struct {
+		name      string
+		model     CandidateBusinessModelEvidence
+		wantScore int
+		wantA     bool
+	}{
+		{name: "commercial can retain full revenue score", model: CandidateBusinessModelEvidence{Model: CandidateBusinessModelCommercial, RevenueScoreCap: 30}, wantScore: 30, wantA: true},
+		{name: "clinical revenue is capped and cannot be A", model: CandidateBusinessModelEvidence{Model: CandidateBusinessModelClinicalPreRevenue, RevenueScoreCap: 10}, wantScore: 10, wantA: false},
+		{name: "unconfirmed licensing revenue is capped and cannot be A", model: CandidateBusinessModelEvidence{Model: CandidateBusinessModelMixedOrLicensing, RevenueScoreCap: 10}, wantScore: 10, wantA: false},
+		{name: "confirmed licensing revenue can be A", model: CandidateBusinessModelEvidence{Model: CandidateBusinessModelMixedOrLicensing, RevenueScoreCap: 30, RevenueRepeatableConfirmed: true}, wantScore: 30, wantA: true},
+		{name: "unknown is retained for research but cannot be A", model: CandidateBusinessModelEvidence{Model: CandidateBusinessModelUnknown, RevenueScoreCap: 10, RequiresReview: true}, wantScore: 10, wantA: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := base
+			input.BusinessModel = tc.model
+			score := ScoreDiscoveryCandidate(input)
+			if score.RevenueGrowthScore != tc.wantScore || score.EligibleA != tc.wantA || !score.EligibleB {
+				t.Fatalf("score = %#v", score)
+			}
+		})
+	}
+}
+
 func TestCandidateScoreToSnapshotPreservesScoreEvidence(t *testing.T) {
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	score := DiscoveryScore{

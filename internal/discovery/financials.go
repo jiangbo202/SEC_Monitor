@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"reflect"
@@ -25,6 +26,7 @@ const (
 	FinancialMetricCostOfRevenue        = "cost_of_revenue"
 	FinancialMetricNetIncomeCommon      = "net_income_common"
 	FinancialMetricDebtCurrent          = "debt_current"
+	FinancialMetricDebtNonCurrent       = "debt_non_current"
 	MaxCashRunwayMonths                 = 999.0
 )
 
@@ -93,6 +95,8 @@ var financialConceptsV1 = []financialConceptSpec{
 	{Metric: FinancialMetricDebtCurrent, Namespace: "us-gaap", Concept: "CurrentPortionOfLongTermDebt", Unit: "USD", Instant: true, Priority: 2},
 	{Metric: FinancialMetricDebtCurrent, Namespace: "us-gaap", Concept: "ShortTermBorrowings", Unit: "USD", Instant: true, Priority: 3},
 	{Metric: FinancialMetricDebtCurrent, Namespace: "us-gaap", Concept: "ShortTermDebtCurrent", Unit: "USD", Instant: true, Priority: 4},
+	{Metric: FinancialMetricDebtNonCurrent, Namespace: "us-gaap", Concept: "LongTermDebtNoncurrent", Unit: "USD", Instant: true, Priority: 1},
+	{Metric: FinancialMetricDebtNonCurrent, Namespace: "us-gaap", Concept: "LongTermDebtAndFinanceLeaseObligationsNoncurrent", Unit: "USD", Instant: true, Priority: 2},
 }
 
 func ParseSECFinancialFactsZIP(z *zip.Reader, allowed map[string]struct{}, limits ZIPParseLimits) ([]FinancialFact, error) {
@@ -192,6 +196,70 @@ type companyFinancialFactsDocument struct {
 	Facts map[string]map[string]companyFactsConcept `json:"facts"`
 }
 
+// ParseSECFinancialFactsJSON parses one issuer's Company Facts response.  It
+// is used by the daily incremental flow so a newly filed report does not force
+// a download and scan of the global companyfacts.zip archive.
+func ParseSECFinancialFactsJSON(reader io.Reader, expectedCIK string) ([]FinancialFact, error) {
+	if reader == nil {
+		return nil, fmt.Errorf("companyfacts reader is required")
+	}
+	if !validCIK(expectedCIK) {
+		return nil, fmt.Errorf("companyfacts expected CIK is invalid")
+	}
+	decoder := json.NewDecoder(reader)
+	var doc companyFinancialFactsDocument
+	if err := decoder.Decode(&doc); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("companyfacts trailing JSON")
+		}
+		return nil, err
+	}
+	if len(doc.CIK) == 0 && len(doc.Facts) == 0 {
+		return []FinancialFact{}, nil
+	}
+	cik, err := normalizeCIK(doc.CIK)
+	if err != nil || cik != expectedCIK {
+		return nil, fmt.Errorf("companyfacts CIK %s invalid cik", expectedCIK)
+	}
+	specs := financialSpecsByConcept()
+	seen := map[string]FinancialFact{}
+	out := []FinancialFact{}
+	for namespace, concepts := range doc.Facts {
+		for conceptName, concept := range concepts {
+			spec, ok := specs[namespace+":"+conceptName]
+			if !ok {
+				continue
+			}
+			for unit, facts := range concept.Units {
+				if unit != spec.Unit {
+					continue
+				}
+				for _, x := range facts {
+					fact, parseErr := financialFactFromCompanyFact(cik, namespace, conceptName, spec, x)
+					if parseErr != nil {
+						continue
+					}
+					key := strings.Join([]string{fact.CIK, fact.Concept, fact.PeriodStart.Format(time.DateOnly), fact.PeriodEnd.Format(time.DateOnly), fact.Accession}, "|")
+					if old, exists := seen[key]; exists {
+						if old != fact {
+							return nil, fmt.Errorf("companyfacts %s conflicting duplicate financial fact", fact.Concept)
+						}
+						continue
+					}
+					seen[key] = fact
+					out = append(out, fact)
+				}
+			}
+		}
+	}
+	sortFinancialFacts(out)
+	return out, nil
+}
+
 func financialFactFromCompanyFact(cik, namespace, conceptName string, spec financialConceptSpec, x companyFactsFact) (FinancialFact, error) {
 	context := cik + "/" + namespace + ":" + conceptName
 	end, err := time.Parse(time.DateOnly, x.End)
@@ -238,6 +306,9 @@ func BuildFinancialSummary(facts []FinancialFact, asOf time.Time) FinancialSumma
 			if out.LatestQuarterRevenueUSD < 5_000_000 {
 				out.QualityFlags = append(out.QualityFlags, "low_revenue_base")
 			}
+			if out.PriorYearQuarterRevenueUSD < 1_000_000 {
+				out.QualityFlags = append(out.QualityFlags, "low_prior_revenue_base")
+			}
 			if out.QuarterlyRevenueYoYPct > 200 {
 				out.QualityFlags = append(out.QualityFlags, "extreme_revenue_growth")
 			}
@@ -258,6 +329,12 @@ func BuildFinancialSummary(facts []FinancialFact, asOf time.Time) FinancialSumma
 			out.AnnualRevenueQoQPct = out.AnnualRevenueYoYPct
 		}
 	}
+	if out.RevenueGrowthAvailable && out.QuarterlyRevenueYoYPct >= CandidateARevenueGrowthMinPct && out.PreviousQuarterRevenueUSD > 0 && out.QuarterlyRevenueQoQPct <= 0 {
+		out.QualityFlags = append(out.QualityFlags, "quarterly_growth_not_confirmed_qoq")
+	}
+	if out.RevenueGrowthAvailable && out.QuarterlyRevenueYoYPct >= CandidateARevenueGrowthMinPct && out.AnnualRevenueYoYPct < 0 {
+		out.QualityFlags = append(out.QualityFlags, "quarterly_growth_conflicts_annual")
+	}
 	cash, okCash := latestInstantAmount(facts, FinancialMetricCash)
 	investments, _ := latestInstantAmount(facts, FinancialMetricShortTermInvestments)
 	ttmCFO, okCFO := latestTTMAmount(facts, FinancialMetricOperatingCashFlow)
@@ -274,6 +351,7 @@ func BuildFinancialSummary(facts []FinancialFact, asOf time.Time) FinancialSumma
 		if conservativeBurn == 0 {
 			out.CashRunwayMonths = MaxCashRunwayMonths
 			out.RunwayAvailable = true
+			out.QualityFlags = append(out.QualityFlags, "cash_flow_positive_runway_not_applicable")
 		} else if out.AvailableCashUSD > 0 {
 			out.CashRunwayMonths = out.AvailableCashUSD / conservativeBurn
 			out.RunwayAvailable = true

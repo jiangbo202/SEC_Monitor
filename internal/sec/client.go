@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/html/charset"
@@ -74,9 +78,93 @@ type HTTPClient struct {
 	CurrentFilingsURL         string
 	UserAgent                 string
 	Client                    *http.Client
+	RequestPolicy             RequestPolicy
+	pacer                     *requestPacer
+}
+
+// RequestPolicy keeps SEC traffic comfortably below EDGAR's published
+// fair-access limit. MaxRetries counts retries after the initial request.
+// A zero RequestsPerSecond disables pacing, which is useful for local tests.
+type RequestPolicy struct {
+	RequestsPerSecond int
+	MaxRetries        int
+	RetryBaseDelay    time.Duration
+}
+
+func DefaultRequestPolicy() RequestPolicy {
+	return RequestPolicy{
+		RequestsPerSecond: 8,
+		MaxRetries:        2,
+		RetryBaseDelay:    500 * time.Millisecond,
+	}
+}
+
+// RequestError preserves the operation and HTTP status so callers can show
+// an actionable message instead of a generic transport failure.
+type RequestError struct {
+	Operation  string
+	StatusCode int
+	Attempts   int
+	Cause      error
+}
+
+func (e *RequestError) Error() string {
+	if e == nil {
+		return "SEC request failed"
+	}
+	if e.StatusCode == http.StatusTooManyRequests {
+		return fmt.Sprintf("SEC request rate limited during %s after %d attempt(s)", e.Operation, e.Attempts)
+	}
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("SEC request failed during %s with HTTP %d after %d attempt(s)", e.Operation, e.StatusCode, e.Attempts)
+	}
+	if e.Cause != nil {
+		return fmt.Sprintf("SEC request failed during %s after %d attempt(s): %v", e.Operation, e.Attempts, e.Cause)
+	}
+	return fmt.Sprintf("SEC request failed during %s after %d attempt(s)", e.Operation, e.Attempts)
+}
+
+func (e *RequestError) Unwrap() error { return e.Cause }
+
+// UserMessage deliberately keeps provider diagnostics useful without exposing
+// an implementation-specific URL in API responses. The original error remains
+// attached to the sync run and server logs for operators.
+func UserMessage(err error) string {
+	var requestErr *RequestError
+	if errors.As(err, &requestErr) {
+		switch requestErr.StatusCode {
+		case http.StatusTooManyRequests:
+			return "SEC 请求频率受限；系统已自动退避重试，请稍后再次同步"
+		case http.StatusNotFound:
+			return "SEC 未找到请求的数据；该文件可能已迁移或暂不可用"
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return "SEC 服务暂时不可用；系统已自动重试，请稍后再次同步"
+		}
+		if errors.Is(requestErr.Cause, context.DeadlineExceeded) {
+			return "SEC 请求超时；系统已按策略重试，请检查网络后重试"
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "SEC 请求超时；请检查网络后重试"
+	}
+	return ""
 }
 
 func NewHTTPClient(baseURL string, userAgent string, timeout time.Duration) *HTTPClient {
+	return NewHTTPClientWithPolicy(baseURL, userAgent, timeout, DefaultRequestPolicy())
+}
+
+func NewHTTPClientWithPolicy(baseURL string, userAgent string, timeout time.Duration, policy RequestPolicy) *HTTPClient {
+	if policy.MaxRetries < 0 {
+		policy.MaxRetries = 0
+	}
+	if policy.RetryBaseDelay <= 0 {
+		policy.RetryBaseDelay = 500 * time.Millisecond
+	}
+	interval := time.Duration(0)
+	if policy.RequestsPerSecond > 0 {
+		interval = time.Second / time.Duration(policy.RequestsPerSecond)
+	}
 	return &HTTPClient{
 		BaseURL:                   strings.TrimRight(baseURL, "/"),
 		CompanyTickersURL:         "https://www.sec.gov/files/company_tickers.json",
@@ -85,6 +173,8 @@ func NewHTTPClient(baseURL string, userAgent string, timeout time.Duration) *HTT
 		CurrentFilingsURL:         "https://www.sec.gov/cgi-bin/browse-edgar",
 		UserAgent:                 userAgent,
 		Client:                    &http.Client{Timeout: timeout},
+		RequestPolicy:             policy,
+		pacer:                     &requestPacer{interval: interval},
 	}
 }
 
@@ -114,7 +204,7 @@ func (c *HTTPClient) ListCurrentFilings(ctx context.Context, query CurrentFiling
 			return nil, err
 		}
 		c.setHeaders(req)
-		resp, err := c.httpClient().Do(req)
+		resp, err := c.do(req, "current filings")
 		if err != nil {
 			return nil, err
 		}
@@ -152,7 +242,7 @@ func (c *HTTPClient) LookupCIK(ctx context.Context, ticker string) (string, stri
 	}
 	c.setHeaders(req)
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.do(req, "CIK lookup")
 	if err != nil {
 		return "", "", err
 	}
@@ -191,7 +281,7 @@ func (c *HTTPClient) ListFilings(ctx context.Context, query FilingQuery) ([]Fili
 	}
 	c.setHeaders(req)
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.do(req, "submissions")
 	if err != nil {
 		return nil, err
 	}
@@ -223,6 +313,127 @@ func (c *HTTPClient) httpClient() *http.Client {
 		return c.Client
 	}
 	return http.DefaultClient
+}
+
+type requestPacer struct {
+	mu       sync.Mutex
+	nextAt   time.Time
+	interval time.Duration
+}
+
+func (p *requestPacer) wait(ctx context.Context) error {
+	if p == nil || p.interval <= 0 {
+		return nil
+	}
+	p.mu.Lock()
+	now := time.Now()
+	when := now
+	if p.nextAt.After(when) {
+		when = p.nextAt
+	}
+	p.nextAt = when.Add(p.interval)
+	p.mu.Unlock()
+	if delay := time.Until(when); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil
+}
+
+func (c *HTTPClient) do(req *http.Request, operation string) (*http.Response, error) {
+	if req == nil {
+		return nil, &RequestError{Operation: operation, Attempts: 1, Cause: errors.New("nil request")}
+	}
+	policy := c.RequestPolicy
+	if policy.RetryBaseDelay <= 0 {
+		policy.RetryBaseDelay = 500 * time.Millisecond
+	}
+	if policy.MaxRetries < 0 {
+		policy.MaxRetries = 0
+	}
+	for attempt := 0; attempt <= policy.MaxRetries; attempt++ {
+		if err := c.pacer.wait(req.Context()); err != nil {
+			return nil, &RequestError{Operation: operation, Attempts: attempt + 1, Cause: err}
+		}
+		response, err := c.httpClient().Do(req.Clone(req.Context()))
+		if err == nil && !retryableStatus(response.StatusCode) {
+			return response, nil
+		}
+
+		requestErr := &RequestError{Operation: operation, Attempts: attempt + 1, Cause: err}
+		var retryAfter time.Duration
+		if response != nil {
+			requestErr.StatusCode = response.StatusCode
+			retryAfter = retryAfterDelay(response.Header.Get("Retry-After"))
+			response.Body.Close()
+		}
+		if attempt == policy.MaxRetries || !retryableRequestError(err, requestErr.StatusCode) {
+			return nil, requestErr
+		}
+		if retryAfter <= 0 {
+			retryAfter = retryDelay(policy.RetryBaseDelay, attempt)
+		}
+		if err := waitForRetry(req.Context(), retryAfter); err != nil {
+			return nil, &RequestError{Operation: operation, Attempts: attempt + 1, StatusCode: requestErr.StatusCode, Cause: err}
+		}
+	}
+	return nil, &RequestError{Operation: operation, Attempts: 1}
+}
+
+func retryableStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode == http.StatusRequestTimeout || statusCode == http.StatusBadGateway || statusCode == http.StatusServiceUnavailable || statusCode == http.StatusGatewayTimeout
+}
+
+func retryableRequestError(err error, statusCode int) bool {
+	if statusCode > 0 {
+		return retryableStatus(statusCode)
+	}
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary())
+}
+
+func retryAfterDelay(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		return max(time.Until(at), 0)
+	}
+	return 0
+}
+
+func retryDelay(base time.Duration, attempt int) time.Duration {
+	shift := min(attempt, 5)
+	delay := base * time.Duration(1<<shift)
+	// A small deterministic jitter prevents all similarly configured workers
+	// from issuing the next retry at exactly the same instant.
+	return delay + time.Duration((attempt+1)*37)*time.Millisecond
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *HTTPClient) companyTickersURL() string {
@@ -477,7 +688,7 @@ func (c *HTTPClient) loadArchivedSubmissions(ctx context.Context, name string) (
 	}
 	c.setHeaders(req)
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.do(req, "archived submissions")
 	if err != nil {
 		return archivedSubmissionsResponse{}, err
 	}

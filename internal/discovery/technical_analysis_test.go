@@ -51,6 +51,97 @@ func TestBuildCandidateTechnicalAnalysisInsufficientHistory(t *testing.T) {
 	}
 }
 
+func TestBuildCandidateTechnicalAnalysisIncludesMA200WhenHistoryIsAvailable(t *testing.T) {
+	base := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	rows := make([]PriceSnapshot, 0, technicalMA200LookbackDays)
+	for day := 0; day < technicalMA200LookbackDays; day++ {
+		rows = append(rows, PriceSnapshot{TradeDate: base.AddDate(0, 0, day), CloseMicros: int64(10_000_000 + day*100_000), Volume: 100})
+	}
+	analysis := buildCandidateTechnicalAnalysis(rows)
+	if !analysis.MA200Available || analysis.MA200USD <= 0 || analysis.MA50USD <= 0 {
+		t.Fatalf("long moving averages = %+v, want MA50 and MA200", analysis)
+	}
+}
+
+func TestBuildCandidateTechnicalAnalysisUsesImmediatePriorWindowAndLiquidity(t *testing.T) {
+	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	rows := make([]PriceSnapshot, 0, 41)
+	for day := 0; day < 40; day++ {
+		close := int64(100_000_000)
+		if day >= 20 {
+			close = 10_000_000
+		}
+		rows = append(rows, PriceSnapshot{TradeDate: base.AddDate(0, 0, day), CloseMicros: close, Volume: 1_000})
+	}
+	rows = append(rows, PriceSnapshot{TradeDate: base.AddDate(0, 0, 40), CloseMicros: 30_000_000, Volume: 2_000})
+
+	analysis := buildCandidateTechnicalAnalysis(rows)
+	if analysis.Prior20DayHighUSD != 10 || analysis.PriorMA20USD != 10 {
+		t.Fatalf("prior window used stale data: %+v", analysis)
+	}
+	if analysis.DollarVolumeUSD != 60_000 || analysis.AverageDollarVolume20 != 10_000 || analysis.DollarVolumeRatio20 != 6 {
+		t.Fatalf("dollar volume = %+v", analysis)
+	}
+	if analysis.LiquidityStatus != "low" || !candidateHasTechnicalSignal(analysis, TechnicalSignalBreakout20DayHigh) {
+		t.Fatalf("liquidity/signals = %+v", analysis)
+	}
+}
+
+func TestBuildCandidateAnchoredVWAPUsesOnlyEventToPublishedPriceWindow(t *testing.T) {
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	rows := []PriceSnapshot{
+		{TradeDate: base, CloseMicros: 10_000_000, Volume: 100},
+		{TradeDate: base.AddDate(0, 0, 1), CloseMicros: 12_000_000, Volume: 200},
+		{TradeDate: base.AddDate(0, 0, 2), CloseMicros: 14_000_000, Volume: 100},
+		{TradeDate: base.AddDate(0, 0, 3), CloseMicros: 16_000_000, Volume: 100},
+	}
+	cutoff := base.AddDate(0, 0, 3)
+	value := buildCandidateAnchoredVWAP(rows, []CandidateSignalEvent{{EventType: CandidateSignalEnteredB, SignalDate: base.AddDate(0, 0, 1), BaselineTradeDate: base.AddDate(0, 0, 1)}}, &cutoff, "test")
+	if value.Status != "ready" || value.TradingDays != 3 || value.AnchorLabel != "进入 B 级候选" {
+		t.Fatalf("anchored vwap = %#v", value)
+	}
+	// (12*200 + 14*100 + 16*100) / 400 = 13.5; last close is 16.
+	if value.ApproximateVWAPUSD != 13.5 || value.DistancePct < 18.5 || value.DistancePct > 18.6 {
+		t.Fatalf("anchored vwap values = %#v", value)
+	}
+}
+
+func TestBuildCandidateAnchoredVWAPDoesNotUseFutureEvent(t *testing.T) {
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	cutoff := base.AddDate(0, 0, 2)
+	value := buildCandidateAnchoredVWAP([]PriceSnapshot{{TradeDate: base, CloseMicros: 10_000_000, Volume: 100}}, []CandidateSignalEvent{{EventType: CandidateSignalEnteredA, BaselineTradeDate: base.AddDate(0, 0, 3)}}, &cutoff, "test")
+	if value.Status != "anchor_unavailable" {
+		t.Fatalf("future anchor = %#v", value)
+	}
+}
+
+func TestBuildCandidateRelativeStrengthUsesMatchedLocalTradingDays(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	prices := make([]PriceSnapshot, 0, (technicalRelativeLongDays+1)*2)
+	candidateRows := make([]PriceSnapshot, 0, technicalRelativeLongDays+1)
+	for day := 0; day <= technicalRelativeLongDays; day++ {
+		date := base.AddDate(0, 0, day)
+		candidate := PriceSnapshot{Source: "test", Symbol: "REL", TradeDate: date, CloseMicros: int64(10_000_000 + day*200_000), QualityStatus: QualityStatusValid}
+		benchmark := PriceSnapshot{Source: "test", Symbol: "IWM", TradeDate: date, CloseMicros: int64(20_000_000 + day*100_000), QualityStatus: QualityStatusValid}
+		candidateRows = append(candidateRows, candidate)
+		prices = append(prices, candidate, benchmark)
+	}
+	if err := db.Create(&prices).Error; err != nil {
+		t.Fatal(err)
+	}
+	cutoff := base.AddDate(0, 0, technicalRelativeLongDays)
+	relative, err := buildCandidateRelativeStrength(context.Background(), db, CandidateScoreResult{
+		CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "REL"}, PriceTradeDate: &cutoff, PriceSource: "test",
+	}, candidateRows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relative.Status != "ready" || relative.MatchedSampleDays != technicalRelativeLongDays+1 || relative.ExcessReturn20DPct == nil || relative.ExcessReturn60DPct == nil || *relative.ExcessReturn20DPct <= 0 {
+		t.Fatalf("relative strength = %+v, want positive ready result", relative)
+	}
+}
+
 func TestCandidateTechnicalHistoryRows(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	rows := []PriceSnapshot{
@@ -92,6 +183,60 @@ func TestCandidateTechnicalPriceHistoryUsesPublishedPriceDateCutoff(t *testing.T
 	}
 	if len(rows) != 2 || !rows[len(rows)-1].TradeDate.Equal(cutoff) {
 		t.Fatalf("rows = %+v, want no record after %s", rows, cutoff.Format(time.DateOnly))
+	}
+}
+
+func TestTechnicalPriceHistoryFallsBackWhenPreferredLocalCacheIsIncomplete(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	base := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)
+	prices := []PriceSnapshot{
+		{Source: "longbridge", SourceVersion: "longbridge:history", Symbol: "CACHE", TradeDate: base, CloseMicros: 10_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "longbridge:history", Symbol: "CACHE", TradeDate: base.AddDate(0, 0, 1), CloseMicros: 11_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "longbridge:history", Symbol: "CACHE", TradeDate: base.AddDate(0, 0, 2), CloseMicros: 12_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: PriceSourceLocalCache, SourceVersion: "cache:latest", Symbol: "CACHE", TradeDate: base.AddDate(0, 0, 2), CloseMicros: 12_100_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+	}
+	if err := db.Create(&prices).Error; err != nil {
+		t.Fatal(err)
+	}
+	cutoff := base.AddDate(0, 0, 2)
+	rows, err := technicalPriceHistoryForSymbol(context.Background(), db, "CACHE", PriceSourceLocalCache, 3, &cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("history rows = %d, want 3", len(rows))
+	}
+	if rows[len(rows)-1].Source != PriceSourceLocalCache {
+		t.Fatalf("latest source = %q, want %q", rows[len(rows)-1].Source, PriceSourceLocalCache)
+	}
+}
+
+func TestCandidateTechnicalPriceHistoryReadsEnoughRowsForMA200(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	prices := make([]PriceSnapshot, 0, 220)
+	for index := 0; index < 220; index++ {
+		prices = append(prices, PriceSnapshot{
+			Source: "longbridge", SourceVersion: "longbridge:technical-history", Symbol: "LONG",
+			TradeDate: base.AddDate(0, 0, index), CloseMicros: 10_000_000 + int64(index), Volume: 100,
+			Currency: "USD", QualityStatus: QualityStatusValid,
+		})
+	}
+	if err := db.Create(&prices).Error; err != nil {
+		t.Fatal(err)
+	}
+	cutoff := prices[len(prices)-1].TradeDate
+	rows, err := candidateTechnicalPriceHistory(context.Background(), db, CandidateScoreResult{
+		CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "LONG"}, PriceTradeDate: &cutoff, PriceSource: "longbridge",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != technicalMA200LookbackDays {
+		t.Fatalf("history row count = %d, want %d", len(rows), technicalMA200LookbackDays)
+	}
+	if got := buildCandidateTechnicalAnalysis(rows); !got.MA200Available {
+		t.Fatalf("MA200 should be available after %d samples: %+v", technicalMA200LookbackDays, got)
 	}
 }
 

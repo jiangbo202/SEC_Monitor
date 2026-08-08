@@ -34,6 +34,12 @@ func assertDatabaseClosed(t *testing.T, db *sql.DB) {
 	}
 }
 
+func TestServeHTTPGracefullyReturnsListenError(t *testing.T) {
+	if err := serveHTTPGracefully(gin.New(), "invalid-address"); err == nil {
+		t.Fatal("serveHTTPGracefully succeeded with invalid address")
+	}
+}
+
 func TestRunWithDependenciesClosesMainDatabaseWhenDiscoveryOpenFails(t *testing.T) {
 	mainDB, mainSQL := openLifecycleTestDatabase(t)
 

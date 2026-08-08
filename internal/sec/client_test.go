@@ -48,6 +48,67 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+func TestHTTPClientRetriesRateLimitedRequest(t *testing.T) {
+	attempts := 0
+	client := NewHTTPClientWithPolicy("https://sec.test", "sec-monitor-test", time.Second, RequestPolicy{
+		RequestsPerSecond: 0,
+		MaxRetries:        1,
+		RetryBaseDelay:    time.Millisecond,
+	})
+	client.Client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader("rate limited")),
+				Header:     make(http.Header),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"0":{"cik_str":1234,"ticker":"ACME","title":"Acme Inc."}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	cik, name, err := client.LookupCIK(context.Background(), "ACME")
+	if err != nil {
+		t.Fatalf("LookupCIK: %v", err)
+	}
+	if cik != "0000001234" || name != "Acme Inc." {
+		t.Fatalf("LookupCIK = (%q, %q), want expected issuer", cik, name)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestSECUserMessageClassifiesRateLimitAndTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "rate limited",
+			err:  &RequestError{Operation: "submissions", StatusCode: http.StatusTooManyRequests, Attempts: 3},
+			want: "SEC 请求频率受限",
+		},
+		{
+			name: "timeout",
+			err:  &RequestError{Operation: "submissions", Attempts: 3, Cause: context.DeadlineExceeded},
+			want: "SEC 请求超时",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := UserMessage(tt.err); !strings.Contains(got, tt.want) {
+				t.Fatalf("UserMessage(%v) = %q, want containing %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 type fixtureRoutes map[string]fixtureRoute
 
 type fixtureRoute struct {
@@ -61,7 +122,7 @@ func fixtureBody(body string) fixtureRoute {
 
 func newFixtureHTTPClient(t *testing.T, routes fixtureRoutes) *HTTPClient {
 	t.Helper()
-	client := NewHTTPClient("https://sec.test", "sec-monitor-test", time.Second)
+	client := NewHTTPClientWithPolicy("https://sec.test", "sec-monitor-test", time.Second, RequestPolicy{RequestsPerSecond: 0})
 	client.CompanyTickersMFURL = "https://sec.test/company_tickers_mf.json"
 	client.Client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		route, ok := routes[r.URL.Path]

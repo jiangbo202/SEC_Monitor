@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type fakeSECClient struct{}
@@ -68,6 +70,22 @@ type blockingDiscoveryRunner struct {
 	calls   int
 }
 
+type blockingIPOSECClient struct {
+	fakeSECClient
+	started chan struct{}
+	unblock chan struct{}
+}
+
+func (c blockingIPOSECClient) ListCurrentFilings(ctx context.Context, query sec.CurrentFilingQuery) ([]sec.CurrentFilingResult, error) {
+	c.started <- struct{}{}
+	select {
+	case <-c.unblock:
+		return c.fakeSECClient.ListCurrentFilings(ctx, query)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (r *blockingDiscoveryRunner) SyncSecurityUniverse(ctx context.Context) (discovery.UniverseBatch, error) {
 	r.mu.Lock()
 	r.calls++
@@ -93,13 +111,13 @@ func (r *blockingDiscoveryRunner) securityCalls() int {
 
 func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	if err := db.AutoMigrate(
 		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
-		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
+		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{}, &model.OperationalAlertDelivery{}, &model.RecoveryDrill{}, &model.LifecycleCleanupRun{},
 		&model.NotificationBatch{}, &model.NotificationBatchItem{},
 		&model.IPOFiling{}, &model.IPOCompanyOverride{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{},
 	); err != nil {
@@ -110,7 +128,7 @@ func testDB(t *testing.T) *gorm.DB {
 
 func testDiscoveryDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatalf("open discovery db: %v", err)
 	}
@@ -276,6 +294,43 @@ func TestSchedulerTableDriven(t *testing.T) {
 	}
 }
 
+func TestSchedulerReloadPersistsNextRunPlan(t *testing.T) {
+	db := testDB(t)
+	seed := []model.TaskConfig{
+		{TaskName: "sec_filing_sync", CronExpr: "0 7 * * 2-6", Enabled: true},
+		{TaskName: "ipo_radar_sync", CronExpr: "0 7 * * *", Enabled: false},
+	}
+	if err := db.Create(&seed).Error; err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("ensure defaults: %v", err)
+	}
+	tasks := service.NewTaskConfigService(db, audit)
+	filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs)
+	sched := New(tasks, filings, configs)
+	if err := sched.Reload(context.Background()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	enabled, err := tasks.GetByTaskName(context.Background(), "sec_filing_sync")
+	if err != nil {
+		t.Fatalf("load enabled task: %v", err)
+	}
+	if enabled.NextRunAt == nil || !enabled.NextRunAt.After(time.Now().UTC()) {
+		t.Fatalf("enabled task next run = %v, want a future timestamp", enabled.NextRunAt)
+	}
+	disabled, err := tasks.GetByTaskName(context.Background(), "ipo_radar_sync")
+	if err != nil {
+		t.Fatalf("load disabled task: %v", err)
+	}
+	if disabled.NextRunAt != nil {
+		t.Fatalf("disabled task next run = %v, want nil", disabled.NextRunAt)
+	}
+}
+
 func TestSchedulerReloadAfterStartRunsNewCron(t *testing.T) {
 	db := testDB(t)
 	if err := db.Create(&model.TaskConfig{TaskName: "sec_filing_sync", CronExpr: "@every 1s", Enabled: false}).Error; err != nil {
@@ -424,8 +479,8 @@ func TestSchedulerSuppressesDuplicateTaskRun(t *testing.T) {
 	go func() { duplicateDone <- sched.RunTask(context.Background(), smallCapDiscoverySyncTaskName) }()
 	select {
 	case err := <-duplicateDone:
-		if err != nil {
-			t.Fatalf("duplicate task: %v", err)
+		if !errors.Is(err, service.ErrTaskAlreadyRunning) {
+			t.Fatalf("duplicate task error = %v, want ErrTaskAlreadyRunning", err)
 		}
 	case <-time.After(time.Second):
 		close(runner.unblock)
@@ -439,6 +494,44 @@ func TestSchedulerSuppressesDuplicateTaskRun(t *testing.T) {
 	close(runner.unblock)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first task: %v", err)
+	}
+}
+
+func TestSchedulerSerializesLiveSECTasks(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create([]model.TaskConfig{
+		{TaskName: secFilingSyncTaskName, CronExpr: "*/5 * * * *", Enabled: true},
+		{TaskName: ipoRadarSyncTaskName, CronExpr: "*/30 * * * *", Enabled: true},
+	}).Error; err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	tasks := service.NewTaskConfigService(db, audit)
+	blockingClient := blockingIPOSECClient{started: make(chan struct{}, 1), unblock: make(chan struct{})}
+	filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs)
+	ipo := service.NewIPORadarService(db, blockingClient, fakeNotifier{}, configs)
+	sched := New(tasks, filings, configs, ipo)
+
+	ipoDone := make(chan error, 1)
+	go func() { ipoDone <- sched.RunTask(context.Background(), ipoRadarSyncTaskName) }()
+	select {
+	case <-blockingClient.started:
+	case <-time.After(time.Second):
+		t.Fatal("IPO task did not start SEC request")
+	}
+
+	err := sched.RunTask(context.Background(), secFilingSyncTaskName)
+	if !errors.Is(err, service.ErrTaskResourceBusy) {
+		t.Fatalf("SEC filing task error = %v, want ErrTaskResourceBusy", err)
+	}
+
+	close(blockingClient.unblock)
+	if err := <-ipoDone; err != nil {
+		t.Fatalf("IPO task: %v", err)
 	}
 }
 
@@ -474,6 +567,34 @@ func TestSchedulerRunsDueNotificationRetries(t *testing.T) {
 	}
 	if batch.Status != "sent" || batch.SentCount != 1 {
 		t.Fatalf("batch after retry = %+v, want sent batch", batch)
+	}
+}
+
+func TestSchedulerMarksDisabledCandidateNotificationAsSkipped(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create(&model.TaskConfig{TaskName: candidateNotificationSyncTaskName, CronExpr: "30 9 * * *", Enabled: true}).Error; err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("ensure defaults: %v", err)
+	}
+	discoveryDB := testDiscoveryDB(t)
+	tasks := service.NewTaskConfigService(db, audit)
+	filings := service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs)
+	candidateNotifications := service.NewCandidateNotificationService(db, discoveryDB, fakeNotifier{}, configs)
+	sched := New(tasks, filings, candidateNotifications)
+
+	if err := sched.RunTask(context.Background(), candidateNotificationSyncTaskName); err != nil {
+		t.Fatalf("run disabled notification task: %v", err)
+	}
+	var task model.TaskConfig
+	if err := db.Where("task_name = ?", candidateNotificationSyncTaskName).First(&task).Error; err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	if task.Running || task.LastStatus != "skipped" || task.ConsecutiveFailures != 0 || task.LastErrorMessage == "" {
+		t.Fatalf("task=%+v, want persisted skipped outcome without failures", task)
 	}
 }
 

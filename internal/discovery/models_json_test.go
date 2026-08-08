@@ -53,6 +53,7 @@ func TestCandidateScoreResultMarshalJSONIncludesEnrichedEvidence(t *testing.T) {
 		SectorLabel:       "优秀赛道",
 		SectorSIC:         7372,
 		SectorRatingScore: 9,
+		Followed:          true,
 	})
 	if err != nil {
 		t.Fatalf("MarshalJSON() error = %v", err)
@@ -84,6 +85,7 @@ func TestCandidateScoreResultMarshalJSONIncludesEnrichedEvidence(t *testing.T) {
 		`"sector_label":"优秀赛道"`,
 		`"sector_sic":7372`,
 		`"sector_rating_score":9`,
+		`"followed":true`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("payload missing %s: %s", want, text)

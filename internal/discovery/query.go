@@ -22,23 +22,36 @@ type UniverseQuery struct {
 }
 
 type UniversePage struct {
-	Page, PageSize int                `json:"page"`
-	Total          int64              `json:"total"`
-	Items          []UniverseSnapshot `json:"items"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"page_size"`
+	Total    int64              `json:"total"`
+	Items    []UniverseSnapshot `json:"items"`
 }
 
 type CandidateScoreQuery struct {
-	Page, PageSize         int
-	Ticker, Grade          string
-	SectorCategory         string
-	QualityTier            string
-	ChangeStatus           string
-	TechnicalSignal        string
-	RecommendedOnly        bool
-	SortBy, SortOrder      string
-	MinReviewPriorityScore int
-	ExcludeQualityTags     []string
-	EligibleA, EligibleB   *bool
+	Page, PageSize           int
+	Ticker, Grade            string
+	SectorCategory           string
+	QualityTier              string
+	ChangeStatus             string
+	TechnicalSignal          string
+	ResearchReadiness        string
+	ExcludeResearchReadiness []string
+	PriceFreshnessStatuses   []string
+	RecommendedOnly          bool
+	SortBy, SortOrder        string
+	MinReviewPriorityScore   int
+	ExcludeQualityTags       []string
+	EligibleA, EligibleB     *bool
+	MaxEVSales               *float64
+	MinNetCashToMarketCapPct *float64
+	// SkipPerformance keeps the default service behavior complete for callers
+	// that need it, while list endpoints can omit the presentation-only
+	// historical performance calculation in their compact view.
+	SkipPerformance         bool
+	UpcomingEarningsTickers []string
+	UpcomingEarningsOnly    bool
+	FollowedOnly            bool
 }
 
 type RevenueGrowthExplanation struct {
@@ -61,33 +74,39 @@ type RevenueGrowthExplanation struct {
 
 type CandidateScoreResult struct {
 	CandidateScoreSnapshot
-	ScoreEffectiveDate    string                     `json:"score_effective_date"`
-	PriceCloseUSD         float64                    `json:"price_close_usd"`
-	PriceVolume           int64                      `json:"price_volume"`
-	PriceTradeDate        *time.Time                 `json:"price_trade_date"`
-	PriceFreshnessStatus  string                     `json:"price_freshness_status"`
-	PriceAgeCalendarDays  int                        `json:"price_age_calendar_days"`
-	PriceCurrency         string                     `json:"price_currency"`
-	PriceQualityStatus    string                     `json:"price_quality_status"`
-	PriceSource           string                     `json:"price_source"`
-	QualityTier           string                     `json:"quality_tier"`
-	QualityTags           []string                   `json:"quality_tags"`
-	QualityAdjustedScore  int                        `json:"quality_adjusted_score"`
-	ReviewPriorityScore   int                        `json:"review_priority_score"`
-	ReviewPriorityReasons []ReviewPriorityReason     `json:"review_priority_reasons"`
-	ChangeStatus          string                     `json:"change_status"`
-	ChangeReasons         []CandidateChangeReason    `json:"change_reasons"`
-	PreviousTotalScore    *int                       `json:"previous_total_score"`
-	PreviousGrade         string                     `json:"previous_grade"`
-	Performance           CandidatePerformance       `json:"performance"`
-	SectorCategory        string                     `json:"sector_category"`
-	SectorLabel           string                     `json:"sector_label"`
-	SectorSIC             int                        `json:"sector_sic"`
-	SectorRatingScore     int                        `json:"sector_rating_score"`
-	RevenueGrowthInfo     RevenueGrowthExplanation   `json:"revenue_growth_explanation"`
-	CapitalRiskSummaries  []CapitalRiskSummary       `json:"capital_risk_summaries"`
-	MarketQuality         CandidateMarketQuality     `json:"market_quality"`
-	Technical             CandidateTechnicalAnalysis `json:"technical"`
+	ScoreEffectiveDate    string                         `json:"score_effective_date"`
+	PriceCloseUSD         float64                        `json:"price_close_usd"`
+	PriceVolume           int64                          `json:"price_volume"`
+	PriceTradeDate        *time.Time                     `json:"price_trade_date"`
+	PriceFreshnessStatus  string                         `json:"price_freshness_status"`
+	PriceAgeCalendarDays  int                            `json:"price_age_calendar_days"`
+	PriceCurrency         string                         `json:"price_currency"`
+	PriceQualityStatus    string                         `json:"price_quality_status"`
+	PriceSource           string                         `json:"price_source"`
+	QualityTier           string                         `json:"quality_tier"`
+	QualityTags           []string                       `json:"quality_tags"`
+	QualityAdjustedScore  int                            `json:"quality_adjusted_score"`
+	ReviewPriorityScore   int                            `json:"review_priority_score"`
+	ReviewPriorityReasons []ReviewPriorityReason         `json:"review_priority_reasons"`
+	ChangeStatus          string                         `json:"change_status"`
+	ChangeReasons         []CandidateChangeReason        `json:"change_reasons"`
+	PreviousTotalScore    *int                           `json:"previous_total_score"`
+	PreviousGrade         string                         `json:"previous_grade"`
+	Performance           CandidatePerformance           `json:"performance"`
+	SectorCategory        string                         `json:"sector_category"`
+	SectorLabel           string                         `json:"sector_label"`
+	SectorSIC             int                            `json:"sector_sic"`
+	SectorRatingScore     int                            `json:"sector_rating_score"`
+	RevenueGrowthInfo     RevenueGrowthExplanation       `json:"revenue_growth_explanation"`
+	CapitalRiskSummaries  []CapitalRiskSummary           `json:"capital_risk_summaries"`
+	MarketQuality         CandidateMarketQuality         `json:"market_quality"`
+	Investability         CandidateInvestability         `json:"investability"`
+	DilutionTrend         CandidateDilutionTrend         `json:"dilution_trend"`
+	Technical             CandidateTechnicalAnalysis     `json:"technical"`
+	ResearchReadiness     CandidateResearchReadiness     `json:"research_readiness"`
+	BusinessModel         CandidateBusinessModelEvidence `json:"business_model"`
+	Valuation             CandidateValuation             `json:"valuation"`
+	Followed              bool                           `json:"followed"`
 }
 
 type ReviewPriorityReason struct {
@@ -128,9 +147,10 @@ type CandidatePerformance struct {
 }
 
 type CandidateScorePage struct {
-	Page, PageSize int                    `json:"page"`
-	Total          int64                  `json:"total"`
-	Items          []CandidateScoreResult `json:"items"`
+	Page     int                    `json:"page"`
+	PageSize int                    `json:"page_size"`
+	Total    int64                  `json:"total"`
+	Items    []CandidateScoreResult `json:"items"`
 }
 
 type CandidateOverview struct {
@@ -149,18 +169,20 @@ type BatchQuery struct {
 	Kind, Status   string
 }
 type BatchPage struct {
-	Page, PageSize int             `json:"page"`
-	Total          int64           `json:"total"`
-	Items          []UniverseBatch `json:"items"`
+	Page     int             `json:"page"`
+	PageSize int             `json:"page_size"`
+	Total    int64           `json:"total"`
+	Items    []UniverseBatch `json:"items"`
 }
 type ProviderRunQuery struct {
 	Page, PageSize            int
 	Provider, Status, BatchID string
 }
 type ProviderRunPage struct {
-	Page, PageSize int           `json:"page"`
-	Total          int64         `json:"total"`
-	Items          []ProviderRun `json:"items"`
+	Page     int           `json:"page"`
+	PageSize int           `json:"page_size"`
+	Total    int64         `json:"total"`
+	Items    []ProviderRun `json:"items"`
 }
 type ProviderHealthPage struct {
 	Items []ProviderHealth `json:"items"`
@@ -260,6 +282,18 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if ticker := strings.ToUpper(strings.TrimSpace(filter.Ticker)); ticker != "" {
 		query = query.Where("ticker = ?", ticker)
 	}
+	if filter.UpcomingEarningsOnly {
+		tickers := normalizeTickerFilter(filter.UpcomingEarningsTickers)
+		if len(tickers) == 0 {
+			query = query.Where("1 = 0")
+		} else {
+			query = query.Where("ticker IN ?", tickers)
+		}
+	}
+	if filter.FollowedOnly {
+		query = query.Where("ticker IN (?)", db.WithContext(ctx).Model(&CandidateWatch{}).
+			Select("ticker").Where("status = ?", CandidateWatchStatusActive))
+	}
 	if grade := normalizeCandidateGradeFilter(filter.Grade); grade != "" {
 		query = query.Where("grade = ?", grade)
 	} else {
@@ -291,6 +325,9 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		}
 		items = filtered
 	}
+	if err = hydrateCandidateBusinessModels(ctx, db, items); err != nil {
+		return result, err
+	}
 	items, err = hydrateCandidateRevenueGrowthEvidence(ctx, db, batch.UniverseSourceVersion, items)
 	if err != nil {
 		return result, err
@@ -299,10 +336,15 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if err != nil {
 		return result, err
 	}
-	if err = hydrateCandidateMarketQuality(ctx, db, items); err != nil {
+	if err = hydrateCandidateValuations(ctx, db, batch, batch.UniverseSourceVersion, items); err != nil {
 		return result, err
 	}
-	if err = hydrateCandidateTechnicalAnalysis(ctx, db, items); err != nil {
+	technicalPriceHistories, err := candidateTechnicalPriceHistories(ctx, db, items, technicalMA200LookbackDays)
+	if err != nil {
+		return result, err
+	}
+	hydrateCandidateMarketQualityFromPriceHistories(items, technicalPriceHistories)
+	if err = hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx, db, items, technicalPriceHistories); err != nil {
 		return result, err
 	}
 	riskBatchID := strings.TrimSpace(batch.UniverseSourceVersion)
@@ -313,15 +355,24 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if err != nil {
 		return result, err
 	}
+	if err = hydrateCandidateDilutionTrends(ctx, db, batch, items); err != nil {
+		return result, err
+	}
+	for i := range items {
+		items[i].Investability = buildCandidateInvestability(items[i])
+	}
+	if err = hydrateCandidateResearchReadiness(ctx, db, batch, items); err != nil {
+		return result, err
+	}
 	items, err = annotateCandidateChanges(ctx, db, batch, items)
 	if err != nil {
 		return result, err
 	}
 	annotateCandidateQuality(items)
-	items = filterCandidateScoreResults(items, filter)
-	if err = hydrateCandidatePerformance(ctx, db, items); err != nil {
+	if err = annotateCandidateFollowed(ctx, db, items); err != nil {
 		return result, err
 	}
+	items = filterCandidateScoreResults(items, filter)
 	sortCandidateScoreResults(items, filter.SortBy, filter.SortOrder)
 	result.Total = int64(len(items))
 	start := (page - 1) * size
@@ -334,7 +385,68 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		end = len(items)
 	}
 	result.Items = items[start:end]
+	// Performance is presentation-only and is only visible in the expanded
+	// table. Avoid its per-row historical lookup for the default compact view.
+	if !filter.SkipPerformance {
+		if err = hydrateCandidatePerformance(ctx, db, result.Items); err != nil {
+			return result, err
+		}
+	}
 	return result, nil
+}
+
+func annotateCandidateFollowed(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {
+	if len(items) == 0 {
+		return nil
+	}
+	tickers := make([]string, 0, len(items))
+	for _, item := range items {
+		tickers = append(tickers, item.Ticker)
+	}
+	var watches []CandidateWatch
+	if err := db.WithContext(ctx).Select("ticker").Where("status = ? AND ticker IN ?", CandidateWatchStatusActive, tickers).Find(&watches).Error; err != nil {
+		return err
+	}
+	followed := make(map[string]struct{}, len(watches))
+	for _, watch := range watches {
+		followed[watch.Ticker] = struct{}{}
+	}
+	for i := range items {
+		_, items[i].Followed = followed[items[i].Ticker]
+	}
+	return nil
+}
+
+// CurrentCandidateTickers returns the compact current A/B universe used by
+// auxiliary local enrichments such as the earnings calendar.
+func CurrentCandidateTickers(ctx context.Context, db *gorm.DB) ([]string, error) {
+	if db == nil || ctx == nil {
+		return nil, errors.New("database and context are required")
+	}
+	var pointer CurrentBatchPointer
+	if err := db.WithContext(ctx).First(&pointer, "kind = ?", BatchKindPrescreen).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	var tickers []string
+	if err := db.WithContext(ctx).Model(&CandidateScoreSnapshot{}).Where("batch_id = ? AND grade IN ?", pointer.BatchID, []string{CandidateGradeA, CandidateGradeB}).Distinct("ticker").Order("ticker ASC").Pluck("ticker", &tickers).Error; err != nil {
+		return nil, err
+	}
+	return tickers, nil
+}
+
+func normalizeTickerFilter(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.ToUpper(strings.TrimSpace(value)); value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func BuildCandidateOverview(ctx context.Context, db *gorm.DB) (CandidateOverview, error) {
@@ -513,12 +625,37 @@ func sortCandidateScoreResults(items []CandidateScoreResult, sortBy, sortOrder s
 		field = "default"
 	}
 	sort.SliceStable(items, func(i, j int) bool {
+		if field == "ev_sales" {
+			return optionalFloatSortLess(items[i].Valuation.EVSales, items[j].Valuation.EVSales, desc)
+		}
+		if field == "net_cash_to_market_cap" {
+			return optionalFloatSortLess(items[i].Valuation.NetCashToMarketCap, items[j].Valuation.NetCashToMarketCap, desc)
+		}
 		less := candidateSortLess(items[i], items[j], field)
 		if desc && field != "default" {
 			return !candidateSortEqual(items[i], items[j], field) && !less
 		}
 		return less
 	})
+}
+
+// optionalFloatSortLess always leaves missing valuation evidence at the end,
+// irrespective of direction. Missing evidence must not look cheaper or more
+// cash-rich than a measurable company.
+func optionalFloatSortLess(left, right *float64, desc bool) bool {
+	if left == nil {
+		return false
+	}
+	if right == nil {
+		return true
+	}
+	if *left == *right {
+		return false
+	}
+	if desc {
+		return *left > *right
+	}
+	return *left < *right
 }
 
 func candidateSortLess(a, b CandidateScoreResult, field string) bool {
@@ -546,18 +683,15 @@ func candidateSortLess(a, b CandidateScoreResult, field string) bool {
 	case "annual_revenue_qoq_pct":
 		return a.RevenueGrowthInfo.AnnualRevenueQoQPct < b.RevenueGrowthInfo.AnnualRevenueQoQPct
 	case "cash_runway_months":
-		return a.CashRunwayMonths < b.CashRunwayMonths
+		return comparableCashRunwayMonths(a.CashRunwayMonths) < comparableCashRunwayMonths(b.CashRunwayMonths)
 	case "review_priority_score":
 		return a.ReviewPriorityScore < b.ReviewPriorityScore
 	default:
-		if a.ReviewPriorityScore != b.ReviewPriorityScore {
-			return a.ReviewPriorityScore > b.ReviewPriorityScore
+		if a.TotalScore != b.TotalScore {
+			return a.TotalScore > b.TotalScore
 		}
 		if a.Grade != b.Grade {
 			return a.Grade < b.Grade
-		}
-		if a.TotalScore != b.TotalScore {
-			return a.TotalScore > b.TotalScore
 		}
 		if a.MarketCapUSD != b.MarketCapUSD {
 			return a.MarketCapUSD < b.MarketCapUSD
@@ -594,12 +728,22 @@ func candidateSortEqual(a, b CandidateScoreResult, field string) bool {
 	case "annual_revenue_qoq_pct":
 		return a.RevenueGrowthInfo.AnnualRevenueQoQPct == b.RevenueGrowthInfo.AnnualRevenueQoQPct
 	case "cash_runway_months":
-		return a.CashRunwayMonths == b.CashRunwayMonths
+		return comparableCashRunwayMonths(a.CashRunwayMonths) == comparableCashRunwayMonths(b.CashRunwayMonths)
 	case "review_priority_score":
 		return a.ReviewPriorityScore == b.ReviewPriorityScore
 	default:
 		return false
 	}
+}
+
+// A finite sentinel represents positive operating cash flow, not 999 months
+// of literal runway. Cap it for ordering so it does not dominate companies
+// whose cash duration is actually measured.
+func comparableCashRunwayMonths(value float64) float64 {
+	if value >= MaxCashRunwayMonths {
+		return 60
+	}
+	return value
 }
 
 func annotateCandidateChanges(ctx context.Context, db *gorm.DB, current UniverseBatch, items []CandidateScoreResult) ([]CandidateScoreResult, error) {
@@ -730,8 +874,11 @@ func filterCandidateScoreResults(items []CandidateScoreResult, filter CandidateS
 	qualityTier := strings.TrimSpace(filter.QualityTier)
 	changeStatus := strings.TrimSpace(filter.ChangeStatus)
 	technicalSignal := strings.TrimSpace(filter.TechnicalSignal)
+	researchReadiness := strings.TrimSpace(filter.ResearchReadiness)
+	excludedReadiness := normalizedStringSet(filter.ExcludeResearchReadiness)
+	priceFreshness := normalizedStringSet(filter.PriceFreshnessStatuses)
 	excludeTags := normalizedStringSet(filter.ExcludeQualityTags)
-	if qualityTier == "" && changeStatus == "" && technicalSignal == "" && !filter.RecommendedOnly && filter.MinReviewPriorityScore == 0 && len(excludeTags) == 0 {
+	if qualityTier == "" && changeStatus == "" && technicalSignal == "" && researchReadiness == "" && len(excludedReadiness) == 0 && len(priceFreshness) == 0 && !filter.RecommendedOnly && filter.MinReviewPriorityScore == 0 && len(excludeTags) == 0 && filter.MaxEVSales == nil && filter.MinNetCashToMarketCapPct == nil {
 		return items
 	}
 	filtered := items[:0]
@@ -748,10 +895,27 @@ func filterCandidateScoreResults(items []CandidateScoreResult, filter CandidateS
 		if technicalSignal != "" && !candidateHasTechnicalSignal(item.Technical, technicalSignal) {
 			continue
 		}
+		if researchReadiness != "" && item.ResearchReadiness.Status != researchReadiness {
+			continue
+		}
+		if _, excluded := excludedReadiness[item.ResearchReadiness.Status]; excluded {
+			continue
+		}
+		if len(priceFreshness) > 0 {
+			if _, included := priceFreshness[item.PriceFreshnessStatus]; !included {
+				continue
+			}
+		}
 		if filter.MinReviewPriorityScore > 0 && item.ReviewPriorityScore < filter.MinReviewPriorityScore {
 			continue
 		}
 		if hasExcludedQualityTag(item.QualityTags, excludeTags) {
+			continue
+		}
+		if filter.MaxEVSales != nil && (item.Valuation.EVSales == nil || *item.Valuation.EVSales > *filter.MaxEVSales) {
+			continue
+		}
+		if filter.MinNetCashToMarketCapPct != nil && (item.Valuation.NetCashToMarketCap == nil || *item.Valuation.NetCashToMarketCap*100 < *filter.MinNetCashToMarketCapPct) {
 			continue
 		}
 		filtered = append(filtered, item)
@@ -762,6 +926,9 @@ func filterCandidateScoreResults(items []CandidateScoreResult, filter CandidateS
 // candidatePrimaryRecommendation defines the default, conservative view for
 // research. The full A/B universe remains available by turning this filter off.
 func candidatePrimaryRecommendation(item CandidateScoreResult) bool {
+	if item.ResearchReadiness.Status != CandidateResearchReadinessReady {
+		return false
+	}
 	if item.Grade == CandidateGradeA {
 		return !hasAnyQualityTag(item.QualityTags, "financials_missing", "active_capital_risk")
 	}
@@ -861,6 +1028,11 @@ func candidateQualityTags(item CandidateScoreResult) []string {
 		if item.MarketQuality.MomentumPct <= -20 {
 			add("negative_momentum")
 		}
+	}
+	if item.DilutionTrend.Status == "high_dilution" {
+		add("share_dilution_high")
+	} else if item.DilutionTrend.Status == "elevated_dilution" {
+		add("share_dilution_elevated")
 	}
 	for _, risk := range item.CapitalRiskSummaries {
 		if risk.Kind == CapitalEventReverseSplit {
@@ -962,7 +1134,7 @@ func countPenaltyQualityTags(tags []string) int {
 	count := 0
 	for _, tag := range tags {
 		switch tag {
-		case "low_revenue_base", "extreme_revenue_growth", "low_liquidity", "financials_missing", "active_capital_risk":
+		case "low_revenue_base", "extreme_revenue_growth", "low_liquidity", "financials_missing", "active_capital_risk", "share_dilution_high":
 			count++
 		}
 	}
@@ -1143,9 +1315,19 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batch Unive
 	if len(tickers) == 0 {
 		return items, nil
 	}
+	// Only a recent local quote can supersede the immutable price selected for
+	// the published batch. Reading every historical snapshot for every ticker
+	// made the list endpoint scan a multi-GB table just to find today's close.
+	// If a symbol has no fresh local quote, its batch price remains the safe
+	// fallback already populated above.
+	latestStart := time.Now().UTC().AddDate(0, 0, -14)
+	if effectiveDate, parseErr := time.Parse(time.DateOnly, batch.EffectiveDate); parseErr == nil {
+		latestStart = effectiveDate.AddDate(0, 0, -14)
+	}
 	var localPrices []PriceSnapshot
 	if err := db.WithContext(ctx).
 		Where("symbol IN ? AND quality_status = ?", tickers, QualityStatusValid).
+		Where("trade_date >= ?", latestStart).
 		Order("trade_date DESC, created_at DESC, id DESC").
 		Find(&localPrices).Error; err != nil {
 		return nil, err
@@ -1258,15 +1440,24 @@ func latestCompletedNYSETradingDate(expected, now time.Time) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	localNow := now.In(newYork)
-	if localNow.Year() != expected.Year() || localNow.Month() != expected.Month() || localNow.Day() != expected.Day() {
-		return expected, true
+	nowDate := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, time.UTC)
+	reference := expected
+
+	// A batch may be created on a weekend or a holiday. Its civil effective
+	// date is still useful for reproducibility, but it must not make the last
+	// completed close look one trading day old. Also cap a future batch date at
+	// the current NY date so no future session can be treated as completed.
+	if reference.After(nowDate) {
+		reference = nowDate
 	}
-	marketClose := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 16, 0, 0, 0, newYork)
-	if !localNow.Before(marketClose) {
-		return expected, true
+	if reference.Equal(nowDate) {
+		marketClose := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 16, 0, 0, 0, newYork)
+		if localNow.Before(marketClose) {
+			reference = reference.AddDate(0, 0, -1)
+		}
 	}
-	for offset := 1; offset <= 14; offset++ {
-		candidate := expected.AddDate(0, 0, -offset)
+	for offset := 0; offset <= 14; offset++ {
+		candidate := reference.AddDate(0, 0, -offset)
 		if knownNYSETradingDate(candidate) {
 			return candidate, true
 		}

@@ -18,6 +18,9 @@
         <el-menu-item index="/discovery-candidates"><el-icon><TrendCharts /></el-icon><span>{{ t('nav.discoveryCandidates') }}</span></el-menu-item>
         <el-menu-item index="/discovery-logs"><el-icon><DataAnalysis /></el-icon><span>{{ t('nav.discoveryLogs') }}</span></el-menu-item>
 
+        <div class="nav-section-label">{{ t('nav.macroResearch') }}</div>
+        <el-menu-item index="/macro-calendar"><el-icon><DataAnalysis /></el-icon><span>{{ t('nav.macroCalendar') }}</span></el-menu-item>
+
         <div class="nav-section-label">{{ t('nav.automation') }}</div>
         <el-menu-item index="/sync-runs"><el-icon><DataAnalysis /></el-icon><span>{{ t('nav.syncRuns') }}</span></el-menu-item>
         <el-menu-item index="/scheduler"><el-icon><Timer /></el-icon><span>{{ t('nav.scheduler') }}</span></el-menu-item>

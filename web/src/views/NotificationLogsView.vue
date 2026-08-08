@@ -84,11 +84,13 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, NotificationBatch, NotificationBatchItem, NotificationLog, PageResult } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
+const route = useRoute()
 const activeTab = ref('batches')
 const loading = ref(false)
 const batches = ref<NotificationBatch[]>([])
@@ -163,5 +165,15 @@ function notificationItemTypeLabel(item: NotificationBatchItem) {
 }
 function formatDateTime(value?: string | null) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString() }
 
-onMounted(loadBatches)
+onMounted(() => {
+  const status = route.query.status
+  if (typeof status === 'string' && ['sent', 'suppressed', 'failed', 'dead_letter'].includes(status)) {
+    filters.status = status
+  }
+  const source = route.query.source
+  if (typeof source === 'string' && ['filing', 'ipo', 'ipo_offering', 'candidate'].includes(source)) {
+    filters.source = source
+  }
+  return loadBatches()
+})
 </script>

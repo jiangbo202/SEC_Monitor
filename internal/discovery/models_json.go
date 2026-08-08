@@ -21,32 +21,38 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 	score.CashRunwayMonths = finiteCashRunwayMonths(score.CashRunwayMonths)
 	type alias struct {
 		scoreAlias
-		PriceCloseUSD         float64                    `json:"price_close_usd"`
-		PriceVolume           int64                      `json:"price_volume"`
-		PriceTradeDate        *time.Time                 `json:"price_trade_date"`
-		PriceFreshnessStatus  string                     `json:"price_freshness_status"`
-		PriceAgeCalendarDays  int                        `json:"price_age_calendar_days"`
-		PriceCurrency         string                     `json:"price_currency"`
-		PriceQualityStatus    string                     `json:"price_quality_status"`
-		PriceSource           string                     `json:"price_source"`
-		QualityTier           string                     `json:"quality_tier"`
-		QualityTags           []string                   `json:"quality_tags"`
-		QualityAdjustedScore  int                        `json:"quality_adjusted_score"`
-		ReviewPriorityScore   int                        `json:"review_priority_score"`
-		ReviewPriorityReasons []ReviewPriorityReason     `json:"review_priority_reasons"`
-		ChangeStatus          string                     `json:"change_status"`
-		ChangeReasons         []CandidateChangeReason    `json:"change_reasons"`
-		PreviousTotalScore    *int                       `json:"previous_total_score"`
-		PreviousGrade         string                     `json:"previous_grade"`
-		Performance           CandidatePerformance       `json:"performance"`
-		SectorCategory        string                     `json:"sector_category"`
-		SectorLabel           string                     `json:"sector_label"`
-		SectorSIC             int                        `json:"sector_sic"`
-		SectorRatingScore     int                        `json:"sector_rating_score"`
-		RevenueGrowthInfo     RevenueGrowthExplanation   `json:"revenue_growth_explanation"`
-		CapitalRiskSummaries  []CapitalRiskSummary       `json:"capital_risk_summaries"`
-		MarketQuality         CandidateMarketQuality     `json:"market_quality"`
-		Technical             CandidateTechnicalAnalysis `json:"technical"`
+		PriceCloseUSD         float64                        `json:"price_close_usd"`
+		PriceVolume           int64                          `json:"price_volume"`
+		PriceTradeDate        *time.Time                     `json:"price_trade_date"`
+		PriceFreshnessStatus  string                         `json:"price_freshness_status"`
+		PriceAgeCalendarDays  int                            `json:"price_age_calendar_days"`
+		PriceCurrency         string                         `json:"price_currency"`
+		PriceQualityStatus    string                         `json:"price_quality_status"`
+		PriceSource           string                         `json:"price_source"`
+		QualityTier           string                         `json:"quality_tier"`
+		QualityTags           []string                       `json:"quality_tags"`
+		QualityAdjustedScore  int                            `json:"quality_adjusted_score"`
+		ReviewPriorityScore   int                            `json:"review_priority_score"`
+		ReviewPriorityReasons []ReviewPriorityReason         `json:"review_priority_reasons"`
+		ChangeStatus          string                         `json:"change_status"`
+		ChangeReasons         []CandidateChangeReason        `json:"change_reasons"`
+		PreviousTotalScore    *int                           `json:"previous_total_score"`
+		PreviousGrade         string                         `json:"previous_grade"`
+		Performance           CandidatePerformance           `json:"performance"`
+		SectorCategory        string                         `json:"sector_category"`
+		SectorLabel           string                         `json:"sector_label"`
+		SectorSIC             int                            `json:"sector_sic"`
+		SectorRatingScore     int                            `json:"sector_rating_score"`
+		RevenueGrowthInfo     RevenueGrowthExplanation       `json:"revenue_growth_explanation"`
+		CapitalRiskSummaries  []CapitalRiskSummary           `json:"capital_risk_summaries"`
+		MarketQuality         CandidateMarketQuality         `json:"market_quality"`
+		Investability         CandidateInvestability         `json:"investability"`
+		DilutionTrend         CandidateDilutionTrend         `json:"dilution_trend"`
+		Technical             CandidateTechnicalAnalysis     `json:"technical"`
+		ResearchReadiness     CandidateResearchReadiness     `json:"research_readiness"`
+		BusinessModel         CandidateBusinessModelEvidence `json:"business_model"`
+		Valuation             CandidateValuation             `json:"valuation"`
+		Followed              bool                           `json:"followed"`
 	}
 	return json.Marshal(alias{
 		scoreAlias:            score,
@@ -75,7 +81,13 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		RevenueGrowthInfo:     row.RevenueGrowthInfo,
 		CapitalRiskSummaries:  row.CapitalRiskSummaries,
 		MarketQuality:         row.MarketQuality,
+		Investability:         row.Investability,
+		DilutionTrend:         row.DilutionTrend,
 		Technical:             row.Technical,
+		ResearchReadiness:     row.ResearchReadiness,
+		BusinessModel:         row.BusinessModel,
+		Valuation:             row.Valuation,
+		Followed:              row.Followed,
 	})
 }
 

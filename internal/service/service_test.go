@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,6 +19,7 @@ import (
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type fakeSECClient struct {
@@ -55,6 +57,7 @@ type fakeFundMatchResult struct {
 type fakeFundMetadataSECClient struct {
 	*fakeFundSECClient
 	metadata      map[string]sec.FundFilingMetadata
+	metadataErrs  map[string]error
 	metadataCalls map[string]int
 }
 
@@ -63,6 +66,9 @@ func (f *fakeFundMetadataSECClient) ParseFundFiling(_ context.Context, filing se
 		f.metadataCalls = map[string]int{}
 	}
 	f.metadataCalls[filing.AccessionNumber]++
+	if err := f.metadataErrs[filing.AccessionNumber]; err != nil {
+		return sec.FundFilingMetadata{}, err
+	}
 	return f.metadata[filing.AccessionNumber], nil
 }
 
@@ -234,7 +240,11 @@ func TestIPORadarReprocessesOlderOfferingParserVersion(t *testing.T) {
 }
 
 func TestIPORadarNew424B4SendsSeparateOfferingNotification(t *testing.T) {
-	now := time.Date(2026, 6, 22, 9, 0, 0, 0, time.UTC)
+	// The refresh intentionally applies the configured rolling lookback window.
+	// Keep this scenario current so it continues to exercise a genuinely new
+	// 424B4 instead of silently falling outside that window as calendar time
+	// advances.
+	now := time.Now().UTC().Truncate(time.Second)
 	db := testDB(t)
 	if err := db.Create(&model.IPOFiling{FilingID: "kard-s1", CIK: "0002123613", CompanyName: "Kardigan, Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -20), FilingURL: "https://sec.test/kardigan-s1"}).Error; err != nil {
 		t.Fatalf("seed registration filing: %v", err)
@@ -259,8 +269,12 @@ func TestIPORadarNew424B4SendsSeparateOfferingNotification(t *testing.T) {
 	}
 	notifier := &fakeNotifier{}
 	svc := NewIPORadarService(db, secClient, notifier, configs)
-	if _, err := svc.Refresh(context.Background()); err != nil {
+	firstResult, err := svc.Refresh(context.Background())
+	if err != nil {
 		t.Fatalf("initial refresh: %v", err)
+	}
+	if firstResult.NewFilings != 1 {
+		t.Fatalf("initial refresh result=%+v, want one new 424B4 filing", firstResult)
 	}
 	secClient.currentFilings = []sec.CurrentFilingResult{{FilingID: "kard-duplicate", CIK: "0002123613", CompanyName: "Kardigan, Inc.", FilingType: "424B4", FilingDate: now.Add(time.Hour), FilingURL: "https://sec.test/kardigan-duplicate"}}
 	secClient.documents["https://sec.test/kardigan-duplicate"] = secClient.documents[url]
@@ -361,7 +375,7 @@ func (f *fakeNotifier) Send(ctx context.Context, message telegram.Message) error
 func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
@@ -372,11 +386,19 @@ func testDB(t *testing.T) *gorm.DB {
 		&model.SyncRun{},
 		&model.SyncRunDetail{},
 		&model.TaskConfig{},
+		&model.OperationalAlertDelivery{},
+		&model.RecoveryDrill{},
+		&model.LifecycleCleanupRun{},
 		&model.SystemConfig{},
 		&model.OperationLog{},
 		&model.NotificationLog{},
 		&model.NotificationBatch{},
 		&model.NotificationBatchItem{},
+		&model.TradeSetupNotificationState{},
+		&model.MacroRelease{},
+		&model.MacroObservation{},
+		&model.EarningsPreview{},
+		&model.EarningsPreviewNotice{},
 		&model.FundFilingIdentity{},
 		&model.IPOFiling{},
 		&model.IPOCompanyOverride{},
@@ -434,6 +456,14 @@ func TestIPORadarHealthCountsOperatorAttention(t *testing.T) {
 	if health.LatestSync == nil || health.LatestSync.Status != "success" || !health.LatestSync.StartedAt.Equal(now) || health.LatestSync.NewFilings != 2 {
 		t.Fatalf("latest IPO sync = %+v", health.LatestSync)
 	}
+	actionKeys := make([]string, 0, len(health.Actions))
+	for _, action := range health.Actions {
+		actionKeys = append(actionKeys, action.Key)
+	}
+	wantActions := []string{"review_dead_letters", "retry_notifications", "verify_listing", "complete_market_mapping", "recheck_lifecycle", "review_offering_parse"}
+	if !reflect.DeepEqual(actionKeys, wantActions) {
+		t.Fatalf("IPO health actions = %v, want %v", actionKeys, wantActions)
+	}
 }
 
 func TestIPOCompanyAttentionFilterReturnsPendingListing(t *testing.T) {
@@ -456,6 +486,28 @@ func TestIPOCompanyAttentionFilterReturnsPendingListing(t *testing.T) {
 	}
 	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].CIK != "0000000001" || page.Items[0].Status != "listing_pending" {
 		t.Fatalf("attention results = %+v", page)
+	}
+}
+
+func TestIPOCompanyAttentionFilterReturnsMissingMarketMapping(t *testing.T) {
+	now := time.Date(2026, 7, 12, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	if err := db.Create(&[]model.IPOFiling{
+		{FilingID: "unmapped-s1", CIK: "0000000011", CompanyName: "Unmapped IPO", FilingType: "S-1", FilingDate: now},
+		{FilingID: "mapped-s1", CIK: "0000000012", CompanyName: "Mapped IPO", FilingType: "S-1", FilingDate: now},
+	}).Error; err != nil {
+		t.Fatalf("seed IPO filings: %v", err)
+	}
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0000000012", Ticker: "MAPD"}).Error; err != nil {
+		t.Fatalf("seed IPO market mapping: %v", err)
+	}
+
+	page, err := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db))).ListCompanies(context.Background(), IPOCompanyFilter{Attention: "missing_market_mapping", Page: 1, PageSize: 10}, now)
+	if err != nil {
+		t.Fatalf("list missing market mappings: %v", err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].CIK != "0000000011" {
+		t.Fatalf("missing market mapping results = %+v", page)
 	}
 }
 
@@ -563,6 +615,35 @@ func TestWatchTargetServiceCreatesListsUpdatesAndAuditsTargets(t *testing.T) {
 	}
 	if logs.Total != 2 {
 		t.Fatalf("audit total = %d, want create and status update logs", logs.Total)
+	}
+}
+
+func TestWatchTargetServiceListsOnlyUpcomingEarnings(t *testing.T) {
+	db := testDB(t)
+	svc := NewWatchTargetService(db, NewAuditService(db))
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+
+	upcoming := model.WatchTarget{Ticker: "UPCOMING", CompanyName: "Upcoming Inc.", TargetType: "stock", Status: "enabled"}
+	past := model.WatchTarget{Ticker: "PAST", CompanyName: "Past Inc.", TargetType: "stock", Status: "enabled"}
+	if err := db.Create(&upcoming).Error; err != nil {
+		t.Fatalf("create upcoming target: %v", err)
+	}
+	if err := db.Create(&past).Error; err != nil {
+		t.Fatalf("create past target: %v", err)
+	}
+	if err := db.Create(&model.EarningsPreview{TargetID: upcoming.ID, Ticker: upcoming.Ticker, Provider: "test", Status: "scheduled", ReportAt: ptrTime(now.Add(24 * time.Hour))}).Error; err != nil {
+		t.Fatalf("create upcoming earnings preview: %v", err)
+	}
+	if err := db.Create(&model.EarningsPreview{TargetID: past.ID, Ticker: past.Ticker, Provider: "test", Status: "scheduled", ReportAt: ptrTime(now.Add(-24 * time.Hour))}).Error; err != nil {
+		t.Fatalf("create past earnings preview: %v", err)
+	}
+
+	page, err := svc.List(context.Background(), WatchTargetFilter{UpcomingEarnings: true, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("list upcoming earnings: %v", err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Ticker != "UPCOMING" {
+		t.Fatalf("upcoming earnings page = %+v, want only UPCOMING", page)
 	}
 }
 
@@ -935,8 +1016,8 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 4 {
-				t.Fatalf("sec defaults = %d, want 4", len(configs))
+			if len(configs) != 5 {
+				t.Fatalf("sec defaults = %d, want 5", len(configs))
 			}
 			settings, err := svc.SECFetchSettings(context.Background())
 			if err != nil {
@@ -1081,20 +1162,20 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err := svc.EnsureDefaults(context.Background()); err != nil {
 				t.Fatalf("EnsureDefaults: %v", err)
 			}
-			cfg := config.DiscoveryConfig{PriceProvider: "stooq", StooqURLs: []string{"https://env.example.test/stooq.csv"}, TiingoAPIToken: "env-token", TiingoBaseURL: "https://env.example.test", TiingoRequestBudget: 10, TwelveDataAPIKey: "env-td", TwelveDataBaseURL: "https://env-td.example.test", TwelveDataRequestBudget: 10, YahooBaseURL: "https://env-yahoo.example.test", YahooRequestBudget: 10, ResearchMode: false, MinPublishCoveragePct: 0}
+			cfg := config.DiscoveryConfig{PriceProvider: "stooq", StooqURLs: []string{"https://env.example.test/stooq.csv"}, TiingoAPIToken: "env-token", TiingoBaseURL: "https://env.example.test", TiingoRequestBudget: 10, TwelveDataAPIKey: "env-td", TwelveDataBaseURL: "https://env-td.example.test", TwelveDataRequestBudget: 10, YahooBaseURL: "https://env-yahoo.example.test", YahooRequestBudget: 10, LongbridgeAppKey: "env-lb-key", LongbridgeAppSecret: "env-lb-secret", LongbridgeAccessToken: "env-lb-token", ResearchMode: false, MinPublishCoveragePct: 0}
 			applied, err := svc.ApplyDiscoveryConfig(context.Background(), cfg)
 			if err != nil {
 				t.Fatalf("ApplyDiscoveryConfig: %v", err)
 			}
-			if applied.PriceProvider != "stooq" || len(applied.StooqURLs) != 1 || applied.StooqURLs[0] != "https://env.example.test/stooq.csv" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || applied.TwelveDataAPIKey != "env-td" || applied.TwelveDataBaseURL != "https://api.twelvedata.com" || applied.TwelveDataRequestBudget != 700 || applied.TwelveDataRequestIntervalMS != 8000 || applied.YahooBaseURL != "https://query1.finance.yahoo.com" || applied.YahooRequestBudget != 45 || applied.MinPublishCoveragePct != 85 || !applied.ResearchMode || !applied.AutoTechnicalHistoryWarmup || applied.TaskTimeoutMin != 60 || applied.DownloadIdleTimeoutSec != 90 || applied.SECBulkCacheTTLHours != 12 {
+			if applied.PriceProvider != "stooq" || len(applied.StooqURLs) != 1 || applied.StooqURLs[0] != "https://env.example.test/stooq.csv" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || applied.TwelveDataAPIKey != "env-td" || applied.TwelveDataBaseURL != "https://api.twelvedata.com" || applied.TwelveDataRequestBudget != 700 || applied.TwelveDataRequestIntervalMS != 8000 || applied.YahooBaseURL != "https://query1.finance.yahoo.com" || applied.YahooRequestBudget != 45 || applied.LongbridgeAppKey != "env-lb-key" || applied.LongbridgeAppSecret != "env-lb-secret" || applied.LongbridgeAccessToken != "env-lb-token" || !applied.LongbridgeCompanyProfileEnabled || applied.LongbridgeCompanyProfileRequestBudget != 20 || applied.LongbridgeCompanyProfileTTLDays != 30 || !applied.LongbridgeAnalystRatingEnabled || applied.LongbridgeAnalystRatingRequestBudget != 20 || applied.LongbridgeAnalystRatingTargetChangePct != 5 || applied.MinPublishCoveragePct != 85 || !applied.ResearchMode || !applied.AutoTechnicalHistoryWarmup || applied.TaskTimeoutMin != 60 || applied.DownloadIdleTimeoutSec != 90 || applied.SECBulkCacheTTLHours != 12 || applied.CacheRetentionDays != 14 {
 				t.Fatalf("applied defaults = %+v", applied)
 			}
 			configs, err := svc.List(context.Background(), "discovery", true)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 18 {
-				t.Fatalf("discovery defaults = %d, want 18", len(configs))
+			if len(configs) != 28 {
+				t.Fatalf("discovery defaults = %d, want 28", len(configs))
 			}
 		}},
 		{name: "stored twelve data config overrides env config", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
@@ -2683,6 +2764,44 @@ func TestFilingServiceRefreshTargetsSkipsAndRetriesIncompleteFundIdentity(t *tes
 	}
 }
 
+func TestFilingServiceRefreshTargetRetriesTransientFundMetadataFailure(t *testing.T) {
+	db := testDB(t)
+	configs := NewConfigService(db, NewAuditService(db))
+	target := model.WatchTarget{Ticker: "KMEM", CompanyName: "KMEM ETF", CIK: "0001976517", TargetType: "etf", FundSeriesID: "S000102337", FundClassID: "C000272806", Status: "enabled"}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	filing := sec.FilingResult{FilingID: "kmem-timeout", AccessionNumber: "kmem-timeout", CIK: target.CIK, FilingType: "N-CSR", FilingDate: time.Now().UTC()}
+	secClient := &fakeFundMetadataSECClient{
+		fakeFundSECClient: &fakeFundSECClient{fakeSECClient: &fakeSECClient{filings: []sec.FilingResult{filing}}},
+		metadata:          map[string]sec.FundFilingMetadata{},
+		metadataErrs:      map[string]error{filing.AccessionNumber: errors.New("context deadline exceeded")},
+	}
+	svc := NewFilingService(db, secClient, &fakeNotifier{}, configs)
+
+	first, err := svc.RefreshTarget(context.Background(), target.ID)
+	if err != nil || first.FailedTargets != 1 {
+		t.Fatalf("first refresh=%+v err=%v", first, err)
+	}
+	var detail model.SyncRunDetail
+	if err := db.Where("sync_run_id = ?", first.SyncRunID).First(&detail).Error; err != nil {
+		t.Fatalf("load failed detail: %v", err)
+	}
+	if !detail.Retryable || detail.FailureKind != "timeout" {
+		t.Fatalf("detail=%+v, want retryable timeout", detail)
+	}
+
+	delete(secClient.metadataErrs, filing.AccessionNumber)
+	secClient.metadata[filing.AccessionNumber] = sec.FundFilingMetadata{Relationships: []sec.FundFilingRelationship{{SeriesID: target.FundSeriesID, ClassID: target.FundClassID}}}
+	second, err := svc.RefreshTarget(context.Background(), target.ID)
+	if err != nil || second.FailedTargets != 0 || second.NewFilings != 1 {
+		t.Fatalf("manual retry=%+v err=%v", second, err)
+	}
+	if got := secClient.metadataCalls[filing.AccessionNumber]; got != 2 {
+		t.Fatalf("metadata calls=%d, want 2", got)
+	}
+}
+
 func TestFilingServiceRefreshTargetsMarksIndexFailurePartial(t *testing.T) {
 	db := testDB(t)
 	configs := NewConfigService(db, NewAuditService(db))
@@ -3012,6 +3131,81 @@ func TestFilingServiceRefreshTargetAndDetailsTableDriven(t *testing.T) {
 	}
 }
 
+func TestFilingServiceRecordsActionableTargetFailureMetadata(t *testing.T) {
+	db := testDB(t)
+	target := model.WatchTarget{Ticker: "MISS", CompanyName: "Missing Inc.", CIK: "0000000001", TargetType: "stock", Status: "enabled"}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	requestErr := &sec.RequestError{Operation: "submissions", StatusCode: http.StatusNotFound, Attempts: 1}
+	client := &fakeSECClient{listErrByTicker: map[string]error{"MISS": requestErr}}
+	svc := NewFilingService(db, client, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	result, err := svc.RefreshWithTrigger(context.Background(), "scheduler")
+	if err != nil {
+		t.Fatalf("RefreshWithTrigger: %v", err)
+	}
+	if client.listCalls != 1 {
+		t.Fatalf("ListFilings calls = %d, want 1 for terminal 404", client.listCalls)
+	}
+	if result.FailedTargets != 1 {
+		t.Fatalf("failed targets = %d, want 1", result.FailedTargets)
+	}
+	details, err := svc.ListSyncRunDetails(context.Background(), result.SyncRunID)
+	if err != nil || len(details) != 1 {
+		t.Fatalf("details = %+v, %v", details, err)
+	}
+	if details[0].FailureKind != "not_found" || details[0].Retryable || details[0].AttemptCount != 1 || details[0].NextRetryAt != nil {
+		t.Fatalf("detail metadata = %+v", details[0])
+	}
+}
+
+func TestFilingServiceSchedulerDefersRecentTerminalTargetFailure(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().UTC()
+	target := model.WatchTarget{Ticker: "HOLD", CompanyName: "Hold Inc.", CIK: "0000000002", TargetType: "stock", Status: "enabled"}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	previousRun := model.SyncRun{StartedAt: now.Add(-time.Minute), Status: "partial", Trigger: "scheduler"}
+	if err := db.Create(&previousRun).Error; err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if err := db.Create(&model.SyncRunDetail{SyncRunID: previousRun.ID, TargetID: target.ID, Ticker: target.Ticker, Status: "failed", StartedAt: now.Add(-time.Minute), FinishedAt: &now, FailureKind: "not_found"}).Error; err != nil {
+		t.Fatalf("seed detail: %v", err)
+	}
+	client := &fakeSECClient{filingsByTicker: map[string][]sec.FilingResult{"HOLD": {}}}
+	svc := NewFilingService(db, client, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	result, err := svc.RefreshWithTrigger(context.Background(), "scheduler")
+	if err != nil {
+		t.Fatalf("RefreshWithTrigger: %v", err)
+	}
+	if result.DeferredTargets != 1 || result.FailedTargets != 0 || client.listCalls != 0 {
+		t.Fatalf("result=%+v listCalls=%d", result, client.listCalls)
+	}
+	details, err := svc.ListSyncRunDetails(context.Background(), result.SyncRunID)
+	if err != nil || len(details) != 1 || details[0].Status != "deferred" || details[0].WarningMessage == "" {
+		t.Fatalf("details=%+v err=%v", details, err)
+	}
+}
+
+func TestTaskConfigServiceMarksPartialOutcome(t *testing.T) {
+	db := testDB(t)
+	svc := NewTaskConfigService(db, NewAuditService(db))
+	if err := svc.EnsureDefault(context.Background()); err != nil {
+		t.Fatalf("EnsureDefault: %v", err)
+	}
+	if err := svc.MarkRunOutcome(context.Background(), "sec_filing_sync", time.Now().UTC(), PartialTask("1 个标的等待自动重试")); err != nil {
+		t.Fatalf("MarkRunOutcome: %v", err)
+	}
+	var task model.TaskConfig
+	if err := db.Where("task_name = ?", "sec_filing_sync").First(&task).Error; err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	if task.LastStatus != "partial" || task.ConsecutiveFailures != 1 || task.LastErrorMessage == "" {
+		t.Fatalf("task outcome = %+v", task)
+	}
+}
+
 func TestWatchTargetServiceValidationTableDriven(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -3139,15 +3333,15 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(tasks) != 5 {
-				t.Fatalf("tasks = %d, want 5", len(tasks))
+			if len(tasks) != 13 {
+				t.Fatalf("tasks = %d, want 13", len(tasks))
 			}
 			names := map[string]bool{}
 			for _, task := range tasks {
 				names[task.TaskName] = true
 			}
-			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] || !names["candidate_notification_sync"] || !names["small_cap_discovery_sync"] || !names["notification_retry_sync"] {
-				t.Fatalf("task names = %+v, want sec, ipo, candidate notification, small-cap discovery, and notification retry tasks", names)
+			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] || !names["candidate_notification_sync"] || !names["trade_setup_notification_sync"] || !names["small_cap_discovery_sync"] || !names["small_cap_discovery_full_sync"] || !names["watch_target_market_sync"] || !names["watch_target_earnings_sync"] || !names["notification_retry_sync"] || !names["sqlite_backup"] || !names["operation_history_cleanup"] || !names["operational_health_notification_sync"] || !names["macro_calendar_sync"] {
+				t.Fatalf("task names = %+v, want SEC, IPO, candidate/trade-plan notification, small-cap discovery, watch-target market/earnings, macro calendar, retry, backup, history cleanup, and operational alert tasks", names)
 			}
 		}},
 		{name: "update task", run: func(t *testing.T, svc *TaskConfigService) {
@@ -3188,8 +3382,8 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 					break
 				}
 			}
-			if !task.Running {
-				t.Fatalf("running task = %+v, want running", task)
+			if !task.Running || task.RunningSince == nil {
+				t.Fatalf("running task = %+v, want running with start time", task)
 			}
 			ranAt := time.Date(2026, 6, 20, 9, 30, 0, 0, time.UTC)
 			if err := svc.MarkRunFinished(context.Background(), "ipo_radar_sync", ranAt); err != nil {
@@ -3205,8 +3399,52 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 					break
 				}
 			}
-			if task.Running || task.LastRunAt == nil || !task.LastRunAt.Equal(ranAt) {
+			if task.Running || task.RunningSince != nil || task.LastRunAt == nil || !task.LastRunAt.Equal(ranAt) {
 				t.Fatalf("finished task = %+v, want not running at %s", task, ranAt)
+			}
+		}},
+		{name: "recover interrupted task", run: func(t *testing.T, svc *TaskConfigService) {
+			if err := svc.EnsureDefault(context.Background()); err != nil {
+				t.Fatalf("EnsureDefault: %v", err)
+			}
+			if err := svc.MarkRunStarted(context.Background(), "sqlite_backup"); err != nil {
+				t.Fatalf("MarkRunStarted: %v", err)
+			}
+			recovered, err := svc.RecoverInterrupted(context.Background())
+			if err != nil || recovered != 1 {
+				t.Fatalf("RecoverInterrupted = %d, %v; want 1, nil", recovered, err)
+			}
+			var task model.TaskConfig
+			if err := svc.db.Where("task_name = ?", "sqlite_backup").First(&task).Error; err != nil {
+				t.Fatal(err)
+			}
+			if task.Running || task.LastStatus != "interrupted" || task.LastErrorMessage == "" {
+				t.Fatalf("recovered task = %+v, want interrupted task state", task)
+			}
+		}},
+		{name: "persist failed outcome then reset after success", run: func(t *testing.T, svc *TaskConfigService) {
+			if err := svc.EnsureDefault(context.Background()); err != nil {
+				t.Fatalf("EnsureDefault: %v", err)
+			}
+			failedAt := time.Date(2026, 7, 20, 1, 0, 0, 0, time.UTC)
+			if err := svc.MarkRunOutcome(context.Background(), "sqlite_backup", failedAt, errors.New("provider token=secret failed")); err != nil {
+				t.Fatalf("MarkRunOutcome failed: %v", err)
+			}
+			var task model.TaskConfig
+			if err := svc.db.Where("task_name = ?", "sqlite_backup").First(&task).Error; err != nil {
+				t.Fatal(err)
+			}
+			if task.LastStatus != "failed" || task.ConsecutiveFailures != 1 || task.LastErrorMessage == "" {
+				t.Fatalf("failed task = %+v", task)
+			}
+			if err := svc.MarkRunOutcome(context.Background(), "sqlite_backup", failedAt.Add(time.Minute), nil); err != nil {
+				t.Fatalf("MarkRunOutcome success: %v", err)
+			}
+			if err := svc.db.Where("task_name = ?", "sqlite_backup").First(&task).Error; err != nil {
+				t.Fatal(err)
+			}
+			if task.LastStatus != "success" || task.ConsecutiveFailures != 0 || task.LastErrorMessage != "" {
+				t.Fatalf("successful task = %+v", task)
 			}
 		}},
 		{name: "missing task returns not found", run: func(t *testing.T, svc *TaskConfigService) {
