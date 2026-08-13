@@ -57,6 +57,9 @@ func GetTickerTechnicalHistory(ctx context.Context, db *gorm.DB, ticker string) 
 		return result, err
 	}
 	result.Technical = buildCandidateTechnicalAnalysis(rows)
+	if err := hydrateTickerTradeSetupStatusSince(ctx, db, result.Ticker, &result.Technical); err != nil {
+		return result, err
+	}
 	result.History = candidateTechnicalHistoryRows(rows)
 	return result, nil
 }

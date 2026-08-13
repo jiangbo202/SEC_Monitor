@@ -22,9 +22,9 @@ import (
 type FilingService struct {
 	db          *gorm.DB
 	sec         sec.Client
-	notifier    telegram.Notifier
 	configs     *ConfigService
 	batches     *NotificationBatchService
+	inApp       *InAppNotificationService
 	discoveryDB *gorm.DB
 }
 
@@ -96,7 +96,24 @@ type CleanupPreview struct {
 }
 
 func NewFilingService(db *gorm.DB, secClient sec.Client, notifier telegram.Notifier, configs *ConfigService) *FilingService {
-	return &FilingService{db: db, sec: secClient, notifier: notifier, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
+	return &FilingService{db: db, sec: secClient, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
+}
+
+// WithNotificationCenter shares the process-wide durable notification queue
+// with the rest of the application. The constructor fallback remains for
+// focused unit tests and standalone use.
+func (s *FilingService) WithNotificationCenter(center *NotificationBatchService) *FilingService {
+	if s != nil && center != nil {
+		s.batches = center
+	}
+	return s
+}
+
+func (s *FilingService) WithInAppNotifications(inApp *InAppNotificationService) *FilingService {
+	if s != nil && inApp != nil {
+		s.inApp = inApp
+	}
+	return s
 }
 
 func (s *FilingService) WithDiscoveryDB(db *gorm.DB) *FilingService {
@@ -253,6 +270,14 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 
 	result := RefreshResult{TargetsChecked: len(targets), SyncRunID: run.ID}
 	notificationCandidates := make([]NotificationCandidate, 0)
+	candidateTickers := map[string]bool{}
+	if s.discoveryDB != nil {
+		if tickers, candidateErr := discovery.CurrentCandidateTickers(ctx, s.discoveryDB); candidateErr == nil {
+			for _, ticker := range tickers {
+				candidateTickers[strings.ToUpper(strings.TrimSpace(ticker))] = true
+			}
+		}
+	}
 	for _, target := range targets {
 		detailStartedAt := time.Now().UTC()
 		if strings.EqualFold(trigger, "scheduler") {
@@ -357,24 +382,127 @@ func (s *FilingService) refreshTargets(ctx context.Context, trigger string, sele
 			if associated {
 				targetNewFilings++
 				notificationCandidates = append(notificationCandidates, filingNotificationCandidateForTarget(storedFiling, target, target.LastSyncAt, notificationSettings, time.Now()))
+				s.createInAppWatchTargetFilingEvents(ctx, target, storedFiling)
+			}
+			if isEarningsReleaseFiling(storedFiling) {
+				if associated {
+					s.createInAppEarningsRelease(ctx, "watch_target", target.ID, storedFiling, target.CompanyName)
+				}
+				if !associated && candidateTickers[strings.ToUpper(strings.TrimSpace(storedFiling.Ticker))] {
+					s.createInAppEarningsRelease(ctx, "candidate", 0, storedFiling, storedFiling.CompanyName)
+				}
 			}
 		}
 		s.markTargetSync(ctx, target.ID, "success", "", targetNewFilings)
 		s.finishSyncRunDetail(ctx, detail.ID, "success", targetNewFilings, detailStartedAt, "", warning)
+		s.resolvePriorRetryableFailures(ctx, target.ID, detail.ID)
 	}
 
 	status := "success"
 	if result.FailedTargets > 0 || result.DeferredTargets > 0 {
 		status = "partial"
 	}
-	if len(notificationCandidates) > 0 {
-		if _, err := s.batches.Deliver(ctx, NotificationBatchInput{SyncRunID: run.ID, Source: "filing", Trigger: trigger, Candidates: notificationCandidates}); err != nil {
+	for source, candidates := range notificationCandidatesByEvent(notificationCandidates) {
+		if _, err := s.batches.Deliver(ctx, NotificationBatchInput{SyncRunID: run.ID, Source: source, Trigger: trigger, Candidates: candidates}); err != nil {
 			s.finishSyncRun(ctx, run.ID, result, "failed", err.Error())
 			return result, err
 		}
 	}
 	s.finishSyncRun(ctx, run.ID, result, status, "")
 	return result, nil
+}
+
+// notificationCandidatesByEvent assigns each SEC filing to exactly one
+// Telegram event source. This makes the per-event channel switches precise and
+// prevents a filing that is both a 8-K and an earnings release from being sent
+// twice. Earnings releases take precedence, followed by insider and major
+// event classifications; all remaining filings keep the legacy "filing" source.
+func notificationCandidatesByEvent(candidates []NotificationCandidate) map[string][]NotificationCandidate {
+	grouped := make(map[string][]NotificationCandidate)
+	for _, candidate := range candidates {
+		source := "filing"
+		filing := model.Filing{FilingType: candidate.FilingType, Title: candidate.Title}
+		if isEarningsReleaseFiling(filing) {
+			source = "earnings_release_watch_target"
+		} else if isInsiderFiling(candidate.FilingType) {
+			source = "insider_trading_watch_target"
+		} else if isMajorEventFiling(candidate.FilingType) {
+			source = "major_event_watch_target"
+		}
+		grouped[source] = append(grouped[source], candidate)
+	}
+	return grouped
+}
+
+func (s *FilingService) createInAppWatchTargetFilingEvents(ctx context.Context, target model.WatchTarget, filing model.Filing) {
+	if s == nil || s.inApp == nil {
+		return
+	}
+	occurredAt := filing.FilingDate
+	if filing.PublishedAt != nil {
+		occurredAt = *filing.PublishedAt
+	}
+	form := strings.ToUpper(strings.TrimSpace(filing.FilingType))
+	if isMajorEventFiling(form) {
+		_, _, _ = s.inApp.Create(ctx, InAppNotificationInput{
+			EventKey: fmt.Sprintf("major-event:watch_target:%d:%s", target.ID, filing.FilingID), Source: "major_event_watch_target", Scope: "watch_target",
+			EntityKind: "filing", TargetID: target.ID, Ticker: target.Ticker, CompanyName: target.CompanyName, Severity: "warning",
+			Title: "重大事件公告：" + form, Body: strings.TrimSpace(filing.Title), Link: "/event-radar?ticker=" + target.Ticker, OccurredAt: occurredAt,
+		})
+	}
+	if isInsiderFiling(form) {
+		_, _, _ = s.inApp.Create(ctx, InAppNotificationInput{
+			EventKey: fmt.Sprintf("insider-filing:watch_target:%d:%s", target.ID, filing.FilingID), Source: "insider_trading_watch_target", Scope: "watch_target",
+			EntityKind: "filing", TargetID: target.ID, Ticker: target.Ticker, CompanyName: target.CompanyName, Severity: "info",
+			Title: "内幕交易公告：Form " + form, Body: strings.TrimSpace(filing.Title), Link: "/insider-trading?ticker=" + target.Ticker, OccurredAt: occurredAt,
+		})
+	}
+}
+
+func isMajorEventFiling(form string) bool {
+	switch strings.ToUpper(strings.TrimSpace(form)) {
+	case "8-K", "8-K/A", "6-K", "S-1", "S-1/A", "S-3", "S-3/A", "424B", "424B1", "424B2", "424B3", "424B4", "424B5", "13D", "SC 13D/A", "13D/A":
+		return true
+	default:
+		return false
+	}
+}
+
+func isInsiderFiling(form string) bool {
+	switch strings.ToUpper(strings.TrimSpace(form)) {
+	case "3", "4", "5", "3/A", "4/A", "5/A":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *FilingService) createInAppEarningsRelease(ctx context.Context, scope string, targetID uint, filing model.Filing, companyName string) {
+	if s == nil || s.inApp == nil {
+		return
+	}
+	occurredAt := filing.FilingDate
+	if filing.PublishedAt != nil {
+		occurredAt = *filing.PublishedAt
+	}
+	_, _, _ = s.inApp.Create(ctx, InAppNotificationInput{
+		EventKey: fmt.Sprintf("earnings-release:%s:%d:%s", scope, targetID, filing.FilingID), Source: "earnings_release_" + scope, Scope: scope,
+		EntityKind: "filing", TargetID: targetID, Ticker: filing.Ticker, CompanyName: valueOrDefault(companyName, filing.CompanyName), Severity: "success",
+		Title: "财报已发布：" + filing.FilingType, Body: strings.TrimSpace(filing.Title), Link: "/filings?ticker=" + filing.Ticker, OccurredAt: occurredAt,
+	})
+}
+
+func isEarningsReleaseFiling(filing model.Filing) bool {
+	form := strings.ToUpper(strings.TrimSpace(filing.FilingType))
+	switch form {
+	case "10-K", "10-Q", "20-F", "40-F":
+		return true
+	case "8-K", "6-K":
+		content := strings.ToLower(filing.Title + " " + filing.RawContent)
+		return strings.Contains(content, "earnings") || strings.Contains(content, "financial results") || strings.Contains(content, "results of operations")
+	default:
+		return false
+	}
 }
 
 func (s *FilingService) recordCandidateRecalcEvent(ctx context.Context, filing model.Filing) error {
@@ -613,6 +741,21 @@ func (s *FilingService) finishSyncRunDetail(ctx context.Context, id uint, status
 		"error_message":   errorMessage,
 		"warning_message": warningMessage,
 	}).Error
+}
+
+// resolvePriorRetryableFailures keeps the historical failure detail for audit
+// purposes, while removing it from the live retry queue after a later success.
+// Without this, a resolved transient failure would be selected forever.
+func (s *FilingService) resolvePriorRetryableFailures(ctx context.Context, targetID, successfulDetailID uint) {
+	if targetID == 0 {
+		return
+	}
+	query := s.db.WithContext(ctx).Model(&model.SyncRunDetail{}).
+		Where("target_id = ? AND status = ? AND retryable = ?", targetID, "failed", true)
+	if successfulDetailID != 0 {
+		query = query.Where("id <> ?", successfulDetailID)
+	}
+	_ = query.Updates(map[string]any{"retryable": false, "next_retry_at": nil}).Error
 }
 
 func (s *FilingService) finishSyncRunDetailFailure(ctx context.Context, id uint, newFilings int, startedAt time.Time, runErr error, phase string, attempts int, warningMessage string) {
@@ -977,18 +1120,19 @@ func (s *FilingService) createFilingAndAssociate(ctx context.Context, filing mod
 	return created, result.RowsAffected == 1, stored, nil
 }
 
+const recoverableFailureBatchLimit = 25
+
 // RetryRecoverableFailures performs one bounded compensation pass for the
-// transient target failures of a completed run. Rate-limited items retain a
-// future retry time and are intentionally left for the next scheduled run.
+// oldest due transient failures across all prior runs. A retry creates a new
+// run, so selecting only the latest failure per target prevents historical
+// details from multiplying requests. Rate-limited items retain a future retry
+// time and are intentionally left for the next scheduled run.
 func (s *FilingService) RetryRecoverableFailures(ctx context.Context, syncRunID uint) (RefreshResult, error) {
-	if syncRunID == 0 {
-		return RefreshResult{}, nil
-	}
 	now := time.Now().UTC()
 	var details []model.SyncRunDetail
 	if err := s.db.WithContext(ctx).
-		Where("sync_run_id = ? AND status = ? AND retryable = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)", syncRunID, "failed", true, now).
-		Order("id ASC").
+		Where("status = ? AND retryable = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)", "failed", true, now).
+		Order("finished_at ASC, id ASC").
 		Find(&details).Error; err != nil {
 		return RefreshResult{}, err
 	}
@@ -1006,6 +1150,9 @@ func (s *FilingService) RetryRecoverableFailures(ctx context.Context, syncRunID 
 		}
 		seen[detail.TargetID] = struct{}{}
 		targetIDs = append(targetIDs, detail.TargetID)
+		if len(targetIDs) >= recoverableFailureBatchLimit {
+			break
+		}
 	}
 	if len(targetIDs) == 0 {
 		return RefreshResult{}, nil
@@ -1280,6 +1427,9 @@ func parseClockMinute(value string) (int, bool) {
 }
 
 func sendWithRetry(ctx context.Context, notifier telegram.Notifier, message telegram.Message, attempts int) error {
+	if notifier == nil {
+		return errors.New("telegram notifier is not configured")
+	}
 	var err error
 	for attempt := 0; attempt < attempts; attempt++ {
 		err = notifier.Send(ctx, message)

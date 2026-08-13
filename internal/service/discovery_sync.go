@@ -40,6 +40,8 @@ type DiscoverySyncService struct {
 	configs              *ConfigService
 	runner               DiscoverySyncRunner
 	analystNotifications *AnalystRatingNotificationService
+	inApp                *InAppNotificationService
+	batches              *NotificationBatchService
 }
 
 type productionDiscoveryRunner struct {
@@ -73,6 +75,352 @@ type WatchTargetMarketSyncResult struct {
 	ProviderResult      discovery.ProviderResult `json:"provider_result"`
 	Skipped             bool                     `json:"skipped"`
 	Message             string                   `json:"message"`
+}
+
+// TickerEvaluationRequest identifies the symbol that an explicit, user-run
+// research evaluation should inspect. It never publishes a universe batch.
+type TickerEvaluationRequest struct {
+	Ticker      string
+	CIK         string
+	CompanyName string
+	TargetType  string
+}
+
+type fixedSecurityMetadataSource struct {
+	records []discovery.SecuritySourceRecord
+}
+
+func (s fixedSecurityMetadataSource) Load(_ context.Context) ([]discovery.SecuritySourceRecord, discovery.SourceVersion, error) {
+	return append([]discovery.SecuritySourceRecord(nil), s.records...), discovery.SourceVersion{Source: "ticker-evaluation"}, nil
+}
+
+// EvaluateTicker reuses the SEC fundamental and candidate-review primitives
+// for one symbol. Price refresh is intentional and happens only on this
+// explicit endpoint, never when history is viewed.
+func (s *DiscoverySyncService) EvaluateTicker(ctx context.Context, request TickerEvaluationRequest) (discovery.TickerEvaluationResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.TickerEvaluationResult{}, errors.New("discovery sync service is not configured")
+	}
+	ticker := strings.ToUpper(strings.TrimSpace(request.Ticker))
+	if ticker == "" {
+		return discovery.TickerEvaluationResult{}, errors.New("ticker is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return discovery.TickerEvaluationResult{}, err
+	}
+	if _, err := s.BackfillTickerTechnicalHistory(ctx, ticker, 0); err != nil {
+		return discovery.TickerEvaluationResult{}, fmt.Errorf("refresh market history: %w", err)
+	}
+	prices, err := discovery.TickerEvaluationPriceHistory(ctx, s.db, ticker)
+	if err != nil {
+		return discovery.TickerEvaluationResult{}, err
+	}
+	now := time.Now().UTC()
+	warnings := []string{}
+	targetType := strings.ToLower(strings.TrimSpace(request.TargetType))
+	if targetType == "" {
+		targetType = "stock"
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.TickerEvaluationResult{}, err
+	}
+	if targetType == "etf" {
+		warnings = append(warnings, "ETF 不适用 SEC 发行人基本面和 Form 4 规则；保留趋势、动量、量价、流动性与交易纪律结果。")
+		result := discovery.BuildTickerEvaluationResult(ticker, request.CIK, request.CompanyName, targetType, discovery.CandidateScoreSnapshot{Ticker: ticker}, discovery.FinancialMetricSnapshot{}, nil, prices, now, "not_applicable", warnings)
+		s.enrichTickerEvaluationResearch(ctx, cfg, &result, true)
+		return discovery.SaveTickerEvaluation(ctx, s.db, result)
+	}
+	timeout := time.Duration(cfg.TaskTimeoutMin) * time.Minute
+	if timeout <= 0 {
+		timeout = time.Hour
+	}
+	downloader := newDiscoveryDownloader(cfg, timeout)
+	bulk := discovery.SECBulkSource{Downloader: downloader, TickerURL: cfg.SECTickerExchangeURL, SubmissionsURL: cfg.SECSubmissionsURL, CompanyFactsURL: cfg.SECCompanyFactsURL, Limits: discovery.ZIPParseLimits{MaxEntries: 1_000_000, MaxEntryBytes: 512 << 20, MaxTotalBytes: 64 << 30}, CacheTTL: discoveryCacheTTL(cfg)}
+	issuer, err := bulk.LoadIncrementalIssuerData(ctx, []discovery.SecuritySourceRecord{{CIK: strings.TrimSpace(request.CIK), Ticker: ticker, ProviderTicker: ticker, CompanyName: request.CompanyName, MappingStatus: discovery.MappingStatusCurrent}})
+	if err != nil {
+		return discovery.TickerEvaluationResult{}, fmt.Errorf("load SEC issuer facts: %w", err)
+	}
+	warnings = append(warnings, issuer.Warnings...)
+	if len(issuer.Records) == 0 {
+		warnings = append(warnings, "SEC 未返回该发行人的可用元数据。")
+	}
+	record := discovery.SecuritySourceRecord{CIK: request.CIK, Ticker: ticker, CompanyName: request.CompanyName}
+	if len(issuer.Records) > 0 {
+		record = issuer.Records[0]
+		if record.CompanyName == "" {
+			record.CompanyName = request.CompanyName
+		}
+	}
+	metric, metricErr := discovery.FinancialMetricFromFacts("", 0, issuer.FinancialFacts, now)
+	fundamentalStatus := "available"
+	if metricErr != nil || len(issuer.FinancialFacts) == 0 {
+		fundamentalStatus = "unavailable"
+		warnings = append(warnings, "未取得足够的 SEC Company Facts，基本面分数不完整。")
+	}
+	allowed := map[string]struct{}{record.CIK: {}}
+	metadata := fixedSecurityMetadataSource{records: []discovery.SecuritySourceRecord{record}}
+	events, _, eventErr := (discovery.SECSubmissionsCapitalEventSource{Metadata: metadata}).Load(ctx, allowed, now)
+	if eventErr != nil {
+		warnings = append(warnings, "资本风险解析不可用："+eventErr.Error())
+	}
+	risks := make([]discovery.CapitalRiskSnapshot, 0)
+	for _, risk := range discovery.AssessCapitalRisks(events, now) {
+		risks = append(risks, discovery.CapitalRiskToSnapshot("", 0, risk, now))
+	}
+	insiderRows := make([]discovery.InsiderTransactionSnapshot, 0)
+	var coverage *discovery.InsiderCoverage
+	transactions, coverages, _, insiderErr := (discovery.SECForm4InsiderSource{Metadata: metadata, Downloader: downloader, LookbackDays: discovery.CandidateInsiderLookbackDays}).LoadInsiderTransactionsWithCoverage(ctx, allowed, now)
+	if insiderErr != nil {
+		warnings = append(warnings, "Form 4 解析不可用："+insiderErr.Error())
+	} else {
+		for _, tx := range transactions {
+			insiderRows = append(insiderRows, discovery.InsiderTransactionToSnapshot(0, tx, now))
+		}
+		if len(coverages) > 0 {
+			coverage = &coverages[0]
+		}
+	}
+	shares := discovery.SelectShareSnapshot(issuer.Shares, events, now)
+	marketCap := int64(0)
+	if len(prices) > 0 && shares.Fact != nil {
+		if value, computeErr := discovery.ComputeMarketCapUSD(prices[len(prices)-1].CloseMicros, shares.Fact.Shares); computeErr == nil {
+			marketCap = value
+		}
+	}
+	if shares.Fact == nil {
+		warnings = append(warnings, "未取得可用流通股本，市值与小盘适配性无法完整判断。")
+	}
+	scored := discovery.ScoreDiscoveryCandidate(discovery.DiscoveryScoreInput{Ticker: ticker, MarketCapUSD: marketCap, Financial: metric, Insiders: insiderRows, Risks: risks, GrossMarginPct: metric.GrossMarginPct, SectorScore: discovery.SectorRatingForSIC(record.SIC).Score, AsOf: now})
+	snapshot := discovery.CandidateScoreToSnapshot("", scored, now)
+	result := discovery.BuildTickerEvaluationResult(ticker, record.CIK, record.CompanyName, targetType, snapshot, metric, risks, prices, now, fundamentalStatus, warnings)
+	result.InsiderCoverage = coverage
+	result.Research.Profile = tickerEvaluationProfileFromRecord(record, result)
+	s.enrichTickerEvaluationResearch(ctx, cfg, &result, true)
+	return discovery.SaveTickerEvaluation(ctx, s.db, result)
+}
+
+// HydrateTickerEvaluationResearch overlays the current locally cached research
+// context onto a result without requesting a third-party provider. It is used
+// by candidate/watch-target cache responses so looking up an existing symbol
+// remains fast and does not consume Longbridge quota.
+func (s *DiscoverySyncService) HydrateTickerEvaluationResearch(ctx context.Context, result discovery.TickerEvaluationResult) discovery.TickerEvaluationResult {
+	if s == nil || s.db == nil {
+		return result
+	}
+	s.hydrateTickerEvaluationResearch(ctx, &result)
+	return result
+}
+
+func (s *DiscoverySyncService) enrichTickerEvaluationResearch(ctx context.Context, cfg config.DiscoveryConfig, result *discovery.TickerEvaluationResult, refresh bool) {
+	if result == nil {
+		return
+	}
+	if refresh {
+		if cfg.LongbridgeCompanyProfileEnabled && cfg.LongbridgeCompanyProfileRequestBudget > 0 && longbridgeCredentialsConfigured(cfg) {
+			if overview, err := discovery.FetchLongbridgeCompanyOverview(ctx, cfg, result.Ticker); err != nil {
+				result.Research.RefreshNotes = append(result.Research.RefreshNotes, "公司资料未更新："+discovery.SanitizeLongbridgeCandidateResearchError(err))
+			} else {
+				applyTickerEvaluationCompanyOverview(&result.Research.Profile, overview)
+			}
+		} else {
+			result.Research.RefreshNotes = append(result.Research.RefreshNotes, "公司资料补充已在系统配置中关闭、预算为 0 或 Longbridge 凭据未配置。")
+		}
+		if cfg.LongbridgeAnalystRatingEnabled && cfg.LongbridgeAnalystRatingRequestBudget > 0 && longbridgeCredentialsConfigured(cfg) {
+			if _, err := discovery.RefreshLongbridgeAnalystRating(ctx, s.db, cfg, result.Ticker, result.CIK); err != nil {
+				result.Research.RefreshNotes = append(result.Research.RefreshNotes, "分析师共识未更新："+discovery.SanitizeLongbridgeCandidateResearchError(err))
+			}
+		} else {
+			result.Research.RefreshNotes = append(result.Research.RefreshNotes, "分析师共识同步已在系统配置中关闭或预算为 0。")
+		}
+		if cfg.LongbridgeCandidateResearchEnabled && cfg.LongbridgeCandidateResearchRequestBudget > 0 && longbridgeCredentialsConfigured(cfg) {
+			if refreshed, err := discovery.RefreshLongbridgeCandidateMarketResearch(ctx, s.db, cfg, result.Ticker, result.CIK); err != nil {
+				result.Research.RefreshNotes = append(result.Research.RefreshNotes, "EPS、异动及持仓未更新："+discovery.SanitizeLongbridgeCandidateResearchError(err))
+			} else {
+				result.Research.RefreshNotes = append(result.Research.RefreshNotes, refreshed.Warnings...)
+			}
+		} else {
+			result.Research.RefreshNotes = append(result.Research.RefreshNotes, "EPS、异动及持仓同步已在系统配置中关闭或预算为 0。")
+		}
+		if cfg.LongbridgeCandidateValuationEnabled && cfg.LongbridgeCandidateValuationRequestBudget > 0 && longbridgeCredentialsConfigured(cfg) {
+			if refreshed, err := discovery.RefreshLongbridgeCandidateValuationResearch(ctx, s.db, cfg, result.Ticker, result.CIK); err != nil {
+				result.Research.RefreshNotes = append(result.Research.RefreshNotes, "估值与同业比较未更新："+discovery.SanitizeLongbridgeCandidateResearchError(err))
+			} else {
+				result.Research.RefreshNotes = append(result.Research.RefreshNotes, refreshed.Warnings...)
+			}
+		} else {
+			result.Research.RefreshNotes = append(result.Research.RefreshNotes, "估值研究同步已在系统配置中关闭或预算为 0。")
+		}
+		if cfg.LongbridgeOptionResearchEnabled && cfg.LongbridgeCandidateOptionResearchBudget > 0 && longbridgeCredentialsConfigured(cfg) {
+			if refreshed, err := discovery.RefreshLongbridgeOptionResearch(ctx, s.db, cfg, result.Ticker, result.CIK); err != nil {
+				result.Research.RefreshNotes = append(result.Research.RefreshNotes, "期权与空头研究未更新："+discovery.SanitizeLongbridgeCandidateResearchError(err))
+			} else {
+				result.Research.RefreshNotes = append(result.Research.RefreshNotes, refreshed.Warnings...)
+			}
+		} else {
+			result.Research.RefreshNotes = append(result.Research.RefreshNotes, "期权与空头研究同步已在系统配置中关闭或预算为 0。")
+		}
+	}
+	s.hydrateTickerEvaluationResearch(ctx, result)
+}
+
+func longbridgeCredentialsConfigured(cfg config.DiscoveryConfig) bool {
+	return strings.TrimSpace(cfg.LongbridgeAppKey) != "" && strings.TrimSpace(cfg.LongbridgeAppSecret) != "" && strings.TrimSpace(cfg.LongbridgeAccessToken) != ""
+}
+
+func applyTickerEvaluationCompanyOverview(profile *discovery.CompanyProfile, overview discovery.LongbridgeCompanyOverview) {
+	if profile == nil {
+		return
+	}
+	if strings.TrimSpace(overview.CompanyName) != "" {
+		profile.CompanyName = strings.TrimSpace(overview.CompanyName)
+	}
+	if strings.TrimSpace(overview.Profile) != "" {
+		profile.BusinessSummary = strings.TrimSpace(overview.Profile)
+		profile.SummarySource = "Longbridge company overview（本次评估）"
+		profile.ProfileProvider = "Longbridge company overview"
+		profile.Status = "available"
+	}
+	profile.Website, profile.Founded, profile.ListingDate, profile.Market = overview.Website, overview.Founded, overview.ListingDate, overview.Market
+	profile.Address, profile.Employees, profile.Manager, profile.YearEnd = overview.Address, overview.Employees, overview.Manager, overview.YearEnd
+	at := time.Now().UTC()
+	profile.ProfileFetchedAt, profile.ProfileFreshness = &at, "fresh"
+}
+
+func (s *DiscoverySyncService) hydrateTickerEvaluationResearch(ctx context.Context, result *discovery.TickerEvaluationResult) {
+	if result == nil {
+		return
+	}
+	research := result.Research
+	if profile, err := discovery.GetCompanyProfile(ctx, s.db, result.Ticker, result.CIK); err == nil {
+		research.Profile = mergeTickerEvaluationProfile(research.Profile, profile)
+	} else {
+		research.RefreshNotes = append(research.RefreshNotes, "公司资料本地快照读取失败。")
+	}
+	if research.Profile.Ticker == "" {
+		research.Profile.Ticker = result.Ticker
+	}
+	if research.Profile.CIK == "" {
+		research.Profile.CIK = result.CIK
+	}
+	if research.Profile.CompanyName == "" {
+		research.Profile.CompanyName = result.CompanyName
+	}
+	if research.Profile.BusinessSummary == "" {
+		if result.TargetType == "etf" {
+			research.Profile.BusinessSummary = "该标的是基金 / ETF。发行人基本面和 Form 4 规则不适用；本评估保留行情、趋势、动量、量价与交易纪律。"
+			research.Profile.SummarySource = "标的类型规则"
+		} else {
+			research.Profile.BusinessSummary = "尚未获得可核验的公司业务简介；请检查 Longbridge 公司资料补充或后续 SEC 元数据同步。"
+			research.Profile.SummarySource = "待补充"
+		}
+	}
+	if research.Profile.Status == "" {
+		research.Profile.Status = "partial"
+	}
+
+	if analyst, err := discovery.GetAnalystRating(ctx, s.db, result.Ticker); err == nil {
+		research.AnalystRating = analyst
+	}
+	if market, err := discovery.GetCandidateMarketResearch(ctx, s.db, result.Ticker); err == nil {
+		research.MarketResearch = market
+	}
+	if option, err := discovery.GetOptionResearch(ctx, s.db, result.Ticker); err == nil {
+		research.OptionResearch = option
+	}
+	if valuation, err := discovery.GetCandidateValuationResearch(ctx, s.db, result.Ticker); err == nil {
+		research.ValuationResearch = valuation
+	}
+	research.Sources = tickerEvaluationResearchSources(research, result.TargetType)
+	if result.TargetType == "etf" {
+		research.HoldingsScopeNote = "当前持仓表展示的是持有该 ETF 的机构及基金 / ETF 披露，不是该 ETF 自身的成分股与组合权重；ETF 成分披露需接入基金持仓原始申报后单独展示。"
+	} else {
+		research.HoldingsScopeNote = "机构股东与基金 / ETF 持仓均为 Longbridge 返回的报告日快照；持股比例和组合权重按提供方口径展示，不参与基本面总分。"
+	}
+	result.Research = research
+}
+
+func tickerEvaluationProfileFromRecord(record discovery.SecuritySourceRecord, result discovery.TickerEvaluationResult) discovery.CompanyProfile {
+	profile := discovery.CompanyProfile{Ticker: result.Ticker, CIK: result.CIK, CompanyName: result.CompanyName, Exchange: record.Exchange, SIC: record.SIC, SICDescription: record.SICDescription, StateOfIncorporation: record.StateOfIncorporation, LatestAnnualForm: record.LatestAnnualForm, Status: "partial"}
+	if profile.SICDescription != "" {
+		profile.BusinessSummary = fmt.Sprintf("SEC 将该发行人归入“%s”（SIC %d）。这是申报资料中的行业分类，并非完整产品介绍。", profile.SICDescription, profile.SIC)
+		profile.SummarySource = "SEC submissions / sicDescription"
+		profile.Status = "available"
+	}
+	return profile
+}
+
+func mergeTickerEvaluationProfile(base, local discovery.CompanyProfile) discovery.CompanyProfile {
+	if local.Ticker != "" {
+		base.Ticker = local.Ticker
+	}
+	if local.CIK != "" {
+		base.CIK = local.CIK
+	}
+	if local.CompanyName != "" {
+		base.CompanyName = local.CompanyName
+	}
+	if local.Exchange != "" {
+		base.Exchange = local.Exchange
+	}
+	if local.SIC != 0 {
+		base.SIC = local.SIC
+	}
+	if local.SICDescription != "" {
+		base.SICDescription = local.SICDescription
+	}
+	if local.SectorCategory != "" {
+		base.SectorCategory = local.SectorCategory
+	}
+	if local.StateOfIncorporation != "" {
+		base.StateOfIncorporation = local.StateOfIncorporation
+	}
+	if local.LatestAnnualForm != "" {
+		base.LatestAnnualForm = local.LatestAnnualForm
+	}
+	if local.BusinessSummary != "" && !strings.Contains(base.SummarySource, "本次评估") {
+		base.BusinessSummary, base.SummarySource, base.Status = local.BusinessSummary, local.SummarySource, local.Status
+	}
+	if local.ProfileProvider != "" {
+		base.ProfileProvider, base.ProfileFetchedAt, base.ProfileFreshness = local.ProfileProvider, local.ProfileFetchedAt, local.ProfileFreshness
+		base.Website, base.Founded, base.ListingDate, base.Market = local.Website, local.Founded, local.ListingDate, local.Market
+		base.Address, base.Employees, base.Manager, base.YearEnd = local.Address, local.Employees, local.Manager, local.YearEnd
+	}
+	if local.MetadataAsOf != nil {
+		base.MetadataAsOf = local.MetadataAsOf
+	}
+	return base
+}
+
+func tickerEvaluationResearchSources(research discovery.TickerEvaluationResearchSnapshot, targetType string) []discovery.TickerEvaluationResearchSource {
+	sources := []discovery.TickerEvaluationResearchSource{{Name: "公司资料 / 行业", Status: research.Profile.Status, Note: research.Profile.SummarySource}}
+	if research.Profile.ProfileFetchedAt != nil {
+		sources[0].AsOf = research.Profile.ProfileFetchedAt.Format(time.RFC3339)
+	}
+	analyst := discovery.TickerEvaluationResearchSource{Name: "分析师共识", Status: "unavailable", Note: research.AnalystRating.Message}
+	if research.AnalystRating.Latest != nil {
+		analyst.Status, analyst.AsOf = research.AnalystRating.Latest.Status, research.AnalystRating.Latest.FetchedAt.Format(time.RFC3339)
+	}
+	eps := discovery.TickerEvaluationResearchSource{Name: "EPS / 异动 / 持仓", Status: "unavailable", Note: research.MarketResearch.EPSForecast.Message}
+	if research.MarketResearch.EPSForecast.Latest != nil {
+		eps.Status, eps.AsOf = "available", research.MarketResearch.EPSForecast.Latest.FetchedAt.Format(time.RFC3339)
+	} else if len(research.MarketResearch.InstitutionalHolders)+len(research.MarketResearch.FundHolders) > 0 {
+		eps.Status = "partial"
+	}
+	valuation := discovery.TickerEvaluationResearchSource{Name: "估值 / 同业比较", Status: "unavailable", Note: research.ValuationResearch.Message}
+	if research.ValuationResearch.Latest != nil {
+		valuation.Status, valuation.AsOf = "available", research.ValuationResearch.Latest.FetchedAt.Format(time.RFC3339)
+	}
+	sources = append(sources, analyst, eps, valuation)
+	options := discovery.TickerEvaluationResearchSource{Name: "期权 / 空头研究", Status: "unavailable", Note: research.OptionResearch.Message}
+	if research.OptionResearch.Latest != nil {
+		options.Status, options.AsOf = research.OptionResearch.Latest.Status, research.OptionResearch.Latest.FetchedAt.Format(time.RFC3339)
+	}
+	sources = append(sources, options)
+	if targetType == "etf" {
+		sources = append(sources, discovery.TickerEvaluationResearchSource{Name: "ETF 自身成分权重", Status: "not_synced", Note: "尚未接入基金持仓原始申报；当前持仓仅表示谁持有该 ETF。"})
+	}
+	return sources
 }
 
 // RefreshLongbridgeCompanyProfile exposes an explicitly user-triggered issuer
@@ -110,6 +458,326 @@ func (s *DiscoverySyncService) RefreshLongbridgeAnalystRating(ctx context.Contex
 			log.Printf("analyst rating notification deferred: %v", notifyErr)
 		}
 	}
+	return result, nil
+}
+
+// RefreshLongbridgeCandidateMarketResearch updates the selected candidate's
+// EPS expectation, anomaly and institutional-holder snapshots only.
+func (s *DiscoverySyncService) RefreshLongbridgeCandidateMarketResearch(ctx context.Context, ticker, cik string) (discovery.CandidateMarketResearchRefreshResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.CandidateMarketResearchRefreshResult{}, errors.New("discovery sync service is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.CandidateMarketResearchRefreshResult{}, err
+	}
+	result, err := discovery.RefreshLongbridgeCandidateMarketResearch(ctx, s.db, cfg, ticker, cik)
+	if err == nil {
+		err = discovery.MarkLongbridgeResearchSuccess(ctx, s.db, discovery.LongbridgeRefreshFamilyMarketResearch, ticker, time.Now().UTC())
+	}
+	return result, err
+}
+
+func (s *DiscoverySyncService) RefreshLongbridgeCandidateValuationResearch(ctx context.Context, ticker, cik string) (discovery.ValuationResearchRefreshResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.ValuationResearchRefreshResult{}, errors.New("discovery sync service is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.ValuationResearchRefreshResult{}, err
+	}
+	result, err := discovery.RefreshLongbridgeCandidateValuationResearch(ctx, s.db, cfg, ticker, cik)
+	if err == nil {
+		err = discovery.MarkLongbridgeResearchSuccess(ctx, s.db, discovery.LongbridgeRefreshFamilyValuation, ticker, time.Now().UTC())
+	}
+	return result, err
+}
+
+// RefreshLongbridgeOptionResearch updates one explicit symbol's compact
+// Call/Put volume and short-interest snapshot. It is separate from P1/P2 and
+// never changes the candidate's fundamental or review score.
+func (s *DiscoverySyncService) RefreshLongbridgeOptionResearch(ctx context.Context, ticker, cik string) (discovery.OptionResearchRefreshResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.OptionResearchRefreshResult{}, errors.New("discovery sync service is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.OptionResearchRefreshResult{}, err
+	}
+	if !cfg.LongbridgeOptionResearchEnabled {
+		return discovery.OptionResearchRefreshResult{}, errors.New("Longbridge 期权与空头研究同步已关闭")
+	}
+	return discovery.RefreshLongbridgeOptionResearch(ctx, s.db, cfg, ticker, cik)
+}
+
+func (s *DiscoverySyncService) GetOptionResearch(ctx context.Context, ticker string) (discovery.OptionResearchView, error) {
+	if s == nil || s.db == nil {
+		return discovery.OptionResearchView{}, errors.New("discovery sync service is not configured")
+	}
+	return discovery.GetOptionResearch(ctx, s.db, ticker)
+}
+
+func (s *DiscoverySyncService) SyncLongbridgeCandidateOptionResearch(ctx context.Context) (discovery.OptionResearchSyncResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.OptionResearchSyncResult{}, errors.New("discovery sync service is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.OptionResearchSyncResult{}, err
+	}
+	return discovery.SyncCurrentCandidateOptionResearch(ctx, s.db, cfg)
+}
+
+// SyncEnabledWatchTargetOptionResearch has its own budget so an expanding
+// candidate universe cannot starve the monitoring list.
+func (s *DiscoverySyncService) SyncEnabledWatchTargetOptionResearch(ctx context.Context) (discovery.OptionResearchSyncResult, error) {
+	result := discovery.OptionResearchSyncResult{Warnings: []string{}}
+	if s == nil || s.db == nil || s.watchDB == nil {
+		return result, errors.New("watch-target option research is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return result, err
+	}
+	if !cfg.LongbridgeOptionResearchEnabled || cfg.LongbridgeWatchTargetOptionResearchBudget <= 0 {
+		result.Skipped, result.Message = true, "Longbridge 监控标的期权与空头研究同步已关闭或预算为 0"
+		return result, nil
+	}
+	var targets []model.WatchTarget
+	// WatchTarget uses the string status column (enabled/disabled), not an
+	// historical boolean enabled column. Keeping this predicate consistent
+	// with the other watch-target research jobs prevents a persisted SQLite
+	// database from failing this scheduled task with "no such column: enabled".
+	if err := s.watchDB.WithContext(ctx).Where("status = ? AND target_type = ?", "enabled", "stock").Order("ticker ASC").Limit(cfg.LongbridgeWatchTargetOptionResearchBudget).Find(&targets).Error; err != nil {
+		return result, err
+	}
+	if len(targets) == 0 {
+		result.Skipped, result.Message = true, "暂无已启用监控标的"
+		return result, nil
+	}
+	result.CandidateCount = len(targets)
+	batchTargets := make([]discovery.OptionResearchTarget, 0, len(targets))
+	for _, target := range targets {
+		batchTargets = append(batchTargets, discovery.OptionResearchTarget{Ticker: target.Ticker, CIK: target.CIK})
+	}
+	items, err := discovery.RefreshLongbridgeOptionResearchBatch(ctx, s.db, cfg, batchTargets)
+	if err != nil {
+		return result, err
+	}
+	for index, item := range items {
+		result.Attempted++
+		if item.Err != nil {
+			result.Failed++
+			result.Warnings = append(result.Warnings, batchTargets[index].Ticker+"："+discovery.SanitizeLongbridgeCandidateResearchError(item.Err))
+			continue
+		}
+		if item.Result.Fetched {
+			result.Fetched++
+		}
+		result.Warnings = append(result.Warnings, item.Result.Warnings...)
+	}
+	result.Message = fmt.Sprintf("已更新 %d/%d 个监控标的的期权与空头研究快照", result.Fetched, result.Attempted)
+	return result, nil
+}
+
+// SyncLongbridgeCandidateMarketResearch runs the bounded P1 data family
+// (EPS expectations, market anomalies, and institutional holdings). It is
+// intentionally scheduled separately from candidate discovery and P2.
+func (s *DiscoverySyncService) SyncLongbridgeCandidateMarketResearch(ctx context.Context) (discovery.CandidateMarketResearchSyncResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.CandidateMarketResearchSyncResult{}, errors.New("discovery sync service is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.CandidateMarketResearchSyncResult{}, err
+	}
+	return discovery.SyncCurrentCandidateLongbridgeMarketResearch(ctx, s.db, cfg)
+}
+
+// WatchTargetMarketResearchSyncResult describes the independent P1 refresh for
+// enabled stock watch targets. It is deliberately separate from candidate P1
+// because shareholder and fund-holder coverage should not depend on the size
+// or cadence of the candidate universe.
+type WatchTargetMarketResearchSyncResult struct {
+	TargetCount int      `json:"target_count"`
+	Attempted   int      `json:"attempted"`
+	Fetched     int      `json:"fetched"`
+	Failed      int      `json:"failed"`
+	Skipped     bool     `json:"skipped"`
+	Message     string   `json:"message"`
+	Warnings    []string `json:"warnings"`
+}
+
+// SyncEnabledWatchTargetMarketResearch refreshes a bounded least-recently
+// updated subset of enabled stock watch targets. It only calls Longbridge P1
+// endpoints (EPS, anomaly, shareholder, fund-holder), and never starts SEC,
+// price, candidate, or P2 valuation work.
+func (s *DiscoverySyncService) SyncEnabledWatchTargetMarketResearch(ctx context.Context) (WatchTargetMarketResearchSyncResult, error) {
+	result := WatchTargetMarketResearchSyncResult{Warnings: []string{}}
+	if s == nil || s.db == nil || s.watchDB == nil {
+		return result, errors.New("watch target market research sync service is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return result, err
+	}
+	if !cfg.LongbridgeWatchTargetResearchEnabled || cfg.LongbridgeWatchTargetResearchRequestBudget <= 0 {
+		result.Skipped, result.Message = true, "监控标的 Longbridge 市场研究同步已关闭或预算为 0"
+		return result, nil
+	}
+	var targets []model.WatchTarget
+	if err := s.watchDB.WithContext(ctx).Where("status = ? AND target_type = ?", "enabled", "stock").Find(&targets).Error; err != nil {
+		return result, err
+	}
+	result.TargetCount = len(targets)
+	if len(targets) == 0 {
+		result.Skipped, result.Message = true, "暂无已启用的股票监控标的"
+		return result, nil
+	}
+	latestByTicker := make(map[string]time.Time, len(targets))
+	fresh, freshErr := discovery.FreshLongbridgeResearchTickers(ctx, s.db, discovery.LongbridgeRefreshFamilyMarketResearch, time.Now().UTC())
+	if freshErr != nil {
+		return result, freshErr
+	}
+	for _, target := range targets {
+		cached, cacheErr := discovery.GetCandidateMarketResearch(ctx, s.db, target.Ticker)
+		if cacheErr == nil && cached.EPSForecast.Latest != nil {
+			latestByTicker[strings.ToUpper(strings.TrimSpace(target.Ticker))] = cached.EPSForecast.Latest.FetchedAt
+		}
+	}
+	sort.SliceStable(targets, func(left, right int) bool {
+		leftAt, leftOK := latestByTicker[strings.ToUpper(strings.TrimSpace(targets[left].Ticker))]
+		rightAt, rightOK := latestByTicker[strings.ToUpper(strings.TrimSpace(targets[right].Ticker))]
+		if leftOK != rightOK {
+			return !leftOK
+		}
+		if !leftAt.Equal(rightAt) {
+			return leftAt.Before(rightAt)
+		}
+		return targets[left].Ticker < targets[right].Ticker
+	})
+	for _, target := range targets {
+		if result.Attempted >= cfg.LongbridgeWatchTargetResearchRequestBudget {
+			break
+		}
+		if fresh[strings.ToUpper(strings.TrimSpace(target.Ticker))] {
+			continue
+		}
+		result.Attempted++
+		refreshed, refreshErr := discovery.RefreshLongbridgeCandidateMarketResearch(ctx, s.db, cfg, target.Ticker, target.CIK)
+		if refreshErr != nil {
+			result.Failed++
+			result.Warnings = append(result.Warnings, target.Ticker+"："+discovery.SanitizeLongbridgeCandidateResearchError(refreshErr))
+			continue
+		}
+		if markErr := discovery.MarkLongbridgeResearchSuccess(ctx, s.db, discovery.LongbridgeRefreshFamilyMarketResearch, target.Ticker, time.Now().UTC()); markErr != nil {
+			return result, markErr
+		}
+		if refreshed.EPSFetched || refreshed.AnomaliesSaved > 0 || refreshed.ShareholdersSaved > 0 || refreshed.FundHoldersSaved > 0 || len(refreshed.Warnings) == 0 {
+			result.Fetched++
+		}
+		result.Warnings = append(result.Warnings, refreshed.Warnings...)
+	}
+	result.Message = fmt.Sprintf("已同步 %d/%d 个监控标的的 Longbridge 市场研究，失败 %d 个", result.Fetched, result.Attempted, result.Failed)
+	return result, nil
+}
+
+// SyncLongbridgeCandidateValuationResearch runs the independently budgeted P2
+// valuation, industry percentile, and peer-comparison refresh.
+func (s *DiscoverySyncService) SyncLongbridgeCandidateValuationResearch(ctx context.Context) (discovery.CandidateValuationResearchSyncResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.CandidateValuationResearchSyncResult{}, errors.New("discovery sync service is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.CandidateValuationResearchSyncResult{}, err
+	}
+	return discovery.SyncCurrentCandidateLongbridgeValuationResearch(ctx, s.db, cfg)
+}
+
+// WatchTargetValuationResearchSyncResult describes the independent P2 refresh
+// for enabled stock watch targets. It has a separate budget from candidates so
+// a large candidate universe cannot starve a user's monitored securities.
+type WatchTargetValuationResearchSyncResult struct {
+	TargetCount int      `json:"target_count"`
+	Attempted   int      `json:"attempted"`
+	Fetched     int      `json:"fetched"`
+	Failed      int      `json:"failed"`
+	Skipped     bool     `json:"skipped"`
+	Message     string   `json:"message"`
+	Warnings    []string `json:"warnings"`
+}
+
+// SyncEnabledWatchTargetValuationResearch refreshes a bounded, least-recently
+// refreshed subset of enabled stock watch targets. It only uses P2 endpoints;
+// it does not run SEC, filing, price, or candidate synchronization.
+func (s *DiscoverySyncService) SyncEnabledWatchTargetValuationResearch(ctx context.Context) (WatchTargetValuationResearchSyncResult, error) {
+	result := WatchTargetValuationResearchSyncResult{Warnings: []string{}}
+	if s == nil || s.db == nil || s.watchDB == nil {
+		return result, errors.New("watch target valuation sync service is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return result, err
+	}
+	if !cfg.LongbridgeWatchTargetValuationEnabled || cfg.LongbridgeWatchTargetValuationRequestBudget <= 0 {
+		result.Skipped, result.Message = true, "监控标的 Longbridge 估值研究同步已关闭或预算为 0"
+		return result, nil
+	}
+	var targets []model.WatchTarget
+	if err := s.watchDB.WithContext(ctx).Where("status = ? AND target_type = ?", "enabled", "stock").Find(&targets).Error; err != nil {
+		return result, err
+	}
+	result.TargetCount = len(targets)
+	if len(targets) == 0 {
+		result.Skipped, result.Message = true, "暂无已启用的股票监控标的"
+		return result, nil
+	}
+	latestByTicker := make(map[string]time.Time, len(targets))
+	fresh, freshErr := discovery.FreshLongbridgeResearchTickers(ctx, s.db, discovery.LongbridgeRefreshFamilyValuation, time.Now().UTC())
+	if freshErr != nil {
+		return result, freshErr
+	}
+	for _, target := range targets {
+		cached, cacheErr := discovery.GetCandidateValuationResearch(ctx, s.db, target.Ticker)
+		if cacheErr == nil && cached.Latest != nil {
+			latestByTicker[strings.ToUpper(strings.TrimSpace(target.Ticker))] = cached.Latest.FetchedAt
+		}
+	}
+	sort.SliceStable(targets, func(left, right int) bool {
+		leftAt, leftOK := latestByTicker[strings.ToUpper(strings.TrimSpace(targets[left].Ticker))]
+		rightAt, rightOK := latestByTicker[strings.ToUpper(strings.TrimSpace(targets[right].Ticker))]
+		if leftOK != rightOK {
+			return !leftOK
+		}
+		if !leftAt.Equal(rightAt) {
+			return leftAt.Before(rightAt)
+		}
+		return targets[left].Ticker < targets[right].Ticker
+	})
+	for _, target := range targets {
+		if result.Attempted >= cfg.LongbridgeWatchTargetValuationRequestBudget {
+			break
+		}
+		if fresh[strings.ToUpper(strings.TrimSpace(target.Ticker))] {
+			continue
+		}
+		result.Attempted++
+		refreshed, refreshErr := discovery.RefreshLongbridgeCandidateValuationResearch(ctx, s.db, cfg, target.Ticker, target.CIK)
+		if refreshErr != nil {
+			result.Failed++
+			result.Warnings = append(result.Warnings, target.Ticker+"："+discovery.SanitizeLongbridgeCandidateResearchError(refreshErr))
+			continue
+		}
+		if markErr := discovery.MarkLongbridgeResearchSuccess(ctx, s.db, discovery.LongbridgeRefreshFamilyValuation, target.Ticker, time.Now().UTC()); markErr != nil {
+			return result, markErr
+		}
+		if refreshed.Fetched || refreshed.Cached {
+			result.Fetched++
+		}
+		result.Warnings = append(result.Warnings, refreshed.Warnings...)
+	}
+	result.Message = fmt.Sprintf("已同步 %d/%d 个监控标的的 Longbridge 估值研究，失败 %d 个", result.Fetched, result.Attempted, result.Failed)
 	return result, nil
 }
 
@@ -252,6 +920,22 @@ func (s *DiscoverySyncService) autoRefreshLongbridgeAnalystRatings(ctx context.C
 	return result
 }
 
+func (s *DiscoverySyncService) autoRefreshLongbridgeCandidateMarketResearch(ctx context.Context) discovery.CandidateMarketResearchSyncResult {
+	if s == nil || s.db == nil {
+		return discovery.CandidateMarketResearchSyncResult{Skipped: true, Message: "P1 候选研究同步服务未配置"}
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.CandidateMarketResearchSyncResult{Failed: 1, Message: err.Error(), Warnings: []string{}}
+	}
+	result, err := discovery.SyncCurrentCandidateLongbridgeMarketResearch(ctx, s.db, cfg)
+	if err != nil {
+		result.Failed++
+		result.Message = err.Error()
+	}
+	return result
+}
+
 type DiscoveryFinancialRefreshResult struct {
 	Events       int `json:"events"`
 	Companies    int `json:"companies"`
@@ -363,6 +1047,18 @@ func (s *DiscoverySyncService) WithAnalystRatingNotifications(notifications *Ana
 	return s
 }
 
+func (s *DiscoverySyncService) WithInAppNotifications(inApp *InAppNotificationService) *DiscoverySyncService {
+	s.inApp = inApp
+	return s
+}
+
+// WithNotificationCenter gives candidate-originated events the same durable
+// Telegram queue used by the rest of the application.
+func (s *DiscoverySyncService) WithNotificationCenter(center *NotificationBatchService) *DiscoverySyncService {
+	s.batches = center
+	return s
+}
+
 func (s *DiscoverySyncService) withRunner(runner DiscoverySyncRunner) *DiscoverySyncService {
 	return s.WithRunner(runner)
 }
@@ -442,6 +1138,8 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	} else {
 		s.finishDiscoverySyncStep(technicalStep.ID, result.TechnicalHistoryWarmup.Status, result.TechnicalHistoryWarmup.Result.PersistedCount, nil)
 	}
+	s.recordCurrentCandidateTradeSetupHistory(taskCtx)
+	s.createInAppCandidateEarningsReleases(taskCtx)
 	s.updateDiscoverySyncRun(run.ID, "company_profiles", securityBatch.BatchID, marketBatch.BatchID)
 	profileStep := s.startDiscoverySyncStep(run.ID, "company_profiles", "增量补充 Longbridge 公司资料（非阻断）")
 	profiles := s.autoRefreshLongbridgeCompanyProfiles(taskCtx)
@@ -726,6 +1424,8 @@ func (s *DiscoverySyncService) runMarketOnly(ctx context.Context, kind string, f
 	} else {
 		s.finishDiscoverySyncStep(technicalStep.ID, result.TechnicalHistoryWarmup.Status, result.TechnicalHistoryWarmup.Result.PersistedCount, nil)
 	}
+	s.recordCurrentCandidateTradeSetupHistory(taskCtx)
+	s.createInAppCandidateEarningsReleases(taskCtx)
 	s.updateDiscoverySyncRun(run.ID, "company_profiles", "", marketBatch.BatchID)
 	profileStep := s.startDiscoverySyncStep(run.ID, "company_profiles", "增量补充 Longbridge 公司资料（非阻断）")
 	profiles := s.autoRefreshLongbridgeCompanyProfiles(taskCtx)
@@ -987,16 +1687,20 @@ func (s *DiscoverySyncService) syncEnabledWatchTargetMarketPricesWithProvider(ct
 		result.Skipped, result.Message = true, "已启用监控标的缺少有效 Ticker，已跳过日线同步"
 		return result, nil
 	}
-	currentCount, err := currentWatchTargetPriceCount(ctx, s.db, listings, effectiveDate)
+	currentCount, missing, err := currentWatchTargetPriceListings(ctx, s.db, listings, effectiveDate)
 	if err != nil {
 		return result, err
 	}
 	result.AlreadyCurrentCount = currentCount
-	if currentCount == len(listings) {
+	if len(missing) == 0 {
+		s.recordTickerTradeSetupHistory(ctx, watchTargetTickers(targets))
 		result.Skipped, result.Message = true, fmt.Sprintf("全部 %d 个监控标的已具备 %s 的本地收盘数据，已跳过重复请求", currentCount, result.EffectiveDate)
 		return result, nil
 	}
-	records, providerResult, err := provider.LoadForDate(ctx, listings, result.EffectiveDate)
+	// Candidate and watch-target jobs share PriceSnapshot. By only requesting
+	// local gaps, a symbol refreshed by the preceding candidate job is never
+	// fetched again merely because another watched symbol needs a price.
+	records, providerResult, err := provider.LoadForDate(ctx, missing, result.EffectiveDate)
 	result.ProviderResult = providerResult
 	if err != nil {
 		return result, fmt.Errorf("load enabled watch target daily prices: %w", err)
@@ -1012,13 +1716,24 @@ func (s *DiscoverySyncService) syncEnabledWatchTargetMarketPricesWithProvider(ct
 	if err != nil {
 		return result, fmt.Errorf("persist enabled watch target daily prices: %w", err)
 	}
-	result.Message = fmt.Sprintf("已同步 %d/%d 个监控标的的 %s 收盘数据", result.RecordCount, result.RequestedCount, result.EffectiveDate)
+	s.recordTickerTradeSetupHistory(ctx, watchTargetTickers(targets))
+	result.Message = fmt.Sprintf("已同步 %d 个缺口标的；%d/%d 个监控标的已复用 %s 本地收盘数据", result.RecordCount, result.AlreadyCurrentCount, result.RequestedCount, result.EffectiveDate)
 	return result, nil
 }
 
-func currentWatchTargetPriceCount(ctx context.Context, db *gorm.DB, listings []discovery.Listing, date time.Time) (int, error) {
+func watchTargetTickers(targets []model.WatchTarget) []string {
+	result := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if ticker := strings.ToUpper(strings.TrimSpace(target.Ticker)); ticker != "" {
+			result = append(result, ticker)
+		}
+	}
+	return result
+}
+
+func currentWatchTargetPriceListings(ctx context.Context, db *gorm.DB, listings []discovery.Listing, date time.Time) (int, []discovery.Listing, error) {
 	if len(listings) == 0 {
-		return 0, nil
+		return 0, []discovery.Listing{}, nil
 	}
 	tickers := make([]string, 0, len(listings))
 	for _, listing := range listings {
@@ -1027,15 +1742,25 @@ func currentWatchTargetPriceCount(ctx context.Context, db *gorm.DB, listings []d
 		}
 	}
 	if len(tickers) == 0 {
-		return 0, nil
+		return 0, append([]discovery.Listing(nil), listings...), nil
 	}
 	var rows []struct{ Symbol string }
 	if err := db.WithContext(ctx).Model(&discovery.PriceSnapshot{}).Distinct("symbol").
 		Where("symbol IN ? AND quality_status = ? AND DATE(trade_date) = ?", tickers, discovery.QualityStatusValid, date.Format(time.DateOnly)).
 		Find(&rows).Error; err != nil {
-		return 0, fmt.Errorf("count current watch target prices: %w", err)
+		return 0, nil, fmt.Errorf("load current watch target prices: %w", err)
 	}
-	return len(rows), nil
+	current := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		current[strings.ToUpper(strings.TrimSpace(row.Symbol))] = struct{}{}
+	}
+	missing := make([]discovery.Listing, 0, len(listings))
+	for _, listing := range listings {
+		if _, ok := current[strings.ToUpper(strings.TrimSpace(listing.Ticker))]; !ok {
+			missing = append(missing, listing)
+		}
+	}
+	return len(rows), missing, nil
 }
 
 func enabledWatchTargetListings(targets []model.WatchTarget) []discovery.Listing {
@@ -1136,6 +1861,224 @@ func (s *DiscoverySyncService) autoWarmTechnicalHistory(ctx context.Context) Tec
 	result.Status = "completed"
 	log.Printf("discovery technical history warmup completed: candidates=%d requested=%d persisted=%d", backfill.CandidateCount, backfill.RequestedCount, backfill.PersistedCount)
 	return result
+}
+
+// recordCurrentCandidateTradeSetupHistory is intentionally non-blocking: the
+// market batch remains publishable if the local research-history write has a
+// transient SQLite contention. It records only actual plan-status changes.
+func (s *DiscoverySyncService) recordCurrentCandidateTradeSetupHistory(ctx context.Context) {
+	if s == nil || s.db == nil {
+		return
+	}
+	tickers, err := discovery.CurrentCandidateTickers(ctx, s.db)
+	if err != nil {
+		log.Printf("record candidate trade setup history: load tickers: %v", err)
+		return
+	}
+	recordedAt := time.Now().UTC()
+	if created, err := discovery.RecordTradeSetupStatusTransitions(ctx, s.db, tickers, recordedAt); err != nil {
+		log.Printf("record candidate trade setup history: %v", err)
+	} else if created > 0 {
+		s.createInAppCandidateTechnicalSignals(ctx, tickers, recordedAt)
+	}
+}
+
+func (s *DiscoverySyncService) createInAppCandidateTechnicalSignals(ctx context.Context, tickers []string, recordedAt time.Time) {
+	if s == nil || s.db == nil || len(tickers) == 0 {
+		return
+	}
+	var events []discovery.TradeSetupStatusEvent
+	if err := s.db.WithContext(ctx).Where("ticker IN ? AND recorded_at >= ?", tickers, recordedAt.Add(-time.Second)).Find(&events).Error; err != nil {
+		log.Printf("record candidate in-app technical signals: %v", err)
+		return
+	}
+	candidates := make([]NotificationCandidate, 0, len(events))
+	for _, event := range events {
+		if !isActionableCandidateTradeSetupStatus(event.Status) || (event.PreviousStatus == "" && event.Status != discovery.TradeSetupEntryCandidate) {
+			continue
+		}
+		severity := "info"
+		if event.Status == discovery.TradeSetupExitWarning {
+			severity = "warning"
+		} else if event.Status == discovery.TradeSetupInvalidated {
+			severity = "danger"
+		}
+		body := event.EntryTrigger
+		if body == "" {
+			body = event.ExitReason
+		}
+		title := "小盘候选技术信号变化：" + candidateTradeSetupStatusLabel(event.Status)
+		if s.inApp != nil {
+			if _, _, err := s.inApp.Create(ctx, InAppNotificationInput{
+				EventKey: fmt.Sprintf("technical-signal:candidate:%s:%s:%s", event.Ticker, event.Status, event.TradeDate), Source: "technical_signal_candidate",
+				Scope: "candidate", EntityKind: "trade_setup", Ticker: event.Ticker, Severity: severity,
+				Title: title, Body: body, Link: "/discovery-candidates?ticker=" + event.Ticker, OccurredAt: event.RecordedAt,
+			}); err != nil {
+				log.Printf("create candidate in-app technical signal: %v", err)
+			}
+		}
+		candidates = append(candidates, NotificationCandidate{EntityKind: "trade_setup", FilingID: fmt.Sprintf("technical-signal:candidate:%s:%s:%s", event.Ticker, event.Status, event.TradeDate), Ticker: event.Ticker, Title: title, Reason: "eligible", EventAt: event.RecordedAt})
+	}
+	if len(candidates) > 0 && s.batches != nil {
+		if _, err := s.batches.Deliver(ctx, NotificationBatchInput{Source: "technical_signal_candidate", Trigger: "discovery_sync", Candidates: candidates}); err != nil {
+			log.Printf("deliver candidate technical signal notification: %v", err)
+		}
+	}
+}
+
+func isActionableCandidateTradeSetupStatus(status string) bool {
+	return status == discovery.TradeSetupEntryCandidate || status == discovery.TradeSetupExitWarning || status == discovery.TradeSetupInvalidated
+}
+
+func candidateTradeSetupStatusLabel(status string) string {
+	switch status {
+	case discovery.TradeSetupEntryCandidate:
+		return "入场候选"
+	case discovery.TradeSetupExitWarning:
+		return "离场预警"
+	case discovery.TradeSetupInvalidated:
+		return "趋势失效"
+	default:
+		return status
+	}
+}
+
+func (s *DiscoverySyncService) createInAppCandidateEarningsReleases(ctx context.Context) {
+	if s == nil || s.db == nil {
+		return
+	}
+	var pointer discovery.CurrentBatchPointer
+	if err := s.db.WithContext(ctx).First(&pointer, "kind = ?", discovery.BatchKindPrescreen).Error; err != nil {
+		return
+	}
+	var scores []discovery.CandidateScoreSnapshot
+	if err := s.db.WithContext(ctx).Where("batch_id = ? AND grade IN ?", pointer.BatchID, []string{discovery.CandidateGradeA, discovery.CandidateGradeB}).Find(&scores).Error; err != nil || len(scores) == 0 {
+		return
+	}
+	securityIDs := make([]uint, 0, len(scores))
+	tickerBySecurity := make(map[uint]string, len(scores))
+	for _, score := range scores {
+		securityIDs = append(securityIDs, score.SecurityID)
+		tickerBySecurity[score.SecurityID] = score.Ticker
+	}
+	var filings []discovery.SECFilingSnapshot
+	cutoff := time.Now().UTC().AddDate(0, 0, -3)
+	if err := s.db.WithContext(ctx).Where("security_id IN ? AND filing_date >= ?", securityIDs, cutoff).Find(&filings).Error; err != nil {
+		log.Printf("load candidate earnings releases: %v", err)
+		return
+	}
+	candidates := make([]NotificationCandidate, 0, len(filings))
+	for _, filing := range filings {
+		if !isCandidateEarningsReleaseFiling(filing) {
+			continue
+		}
+		occurredAt := filing.FilingDate
+		if filing.AcceptedAt != nil {
+			occurredAt = *filing.AcceptedAt
+		}
+		ticker := tickerBySecurity[filing.SecurityID]
+		eventKey := fmt.Sprintf("earnings-release:candidate:%s", filing.AccessionNumber)
+		title := "小盘候选财报已发布：" + filing.FilingType
+		if s.inApp != nil {
+			if _, _, err := s.inApp.Create(ctx, InAppNotificationInput{
+				EventKey: eventKey, Source: "earnings_release_candidate", Scope: "candidate",
+				EntityKind: "filing", Ticker: ticker, Severity: "success", Title: title,
+				Body: "SEC 已发布对应定期财报或业绩公告。", Link: "/discovery-candidates?ticker=" + ticker, OccurredAt: occurredAt,
+			}); err != nil {
+				log.Printf("create candidate earnings-release message: %v", err)
+			}
+		}
+		if !s.candidateNotificationAlreadyQueued(ctx, "earnings_release_candidate", eventKey) {
+			candidates = append(candidates, NotificationCandidate{EntityKind: "filing", FilingID: eventKey, Ticker: ticker, FilingType: filing.FilingType, Title: title, FilingURL: filing.FilingURL, Reason: "eligible", EventAt: occurredAt})
+		}
+	}
+	if len(candidates) > 0 && s.batches != nil {
+		if _, err := s.batches.Deliver(ctx, NotificationBatchInput{Source: "earnings_release_candidate", Trigger: "discovery_sync", Candidates: candidates}); err != nil {
+			log.Printf("deliver candidate earnings-release notification: %v", err)
+		}
+	}
+}
+
+func (s *DiscoverySyncService) candidateNotificationAlreadyQueued(ctx context.Context, source, filingID string) bool {
+	if s == nil || s.batches == nil || strings.TrimSpace(filingID) == "" {
+		return false
+	}
+	var count int64
+	err := s.batches.db.WithContext(ctx).Model(&model.NotificationBatchItem{}).
+		Joins("JOIN notification_batches ON notification_batches.id = notification_batch_items.batch_id").
+		Where("notification_batches.source = ? AND notification_batch_items.filing_id = ?", source, filingID).
+		Count(&count).Error
+	if err != nil {
+		log.Printf("check candidate notification deduplication: %v", err)
+		return false
+	}
+	return count > 0
+}
+
+func isCandidateEarningsReleaseFiling(filing discovery.SECFilingSnapshot) bool {
+	switch strings.ToUpper(strings.TrimSpace(filing.FilingType)) {
+	case "10-K", "10-Q", "20-F", "40-F":
+		return true
+	case "8-K", "6-K":
+		return strings.Contains(strings.ToLower(filing.Items), "2.02") || strings.Contains(strings.ToLower(filing.Items), "earnings")
+	default:
+		return false
+	}
+}
+
+func (s *DiscoverySyncService) recordTickerTradeSetupHistory(ctx context.Context, tickers []string) {
+	if s == nil || s.db == nil {
+		return
+	}
+	recordedAt := time.Now().UTC()
+	if created, err := discovery.RecordTradeSetupStatusTransitions(ctx, s.db, tickers, recordedAt); err != nil {
+		log.Printf("record watch target trade setup history: %v", err)
+	} else if created > 0 {
+		s.createInAppWatchTargetTechnicalSignals(ctx, tickers, recordedAt)
+	}
+}
+
+func (s *DiscoverySyncService) createInAppWatchTargetTechnicalSignals(ctx context.Context, tickers []string, recordedAt time.Time) {
+	if s == nil || s.inApp == nil || s.db == nil || s.watchDB == nil || len(tickers) == 0 {
+		return
+	}
+	var targets []model.WatchTarget
+	if err := s.watchDB.WithContext(ctx).Where("status = ? AND ticker IN ?", "enabled", tickers).Find(&targets).Error; err != nil {
+		log.Printf("load watch targets for in-app technical signals: %v", err)
+		return
+	}
+	targetByTicker := make(map[string]model.WatchTarget, len(targets))
+	for _, target := range targets {
+		targetByTicker[strings.ToUpper(strings.TrimSpace(target.Ticker))] = target
+	}
+	var events []discovery.TradeSetupStatusEvent
+	if err := s.db.WithContext(ctx).Where("ticker IN ? AND recorded_at >= ?", tickers, recordedAt.Add(-time.Second)).Find(&events).Error; err != nil {
+		log.Printf("load watch in-app technical signals: %v", err)
+		return
+	}
+	for _, event := range events {
+		target, found := targetByTicker[strings.ToUpper(strings.TrimSpace(event.Ticker))]
+		if !found || !isActionableCandidateTradeSetupStatus(event.Status) || (event.PreviousStatus == "" && event.Status != discovery.TradeSetupEntryCandidate) {
+			continue
+		}
+		severity := "info"
+		if event.Status == discovery.TradeSetupExitWarning {
+			severity = "warning"
+		} else if event.Status == discovery.TradeSetupInvalidated {
+			severity = "danger"
+		}
+		body := event.EntryTrigger
+		if body == "" {
+			body = event.ExitReason
+		}
+		if _, _, err := s.inApp.Create(ctx, InAppNotificationInput{
+			EventKey: fmt.Sprintf("technical-signal:watch_target:%d:%s:%s", target.ID, event.Status, event.TradeDate), Source: "technical_signal_watch_target",
+			Scope: "watch_target", EntityKind: "trade_setup", TargetID: target.ID, Ticker: event.Ticker, CompanyName: target.CompanyName,
+			Severity: severity, Title: "技术信号变化：" + candidateTradeSetupStatusLabel(event.Status), Body: body, Link: "/targets", OccurredAt: event.RecordedAt,
+		}); err != nil {
+			log.Printf("create watch in-app technical signal: %v", err)
+		}
+	}
 }
 
 func (s *DiscoverySyncService) appliedDiscoveryConfig(ctx context.Context) (config.DiscoveryConfig, error) {

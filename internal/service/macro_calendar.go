@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"sec_monitor/internal/config"
 	"sec_monitor/internal/model"
 
 	"golang.org/x/net/html"
@@ -77,7 +78,22 @@ type MacroReleaseFilter struct {
 
 type MacroReleaseItem struct {
 	model.MacroRelease
-	Observations []model.MacroObservation `json:"observations"`
+	Observations   []model.MacroObservation `json:"observations"`
+	RelatedSources []MacroReleaseSource     `json:"related_sources"`
+}
+
+// MacroReleaseSource is an auditable cross-source association for one
+// calendar event. Official sources remain primary; a Longbridge record only
+// contributes its separately-labelled consensus and market-calendar fields.
+type MacroReleaseSource struct {
+	Provider    string     `json:"provider"`
+	Category    string     `json:"category"`
+	Title       string     `json:"title"`
+	Status      string     `json:"status"`
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	SourceURL   string     `json:"source_url"`
+	Official    bool       `json:"official"`
 }
 
 type MacroReleasePage struct {
@@ -96,9 +112,9 @@ type MacroCalendarSyncResult struct {
 	Warnings       []string `json:"warnings"`
 }
 
-// MacroCalendarService uses official agency pages only. It never tries to
-// infer or scrape a commercial consensus forecast or a "bullish/bearish"
-// label from third-party calendar sites.
+// MacroCalendarService uses official agency pages as its primary source. It
+// may add explicitly-labelled Longbridge market-calendar events, but never
+// infers a forecast or a "bullish/bearish" interpretation itself.
 type MacroCalendarService struct {
 	db                        *gorm.DB
 	client                    macroHTTPClient
@@ -114,6 +130,17 @@ type MacroCalendarService struct {
 	fomcScheduleURL           string
 	fredCPIURL                string
 	now                       func() time.Time
+	configs                   *ConfigService
+	runtime                   config.DiscoveryConfig
+}
+
+// WithLongbridge adds the commercial calendar as an explicitly labelled
+// supplement. Official agency releases remain the primary evidence source.
+func (s *MacroCalendarService) WithLongbridge(configs *ConfigService, runtime config.DiscoveryConfig) *MacroCalendarService {
+	if s != nil {
+		s.configs, s.runtime = configs, runtime
+	}
+	return s
 }
 
 func NewMacroCalendarService(db *gorm.DB) *MacroCalendarService {
@@ -192,11 +219,17 @@ func (s *MacroCalendarService) List(ctx context.Context, filter MacroReleaseFilt
 	}
 	result.Items = make([]MacroReleaseItem, 0, len(releases))
 	for _, release := range releases {
-		item := MacroReleaseItem{MacroRelease: release, Observations: []model.MacroObservation{}}
+		if release.CanonicalEventKey == "" {
+			release.CanonicalEventKey = canonicalMacroEventKey(release.Category, release.Title, release.ScheduledAt)
+		}
+		item := MacroReleaseItem{MacroRelease: release, Observations: []model.MacroObservation{}, RelatedSources: []MacroReleaseSource{}}
 		if err := s.db.WithContext(ctx).Where("release_id = ?", release.ID).Order("indicator_code ASC").Find(&item.Observations).Error; err != nil {
 			return result, err
 		}
 		result.Items = append(result.Items, item)
+	}
+	if err := s.attachMacroReleaseSources(ctx, result.Items); err != nil {
+		return result, err
 	}
 	result.Page, result.PageSize = filter.Page, filter.PageSize
 	result.Pages = int((result.Total + int64(filter.PageSize) - 1) / int64(filter.PageSize))
@@ -301,6 +334,9 @@ func (s *MacroCalendarService) SyncOfficialBEA(ctx context.Context) (MacroCalend
 	if err := s.syncOfficialEIAWeeklyPetroleum(ctx, &result); err != nil {
 		result.Warnings = append(result.Warnings, "EIA 周度石油库存同步提示："+sanitizeMacroError(err))
 	}
+	if err := s.syncLongbridgeMacroCalendar(ctx, &result); err != nil {
+		result.Warnings = append(result.Warnings, "Longbridge 市场日历同步提示："+sanitizeMacroError(err))
+	}
 	return result, nil
 }
 
@@ -331,13 +367,13 @@ func (s *MacroCalendarService) upsertRelease(ctx context.Context, event beaSched
 	}
 	now := s.now().UTC()
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		row := model.MacroRelease{Provider: provider, Category: event.Category, Title: event.Title, ReferencePeriod: event.ReferencePeriod, ReleaseStage: event.ReleaseStage, Status: MacroReleaseScheduled, ScheduledAt: &event.ScheduledAt, SourceURL: event.SourceURL, FetchedAt: now}
+		row := model.MacroRelease{Provider: provider, Category: event.Category, CanonicalEventKey: canonicalMacroEventKey(event.Category, event.Title, &event.ScheduledAt), Title: event.Title, ReferencePeriod: event.ReferencePeriod, ReleaseStage: event.ReleaseStage, Status: MacroReleaseScheduled, ScheduledAt: &event.ScheduledAt, SourceURL: event.SourceURL, FetchedAt: now}
 		if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 			return row, false, err
 		}
 		return row, true, nil
 	}
-	if err := s.db.WithContext(ctx).Model(&existing).Updates(map[string]any{"category": event.Category, "title": event.Title, "reference_period": event.ReferencePeriod, "release_stage": event.ReleaseStage, "scheduled_at": &event.ScheduledAt, "fetched_at": now}).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&existing).Updates(map[string]any{"category": event.Category, "canonical_event_key": canonicalMacroEventKey(event.Category, event.Title, &event.ScheduledAt), "title": event.Title, "reference_period": event.ReferencePeriod, "release_stage": event.ReleaseStage, "scheduled_at": &event.ScheduledAt, "fetched_at": now}).Error; err != nil {
 		return existing, false, err
 	}
 	if err := s.db.WithContext(ctx).First(&existing, existing.ID).Error; err != nil {

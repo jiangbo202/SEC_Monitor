@@ -15,6 +15,8 @@ type CandidateDetail struct {
 	Security           Security                       `json:"security"`
 	CompanyProfile     CompanyProfile                 `json:"company_profile"`
 	AnalystRating      AnalystRatingView              `json:"analyst_rating"`
+	MarketResearch     CandidateMarketResearch        `json:"market_research"`
+	OptionResearch     OptionResearchView             `json:"option_research"`
 	Universe           *UniverseSnapshot              `json:"universe,omitempty"`
 	Score              CandidateScoreSnapshot         `json:"score"`
 	ScoreHistory       []CandidateScoreHistoryPoint   `json:"score_history"`
@@ -29,11 +31,14 @@ type CandidateDetail struct {
 	Sector             SectorExplanation              `json:"sector"`
 	BusinessModel      CandidateBusinessModelEvidence `json:"business_model"`
 	Valuation          CandidateValuation             `json:"valuation"`
+	ValuationResearch  CandidateValuationResearch     `json:"valuation_research"`
+	FairValue          CandidateFairValueEstimate     `json:"fair_value"`
 	Research           *CandidateWatch                `json:"research,omitempty"`
 	ResearchVersions   []CandidateResearchMemoVersion `json:"research_versions"`
 	ResearchReadiness  CandidateResearchReadiness     `json:"research_readiness"`
 	ResearchNextStep   CandidateResearchNextStep      `json:"research_next_step"`
 	Technical          CandidateTechnicalAnalysis     `json:"technical"`
+	TradeSetupHistory  []TradeSetupStatusEvent        `json:"trade_setup_history"`
 	Investability      CandidateInvestability         `json:"investability"`
 	DilutionTrend      CandidateDilutionTrend         `json:"dilution_trend"`
 	TechnicalHistory   []CandidateTechnicalHistoryRow `json:"technical_history"`
@@ -69,7 +74,7 @@ type RecentSECFiling struct {
 }
 
 func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (CandidateDetail, error) {
-	result := CandidateDetail{ScoreHistory: []CandidateScoreHistoryPoint{}, SignalEvents: []CandidateSignalEvent{}, Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, ResearchVersions: []CandidateResearchMemoVersion{}, TechnicalHistory: []CandidateTechnicalHistoryRow{}, ProfitHistory: ProfitHistory{Quarterly: []ProfitHistoryPoint{}, Annual: []ProfitHistoryPoint{}}, AnalystRating: AnalystRatingView{History: []AnalystRatingSnapshot{}}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
+	result := CandidateDetail{ScoreHistory: []CandidateScoreHistoryPoint{}, SignalEvents: []CandidateSignalEvent{}, Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, ResearchVersions: []CandidateResearchMemoVersion{}, TechnicalHistory: []CandidateTechnicalHistoryRow{}, TradeSetupHistory: []TradeSetupStatusEvent{}, ProfitHistory: ProfitHistory{Quarterly: []ProfitHistoryPoint{}, Annual: []ProfitHistoryPoint{}}, AnalystRating: AnalystRatingView{History: []AnalystRatingSnapshot{}}, MarketResearch: CandidateMarketResearch{EPSForecast: EPSForecastView{History: []EPSForecastSnapshot{}}, Anomalies: []MarketAnomalySnapshot{}, InstitutionalHolders: []InstitutionalHolderSnapshot{}, FundHolders: []FundHolderSnapshot{}}, OptionResearch: OptionResearchView{History: []OptionResearchSnapshot{}}, ValuationResearch: CandidateValuationResearch{History: []ValuationResearchSnapshot{}}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -113,6 +118,9 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	if result.SignalEvents, err = candidateSignalEvents(ctx, db, result.Score.SecurityID); err != nil {
 		return result, err
 	}
+	if result.TradeSetupHistory, err = GetTradeSetupStatusHistory(ctx, db, result.Score.Ticker, 100); err != nil {
+		return result, err
+	}
 	profitHistory, err := getProfitHistoryForSecurity(ctx, db, result.Score.SecurityID, result.Score.Ticker, time.Now().UTC())
 	if err != nil {
 		return result, err
@@ -142,6 +150,21 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	} else {
 		result.DataQuality["analyst_rating"] = QualityStatusMissing
 	}
+	marketResearch, marketResearchErr := GetCandidateMarketResearch(ctx, db, result.Score.Ticker)
+	if marketResearchErr != nil {
+		return result, marketResearchErr
+	}
+	result.MarketResearch = marketResearch
+	if optionResearch, optionResearchErr := GetOptionResearch(ctx, db, result.Score.Ticker); optionResearchErr == nil {
+		result.OptionResearch = optionResearch
+	} else {
+		result.DataQuality["option_research"] = "local option research unavailable"
+	}
+	if marketResearch.EPSForecast.Latest != nil {
+		result.DataQuality["eps_forecast"] = QualityStatusValid
+	} else {
+		result.DataQuality["eps_forecast"] = QualityStatusMissing
+	}
 	result.Sector = ExplainSectorScore(result.Score, result.Security)
 	businessModels, err := activeCandidateBusinessModels(ctx, db, []uint{result.Score.SecurityID})
 	if err != nil {
@@ -160,10 +183,22 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		return result, err
 	}
 	result.Valuation = technicalItems[0].Valuation
+	valuationResearch, valuationResearchErr := GetCandidateValuationResearch(ctx, db, result.Score.Ticker)
+	if valuationResearchErr != nil {
+		return result, valuationResearchErr
+	}
+	result.ValuationResearch = valuationResearch
+	if valuationResearch.Latest != nil {
+		result.DataQuality["longbridge_valuation"] = QualityStatusValid
+	} else {
+		result.DataQuality["longbridge_valuation"] = QualityStatusMissing
+	}
 	if err = hydrateCandidateTechnicalAnalysis(ctx, db, technicalItems); err != nil {
 		return result, err
 	}
 	result.Technical = technicalItems[0].Technical
+	result.FairValue = buildCandidateFairValueEstimate(result.Technical, result.AnalystRating.Latest, result.ValuationResearch.Latest)
+	result.DataQuality["fair_value"] = result.FairValue.Status
 	technicalHistory, err := candidateTechnicalPriceHistoryLimit(ctx, db, technicalItems[0], technicalDetailHistoryDays)
 	if err != nil {
 		return result, err

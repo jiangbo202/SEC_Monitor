@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,7 +20,6 @@ import (
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/service"
-	"sec_monitor/internal/telegram"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -37,6 +38,7 @@ type AppHandler struct {
 	Audit                  *service.AuditService
 	Notification           *service.NotificationService
 	NotificationBatch      *service.NotificationBatchService
+	InAppNotifications     *service.InAppNotificationService
 	CandidateNotification  *service.CandidateNotificationService
 	TradeSetupNotification *service.TradeSetupNotificationService
 	TradePlanSimulation    *service.TradePlanSimulationService
@@ -45,9 +47,15 @@ type AppHandler struct {
 	Lifecycle              *service.LifecycleService
 	OperationalHealth      *service.OperationalHealthService
 	Macro                  *service.MacroCalendarService
+	MarketTrend            *service.MarketTrendService
+	USFutures              *service.USFuturesService
 	EarningsPreview        *service.EarningsPreviewService
 	Scheduler              SchedulerController
+	tickerEvaluationMu     sync.Mutex
+	tickerEvaluations      map[string]struct{}
 }
+
+const tickerEvaluationCooldown = 10 * time.Minute
 
 // dataSourceHealthItem is a compact operational summary for a source the
 // system relies on. It intentionally describes the most recent *recorded*
@@ -81,6 +89,210 @@ type tickerLookupResponse struct {
 	ResolutionReason string                 `json:"resolution_reason,omitempty"`
 }
 
+type tickerEvaluationRequest struct {
+	Ticker     string `json:"ticker"`
+	TargetType string `json:"target_type"`
+}
+
+// EvaluateTicker performs one explicit, persisted assessment of a symbol. The
+// endpoint intentionally refreshes price history; the history endpoint remains
+// read-only so opening a prior result never consumes market-data quota.
+func (h *AppHandler) EvaluateTicker(c *gin.Context) {
+	var request tickerEvaluationRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	ticker := strings.ToUpper(strings.TrimSpace(request.Ticker))
+	if ticker == "" {
+		Error(c, service.ErrValidation)
+		return
+	}
+	// Cache-first is important here: existing candidates and monitored symbols
+	// already have an auditable local result. Do not spend SEC/Longbridge quota
+	// merely because a user asks to view a symbol that the system knows.
+	if cached, found, err := h.cachedTickerEvaluation(c.Request.Context(), ticker); err != nil {
+		Error(c, err)
+		return
+	} else if found {
+		OK(c, h.discoverySyncService().HydrateTickerEvaluationResearch(c.Request.Context(), cached))
+		return
+	}
+	if recent, found, err := h.recentTickerEvaluation(c.Request.Context(), ticker); err != nil {
+		Error(c, err)
+		return
+	} else if found {
+		OK(c, h.discoverySyncService().HydrateTickerEvaluationResearch(c.Request.Context(), recent))
+		return
+	}
+	if !h.beginTickerEvaluation(ticker) {
+		Error(c, service.TaskAlreadyRunning("ticker_evaluation:"+ticker))
+		return
+	}
+	defer h.finishTickerEvaluation(ticker)
+	// Check once more after obtaining the per-symbol lock. Another request may
+	// have completed between the first check and lock acquisition.
+	if recent, found, err := h.recentTickerEvaluation(c.Request.Context(), ticker); err != nil {
+		Error(c, err)
+		return
+	} else if found {
+		OK(c, h.discoverySyncService().HydrateTickerEvaluationResearch(c.Request.Context(), recent))
+		return
+	}
+	resolved := tickerLookupResponse{Ticker: ticker, TargetType: "stock"}
+	if strings.EqualFold(strings.TrimSpace(request.TargetType), "etf") {
+		fund, err := h.lookupFundTicker(context.WithoutCancel(c.Request.Context()), ticker)
+		if err != nil {
+			Error(c, err)
+			return
+		}
+		resolved = fund
+	} else {
+		cik, companyName, err := h.SEC.LookupCIK(context.WithoutCancel(c.Request.Context()), ticker)
+		if err != nil {
+			fund, fundErr := h.lookupFundTicker(context.WithoutCancel(c.Request.Context()), ticker)
+			if fundErr != nil || fund.FundIdentity == nil {
+				Error(c, err)
+				return
+			}
+			resolved = fund
+		} else {
+			resolved.CIK, resolved.CompanyName = cik, companyName
+		}
+	}
+	if resolved.FundIdentity != nil {
+		resolved.CIK = resolved.FundIdentity.CIK
+		resolved.CompanyName = resolved.FundIdentity.FundName
+	}
+	// Fund-class resolution is intentionally strict because it is used by SEC
+	// filing association. A valid ETF can still lack the series/class metadata,
+	// though, so do not leave its human-readable name blank in an assessment.
+	// The SEC ticker directory is a safe secondary identity source and does not
+	// change the ETF's fundamental-data boundary.
+	if resolved.TargetType == "etf" && strings.TrimSpace(resolved.CompanyName) == "" {
+		if cik, name, lookupErr := h.SEC.LookupCIK(context.WithoutCancel(c.Request.Context()), ticker); lookupErr == nil {
+			if resolved.CIK == "" {
+				resolved.CIK = cik
+			}
+			resolved.CompanyName = strings.TrimSpace(name)
+		}
+	}
+	result, err := h.discoverySyncService().EvaluateTicker(context.WithoutCancel(c.Request.Context()), service.TickerEvaluationRequest{Ticker: ticker, CIK: resolved.CIK, CompanyName: resolved.CompanyName, TargetType: resolved.TargetType})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) beginTickerEvaluation(ticker string) bool {
+	h.tickerEvaluationMu.Lock()
+	defer h.tickerEvaluationMu.Unlock()
+	if h.tickerEvaluations == nil {
+		h.tickerEvaluations = make(map[string]struct{})
+	}
+	if _, exists := h.tickerEvaluations[ticker]; exists {
+		return false
+	}
+	h.tickerEvaluations[ticker] = struct{}{}
+	return true
+}
+
+func (h *AppHandler) finishTickerEvaluation(ticker string) {
+	h.tickerEvaluationMu.Lock()
+	defer h.tickerEvaluationMu.Unlock()
+	delete(h.tickerEvaluations, ticker)
+}
+
+func (h *AppHandler) recentTickerEvaluation(ctx context.Context, ticker string) (discovery.TickerEvaluationResult, bool, error) {
+	page, err := discovery.ListTickerEvaluations(ctx, h.DiscoveryDB, discovery.TickerEvaluationFilter{Ticker: ticker, Page: 1, PageSize: 1})
+	if err != nil || len(page.Items) == 0 {
+		return discovery.TickerEvaluationResult{}, false, err
+	}
+	result := page.Items[0]
+	if result.EvaluatedAt.IsZero() || time.Since(result.EvaluatedAt) >= tickerEvaluationCooldown {
+		return discovery.TickerEvaluationResult{}, false, nil
+	}
+	// Earlier ETF snapshots may predate display-name fallback. Re-evaluate them
+	// immediately rather than preserving a blank historical label for the full
+	// cooldown window.
+	if result.TargetType == "etf" && strings.TrimSpace(result.CompanyName) == "" {
+		return discovery.TickerEvaluationResult{}, false, nil
+	}
+	result.DataSource = "ad_hoc_evaluation_cooldown_cache"
+	result.Warnings = append([]string{"同一标的已在 10 分钟内完成即时评估，直接返回该次结果以避免重复调用 SEC 与行情数据源。"}, result.Warnings...)
+	return result, true, nil
+}
+
+func (h *AppHandler) cachedTickerEvaluation(ctx context.Context, ticker string) (discovery.TickerEvaluationResult, bool, error) {
+	if h.DiscoveryDB != nil {
+		page, err := discovery.ListCandidateScores(ctx, h.DiscoveryDB, discovery.CandidateScoreQuery{Ticker: ticker, Page: 1, PageSize: 1, SkipPerformance: true})
+		if err != nil {
+			return discovery.TickerEvaluationResult{}, false, err
+		}
+		if len(page.Items) > 0 {
+			item := page.Items[0]
+			companyName, cik := "", ""
+			var security discovery.Security
+			if err := h.DiscoveryDB.WithContext(ctx).First(&security, item.SecurityID).Error; err == nil {
+				companyName, cik = security.CompanyName, security.CIK
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return discovery.TickerEvaluationResult{}, false, err
+			}
+			at := item.CreatedAt
+			if at.IsZero() {
+				at = time.Now().UTC()
+			}
+			return discovery.TickerEvaluationResult{Ticker: ticker, CIK: cik, CompanyName: companyName, TargetType: "stock", Status: discovery.TickerEvaluationStatusReady, DataSource: "candidate_cache", EvaluatedAt: at, Warnings: []string{"已直接返回当前小盘候选缓存；未发起 SEC 或行情补数请求。"}, CandidateScore: item, FundamentalStatus: "available"}, true, nil
+		}
+	}
+	if h.Targets == nil {
+		return discovery.TickerEvaluationResult{}, false, nil
+	}
+	targets, err := h.Targets.List(ctx, service.WatchTargetFilter{Ticker: ticker, Page: 1, PageSize: 20})
+	if err != nil {
+		return discovery.TickerEvaluationResult{}, false, err
+	}
+	for _, target := range targets.Items {
+		if !strings.EqualFold(target.Ticker, ticker) {
+			continue
+		}
+		prices, err := discovery.TickerEvaluationPriceHistory(ctx, h.DiscoveryDB, ticker)
+		if err != nil {
+			return discovery.TickerEvaluationResult{}, false, err
+		}
+		fundamentalStatus := "not_synced"
+		if target.TargetType == "etf" {
+			fundamentalStatus = "not_applicable"
+		}
+		result := discovery.BuildTickerEvaluationResult(ticker, target.CIK, target.CompanyName, target.TargetType, discovery.CandidateScoreSnapshot{Ticker: ticker}, discovery.FinancialMetricSnapshot{}, nil, prices, time.Now().UTC(), fundamentalStatus, []string{"已直接返回监控标的的本地行情缓存；未发起 SEC 或行情补数请求。", "该标的不在小盘候选评分缓存中，基本面和短线复核总分未生成。"})
+		result.DataSource = "watch_target_cache"
+		return result, true, nil
+	}
+	return discovery.TickerEvaluationResult{}, false, nil
+}
+
+func (h *AppHandler) ListTickerEvaluations(c *gin.Context) {
+	page, pageSize := pageParams(c)
+	result, err := discovery.ListTickerEvaluations(c.Request.Context(), h.DiscoveryDB, discovery.TickerEvaluationFilter{
+		Ticker: c.Query("ticker"), EntryTrigger: c.Query("entry_trigger"), SortBy: c.Query("sort_by"), SortOrder: c.Query("sort_order"), Page: page, PageSize: pageSize,
+	})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ListTickerEvaluationEntryTriggers(c *gin.Context) {
+	items, err := discovery.ListTickerEvaluationEntryTriggers(c.Request.Context(), h.DiscoveryDB, c.Query("ticker"))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, items)
+}
+
 func (h *AppHandler) ListMacroReleases(c *gin.Context) {
 	if h.Macro == nil {
 		Error(c, errors.New("macro calendar service is not configured"))
@@ -91,7 +303,7 @@ func (h *AppHandler) ListMacroReleases(c *gin.Context) {
 		Status: strings.TrimSpace(c.Query("status")), Category: strings.TrimSpace(c.Query("category")),
 		View: strings.TrimSpace(c.Query("view")), Frequency: strings.TrimSpace(c.Query("frequency")), SortOrder: strings.TrimSpace(c.Query("sort")), Page: page, PageSize: pageSize,
 	}
-	if filter.Category != "" && !map[string]bool{"personal_income_outlays": true, "gdp": true, "employment": true, "initial_claims": true, "petroleum_inventories": true, "cpi": true, "ppi": true, "jolts": true, "retail_sales": true, "durable_goods": true, "housing_starts": true, "new_home_sales": true, "international_trade": true, "advance_trade": true, "treasury_yields": true, "treasury_real_yields": true, "fomc": true}[filter.Category] {
+	if filter.Category != "" && !map[string]bool{"personal_income_outlays": true, "gdp": true, "employment": true, "initial_claims": true, "petroleum_inventories": true, "cpi": true, "ppi": true, "jolts": true, "retail_sales": true, "durable_goods": true, "housing_starts": true, "new_home_sales": true, "international_trade": true, "advance_trade": true, "treasury_yields": true, "treasury_real_yields": true, "fomc": true, "market_calendar": true}[filter.Category] {
 		Error(c, service.ErrValidation)
 		return
 	}
@@ -132,7 +344,7 @@ func (h *AppHandler) ListMacroReleases(c *gin.Context) {
 }
 
 // SyncMacroReleases fetches supported official agency calendars and release
-// pages. It never requests a commercial consensus forecast.
+// pages, then supplements them with separately-labelled Longbridge events.
 func (h *AppHandler) SyncMacroReleases(c *gin.Context) {
 	if h.Macro == nil {
 		Error(c, errors.New("macro calendar service is not configured"))
@@ -140,7 +352,108 @@ func (h *AppHandler) SyncMacroReleases(c *gin.Context) {
 	}
 	result, err := h.Macro.SyncOfficialBEA(context.WithoutCancel(c.Request.Context()))
 	if err != nil {
-		Error(c, fmt.Errorf("sync official macro calendar: %s", service.SanitizeSensitiveError(err.Error())))
+		Error(c, fmt.Errorf("sync macro calendar: %s", service.SanitizeSensitiveError(err.Error())))
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ListInstitutionalFilings(c *gin.Context) {
+	var rows []model.InstitutionalFiling
+	if err := h.DB.WithContext(c.Request.Context()).Order("total_value_usd DESC, id DESC").Find(&rows).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, rows)
+}
+
+func (h *AppHandler) GetInstitutionalFilingDetail(c *gin.Context) {
+	var filing model.InstitutionalFiling
+	if err := h.DB.WithContext(c.Request.Context()).Where("cik = ?", strings.TrimSpace(c.Param("cik"))).Order("filing_date DESC, id DESC").First(&filing).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	var history []model.InstitutionalFiling
+	var holdings []model.InstitutionalPortfolioHolding
+	h.DB.WithContext(c.Request.Context()).Where("cik = ?", filing.CIK).Order("filing_date DESC").Find(&history)
+	h.DB.WithContext(c.Request.Context()).Where("accession_number = ?", filing.AccessionNumber).Order("weight_pct DESC").Find(&holdings)
+	OK(c, gin.H{"filing": filing, "history": history, "holdings": holdings})
+}
+
+func (h *AppHandler) SyncInstitutionalFilings(c *gin.Context) {
+	result, err := service.NewInstitutionalHoldingsService(h.DB).Sync(context.WithoutCancel(c.Request.Context()))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetMarketTrend(c *gin.Context) {
+	if h.MarketTrend == nil {
+		Error(c, errors.New("market trend service is not configured"))
+		return
+	}
+	historyDays := 120
+	if raw := strings.TrimSpace(c.Query("history_days")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 20 || parsed > 365 {
+			Error(c, service.ErrValidation)
+			return
+		}
+		historyDays = parsed
+	}
+	result, err := h.MarketTrend.List(c.Request.Context(), historyDays)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) RefreshMarketTrend(c *gin.Context) {
+	if h.MarketTrend == nil {
+		Error(c, errors.New("market trend service is not configured"))
+		return
+	}
+	result, err := h.MarketTrend.Refresh(context.WithoutCancel(c.Request.Context()))
+	if err != nil {
+		Error(c, fmt.Errorf("refresh Longbridge market trend: %s", service.SanitizeSensitiveError(err.Error())))
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetUSFutures(c *gin.Context) {
+	if h.USFutures == nil {
+		Error(c, errors.New("US futures service is not configured"))
+		return
+	}
+	historyDays := 120
+	if raw := strings.TrimSpace(c.Query("history_days")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 20 || parsed > 365 {
+			Error(c, service.ErrValidation)
+			return
+		}
+		historyDays = parsed
+	}
+	result, err := h.USFutures.List(c.Request.Context(), historyDays)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) RefreshUSFutures(c *gin.Context) {
+	if h.USFutures == nil {
+		Error(c, errors.New("US futures service is not configured"))
+		return
+	}
+	result, err := h.USFutures.Refresh(context.WithoutCancel(c.Request.Context()))
+	if err != nil {
+		Error(c, fmt.Errorf("refresh US futures: %s", service.SanitizeSensitiveError(err.Error())))
 		return
 	}
 	OK(c, result)
@@ -575,6 +888,71 @@ func (h *AppHandler) GetDiscoveryAnalystRating(c *gin.Context) {
 	OK(c, result)
 }
 
+// GetDiscoveryTickerFairValue returns a fully local, cached estimate view for
+// a ticker. It combines the latest saved analyst target, valuation snapshot,
+// and local EOD close; opening a page never makes a Longbridge request.
+func (h *AppHandler) GetDiscoveryTickerFairValue(c *gin.Context) {
+	result, err := discovery.GetTickerFairValueEstimate(c.Request.Context(), h.DiscoveryDB, c.Param("ticker"))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+// GetDiscoveryTickerInstitutionalHoldings serves the complete locally saved
+// report-date history for institution and fund disclosures. It never makes an
+// external request while a watch-target detail is opening.
+func (h *AppHandler) GetDiscoveryTickerInstitutionalHoldings(c *gin.Context) {
+	result, err := discovery.GetTickerInstitutionalHoldingHistory(c.Request.Context(), h.DiscoveryDB, c.Param("ticker"))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+// GetDiscoveryOptionResearch returns local options/short-interest snapshots.
+// Opening the page never causes an external market-data request.
+func (h *AppHandler) GetDiscoveryOptionResearch(c *gin.Context) {
+	result, err := discovery.GetOptionResearch(c.Request.Context(), h.DiscoveryDB, c.Param("ticker"))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) RefreshDiscoveryOptionResearch(c *gin.Context) {
+	ticker := strings.TrimSpace(c.Param("ticker"))
+	if ticker == "" {
+		Error(c, errors.New("ticker is required"))
+		return
+	}
+	result, err := h.discoverySyncService().RefreshLongbridgeOptionResearch(context.WithoutCancel(c.Request.Context()), ticker, c.Query("cik"))
+	if err != nil {
+		Error(c, fmt.Errorf("refresh Longbridge option research: %s", service.SanitizeSensitiveError(err.Error())))
+		return
+	}
+	view, err := discovery.GetOptionResearch(c.Request.Context(), h.DiscoveryDB, ticker)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, gin.H{"refresh": result, "research": view})
+}
+
+// GetDiscoveryTickerTradeSetupHistory serves the locally persisted daily-close
+// plan transitions. It never fetches a market quote while a detail view opens.
+func (h *AppHandler) GetDiscoveryTickerTradeSetupHistory(c *gin.Context) {
+	result, err := discovery.GetTradeSetupStatusHistory(c.Request.Context(), h.DiscoveryDB, c.Param("ticker"), 100)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 // RefreshDiscoveryAnalystRating explicitly refreshes one issuer. It does not
 // run SEC sync, change a score, or submit a candidate notification by itself.
 func (h *AppHandler) RefreshDiscoveryAnalystRating(c *gin.Context) {
@@ -589,6 +967,58 @@ func (h *AppHandler) RefreshDiscoveryAnalystRating(c *gin.Context) {
 		return
 	}
 	OK(c, gin.H{"refresh": result, "rating": view})
+}
+
+// RefreshDiscoveryCandidateMarketResearch pulls the P1 Longbridge research
+// supplements for one selected candidate; it never reruns the candidate scan.
+func (h *AppHandler) RefreshDiscoveryCandidateMarketResearch(c *gin.Context) {
+	if h.DiscoverySync == nil {
+		Error(c, errors.New("discovery sync service is not configured"))
+		return
+	}
+	ticker := strings.TrimSpace(c.Param("ticker"))
+	if ticker == "" {
+		Error(c, errors.New("ticker is required"))
+		return
+	}
+	result, err := h.DiscoverySync.RefreshLongbridgeCandidateMarketResearch(context.WithoutCancel(c.Request.Context()), ticker, c.Query("cik"))
+	if err != nil {
+		Error(c, fmt.Errorf("refresh Longbridge candidate market research: %s", service.SanitizeSensitiveError(err.Error())))
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) RefreshDiscoveryCandidateValuationResearch(c *gin.Context) {
+	if h.DiscoverySync == nil {
+		Error(c, errors.New("discovery sync service is not configured"))
+		return
+	}
+	ticker := strings.TrimSpace(c.Param("ticker"))
+	if ticker == "" {
+		Error(c, errors.New("ticker is required"))
+		return
+	}
+	result, err := h.DiscoverySync.RefreshLongbridgeCandidateValuationResearch(context.WithoutCancel(c.Request.Context()), ticker, c.Query("cik"))
+	if err != nil {
+		Error(c, fmt.Errorf("refresh Longbridge valuation research: %s", service.SanitizeSensitiveError(err.Error())))
+		return
+	}
+	OK(c, result)
+}
+
+// RefreshDiscoveryTickerValuationResearch explicitly refreshes P2 valuation
+// data for a single stock. It is intentionally shared by candidate and watch
+// target details and never starts a broad candidate or SEC sync.
+func (h *AppHandler) RefreshDiscoveryTickerValuationResearch(c *gin.Context) {
+	h.RefreshDiscoveryCandidateValuationResearch(c)
+}
+
+// RefreshDiscoveryTickerMarketResearch explicitly refreshes the P1 market
+// research data for one ticker, including Longbridge shareholder and fund
+// holder disclosures. It never triggers a broad candidate or SEC sync.
+func (h *AppHandler) RefreshDiscoveryTickerMarketResearch(c *gin.Context) {
+	h.RefreshDiscoveryCandidateMarketResearch(c)
 }
 
 func (h *AppHandler) UpsertDiscoveryCandidateBusinessModel(c *gin.Context) {
@@ -1019,6 +1449,15 @@ func (h *AppHandler) lookupFundTicker(ctx context.Context, ticker string) (ticke
 	if err != nil {
 		return tickerLookupResponse{}, err
 	}
+	// A partial fund identity is insufficient for creating a monitored ETF, but
+	// its exact-ticker fund name is still useful display metadata for a one-off
+	// ETF evaluation.
+	if resolution.Identity != nil && strings.EqualFold(strings.TrimSpace(resolution.Identity.Ticker), ticker) {
+		result.CompanyName = strings.TrimSpace(resolution.Identity.FundName)
+		if result.CIK == "" {
+			result.CIK = strings.TrimSpace(resolution.Identity.CIK)
+		}
+	}
 	if resolution.Identity != nil && completeFundIdentity(*resolution.Identity, ticker) {
 		identity := fundIdentityTransport(*resolution.Identity)
 		result.FundIdentity = &identity
@@ -1351,17 +1790,47 @@ func (h *AppHandler) ListIPOCompanies(c *gin.Context) {
 		}
 		includeEnded = parsed
 	}
+	var followed *bool
+	if value := strings.TrimSpace(c.Query("followed")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			Error(c, service.ErrValidation)
+			return
+		}
+		followed = &parsed
+	}
 	result, err := h.IPO.ListCompanies(c.Request.Context(), service.IPOCompanyFilter{
 		CompanyName:  c.Query("company_name"),
 		CIK:          c.Query("cik"),
+		Ticker:       c.Query("ticker"),
 		Status:       c.Query("status"),
 		Attention:    c.Query("attention"),
 		IncludeEnded: includeEnded,
+		Followed:     followed,
 		SortBy:       c.Query("sort_by"),
 		SortOrder:    c.Query("sort_order"),
 		Page:         page,
 		PageSize:     pageSize,
 	}, time.Now().UTC())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ListIPOCalendarEvents(c *gin.Context) {
+	if h.IPO == nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	page, pageSize := pageParams(c)
+	result, err := h.IPO.ListCalendarEvents(c.Request.Context(), service.IPOCalendarEventFilter{
+		CompanyName: c.Query("company_name"),
+		Ticker:      c.Query("ticker"),
+		Page:        page,
+		PageSize:    pageSize,
+	})
 	if err != nil {
 		Error(c, err)
 		return
@@ -1376,6 +1845,26 @@ func (h *AppHandler) ListIPOOfferingEvents(c *gin.Context) {
 	}
 	page, pageSize := pageParams(c)
 	result, err := h.IPO.ListOfferingEvents(c.Request.Context(), c.Param("cik"), page, pageSize)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) SetIPOCompanyFollow(c *gin.Context) {
+	if h.IPO == nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	var input struct {
+		Followed bool `json:"followed"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := h.IPO.SetCompanyFollow(c.Request.Context(), c.Param("cik"), input.Followed, time.Now().UTC())
 	if err != nil {
 		Error(c, err)
 		return
@@ -1608,7 +2097,7 @@ func (h *AppHandler) UpdateSystemConfigs(c *gin.Context) {
 		Error(c, err)
 		return
 	}
-	if h.Scheduler != nil {
+	if h.Scheduler != nil && systemConfigChangeRequiresSchedulerReload(input) {
 		if err := h.Scheduler.Reload(c.Request.Context()); err != nil {
 			Error(c, err)
 			return
@@ -1668,14 +2157,23 @@ func (h *AppHandler) TestTelegram(c *gin.Context) {
 		Error(c, fmt.Errorf("%w: Bot Token 已被脱敏值覆盖，请重新输入真实 Token 并保存", service.ErrValidation))
 		return
 	}
-	notifier := telegram.NewHTTPNotifier(cfg.BotToken, cfg.ChatID, 10*time.Second)
-	notifier.BaseURL = cfg.APIBaseURL
-	err = notifier.Send(c.Request.Context(), telegram.Message{Text: "SEC Monitor test message"})
+	if h.NotificationBatch == nil {
+		Error(c, fmt.Errorf("notification center is not configured"))
+		return
+	}
+	batch, err := h.NotificationBatch.DeliverMessage(c.Request.Context(), service.NotificationMessageInput{
+		Source: "system_test", Trigger: "manual", EventKey: fmt.Sprintf("telegram-test:%d", time.Now().UTC().UnixNano()),
+		EntityKind: "connection_test", Title: "Telegram 连接测试", SummaryText: "SEC Monitor test message", EventAt: time.Now().UTC(),
+	})
 	if err != nil {
 		Error(c, fmt.Errorf("%s", service.SanitizeSensitiveError(err.Error())))
 		return
 	}
-	OK(c, gin.H{"sent": true})
+	if batch.Status != "sent" {
+		Error(c, service.PartialTask("Telegram 测试消息已进入通知中心，但尚未成功投递；请在通知日志查看重试状态"))
+		return
+	}
+	OK(c, gin.H{"sent": true, "batch": batch})
 }
 
 func (h *AppHandler) ListOperationLogs(c *gin.Context) {
@@ -1751,6 +2249,25 @@ func (h *AppHandler) RequeueNotificationBatch(c *gin.Context) {
 	OK(c, batch)
 }
 
+func (h *AppHandler) RequeueFailedNotificationBatches(c *gin.Context) {
+	var input struct {
+		Limit int `json:"limit"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil && !errors.Is(err, io.EOF) {
+		Error(c, err)
+		return
+	}
+	if input.Limit == 0 {
+		input.Limit = 100
+	}
+	result, err := h.NotificationBatch.RequeueFailed(c.Request.Context(), time.Now().UTC(), input.Limit)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) ListTaskConfigs(c *gin.Context) {
 	tasks, err := h.Tasks.List(c.Request.Context())
 	if err != nil {
@@ -1758,6 +2275,24 @@ func (h *AppHandler) ListTaskConfigs(c *gin.Context) {
 		return
 	}
 	OK(c, tasks)
+}
+
+// ListTaskExecutions returns the common scheduler history. Small-cap
+// discovery intentionally remains on its dedicated workflow-log page.
+func (h *AppHandler) ListTaskExecutions(c *gin.Context) {
+	page, pageSize := pageParams(c)
+	result, err := h.Tasks.ListExecutions(c.Request.Context(), service.TaskExecutionFilter{
+		TaskName: c.Query("task_name"),
+		Status:   c.Query("status"),
+		Trigger:  c.Query("trigger"),
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
 }
 
 func (h *AppHandler) UpdateTaskConfig(c *gin.Context) {
@@ -1784,6 +2319,18 @@ func (h *AppHandler) UpdateTaskConfig(c *gin.Context) {
 		}
 	}
 	OK(c, task)
+}
+
+// Scheduler reload is intentionally limited to scheduling settings. Saving a
+// display, notification, or provider setting must not stop and recreate every
+// cron entry while a long-running background task is in progress.
+func systemConfigChangeRequiresSchedulerReload(input []service.ConfigInput) bool {
+	for _, item := range input {
+		if strings.HasPrefix(strings.TrimSpace(item.Key), "scheduler.") {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *AppHandler) RunTask(c *gin.Context) {
@@ -1830,11 +2377,16 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 	var enabledTargets int64
 	var filingTotal int64
 	var notificationFailures int64
+	var failedNotificationBatches int64
+	var deadLetterBatches int64
 	var unstableTasks []model.TaskConfig
 	_ = h.DB.WithContext(c.Request.Context()).Model(&model.WatchTarget{}).Count(&targetTotal).Error
 	_ = h.DB.WithContext(c.Request.Context()).Model(&model.WatchTarget{}).Where("status = ?", "enabled").Count(&enabledTargets).Error
 	_ = h.DB.WithContext(c.Request.Context()).Model(&model.Filing{}).Count(&filingTotal).Error
 	_ = h.DB.WithContext(c.Request.Context()).Model(&model.NotificationLog{}).Where("status = ?", "failed").Count(&notificationFailures).Error
+	_ = h.DB.WithContext(c.Request.Context()).Model(&model.NotificationBatch{}).Where("status = ?", "failed").Count(&failedNotificationBatches).Error
+	_ = h.DB.WithContext(c.Request.Context()).Model(&model.NotificationBatch{}).Where("status = ?", "dead_letter").Count(&deadLetterBatches).Error
+	notificationFailures += failedNotificationBatches + deadLetterBatches
 	_ = h.DB.WithContext(c.Request.Context()).Where("consecutive_failures >= ?", 3).Order("consecutive_failures DESC, task_name ASC").Find(&unstableTasks).Error
 
 	var latestSync model.SyncRun
@@ -1868,7 +2420,7 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 		issues = append(issues, gin.H{"level": "warning", "message": "还没有同步记录"})
 	}
 	if notificationFailures > 0 {
-		issues = append(issues, gin.H{"level": "warning", "message": "存在失败的通知记录"})
+		issues = append(issues, gin.H{"level": "warning", "message": fmt.Sprintf("存在 %d 条失败通知记录（含批量通知失败 %d、死信 %d）", notificationFailures, failedNotificationBatches, deadLetterBatches)})
 	}
 	if usedPct, ok := storage["used_pct"].(int); ok {
 		warningPct := 80

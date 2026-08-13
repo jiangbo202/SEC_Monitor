@@ -17,8 +17,13 @@ const messages = {
     nav: {
       monitor: '监控',
       smallCapResearch: '小盘研究',
+      strategyPool: '策略观察池',
+	  tickerEvaluation: '标的评估',
       macroResearch: '宏观研究',
       macroCalendar: '宏观日历',
+	  marketTrend: '大盘趋势',
+	  usFutures: '美股期货',
+	  sectorBreadth: '板块广度',
       dashboard: '总览',
       targets: '监控标的',
       filings: 'SEC 公告',
@@ -28,7 +33,7 @@ const messages = {
       ipoRadar: 'IPO监控',
       insiderTrading: '内幕交易',
       automation: '自动化',
-      syncRuns: '同步历史',
+	  syncRuns: '任务执行历史',
       scheduler: '调度任务',
       settings: '通知与配置',
       telegram: 'Telegram',
@@ -36,7 +41,7 @@ const messages = {
       systemHealth: '系统健康',
       logs: '日志',
       auditLogs: '审计日志',
-      notificationLogs: '通知日志'
+      notificationLogs: '通知中心'
     },
     common: {
       actions: '操作',
@@ -317,9 +322,10 @@ const messages = {
         latestUpdate: '最近更新',
         statusReason: '判断依据',
         statusSource: '状态来源',
+        ticker: '标的',
         finalTicker: '最终 Ticker',
         automaticTicker: 'SEC 自动 Ticker',
-        automaticExchange: 'SEC 自动交易所',
+        automaticExchange: '自动交易所',
         automaticOfferPrice: '自动发行价',
         automaticSharesOffered: '自动发行股数',
         exchange: '交易所',
@@ -328,7 +334,7 @@ const messages = {
         grossProceeds: '预计募资总额',
         parseMessage: '解析说明',
         lifecycleCheckedAt: '生命周期最后核查',
-        listedVerifiedAt: 'SEC 首次确认上市',
+        listedVerifiedAt: '首次确认上市',
         listingDate: '实际上市日期',
         marketDataSource: '市场数据来源',
         marketDataUpdatedAt: '市场数据更新时间',
@@ -347,14 +353,16 @@ const messages = {
           missingMarketMappingOption: '缺少市场映射'
         },
         operations: {
-          title: '运营待办（{count} 项）',
+          title: '自动补偿与人工确认（{count} 项）',
+          automaticTitle: '系统自动处理中（{count} 项）',
+          manualTitle: '需要人工确认（{count} 项）',
           actions: {
-            review_dead_letters: { title: '死信通知 {count}', description: '通知已达到自动重试上限，需要检查 Telegram 配置或投递错误后手动重试。', button: '查看死信' },
+            review_dead_letters: { title: '死信通知 {count}', description: '超时、限流和上游 5xx 会在 24 小时后自动复活重试；认证、配置或消息格式错误才需要人工处理。', button: '查看死信' },
             retry_notifications: { title: '待重试通知 {count}', description: '已有失败的 IPO 通知到达重试时间，请查看投递队列与错误信息。', button: '查看队列' },
-            verify_listing: { title: '待确认上市 {count}', description: '已出现定价或生效迹象，但尚未确认实际上市状态。', button: '查看项目' },
-            complete_market_mapping: { title: '缺少市场映射 {count}', description: '活跃项目尚未从 SEC 解析到 Ticker，必要时可在详情进行人工校准。', button: '查看项目' },
-            recheck_lifecycle: { title: '生命周期核查过期 {count}', description: '请重新扫描 IPO 申报，以刷新项目的上市、撤回或失效状态。', button: '查看项目' },
-            review_offering_parse: { title: '发行解析失败 {count}', description: '部分发行条款未被自动识别，请在项目详情核对原始 SEC 文件。', button: '查看项目' },
+            verify_listing: { title: '待确认上市 {count}', description: '系统会按预算通过 SEC 与 Longbridge 自动复核；持续无市场数据的项目才保留在此队列。', button: '查看项目' },
+            complete_market_mapping: { title: '缺少市场映射 {count}', description: '仅定价、生效或待上市项目进入此队列；系统会优先尝试 SEC 与 Longbridge 日历的无歧义匹配。', button: '查看项目' },
+            recheck_lifecycle: { title: '生命周期核查过期 {count}', description: 'IPO 扫描会按生命周期预算自动补查；若最近同步失败，可在同步历史查看原因。', button: '查看项目' },
+            review_offering_parse: { title: '发行解析失败 {count}', description: '失败的 424B4 条款会在 24 小时后分批自动重解析；仍无法识别时再核对原始 SEC 文件。', button: '查看项目' },
             retry_sync: { title: '最近 IPO 扫描失败', description: '最近一次 IPO 申报扫描未完成，可在确认 SEC 连通性后重新执行。', button: '重新扫描' }
           }
         },
@@ -385,11 +393,22 @@ const messages = {
         },
         sources: {
           system: '系统推断',
-          manual: '手动校准'
+          manual: '手动校准',
+          longbridgeCalendar: 'Longbridge IPO 日历'
         },
         tabs: {
           filings: '申报列表',
-          companies: '公司视图'
+          companies: '公司视图',
+          calendar: 'IPO 日历（Longbridge）'
+        },
+        calendar: {
+          intro: '日历数据会在 IPO 扫描时缓存；它用于发现和补全拟上市标的，不替代 SEC 文件状态。',
+          empty: '暂无已缓存的 IPO 日历；请触发一次 IPO 扫描。',
+          expectedDate: '预计日期',
+          market: '市场',
+          session: '时段',
+          lastSynced: '最近同步',
+          source: 'Longbridge IPO 日历'
         },
         statuses: {
           new: '新申报',
@@ -676,12 +695,12 @@ const messages = {
         after: '操作后'
       },
       notificationLogs: {
-        title: '通知日志',
+        title: '通知中心',
         empty: '暂无通知日志',
         emptyBatches: '暂无通知批次',
         channel: '渠道',
-        batches: '通知批次',
-        legacy: '历史日志',
+        batches: '统一投递队列',
+        legacy: '历史兼容日志',
         source: '业务来源',
         totalCount: '总数',
         sentCount: '已发送',
@@ -723,8 +742,13 @@ const messages = {
     nav: {
       monitor: 'Monitor',
       smallCapResearch: 'Small-Cap Research',
+      strategyPool: 'Strategy Watchlist',
+	  tickerEvaluation: 'Ticker Evaluation',
       macroResearch: 'Macro Research',
       macroCalendar: 'Macro Calendar',
+	  marketTrend: 'Market Trend',
+	  usFutures: 'US Futures',
+	  sectorBreadth: 'Sector Breadth',
       dashboard: 'Dashboard',
       targets: 'Watch Targets',
       filings: 'SEC Filings',
@@ -1023,9 +1047,10 @@ const messages = {
         latestUpdate: 'Latest Update',
         statusReason: 'Reason',
         statusSource: 'Status Source',
+        ticker: 'Ticker',
         finalTicker: 'Final Ticker',
         automaticTicker: 'SEC Ticker',
-        automaticExchange: 'SEC Exchange',
+        automaticExchange: 'Automatic Exchange',
         automaticOfferPrice: 'Automatic Offer Price',
         automaticSharesOffered: 'Automatic Shares Offered',
         exchange: 'Exchange',
@@ -1034,7 +1059,7 @@ const messages = {
         grossProceeds: 'Estimated Gross Proceeds',
         parseMessage: 'Parse Detail',
         lifecycleCheckedAt: 'Last Lifecycle Check',
-        listedVerifiedAt: 'First SEC Listing Verification',
+        listedVerifiedAt: 'First Listing Verification',
         listingDate: 'Actual Listing Date',
         marketDataSource: 'Market Data Source',
         marketDataUpdatedAt: 'Market Data Updated At',
@@ -1053,7 +1078,9 @@ const messages = {
           missingMarketMappingOption: 'Missing market mapping'
         },
         operations: {
-          title: 'Operations queue ({count})',
+          title: 'Automated recovery & manual review ({count})',
+          automaticTitle: 'Automatically processing ({count})',
+          manualTitle: 'Manual review ({count})',
           actions: {
             review_dead_letters: { title: 'Dead-letter notifications {count}', description: 'These notifications exhausted automatic retries. Review the Telegram configuration or delivery error, then retry manually.', button: 'View dead letters' },
             retry_notifications: { title: 'Notifications due for retry {count}', description: 'Failed IPO notifications have reached their retry time. Review the queue and delivery error.', button: 'View queue' },
@@ -1091,11 +1118,22 @@ const messages = {
         },
         sources: {
           system: 'System inferred',
-          manual: 'Manual override'
+          manual: 'Manual override',
+          longbridgeCalendar: 'Longbridge IPO calendar'
         },
         tabs: {
           filings: 'Filing List',
-          companies: 'Company View'
+          companies: 'Company View',
+          calendar: 'IPO Calendar (Longbridge)'
+        },
+        calendar: {
+          intro: 'Calendar data is cached during an IPO scan. It discovers and enriches prospective listings but does not replace SEC filing status.',
+          empty: 'No cached IPO calendar yet. Run an IPO scan first.',
+          expectedDate: 'Expected Date',
+          market: 'Market',
+          session: 'Session',
+          lastSynced: 'Last Synced',
+          source: 'Longbridge IPO Calendar'
         },
         statuses: {
           new: 'New',

@@ -26,6 +26,23 @@ export interface PageResult<T> {
   pages: number
 }
 
+export interface InAppNotification {
+  id: number
+  event_key: string
+  source: 'earnings_preview' | 'earnings_release' | 'technical_signal' | string
+  scope: 'watch_target' | 'candidate' | string
+  entity_kind: string
+  target_id?: number
+  ticker?: string
+  company_name?: string
+  severity: 'info' | 'success' | 'warning' | 'danger' | string
+  title: string
+  body?: string
+  link?: string
+  occurred_at: string
+  read_at?: string | null
+}
+
 export interface WatchTarget {
   id: number
   ticker: string
@@ -180,6 +197,9 @@ export interface IPOCompany {
   gross_proceeds?: string
   listed_verified_at?: string | null
   listing_date?: string | null
+  longbridge_listing_check_count?: number
+  longbridge_listing_last_result?: string
+  longbridge_listing_next_retry_at?: string | null
   market_data_source?: string
   market_data_confidence?: string
   market_data_updated_at?: string | null
@@ -196,6 +216,23 @@ export interface IPOCompany {
   override_listing_date?: string | null
   override_note?: string
   override_updated_at?: string | null
+  followed: boolean
+}
+
+export interface IPOCalendarEvent {
+  id: number
+  event_key: string
+  symbol?: string
+  market?: string
+  company_name?: string
+  event_date: string
+  session?: string
+  content?: string
+  currency?: string
+  source: string
+  last_seen_at: string
+  created_at: string
+  updated_at: string
 }
 
 export interface IPORadarRefreshResult {
@@ -214,6 +251,7 @@ export interface IPORadarHealthSync {
 export interface IPORadarAction {
   key: string
   severity: 'warning' | 'danger' | string
+  disposition?: 'automatic' | 'manual' | string
   count: number
   attention?: string
   route?: string
@@ -272,6 +310,7 @@ export interface CandidateScore {
   quality_adjusted_score?: number
   review_priority_score?: number
   review_priority_reasons?: ReviewPriorityReason[]
+  recent_anomaly_labels?: string[]
   change_status?: string
   change_reasons?: CandidateChangeReason[]
   previous_total_score?: number | null
@@ -444,6 +483,26 @@ export interface CandidateTradeSetup {
   take_profit_zone_high_usd: number
   exit_reason: string
   reasons: string[]
+  status_since?: string | null
+}
+
+export interface TradeSetupStatusEvent {
+  id: number
+  ticker: string
+  trade_date: string
+  status: string
+  previous_status?: string
+  bias: string
+  entry_trigger?: string
+  exit_reason?: string
+  reasons: string[]
+  close_usd: number
+  stop_loss_usd: number
+  risk_pct: number
+  take_profit_zone_low_usd: number
+  take_profit_zone_high_usd: number
+  started_at: string
+  recorded_at: string
 }
 
 export interface CandidateAnchoredVWAP {
@@ -957,7 +1016,8 @@ export interface CandidateDetail {
   batch_id: string
   security: DiscoverySecurity
   company_profile: CompanyProfile
-  analyst_rating: AnalystRatingView
+	analyst_rating: AnalystRatingView
+  market_research: CandidateMarketResearch
   score: CandidateScore
 	 score_history: CandidateScoreHistoryPoint[]
   signal_events: CandidateSignalEvent[]
@@ -971,11 +1031,14 @@ export interface CandidateDetail {
   sector: SectorExplanation
   business_model: CandidateBusinessModelEvidence
   valuation: CandidateValuation
+	valuation_research: CandidateValuationResearch
+  fair_value: CandidateFairValueEstimate
   research?: CandidateWatch | null
   research_versions: CandidateResearchMemoVersion[]
   research_readiness: CandidateResearchReadiness
   research_next_step: CandidateResearchNextStep
   technical: CandidateTechnicalAnalysis
+	trade_setup_history?: TradeSetupStatusEvent[]
 	investability: CandidateInvestability
   dilution_trend: CandidateDilutionTrend
 	technical_history: CandidateTechnicalHistoryRow[]
@@ -983,6 +1046,95 @@ export interface CandidateDetail {
 	data_lineage: CandidateDataLineage
   evidence: DiscoveryEvidence[]
   recent_filings: RecentSECFiling[]
+}
+
+export interface EPSForecastSnapshot {
+  id: number
+  security_id: number
+  provider: string
+  ticker: string
+  forecast_start_date: string
+  forecast_end_date: string
+  mean?: number | null
+  median?: number | null
+  low?: number | null
+  high?: number | null
+  institution_total: number
+  institution_up: number
+  institution_down: number
+  change_summary?: string
+  fetched_at: string
+}
+
+export interface MarketAnomalySnapshot {
+  id: number
+  ticker: string
+  name: string
+  alert_name: string
+  alert_time: string
+  values_json: string
+  emotion: number
+  fetched_at: string
+}
+
+export interface InstitutionalHolderSnapshot {
+  id: number
+  ticker: string
+  holder_name: string
+  institution_type: string
+  percent_of_shares?: number | null
+  shares_changed?: number | null
+  report_date: string
+  source_url: string
+  fetched_at: string
+}
+
+export interface FundHolderSnapshot {
+  id: number
+  ticker: string
+  fund_code: string
+  fund_symbol: string
+  fund_name: string
+  currency: string
+  position_ratio: number
+  report_date: string
+  source_url: string
+  fetched_at: string
+}
+
+export interface CandidateMarketResearch {
+  eps_forecast: { latest?: EPSForecastSnapshot | null; history: EPSForecastSnapshot[]; message: string }
+  anomalies: MarketAnomalySnapshot[]
+  institutional_holders: InstitutionalHolderSnapshot[]
+  fund_holders: FundHolderSnapshot[]
+}
+
+export interface TickerInstitutionalHoldingHistory {
+  ticker: string
+  institutional_holders: InstitutionalHolderSnapshot[]
+  fund_holders: FundHolderSnapshot[]
+  message: string
+}
+
+export interface ValuationMetricResearch { current?: number | null; low?: number | null; high?: number | null; median?: number | null; history: Array<{ date: string; value?: number | null }> }
+export interface ValuationPercentileResearch { value?: number | null; low?: number | null; high?: number | null; median?: number | null; ranking?: number | null; rank_index: string; rank_total: string }
+export interface CandidateValuationResearchSnapshot { id: number; ticker: string; metrics: { pe: ValuationMetricResearch; pb: ValuationMetricResearch; ps: ValuationMetricResearch }; percentiles: { pe: ValuationPercentileResearch; pb: ValuationPercentileResearch; ps: ValuationPercentileResearch }; peers: Array<{ symbol: string; name: string; currency: string; pe?: number | null; pb?: number | null; ps?: number | null }>; change_summary?: string; fetched_at: string }
+export interface CandidateValuationResearch { latest?: CandidateValuationResearchSnapshot | null; history: CandidateValuationResearchSnapshot[]; message: string }
+export interface CandidateFairValueEstimate {
+  status: 'available' | 'insufficient' | string
+  currency: string
+  reference_price?: number | null
+  reference_price_date?: string
+  reference_price_source?: string
+  market_consensus_target?: number | null
+  market_consensus_low?: number | null
+  market_consensus_high?: number | null
+  market_consensus_upside_pct?: number | null
+  analyst_count: number
+  local_historical_scenario?: { low: number; mid: number; high: number; metrics: number } | null
+  metric_scenarios: Array<{ metric: string; current_multiple: number; historical_low: number; historical_mid: number; historical_high: number; price_low: number; price_mid: number; price_high: number }>
+  methodology: string
+  message: string
 }
 
 export interface AnalystRatingSnapshot {
@@ -1370,6 +1522,18 @@ export interface TaskConfig {
   consecutive_failures: number
 }
 
+export interface TaskExecution {
+  id: number
+  task_name: string
+  trigger: 'scheduled' | 'manual' | string
+  status: 'running' | 'success' | 'partial' | 'skipped' | 'failed' | 'interrupted' | string
+  started_at: string
+  finished_at?: string | null
+  duration_ms: number
+  summary: string
+  error_message: string
+}
+
 export interface OperationLog {
   id: number
   operated_at: string
@@ -1407,6 +1571,7 @@ export interface NotificationBatch {
   failed_count: number
   retry_count: number
   suppression_summary?: string
+  message_text?: string
   error_message?: string
   sent_at?: string | null
   next_retry_at?: string | null
@@ -1483,6 +1648,8 @@ export interface SQLiteBackupHealth {
   directory: string
   complete_pairs: number
   incomplete_pairs: number
+  total_bytes: number
+  latest_pair_bytes: number
   latest_completed?: string | null
 }
 
@@ -1547,6 +1714,9 @@ export interface LifecycleCleanupPreview {
   cutoff: string
   sync_runs: number
   sync_run_details: number
+	 task_executions: number
+  notification_batches: number
+  notification_batch_items: number
   operational_alert_deliveries: number
 	 recovery_drills: number
   lifecycle_cleanup_runs: number
@@ -1603,7 +1773,7 @@ export interface OperationalIssue {
   severity: 'warning' | 'critical' | string
   title: string
   detail: string
-  action?: 'scheduler' | 'sync-runs' | 'discovery-logs' | string
+  action?: 'scheduler' | 'sync-runs' | 'discovery-logs' | 'notification-logs' | string
   observed_at: string
 }
 
@@ -1632,6 +1802,8 @@ export interface OperationalReport {
 	 slow_sec_targets: number
 	 slow_discovery_steps: number
   provider_warnings: number
+  failed_notification_batches: number
+  dead_letter_batches: number
   summary: string
 }
 
@@ -1651,6 +1823,7 @@ export interface MacroObservation {
   unit: string
   actual_value?: number | null
   previous_value?: number | null
+	forecast_value?: number | null
   previous_revised: boolean
   source_field: string
   source_url: string
@@ -1662,6 +1835,7 @@ export interface MacroRelease {
   id: number
   provider: string
   category: string
+	canonical_event_key?: string
   title: string
   reference_period: string
   release_stage: string
@@ -1671,5 +1845,84 @@ export interface MacroRelease {
   source_url: string
   fetched_at: string
   last_error?: string
+	market_importance?: number
   observations: MacroObservation[]
+	related_sources: MacroReleaseSource[]
+}
+
+export interface MacroReleaseSource {
+  provider: string
+  category: string
+  title: string
+  status: 'scheduled' | 'published' | string
+  scheduled_at?: string | null
+  published_at?: string | null
+  source_url: string
+  official: boolean
+}
+
+export interface MarketTrendPoint {
+  date: string
+  close: number
+}
+
+export interface MarketTrendSeries {
+  symbol: string
+  label: string
+  trade_date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+  change_1d_pct?: number | null
+  change_5d_pct?: number | null
+  change_20d_pct?: number | null
+  history: MarketTrendPoint[]
+}
+
+export interface MarketTrendResponse {
+  source: string
+  last_fetched_at?: string | null
+  market: MarketTrendSeries[]
+  sectors: MarketTrendSeries[]
+	temperature?: MarketTemperature | null
+}
+
+export interface MarketTemperaturePoint {
+  date: string
+  temperature: number
+  valuation: number
+  sentiment: number
+}
+
+export interface MarketTemperature {
+  market: string
+  trade_date: string
+  temperature: number
+  valuation: number
+  sentiment: number
+  description?: string
+  history: MarketTemperaturePoint[]
+}
+
+export interface MarketTrendRefreshResult {
+  symbols_requested: number
+  symbols_updated: number
+  bars_saved: number
+	temperature_saved: number
+  warnings: string[]
+}
+
+export interface USFuturesResponse {
+  source: string
+  last_fetched_at?: string | null
+  futures: MarketTrendSeries[]
+}
+
+export interface USFuturesRefreshResult {
+  symbols_requested: number
+  symbols_updated: number
+  bars_saved: number
+  warnings: string[]
 }

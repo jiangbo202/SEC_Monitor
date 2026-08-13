@@ -54,16 +54,23 @@ type NotificationSettings struct {
 }
 
 type IPORadarSettings struct {
-	Enabled               bool
-	FormTypes             []string
-	LookbackDays          int
-	MaxResults            int
-	NotifyEnabled         bool
-	NotifyFormTypes       []string
-	Keywords              []string
-	LifecycleSweepEnabled bool
-	LifecycleMaxCIKs      int
-	LifecycleRecheckHours int
+	Enabled                              bool
+	FormTypes                            []string
+	LookbackDays                         int
+	MaxResults                           int
+	NotifyEnabled                        bool
+	NotifyFormTypes                      []string
+	Keywords                             []string
+	LifecycleSweepEnabled                bool
+	LifecycleMaxCIKs                     int
+	LifecycleRecheckHours                int
+	LongbridgeListingVerificationEnabled bool
+	LongbridgeListingRequestBudget       int
+	LongbridgeListingRecheckHours        int
+	LongbridgeIPOCalendarEnabled         bool
+	LongbridgeIPOCalendarLookbackDays    int
+	LongbridgeIPOCalendarLookaheadDays   int
+	LongbridgeIPOCalendarMaxPages        int
 }
 
 type CandidateNotificationSettings struct {
@@ -230,6 +237,10 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "scheduler.timezone", Value: "UTC", ValueType: "string", Category: "scheduler"},
 		{Key: "ui.default_locale", Value: "zh-CN", ValueType: "string", Category: "ui"},
 		{Key: "ui.onboarding_completed", Value: "false", ValueType: "bool", Category: "ui"},
+		// The landing page reads this local preference together with its compact
+		// aggregate. It only controls widget visibility; collection jobs and
+		// cached research snapshots are intentionally unaffected.
+		{Key: "ui.dashboard_hidden_modules", Value: "[]", ValueType: "json", Category: "ui"},
 		{Key: "telegram.api_base_url", Value: "https://api.telegram.org", ValueType: "string", Category: "telegram"},
 		{Key: "notification.important_only", Value: "false", ValueType: "bool", Category: "notification"},
 		{Key: "notification.filing_types", Value: "", ValueType: "string", Category: "notification"},
@@ -247,6 +258,13 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "ipo.lifecycle_sweep_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
 		{Key: "ipo.lifecycle_max_ciks", Value: "50", ValueType: "int", Category: "ipo"},
 		{Key: "ipo.lifecycle_recheck_hours", Value: "12", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.longbridge_listing_verification_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
+		{Key: "ipo.longbridge_listing_request_budget", Value: "20", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.longbridge_listing_recheck_hours", Value: "24", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.longbridge_calendar_enabled", Value: "true", ValueType: "bool", Category: "ipo"},
+		{Key: "ipo.longbridge_calendar_lookback_days", Value: "14", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.longbridge_calendar_lookahead_days", Value: "30", ValueType: "int", Category: "ipo"},
+		{Key: "ipo.longbridge_calendar_max_pages", Value: "5", ValueType: "int", Category: "ipo"},
 		{Key: "candidate_notification.enabled", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.shadow_mode", Value: "false", ValueType: "bool", Category: "candidate_notification"},
 		{Key: "candidate_notification.notify_a", Value: "false", ValueType: "bool", Category: "candidate_notification"},
@@ -261,6 +279,24 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "trade_setup_notification.notify_exit", Value: "true", ValueType: "bool", Category: "trade_setup_notification"},
 		{Key: "trade_setup_notification.notify_invalidated", Value: "true", ValueType: "bool", Category: "trade_setup_notification"},
 		{Key: "trade_setup_notification.max_per_run", Value: "10", ValueType: "int", Category: "trade_setup_notification"},
+		// 站内消息与 Telegram 投递完全解耦；默认开启所有已支持的
+		// 研究事件，用户可在系统配置中按事件类型关闭后续提醒。
+		{Key: "in_app_notification.earnings_preview_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
+		{Key: "in_app_notification.earnings_release_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
+		{Key: "in_app_notification.technical_signal_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
+		{Key: "in_app_notification.major_event_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
+		{Key: "in_app_notification.insider_trading_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
+		{Key: "in_app_notification.ipo_progress_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
+		// Telegram shares the durable notification queue with every business
+		// module. These event switches are a final, channel-specific gate: the
+		// underlying module's own scope, threshold and quiet-hour rules still
+		// apply before an event reaches the queue.
+		{Key: "telegram_notification.earnings_preview_enabled", Value: "true", ValueType: "bool", Category: "telegram_notification"},
+		{Key: "telegram_notification.earnings_release_enabled", Value: "true", ValueType: "bool", Category: "telegram_notification"},
+		{Key: "telegram_notification.technical_signal_enabled", Value: "true", ValueType: "bool", Category: "telegram_notification"},
+		{Key: "telegram_notification.major_event_enabled", Value: "true", ValueType: "bool", Category: "telegram_notification"},
+		{Key: "telegram_notification.insider_trading_enabled", Value: "true", ValueType: "bool", Category: "telegram_notification"},
+		{Key: "telegram_notification.ipo_progress_enabled", Value: "true", ValueType: "bool", Category: "telegram_notification"},
 		{Key: "discovery.price_provider", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.stooq_urls", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.tiingo_api_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
@@ -282,6 +318,17 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "discovery.longbridge_analyst_rating_enabled", Value: "true", ValueType: "bool", Category: "discovery"},
 		{Key: "discovery.longbridge_analyst_rating_request_budget", Value: "20", ValueType: "int", Category: "discovery"},
 		{Key: "discovery.longbridge_analyst_rating_target_change_pct", Value: "5", ValueType: "float", Category: "discovery"},
+		{Key: "discovery.longbridge_candidate_research_enabled", Value: "true", ValueType: "bool", Category: "discovery"},
+		{Key: "discovery.longbridge_candidate_research_request_budget", Value: "5", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.longbridge_watch_target_research_enabled", Value: "true", ValueType: "bool", Category: "discovery"},
+		{Key: "discovery.longbridge_watch_target_research_request_budget", Value: "5", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.longbridge_candidate_valuation_enabled", Value: "true", ValueType: "bool", Category: "discovery"},
+		{Key: "discovery.longbridge_candidate_valuation_request_budget", Value: "3", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.longbridge_watch_target_valuation_enabled", Value: "true", ValueType: "bool", Category: "discovery"},
+		{Key: "discovery.longbridge_watch_target_valuation_request_budget", Value: "3", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.longbridge_option_research_enabled", Value: "true", ValueType: "bool", Category: "discovery"},
+		{Key: "discovery.longbridge_candidate_option_research_budget", Value: "5", ValueType: "int", Category: "discovery"},
+		{Key: "discovery.longbridge_watch_target_option_research_budget", Value: "5", ValueType: "int", Category: "discovery"},
 		{Key: "analyst_rating.notify_enabled", Value: "false", ValueType: "bool", Category: "analyst_rating"},
 		// 财报预告只使用 Longbridge 的公开市场日历/共识结果，并写入本地
 		// 缓存。默认关闭推送，避免首次同步把已有监控标的一次性发送给用户。
@@ -404,6 +451,26 @@ func validateConfigInput(key string, value string) error {
 	case "ipo.lifecycle_recheck_hours":
 		parsed, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || parsed < 1 || parsed > 168 {
+			return ErrValidation
+		}
+	case "ipo.longbridge_listing_request_budget":
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 0 || parsed > 200 {
+			return ErrValidation
+		}
+	case "ipo.longbridge_listing_recheck_hours":
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 1 || parsed > 168 {
+			return ErrValidation
+		}
+	case "ipo.longbridge_calendar_lookback_days", "ipo.longbridge_calendar_lookahead_days":
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 0 || parsed > 365 {
+			return ErrValidation
+		}
+	case "ipo.longbridge_calendar_max_pages":
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 1 || parsed > 20 {
 			return ErrValidation
 		}
 	}
@@ -619,6 +686,34 @@ func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings,
 	if err != nil {
 		return IPORadarSettings{}, err
 	}
+	longbridgeListingEnabledRaw, _, err := s.GetValue(ctx, "ipo.longbridge_listing_verification_enabled")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	longbridgeListingBudgetRaw, _, err := s.GetValue(ctx, "ipo.longbridge_listing_request_budget")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	longbridgeListingRecheckRaw, _, err := s.GetValue(ctx, "ipo.longbridge_listing_recheck_hours")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	longbridgeCalendarEnabledRaw, _, err := s.GetValue(ctx, "ipo.longbridge_calendar_enabled")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	longbridgeCalendarLookbackRaw, _, err := s.GetValue(ctx, "ipo.longbridge_calendar_lookback_days")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	longbridgeCalendarLookaheadRaw, _, err := s.GetValue(ctx, "ipo.longbridge_calendar_lookahead_days")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
+	longbridgeCalendarMaxPagesRaw, _, err := s.GetValue(ctx, "ipo.longbridge_calendar_max_pages")
+	if err != nil {
+		return IPORadarSettings{}, err
+	}
 	enabled, _ := strconv.ParseBool(enabledRaw)
 	notify, _ := strconv.ParseBool(notifyRaw)
 	lookback, _ := strconv.Atoi(lookbackRaw)
@@ -626,6 +721,13 @@ func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings,
 	lifecycleSweepEnabled, _ := strconv.ParseBool(lifecycleSweepRaw)
 	lifecycleMaxCIKs, _ := strconv.Atoi(lifecycleMaxRaw)
 	lifecycleRecheckHours, _ := strconv.Atoi(lifecycleRecheckRaw)
+	longbridgeListingEnabled, _ := strconv.ParseBool(longbridgeListingEnabledRaw)
+	longbridgeListingBudget, _ := strconv.Atoi(longbridgeListingBudgetRaw)
+	longbridgeListingRecheckHours, _ := strconv.Atoi(longbridgeListingRecheckRaw)
+	longbridgeCalendarEnabled, _ := strconv.ParseBool(longbridgeCalendarEnabledRaw)
+	longbridgeCalendarLookback, _ := strconv.Atoi(longbridgeCalendarLookbackRaw)
+	longbridgeCalendarLookahead, _ := strconv.Atoi(longbridgeCalendarLookaheadRaw)
+	longbridgeCalendarMaxPages, _ := strconv.Atoi(longbridgeCalendarMaxPagesRaw)
 	if lookback <= 0 {
 		lookback = 7
 	}
@@ -638,21 +740,43 @@ func (s *ConfigService) IPORadarSettings(ctx context.Context) (IPORadarSettings,
 	if lifecycleRecheckHours < 1 || lifecycleRecheckHours > 168 {
 		lifecycleRecheckHours = 12
 	}
+	if longbridgeListingBudget < 0 || longbridgeListingBudget > 200 {
+		longbridgeListingBudget = 20
+	}
+	if longbridgeListingRecheckHours < 1 || longbridgeListingRecheckHours > 168 {
+		longbridgeListingRecheckHours = 24
+	}
+	if longbridgeCalendarLookback < 0 || longbridgeCalendarLookback > 365 {
+		longbridgeCalendarLookback = 14
+	}
+	if longbridgeCalendarLookahead < 0 || longbridgeCalendarLookahead > 365 {
+		longbridgeCalendarLookahead = 30
+	}
+	if longbridgeCalendarMaxPages < 1 || longbridgeCalendarMaxPages > 20 {
+		longbridgeCalendarMaxPages = 5
+	}
 	formTypes := splitConfigList(formTypesRaw)
 	if len(formTypes) == 0 {
 		formTypes = []string{"S-1", "S-1/A", "F-1", "F-1/A", "S-1MEF"}
 	}
 	return IPORadarSettings{
-		Enabled:               enabled,
-		FormTypes:             formTypes,
-		LookbackDays:          lookback,
-		MaxResults:            maxResults,
-		NotifyEnabled:         notify,
-		NotifyFormTypes:       splitConfigList(notifyFormTypesRaw),
-		Keywords:              splitConfigList(keywordsRaw),
-		LifecycleSweepEnabled: lifecycleSweepEnabled,
-		LifecycleMaxCIKs:      lifecycleMaxCIKs,
-		LifecycleRecheckHours: lifecycleRecheckHours,
+		Enabled:                              enabled,
+		FormTypes:                            formTypes,
+		LookbackDays:                         lookback,
+		MaxResults:                           maxResults,
+		NotifyEnabled:                        notify,
+		NotifyFormTypes:                      splitConfigList(notifyFormTypesRaw),
+		Keywords:                             splitConfigList(keywordsRaw),
+		LifecycleSweepEnabled:                lifecycleSweepEnabled,
+		LifecycleMaxCIKs:                     lifecycleMaxCIKs,
+		LifecycleRecheckHours:                lifecycleRecheckHours,
+		LongbridgeListingVerificationEnabled: longbridgeListingEnabled,
+		LongbridgeListingRequestBudget:       longbridgeListingBudget,
+		LongbridgeListingRecheckHours:        longbridgeListingRecheckHours,
+		LongbridgeIPOCalendarEnabled:         longbridgeCalendarEnabled,
+		LongbridgeIPOCalendarLookbackDays:    longbridgeCalendarLookback,
+		LongbridgeIPOCalendarLookaheadDays:   longbridgeCalendarLookahead,
+		LongbridgeIPOCalendarMaxPages:        longbridgeCalendarMaxPages,
 	}, nil
 }
 
@@ -922,6 +1046,83 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 	} else if ok && strings.TrimSpace(threshold) != "" {
 		if parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(threshold), 64); parseErr == nil && parsed >= 0 {
 			cfg.LongbridgeAnalystRatingTargetChangePct = parsed
+		}
+	}
+	if enabled, ok, err := s.GetValue(ctx, "discovery.longbridge_candidate_research_enabled"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(enabled) != "" {
+		if parsed, parseErr := strconv.ParseBool(strings.TrimSpace(enabled)); parseErr == nil {
+			cfg.LongbridgeCandidateResearchEnabled = parsed
+		}
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.longbridge_candidate_research_request_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget)); parseErr == nil && parsed >= 0 {
+			cfg.LongbridgeCandidateResearchRequestBudget = parsed
+		}
+	}
+	if enabled, ok, err := s.GetValue(ctx, "discovery.longbridge_watch_target_research_enabled"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(enabled) != "" {
+		if parsed, parseErr := strconv.ParseBool(strings.TrimSpace(enabled)); parseErr == nil {
+			cfg.LongbridgeWatchTargetResearchEnabled = parsed
+		}
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.longbridge_watch_target_research_request_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget)); parseErr == nil && parsed >= 0 {
+			cfg.LongbridgeWatchTargetResearchRequestBudget = parsed
+		}
+	}
+	if enabled, ok, err := s.GetValue(ctx, "discovery.longbridge_candidate_valuation_enabled"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(enabled) != "" {
+		if parsed, parseErr := strconv.ParseBool(strings.TrimSpace(enabled)); parseErr == nil {
+			cfg.LongbridgeCandidateValuationEnabled = parsed
+		}
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.longbridge_candidate_valuation_request_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget)); parseErr == nil && parsed >= 0 {
+			cfg.LongbridgeCandidateValuationRequestBudget = parsed
+		}
+	}
+	if enabled, ok, err := s.GetValue(ctx, "discovery.longbridge_watch_target_valuation_enabled"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(enabled) != "" {
+		if parsed, parseErr := strconv.ParseBool(strings.TrimSpace(enabled)); parseErr == nil {
+			cfg.LongbridgeWatchTargetValuationEnabled = parsed
+		}
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.longbridge_watch_target_valuation_request_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget)); parseErr == nil && parsed >= 0 {
+			cfg.LongbridgeWatchTargetValuationRequestBudget = parsed
+		}
+	}
+	if enabled, ok, err := s.GetValue(ctx, "discovery.longbridge_option_research_enabled"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(enabled) != "" {
+		if parsed, parseErr := strconv.ParseBool(strings.TrimSpace(enabled)); parseErr == nil {
+			cfg.LongbridgeOptionResearchEnabled = parsed
+		}
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.longbridge_candidate_option_research_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget)); parseErr == nil && parsed >= 0 {
+			cfg.LongbridgeCandidateOptionResearchBudget = parsed
+		}
+	}
+	if budget, ok, err := s.GetValue(ctx, "discovery.longbridge_watch_target_option_research_budget"); err != nil {
+		return cfg, err
+	} else if ok && strings.TrimSpace(budget) != "" {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget)); parseErr == nil && parsed >= 0 {
+			cfg.LongbridgeWatchTargetOptionResearchBudget = parsed
 		}
 	}
 	if coverage, ok, err := s.GetValue(ctx, "discovery.min_publish_coverage_pct"); err != nil {

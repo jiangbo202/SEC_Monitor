@@ -14,6 +14,11 @@
               <el-option :label="t('pages.notificationLogs.sources.ipo')" value="ipo" />
               <el-option :label="t('pages.notificationLogs.sources.ipoOffering')" value="ipo_offering" />
               <el-option :label="t('pages.notificationLogs.sources.candidate')" value="candidate" />
+			  <el-option label="交易计划" value="trade_setup" />
+			  <el-option label="分析师共识" value="analyst_rating" />
+			  <el-option label="财报预告" value="earnings_preview" />
+			  <el-option label="运行健康" value="operational_health" />
+			  <el-option label="系统测试" value="system_test" />
             </el-select>
           </el-form-item>
           <el-form-item :label="t('common.status')">
@@ -25,6 +30,7 @@
             </el-select>
           </el-form-item>
           <el-form-item><el-button @click="queryBatches">{{ t('common.query') }}</el-button></el-form-item>
+          <el-form-item><el-button type="warning" plain :loading="requeueingFailed" @click="requeueFailed">重新入队失败通知（最多 100 条）</el-button></el-form-item>
         </el-form>
 
         <el-table :data="batches" v-loading="loading" border :empty-text="t('pages.notificationLogs.emptyBatches')" @expand-change="loadBatchItems">
@@ -56,6 +62,7 @@
           <el-table-column prop="retry_count" :label="t('common.retryCount')" width="85" align="right" />
           <el-table-column prop="next_retry_at" :label="t('pages.notificationLogs.nextRetryAt')" width="170"><template #default="{ row }">{{ formatDateTime(row.next_retry_at) }}</template></el-table-column>
           <el-table-column prop="suppression_summary" :label="t('pages.notificationLogs.summary')" min-width="190" show-overflow-tooltip />
+		  <el-table-column prop="message_text" label="投递内容" min-width="240" show-overflow-tooltip />
           <el-table-column prop="error_message" :label="t('common.error')" min-width="180" show-overflow-tooltip />
           <el-table-column :label="t('common.actions')" width="105" fixed="right">
             <template #default="{ row }">
@@ -85,6 +92,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, NotificationBatch, NotificationBatchItem, NotificationLog, PageResult } from '@/api/types'
 import { useI18n } from '@/i18n'
@@ -102,6 +110,7 @@ const batchesPage = ref(1)
 const legacyPage = ref(1)
 const pageSize = 20
 const filters = reactive({ source: '', status: '' })
+const requeueingFailed = ref(false)
 
 async function loadBatches() {
   loading.value = true
@@ -135,17 +144,36 @@ async function requeue(row: NotificationBatch) {
   } finally { loading.value = false }
 }
 
+async function requeueFailed() {
+  requeueingFailed.value = true
+  try {
+    const response = await apiClient.post<ApiResponse<{ requeued: number; skipped: number }>>('/notification-batches/requeue-failed', { limit: 100 })
+    const result = response.data.data
+    ElMessage.success(`已重新入队 ${result.requeued} 条${result.skipped ? `，跳过 ${result.skipped} 条` : ''}；将由定时重试任务投递`)
+    await loadBatches()
+  } finally {
+    requeueingFailed.value = false
+  }
+}
+
 function loadActive() { return activeTab.value === 'batches' ? loadBatches() : loadLegacy() }
 function queryBatches() { batchesPage.value = 1; return loadBatches() }
 function sourceLabel(value: string) {
   if (value === 'candidate') return t('pages.notificationLogs.sources.candidate')
   if (value === 'ipo') return t('pages.notificationLogs.sources.ipo')
   if (value === 'ipo_offering') return t('pages.notificationLogs.sources.ipoOffering')
+	if (value === 'trade_setup') return '交易计划'
+	if (value === 'analyst_rating') return '分析师共识'
+	if (value === 'earnings_preview') return '财报预告'
+	if (value === 'operational_health') return '运行健康'
+	if (value === 'system_test') return '系统测试'
   return t('pages.notificationLogs.sources.filing')
 }
 function sourceTagType(value: string) {
   if (value === 'candidate') return 'success'
   if (value === 'ipo' || value === 'ipo_offering') return 'warning'
+	if (value === 'operational_health') return 'danger'
+	if (value === 'trade_setup') return 'success'
   return 'info'
 }
 function batchStatusLabel(value: string) { return t(`pages.notificationLogs.statuses.${value === 'dead_letter' ? 'deadLetter' : value}`) }
@@ -155,6 +183,11 @@ function reasonType(value: string) { return value === 'eligible' ? 'success' : v
 function entityKindLabel(value: string) {
   if (value === 'candidate') return t('pages.notificationLogs.entityKinds.candidate')
   if (value === 'ipo_filing') return t('pages.notificationLogs.entityKinds.ipoFiling')
+	if (value === 'trade_setup') return '交易计划'
+	if (value === 'analyst_rating') return '分析师共识'
+	if (value === 'earnings_preview') return '财报预告'
+	if (value === 'operational_report') return '运行健康'
+	if (value === 'connection_test') return '连接测试'
   return t('pages.notificationLogs.entityKinds.filing')
 }
 function notificationItemTypeLabel(item: NotificationBatchItem) {
@@ -171,7 +204,7 @@ onMounted(() => {
     filters.status = status
   }
   const source = route.query.source
-  if (typeof source === 'string' && ['filing', 'ipo', 'ipo_offering', 'candidate'].includes(source)) {
+	if (typeof source === 'string' && ['filing', 'ipo', 'ipo_offering', 'candidate', 'trade_setup', 'analyst_rating', 'earnings_preview', 'operational_health', 'system_test'].includes(source)) {
     filters.source = source
   }
   return loadBatches()

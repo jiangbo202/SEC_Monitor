@@ -106,6 +106,37 @@ func TestMacroCalendarListFiltersFrequencyAndTimeOrder(t *testing.T) {
 	}
 }
 
+func TestMacroCalendarListAssociatesOfficialAndLongbridgeEvent(t *testing.T) {
+	db := testDB(t)
+	at := time.Date(2026, time.August, 12, 12, 30, 0, 0, time.UTC)
+	if err := db.Create(&[]model.MacroRelease{
+		{Provider: MacroProviderBLS, Category: "cpi", Title: "Consumer Price Index for July 2026", Status: MacroReleaseScheduled, ScheduledAt: &at, SourceURL: "https://bls.test/cpi", FetchedAt: at},
+		{Provider: macroProviderLongbridge, Category: "market_calendar", Title: "United States CPI", Status: MacroReleaseScheduled, ScheduledAt: &at, SourceURL: "https://longbridge.test/cpi", FetchedAt: at},
+	}).Error; err != nil {
+		t.Fatalf("seed macro releases: %v", err)
+	}
+	page, err := NewMacroCalendarService(db).List(context.Background(), MacroReleaseFilter{Page: 1, PageSize: 10})
+	if err != nil || len(page.Items) != 2 {
+		t.Fatalf("List page=%+v err=%v", page, err)
+	}
+	for _, item := range page.Items {
+		if item.CanonicalEventKey != "cpi:2026-08-12" || len(item.RelatedSources) != 2 {
+			t.Fatalf("association item=%+v", item)
+		}
+		if !item.RelatedSources[0].Official || item.RelatedSources[1].Official {
+			t.Fatalf("sources should be official-first: %+v", item.RelatedSources)
+		}
+	}
+}
+
+func TestCanonicalMacroEventKeyKeepsGDPSeparateFromPersonalIncome(t *testing.T) {
+	at := time.Date(2026, time.April, 9, 12, 30, 0, 0, time.UTC)
+	key := canonicalMacroEventKey("gdp", "GDP (Third Estimate), Industries, Corporate Profits, State GDP, and State Personal Income", &at)
+	if key != "gdp:2026-04-09" {
+		t.Fatalf("GDP canonical key=%q", key)
+	}
+}
+
 func TestParseBLSScheduleAndReleaseObservations(t *testing.T) {
 	schedule := `BEGIN:VCALENDAR
 BEGIN:VEVENT

@@ -46,6 +46,149 @@ func TestNotificationBatchFailureSchedulesExponentialRetry(t *testing.T) {
 	}
 }
 
+func TestNotificationBatchRequeueFailedIsBoundedAndResetsRetryState(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, 8, 13, 2, 0, 0, 0, time.UTC)
+	lease := now.Add(time.Hour)
+	batches := []model.NotificationBatch{
+		{Source: "filing", Trigger: "scheduler", Channel: "telegram", Status: "failed", RetryCount: 3, ErrorMessage: "timeout", NextRetryAt: &lease},
+		{Source: "ipo", Trigger: "scheduler", Channel: "telegram", Status: "dead_letter", RetryCount: 6, ErrorMessage: "timeout"},
+		{Source: "candidate", Trigger: "scheduler", Channel: "telegram", Status: "sent"},
+	}
+	if err := db.Create(&batches).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := NewNotificationBatchService(db, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	result, err := svc.RequeueFailed(context.Background(), now, 2)
+	if err != nil || result.Requeued != 2 || result.Skipped != 0 {
+		t.Fatalf("RequeueFailed result=%+v err=%v", result, err)
+	}
+	var recovered []model.NotificationBatch
+	if err := db.Where("status = ?", "failed").Order("id ASC").Find(&recovered).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 2 || recovered[0].RetryCount != 0 || recovered[0].NextRetryAt == nil || recovered[1].RetryCount != 0 || recovered[1].NextRetryAt == nil {
+		t.Fatalf("recovered batches=%+v", recovered)
+	}
+	if _, err := svc.RequeueFailed(context.Background(), now, 0); err == nil {
+		t.Fatal("expected validation error for zero limit")
+	}
+}
+
+func TestNotificationBatchSuppressesTelegramWhenEventChannelIsDisabled(t *testing.T) {
+	db := testDB(t)
+	seedNotificationTelegramConfig(t, db)
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{{
+		Key: "telegram_notification.major_event_enabled", Value: "false", ValueType: "bool", Category: "telegram_notification",
+	}}, "test"); err != nil {
+		t.Fatalf("disable major-event channel: %v", err)
+	}
+	notifier := &fakeNotifier{}
+	batch, err := NewNotificationBatchService(db, notifier, configs).Deliver(context.Background(), NotificationBatchInput{
+		Source: "major_event", Trigger: "scheduler", Candidates: []NotificationCandidate{{
+			EntityKind: "filing", FilingID: "major-event-filing", Ticker: "TSLA", Reason: "eligible", EventAt: time.Now().UTC(),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if batch.Status != "suppressed" || batch.SuppressionSummary != "event_channel_disabled:1" {
+		t.Fatalf("batch = %+v, want event channel suppression", batch)
+	}
+	if len(notifier.messages) != 0 {
+		t.Fatalf("notifier messages = %d, want 0", len(notifier.messages))
+	}
+	var item model.NotificationBatchItem
+	if err := db.Where("batch_id = ?", batch.ID).First(&item).Error; err != nil {
+		t.Fatalf("load batch item: %v", err)
+	}
+	if item.Status != "suppressed" || item.Reason != "event_channel_disabled" {
+		t.Fatalf("item = %+v, want event channel suppression", item)
+	}
+}
+
+func TestNotificationBatchDeduplicatesSameEventAcrossRepeatedDelivery(t *testing.T) {
+	db := testDB(t)
+	seedNotificationTelegramConfig(t, db)
+	now := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
+	notifier := &fakeNotifier{}
+	svc := NewNotificationBatchService(db, notifier, NewConfigService(db, NewAuditService(db)))
+	input := NotificationBatchInput{Source: "technical_signal_candidate", Trigger: "scheduler", Candidates: []NotificationCandidate{{
+		EntityKind: "trade_setup", FilingID: "technical-signal:candidate:RKLB:entry_candidate:2026-08-12", Ticker: "RKLB", Reason: "eligible", EventAt: now,
+	}}}
+	first, err := svc.Deliver(context.Background(), input)
+	if err != nil || first.Status != "sent" {
+		t.Fatalf("first delivery = %+v, err=%v", first, err)
+	}
+	second, err := svc.Deliver(context.Background(), input)
+	if err != nil || second.ID != 0 {
+		t.Fatalf("duplicate delivery = %+v, err=%v; want no new batch", second, err)
+	}
+	if notifier.calls != 1 {
+		t.Fatalf("notifier calls = %d, want 1", notifier.calls)
+	}
+	var batches, items int64
+	if err := db.Model(&model.NotificationBatch{}).Count(&batches).Error; err != nil || batches != 1 {
+		t.Fatalf("batches = %d, err=%v; want 1", batches, err)
+	}
+	if err := db.Model(&model.NotificationBatchItem{}).Count(&items).Error; err != nil || items != 1 {
+		t.Fatalf("items = %d, err=%v; want 1", items, err)
+	}
+}
+
+func TestNotificationBatchRetryReusesClaimedEvent(t *testing.T) {
+	db := testDB(t)
+	seedNotificationTelegramConfig(t, db)
+	now := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
+	notifier := &fakeNotifier{errs: []error{context.DeadlineExceeded, context.DeadlineExceeded, context.DeadlineExceeded}}
+	svc := NewNotificationBatchService(db, notifier, NewConfigService(db, NewAuditService(db)))
+	input := NotificationBatchInput{Source: "earnings_release_watch_target", Trigger: "scheduler", Candidates: []NotificationCandidate{{
+		EntityKind: "filing", FilingID: "0001-10q", Ticker: "ACME", Reason: "eligible", EventAt: now,
+	}}}
+	failed, err := svc.Deliver(context.Background(), input)
+	if err != nil || failed.Status != "failed" {
+		t.Fatalf("initial delivery = %+v, err=%v", failed, err)
+	}
+	notifier.errs = nil
+	duplicate, err := svc.Deliver(context.Background(), input)
+	if err != nil || duplicate.ID != 0 {
+		t.Fatalf("duplicate delivery = %+v, err=%v; want no new batch", duplicate, err)
+	}
+	if _, err := svc.RetryDue(context.Background(), *failed.NextRetryAt); err != nil {
+		t.Fatalf("retry due: %v", err)
+	}
+	if notifier.calls != 4 {
+		t.Fatalf("notifier calls = %d, want 4 (initial attempts plus one persisted retry)", notifier.calls)
+	}
+}
+
+func TestNotificationCenterDeliversAndRetriesPersistedSystemMessage(t *testing.T) {
+	db := testDB(t)
+	seedNotificationTelegramConfig(t, db)
+	now := time.Date(2026, 8, 12, 2, 0, 0, 0, time.UTC)
+	message := "SEC Monitor 运行摘要\n[critical] 上游超时"
+	notifier := &fakeNotifier{errs: []error{context.DeadlineExceeded, context.DeadlineExceeded, context.DeadlineExceeded}}
+	svc := NewNotificationBatchService(db, notifier, NewConfigService(db, NewAuditService(db)))
+	batch, err := svc.DeliverMessage(context.Background(), NotificationMessageInput{
+		Source: "operational_health", Trigger: "scheduled", EventKey: "operational:abc", EntityKind: "operational_report", Title: "运行摘要", SummaryText: message, EventAt: now,
+	})
+	if err != nil || batch.Status != "failed" || batch.MessageText != message {
+		t.Fatalf("DeliverMessage batch=%+v err=%v", batch, err)
+	}
+	notifier.errs = nil
+	if _, err := svc.RetryDue(context.Background(), *batch.NextRetryAt); err != nil {
+		t.Fatalf("RetryDue: %v", err)
+	}
+	if len(notifier.messages) == 0 || notifier.messages[len(notifier.messages)-1].Text != message {
+		t.Fatalf("retry did not preserve original message: %+v", notifier.messages)
+	}
+	var persisted model.NotificationBatch
+	if err := db.First(&persisted, batch.ID).Error; err != nil || persisted.Status != "sent" || persisted.MessageText != message {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+}
+
 func TestRetryDueSchedulesFiveRetryRoundsAfterInitialDeliveryFailure(t *testing.T) {
 	db := testDB(t)
 	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
@@ -197,6 +340,42 @@ func TestRequeueOnlyAcceptsFailedOrDeadLetter(t *testing.T) {
 		if got.Status != "failed" || got.NextRetryAt == nil || !got.NextRetryAt.Equal(now) {
 			t.Fatalf("requeued %s batch = %+v", batch.Status, got)
 		}
+	}
+}
+
+func TestRecoverTransientDeadLettersLeavesPermanentFailuresForReview(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, 8, 12, 4, 0, 0, 0, time.UTC)
+	old := now.Add(-notificationDeadLetterRecoveryDelay - time.Minute)
+	newer := now.Add(-notificationDeadLetterRecoveryDelay + time.Minute)
+	batches := []model.NotificationBatch{
+		{Source: "ipo", Channel: "telegram", Status: "dead_letter", RetryCount: 6, ErrorMessage: "context deadline exceeded", CreatedAt: old, UpdatedAt: old},
+		{Source: "ipo", Channel: "telegram", Status: "dead_letter", RetryCount: 6, ErrorMessage: "HTTP 401 unauthorized", CreatedAt: old, UpdatedAt: old},
+		{Source: "ipo", Channel: "telegram", Status: "dead_letter", RetryCount: 6, ErrorMessage: "HTTP 429 rate limit", CreatedAt: newer, UpdatedAt: newer},
+	}
+	if err := db.Create(&batches).Error; err != nil {
+		t.Fatalf("seed batches: %v", err)
+	}
+	svc := NewNotificationBatchService(db, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	result, err := svc.RecoverTransientDeadLetters(context.Background(), now)
+	if err != nil || result.Requeued != 1 {
+		t.Fatalf("recovery result = %+v, err=%v", result, err)
+	}
+	var recovered, permanent, waiting model.NotificationBatch
+	if err := db.First(&recovered, batches[0].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&permanent, batches[1].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&waiting, batches[2].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != "failed" || recovered.RetryCount != 0 || recovered.NextRetryAt == nil || !recovered.NextRetryAt.Equal(now) {
+		t.Fatalf("recovered batch = %+v", recovered)
+	}
+	if permanent.Status != "dead_letter" || waiting.Status != "dead_letter" {
+		t.Fatalf("permanent=%+v waiting=%+v", permanent, waiting)
 	}
 }
 

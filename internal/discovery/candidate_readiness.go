@@ -136,17 +136,25 @@ func hydrateCandidateResearchReadiness(ctx context.Context, db *gorm.DB, batch U
 	for _, metric := range metrics {
 		metricsBySecurity[metric.SecurityID] = metric
 	}
-	var facts []FinancialFactSnapshot
-	if err := db.WithContext(ctx).
+	// Readiness only needs the newest financial reporting period. Loading every
+	// historical fact (including source URLs and amounts) for every candidate
+	// made the compact list wait on tens of thousands of rows from the local
+	// research store.
+	type latestFinancialPeriod struct {
+		SecurityID uint
+		PeriodEnd  string
+	}
+	var latestPeriods []latestFinancialPeriod
+	if err := db.WithContext(ctx).Model(&FinancialFactSnapshot{}).
+		Select("security_id, MAX(period_end) AS period_end").
 		Where("security_id IN ? AND metric IN ? AND quality_status = ?", securityIDs, []string{FinancialMetricRevenue, FinancialMetricCash}, QualityStatusValid).
-		Find(&facts).Error; err != nil {
+		Group("security_id").
+		Scan(&latestPeriods).Error; err != nil {
 		return err
 	}
 	latestPeriodBySecurity := map[uint]time.Time{}
-	for _, fact := range facts {
-		if fact.PeriodEnd.After(latestPeriodBySecurity[fact.SecurityID]) {
-			latestPeriodBySecurity[fact.SecurityID] = fact.PeriodEnd
-		}
+	for _, period := range latestPeriods {
+		latestPeriodBySecurity[period.SecurityID] = parseCandidateReadinessTime(period.PeriodEnd)
 	}
 	insiderAvailable, err := candidateInsiderDataAvailable(ctx, db, batch)
 	if err != nil {
@@ -177,6 +185,16 @@ func hydrateCandidateResearchReadiness(ctx context.Context, db *gorm.DB, batch U
 		items[i].ResearchReadiness = buildCandidateResearchReadiness(items[i], metric, found, latestPeriodBySecurity[items[i].SecurityID], insiderAvailable, insiderSourceDeclared, insiderCoverageExpected, coverage, asOf)
 	}
 	return nil
+}
+
+func parseCandidateReadinessTime(value string) time.Time {
+	value = strings.TrimSpace(value)
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999Z07:00", time.DateTime, time.DateOnly} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func readinessAsOf(batch UniverseBatch) time.Time {

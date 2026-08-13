@@ -306,6 +306,67 @@
 
         <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
           <div class="panel-header target-detail-section-title">
+            <span>机构持仓披露（Longbridge）</span>
+            <el-button size="small" :loading="detailMarketResearchRefreshing" @click="refreshTargetMarketResearch">刷新机构持仓</el-button>
+          </div>
+          <el-alert type="info" :closable="false" show-icon title="显示 Longbridge 已返回并保存的全部报告日快照。机构的披露频率、覆盖范围和持股比例口径由提供方决定，不能把未覆盖视为零持仓。" />
+          <template v-if="detailInstitutionalHoldings && (detailInstitutionalHoldings.institutional_holders.length || detailInstitutionalHoldings.fund_holders.length)">
+            <div class="analyst-rating-provenance-title">机构股东：每次披露的公司持股比例</div>
+            <el-table :data="detailInstitutionalHoldings.institutional_holders" size="small" border max-height="360" empty-text="Longbridge 暂无机构股东披露">
+              <el-table-column prop="holder_name" label="机构" min-width="210" show-overflow-tooltip />
+              <el-table-column prop="institution_type" label="类型" min-width="100" show-overflow-tooltip />
+              <el-table-column label="持股比例" width="110" align="right"><template #default="{ row }">{{ formatPct(row.percent_of_shares) }}</template></el-table-column>
+              <el-table-column label="披露变动" width="120" align="right"><template #default="{ row }">{{ row.shares_changed === undefined || row.shares_changed === null ? '-' : row.shares_changed.toLocaleString(undefined, { maximumFractionDigits: 0 }) }}</template></el-table-column>
+              <el-table-column prop="report_date" label="报告日" width="115" />
+              <el-table-column label="本地同步" width="165"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
+              <el-table-column label="来源" width="80"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">Longbridge</el-link><span v-else>-</span></template></el-table-column>
+            </el-table>
+            <div class="analyst-rating-provenance-title">基金 / ETF：每次披露的组合权重</div>
+            <el-table :data="detailInstitutionalHoldings.fund_holders" size="small" border max-height="360" empty-text="Longbridge 暂无基金或 ETF 持仓披露">
+              <el-table-column prop="fund_name" label="基金 / ETF" min-width="220" show-overflow-tooltip />
+              <el-table-column prop="fund_symbol" label="代码" width="110" />
+              <el-table-column label="组合权重" width="110" align="right"><template #default="{ row }">{{ formatPct(row.position_ratio) }}</template></el-table-column>
+              <el-table-column prop="report_date" label="报告日" width="115" />
+              <el-table-column label="本地同步" width="165"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
+              <el-table-column label="来源" width="80"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">Longbridge</el-link><span v-else>-</span></template></el-table-column>
+            </el-table>
+            <el-alert type="info" :closable="false" style="margin-top: 12px" :title="detailInstitutionalHoldings.message" />
+          </template>
+          <el-alert v-else type="info" :closable="false" show-icon style="margin-top: 12px" :title="detailInstitutionalHoldings?.message || '尚未同步机构持仓披露。'" description="可手动刷新当前标的；不会执行 SEC 同步、行情全量请求或候选重算。" />
+        </div>
+
+        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+          <div class="panel-header target-detail-section-title">
+            <span>市场一致目标价与合理价值情景</span>
+            <el-button size="small" :loading="detailValuationRefreshing" @click="refreshTargetValuationResearch">刷新估值研究</el-button>
+          </div>
+          <el-alert type="warning" :closable="false" show-icon title="不提供 Longbridge “公允价值”结论：市场一致目标价与本地历史估值情景必须分开阅读，均不构成投资建议。" />
+          <template v-if="detailFairValue?.status === 'available'">
+            <el-descriptions :column="2" border size="small" style="margin-top: 12px">
+              <el-descriptions-item label="参考收盘价">{{ formatFairValuePrice(detailFairValue.reference_price, detailFairValue.currency) }}<span v-if="detailFairValue.reference_price_date"> · {{ detailFairValue.reference_price_date }}</span></el-descriptions-item>
+              <el-descriptions-item label="市场一致目标价（平均）">{{ formatFairValuePrice(detailFairValue.market_consensus_target, detailFairValue.currency) }}</el-descriptions-item>
+              <el-descriptions-item label="目标价相对空间">{{ detailFairValue.market_consensus_upside_pct === undefined || detailFairValue.market_consensus_upside_pct === null ? '-' : formatSignedPct(detailFairValue.market_consensus_upside_pct) }}</el-descriptions-item>
+              <el-descriptions-item label="市场目标价区间">{{ formatFairValuePrice(detailFairValue.market_consensus_low, detailFairValue.currency) }} - {{ formatFairValuePrice(detailFairValue.market_consensus_high, detailFairValue.currency) }}</el-descriptions-item>
+              <el-descriptions-item label="机构覆盖数">{{ detailFairValue.analyst_count || '-' }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailFairValue.local_historical_scenario" label="本地历史倍数情景（低 / 中 / 高）" :span="2">
+                {{ formatFairValuePrice(detailFairValue.local_historical_scenario.low, detailFairValue.currency) }} / {{ formatFairValuePrice(detailFairValue.local_historical_scenario.mid, detailFairValue.currency) }} / {{ formatFairValuePrice(detailFairValue.local_historical_scenario.high, detailFairValue.currency) }}（{{ detailFairValue.local_historical_scenario.metrics }} 个可用指标等权）
+              </el-descriptions-item>
+              <el-descriptions-item label="本地参考价来源" :span="2">{{ detailFairValue.reference_price_source || '-' }}</el-descriptions-item>
+            </el-descriptions>
+            <div v-if="detailFairValue.metric_scenarios.length" class="analyst-rating-provenance-title">本地计算输入与过程</div>
+            <el-table v-if="detailFairValue.metric_scenarios.length" :data="detailFairValue.metric_scenarios" size="small" border>
+              <el-table-column prop="metric" label="指标" width="80" />
+              <el-table-column label="当前倍数" width="115" align="right"><template #default="{ row }">{{ row.current_multiple.toFixed(2) }}</template></el-table-column>
+              <el-table-column label="历史倍数低 / 中 / 高" min-width="190" align="right"><template #default="{ row }">{{ row.historical_low.toFixed(2) }} / {{ row.historical_mid.toFixed(2) }} / {{ row.historical_high.toFixed(2) }}</template></el-table-column>
+              <el-table-column label="推导价格低 / 中 / 高" min-width="210" align="right"><template #default="{ row }">{{ formatFairValuePrice(row.price_low, detailFairValue.currency) }} / {{ formatFairValuePrice(row.price_mid, detailFairValue.currency) }} / {{ formatFairValuePrice(row.price_high, detailFairValue.currency) }}</template></el-table-column>
+            </el-table>
+            <el-alert type="info" :closable="false" style="margin-top: 12px" :title="detailFairValue.methodology" :description="detailFairValue.message" />
+          </template>
+          <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="detailFairValue?.message || '尚缺机构目标价或可用估值倍数，无法计算本地历史估值情景。'" />
+        </div>
+
+        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+          <div class="panel-header target-detail-section-title">
             <span>机构与分析师共识（Longbridge）</span>
             <el-button size="small" :loading="detailAnalystRatingRefreshing" @click="refreshTargetAnalystRating">刷新分析师评级</el-button>
           </div>
@@ -313,7 +374,7 @@
             <el-descriptions :column="2" border size="small">
               <el-descriptions-item label="共识评级"><el-tag :type="analystRecommendationTagType(detailAnalystRating.latest.recommendation)" effect="plain">{{ analystRecommendationLabel(detailAnalystRating.latest.recommendation) }}</el-tag></el-descriptions-item>
               <el-descriptions-item label="覆盖数">{{ detailAnalystRating.latest.analyst_count }}</el-descriptions-item>
-              <el-descriptions-item label="平均目标价">{{ formatAnalystPrice(detailAnalystRating.latest.target_average_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
+			  <el-descriptions-item label="市场一致目标价（平均）">{{ formatAnalystPrice(detailAnalystRating.latest.target_average_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
               <el-descriptions-item label="目标价区间">{{ formatAnalystPrice(detailAnalystRating.latest.target_low_micros, detailAnalystRating.latest.currency) }} - {{ formatAnalystPrice(detailAnalystRating.latest.target_high_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
               <el-descriptions-item label="评级分布" :span="2">强烈买入 {{ detailAnalystRating.latest.strong_buy_count }} · 买入 {{ detailAnalystRating.latest.buy_count }} · 持有 {{ detailAnalystRating.latest.hold_count }} · 跑输 {{ detailAnalystRating.latest.underperform_count }} · 卖出 {{ detailAnalystRating.latest.sell_count }}</el-descriptions-item>
               <el-descriptions-item label="来源" :span="2">Longbridge · {{ analystProviderTimeText(detailAnalystRating.latest) }}</el-descriptions-item>
@@ -385,6 +446,20 @@
           <TechnicalPriceHistoryChart :ticker="detailTarget.ticker" :rows="detailTechnicalHistory" />
         </div>
 
+        <div class="target-detail-section">
+          <div class="panel-header target-detail-section-title"><span>交易计划状态历史</span></div>
+          <el-alert type="info" :closable="false" show-icon title="仅记录日线收盘后交易计划状态的变化，不是交易指令或实际成交记录。" />
+          <el-timeline v-if="detailTradeSetupHistory.length" class="target-trade-setup-timeline">
+            <el-timeline-item v-for="event in detailTradeSetupHistory" :key="event.id" :timestamp="formatDateTime(event.started_at)" :type="tradeSetupTagType(event.status)">
+              <strong>{{ tradeSetupLabel(event.status) }}</strong>
+              <span v-if="event.previous_status">（由 {{ tradeSetupLabel(event.previous_status) }} 变更）</span>
+              <div class="target-trade-setup-detail">收盘 {{ formatPrice(event.close_usd) }} USD · 止损 {{ formatPrice(event.stop_loss_usd) }} USD · {{ event.entry_trigger || event.exit_reason || '等待触发条件' }}</div>
+              <div v-if="event.reasons?.length" class="target-trade-setup-detail">{{ event.reasons.join('；') }}</div>
+            </el-timeline-item>
+          </el-timeline>
+          <el-empty v-else :image-size="44" description="尚未记录状态变化；下次日线同步后会建立当前状态基线。" />
+        </div>
+
         <div class="panel-header target-detail-section-title">
           <span>{{ t('pages.targets.recentSync') }}</span>
           <el-link type="primary" @click="$router.push('/sync-runs')">{{ t('common.history') }}</el-link>
@@ -437,7 +512,7 @@ import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
-import type { AnalystRatingView, ApiResponse, CandidateTechnicalHistoryRow, CompanyProfile, EarningsPreview, EarningsPreviewRefreshResult, EarningsPreviewView, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerLookup, TickerTechnicalHistory, TradePlanSimulationRebuildResult, TradePlanSimulationReport, WatchTarget } from '@/api/types'
+import type { AnalystRatingView, ApiResponse, CandidateFairValueEstimate, CandidateTechnicalHistoryRow, CompanyProfile, EarningsPreview, EarningsPreviewRefreshResult, EarningsPreviewView, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerInstitutionalHoldingHistory, TickerLookup, TickerTechnicalHistory, TradePlanSimulationRebuildResult, TradePlanSimulationReport, TradeSetupStatusEvent, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -459,10 +534,15 @@ const detailFilings = ref<Filing[]>([])
 const detailSyncDetails = ref<SyncRunDetail[]>([])
 const detailProfitHistory = ref<ProfitHistory | null>(null)
 const detailTechnicalHistory = ref<CandidateTechnicalHistoryRow[]>([])
+const detailTradeSetupHistory = ref<TradeSetupStatusEvent[]>([])
 const detailCompanyProfile = ref<CompanyProfile | null>(null)
 const detailCompanyProfileRefreshing = ref(false)
 const detailAnalystRating = ref<AnalystRatingView | null>(null)
 const detailAnalystRatingRefreshing = ref(false)
+const detailFairValue = ref<CandidateFairValueEstimate | null>(null)
+const detailValuationRefreshing = ref(false)
+const detailInstitutionalHoldings = ref<TickerInstitutionalHoldingHistory | null>(null)
+const detailMarketResearchRefreshing = ref(false)
 const detailEarningsPreview = ref<EarningsPreviewView | null>(null)
 const detailEarningsRefreshing = ref(false)
 const detailTechnicalBackfilling = ref(false)
@@ -796,20 +876,25 @@ async function loadTargetDetailData(row: WatchTarget) {
 	detailLoading.value = true
 	detailProfitHistory.value = null
 	detailTechnicalHistory.value = []
+	detailTradeSetupHistory.value = []
 	detailCompanyProfile.value = null
 	detailAnalystRating.value = null
+	detailFairValue.value = null
+	detailInstitutionalHoldings.value = null
 	detailEarningsPreview.value = null
 	try {
-    const [filings, syncDetails, configs] = await Promise.all([
+    const [filings, syncDetails, configs, tradeSetupHistory] = await Promise.all([
       apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', {
         params: { ticker: row.ticker, page: 1, page_size: 8, sort_by: 'pulled_at', sort_order: 'desc' }
       }),
       apiClient.get<ApiResponse<SyncRunDetail[]>>(`/watch-targets/${row.id}/sync-details`),
-      apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs')
+      apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs'),
+      apiClient.get<ApiResponse<TradeSetupStatusEvent[]>>(`/discovery/trade-setup-history/${encodeURIComponent(row.ticker)}`)
     ])
     detailFilings.value = filings.data.data.items
     detailSyncDetails.value = syncDetails.data.data
     systemConfigs.value = configs.data.data
+		detailTradeSetupHistory.value = tradeSetupHistory.data.data || []
 		try {
 			const profile = await apiClient.get<ApiResponse<CompanyProfile>>(`/discovery/company-profiles/${encodeURIComponent(row.ticker)}`, { params: { cik: row.cik || undefined } })
 			detailCompanyProfile.value = profile.data.data
@@ -834,6 +919,18 @@ async function loadTargetDetailData(row: WatchTarget) {
 				detailAnalystRating.value = rating.data.data
 			} catch {
 				detailAnalystRating.value = null
+			}
+			try {
+				const fairValue = await apiClient.get<ApiResponse<CandidateFairValueEstimate>>(`/discovery/fair-values/${encodeURIComponent(row.ticker)}`)
+				detailFairValue.value = fairValue.data.data
+			} catch {
+				detailFairValue.value = null
+			}
+			try {
+				const holdings = await apiClient.get<ApiResponse<TickerInstitutionalHoldingHistory>>(`/discovery/institutional-holdings/${encodeURIComponent(row.ticker)}`)
+				detailInstitutionalHoldings.value = holdings.data.data
+			} catch {
+				detailInstitutionalHoldings.value = null
 			}
 			try {
 				const history = await apiClient.get<ApiResponse<ProfitHistory>>(`/discovery/profit-history/${encodeURIComponent(row.ticker)}`)
@@ -907,6 +1004,38 @@ async function refreshTargetAnalystRating() {
   }
 }
 
+async function refreshTargetValuationResearch() {
+	const target = detailTarget.value
+	if (!target) return
+	detailValuationRefreshing.value = true
+	try {
+		await apiClient.post(`/discovery/valuation-research/${encodeURIComponent(target.ticker)}/refresh`, null, { params: { cik: target.cik || undefined } })
+		const fairValue = await apiClient.get<ApiResponse<CandidateFairValueEstimate>>(`/discovery/fair-values/${encodeURIComponent(target.ticker)}`)
+		detailFairValue.value = fairValue.data.data
+		ElMessage.success('已更新 Longbridge 估值研究')
+	} catch (err: any) {
+		ElMessage.error(err?.response?.data?.message || '刷新估值研究失败')
+	} finally {
+		detailValuationRefreshing.value = false
+	}
+}
+
+async function refreshTargetMarketResearch() {
+	const target = detailTarget.value
+	if (!target) return
+	detailMarketResearchRefreshing.value = true
+	try {
+		await apiClient.post(`/discovery/market-research/${encodeURIComponent(target.ticker)}/refresh`, null, { params: { cik: target.cik || undefined } })
+		const holdings = await apiClient.get<ApiResponse<TickerInstitutionalHoldingHistory>>(`/discovery/institutional-holdings/${encodeURIComponent(target.ticker)}`)
+		detailInstitutionalHoldings.value = holdings.data.data
+		ElMessage.success('已更新 Longbridge 机构持仓研究')
+	} catch (err: any) {
+		ElMessage.error(err?.response?.data?.message || '刷新机构持仓研究失败')
+	} finally {
+		detailMarketResearchRefreshing.value = false
+	}
+}
+
 function analystRecommendationLabel(value?: string) {
   const labels: Record<string, string> = { strong_buy: '强烈买入', buy: '买入', hold: '持有', underperform: '跑输', sell: '卖出', strong_sell: '强烈卖出', no_opinion: '无观点', unknown: '未评级' }
   return labels[value || 'unknown'] || value || '未评级'
@@ -921,6 +1050,11 @@ function analystRecommendationTagType(value?: string) {
 function formatAnalystPrice(micros?: number, currency?: string) {
   if (!micros) return '-'
   return `${currency || '$'}${(micros / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+}
+
+function formatFairValuePrice(value?: number | null, currency?: string) {
+	if (value === undefined || value === null || !Number.isFinite(value)) return '-'
+	return `${currency || '$'}${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
 }
 
 function analystRatingProvenanceRows(snapshot: AnalystRatingView['latest']) {
@@ -1087,11 +1221,12 @@ function tradeSetupTagType(status?: string) {
 
 function tradeSetupSummary(technical?: WatchTarget['technical']) {
   const setup = technical?.trade_setup
-  if (!setup || setup.status === 'unavailable') return setup?.reasons?.[0] || '日线历史不足'
+  const statusSince = setup?.status_since ? '；当前状态始于 ' + formatDateTime(setup.status_since) : '；状态起始时间将在下次日线同步后记录'
+  if (!setup || setup.status === 'unavailable') return (setup?.reasons?.[0] || '日线历史不足') + statusSince
   const stop = formatPrice(setup.stop_loss_usd)
-  if (setup.status === 'entry_candidate') return `${setup.entry_trigger}；计划止损 ${stop}（风险 ${formatSignedPct(setup.risk_pct)}）`
-  if (setup.exit_reason) return setup.exit_reason
-  return setup.reasons?.[0] || '等待触发条件'
+  if (setup.status === 'entry_candidate') return setup.entry_trigger + '；计划止损 ' + stop + '（风险 ' + formatSignedPct(setup.risk_pct) + '）' + statusSince
+  if (setup.exit_reason) return setup.exit_reason + statusSince
+  return (setup.reasons?.[0] || '等待触发条件') + statusSince
 }
 
 function simulationStatusLabel(status?: string) {

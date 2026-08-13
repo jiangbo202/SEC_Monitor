@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strconv"
@@ -76,13 +77,28 @@ type EarningsPreviewService struct {
 	discoveryDB *gorm.DB
 	runtime     config.DiscoveryConfig
 	configs     *ConfigService
-	notifier    telegram.Notifier
+	batches     *NotificationBatchService
+	inApp       *InAppNotificationService
 	now         func() time.Time
 	newClient   func(string, string, string) (longbridgeEarningsClient, error)
 }
 
 func NewEarningsPreviewService(db *gorm.DB, runtime config.DiscoveryConfig, configs *ConfigService, notifier telegram.Notifier) *EarningsPreviewService {
-	return &EarningsPreviewService{db: db, runtime: runtime, configs: configs, notifier: notifier, now: time.Now, newClient: newLongbridgeEarningsClient}
+	return &EarningsPreviewService{db: db, runtime: runtime, configs: configs, batches: NewNotificationBatchService(db, notifier, configs), now: time.Now, newClient: newLongbridgeEarningsClient}
+}
+
+func (s *EarningsPreviewService) WithNotificationCenter(center *NotificationBatchService) *EarningsPreviewService {
+	if s != nil && center != nil {
+		s.batches = center
+	}
+	return s
+}
+
+func (s *EarningsPreviewService) WithInAppNotifications(inApp *InAppNotificationService) *EarningsPreviewService {
+	if s != nil && inApp != nil {
+		s.inApp = inApp
+	}
+	return s
 }
 
 func (s *EarningsPreviewService) WithDiscoveryDB(db *gorm.DB) *EarningsPreviewService {
@@ -148,12 +164,18 @@ func (s *EarningsPreviewService) SyncCurrentCandidates(ctx context.Context) (int
 		if !tickerSet[ticker] {
 			continue
 		}
+		var previous model.CandidateEarningsPreview
+		foundPrevious := s.db.WithContext(ctx).Where("ticker = ?", ticker).First(&previous).Error == nil
 		entry := model.CandidateEarningsPreview{Ticker: ticker, Provider: earningsPreviewProvider, Status: earningsPreviewStatusScheduled, EventKey: event.ID, ReportAt: &event.ReportAt, Session: event.Session, FetchedAt: &now}
 		if entry.EventKey == "" {
 			entry.EventKey = ticker + ":" + event.ReportAt.Format(time.DateOnly)
 		}
 		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "ticker"}}, DoUpdates: clause.AssignmentColumns([]string{"provider", "status", "event_key", "report_at", "session", "fetched_at", "last_error", "updated_at"})}).Create(&entry).Error; err != nil {
 			return count, err
+		}
+		if !foundPrevious || previous.EventKey != entry.EventKey {
+			s.createInAppCandidateEarningsPreview(ctx, entry)
+			s.deliverCandidateEarningsPreview(ctx, entry)
 		}
 		count++
 	}
@@ -663,16 +685,6 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (s *EarningsPreviewService) deliverNotifications(ctx context.Context, settings EarningsPreviewSettings, changed []model.EarningsPreview) (int, error) {
-	if !settings.NotifyEnabled || s.notifier == nil || s.configs == nil {
-		return 0, nil
-	}
-	telegramConfig, err := s.configs.Telegram(ctx)
-	if err != nil {
-		return 0, err
-	}
-	if !telegramConfig.Enabled || telegramConfig.BotToken == "" || telegramConfig.ChatID == "" {
-		return 0, nil
-	}
 	var previews []model.EarningsPreview
 	if err := s.db.WithContext(ctx).Where("status = ? AND report_at IS NOT NULL", earningsPreviewStatusScheduled).Find(&previews).Error; err != nil {
 		return 0, err
@@ -702,6 +714,19 @@ func (s *EarningsPreviewService) deliverNotifications(ctx context.Context, setti
 	if len(notices) == 0 {
 		return 0, nil
 	}
+	for _, notice := range notices {
+		s.createInAppWatchTargetEarningsPreview(ctx, notice)
+	}
+	if !settings.NotifyEnabled || s.batches == nil || s.configs == nil {
+		return 0, nil
+	}
+	telegramConfig, err := s.configs.Telegram(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if !telegramConfig.Enabled || telegramConfig.BotToken == "" || telegramConfig.ChatID == "" {
+		return 0, nil
+	}
 	candidates := make([]NotificationCandidate, 0, len(notices))
 	created := make([]model.EarningsPreviewNotice, 0, len(notices))
 	for _, notice := range notices {
@@ -719,7 +744,7 @@ func (s *EarningsPreviewService) deliverNotifications(ctx context.Context, setti
 	if len(candidates) == 0 {
 		return 0, nil
 	}
-	batch, err := NewNotificationBatchService(s.db, s.notifier, s.configs).Deliver(ctx, NotificationBatchInput{Source: "earnings_preview", Trigger: "scheduler", Candidates: candidates, SummaryText: renderEarningsPreviewNotification(candidates)})
+	batch, err := s.batches.Deliver(ctx, NotificationBatchInput{Source: "earnings_preview_watch_target", Trigger: "scheduler", Candidates: candidates, SummaryText: renderEarningsPreviewNotification(candidates)})
 	if err != nil {
 		return 0, err
 	}
@@ -742,6 +767,51 @@ func (s *EarningsPreviewService) deliverNotifications(ctx context.Context, setti
 		return len(candidates), nil
 	}
 	return 0, nil
+}
+
+func (s *EarningsPreviewService) createInAppWatchTargetEarningsPreview(ctx context.Context, notice pendingEarningsNotice) {
+	if s == nil || s.inApp == nil || notice.Preview.ReportAt == nil {
+		return
+	}
+	_, _, _ = s.inApp.Create(ctx, InAppNotificationInput{
+		EventKey: fmt.Sprintf("earnings-preview:watch_target:%d:%s:%s", notice.Preview.TargetID, notice.Preview.EventKey, notice.Key),
+		Source:   "earnings_preview_watch_target", Scope: "watch_target", EntityKind: "earnings_preview", TargetID: notice.Preview.TargetID,
+		Ticker: notice.Preview.Ticker, CompanyName: notice.Preview.CompanyName, Severity: "info", Title: "财报预告：" + notice.Text,
+		Body: earningsPreviewMessage(notice.Preview), Link: "/targets", OccurredAt: *notice.Preview.ReportAt,
+	})
+}
+
+func (s *EarningsPreviewService) createInAppCandidateEarningsPreview(ctx context.Context, preview model.CandidateEarningsPreview) {
+	if s == nil || s.inApp == nil || preview.ReportAt == nil {
+		return
+	}
+	_, _, _ = s.inApp.Create(ctx, InAppNotificationInput{
+		EventKey: fmt.Sprintf("earnings-preview:candidate:%s:%s", preview.Ticker, preview.EventKey), Source: "earnings_preview_candidate", Scope: "candidate",
+		EntityKind: "earnings_preview", Ticker: preview.Ticker, Severity: "info", Title: "小盘候选财报预告",
+		Body: fmt.Sprintf("预计财报日：%s%s", preview.ReportAt.In(time.Local).Format("2006-01-02 15:04"), optionalEarningsSession(preview.Session)),
+		Link: "/discovery-candidates?ticker=" + preview.Ticker, OccurredAt: *preview.ReportAt,
+	})
+}
+
+func (s *EarningsPreviewService) deliverCandidateEarningsPreview(ctx context.Context, preview model.CandidateEarningsPreview) {
+	if s == nil || s.batches == nil || preview.ReportAt == nil {
+		return
+	}
+	candidate := NotificationCandidate{
+		EntityKind: "earnings_preview", FilingID: "earnings-preview:candidate:" + preview.EventKey,
+		Ticker: preview.Ticker, FilingType: "earnings_preview", Title: "小盘候选财报预告",
+		Reason: "eligible", EventAt: *preview.ReportAt,
+	}
+	if _, err := s.batches.Deliver(ctx, NotificationBatchInput{Source: "earnings_preview_candidate", Trigger: "candidate_sync", Candidates: []NotificationCandidate{candidate}}); err != nil {
+		log.Printf("deliver candidate earnings-preview notification: %v", err)
+	}
+}
+
+func optionalEarningsSession(session string) string {
+	if session = strings.TrimSpace(session); session != "" {
+		return "（" + session + "）"
+	}
+	return ""
 }
 
 type pendingEarningsNotice struct {

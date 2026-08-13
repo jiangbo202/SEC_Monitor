@@ -34,8 +34,19 @@
       show-icon
     >
       <template #default>
-        <div class="ipo-action-list">
-          <div v-for="action in health.actions" :key="action.key" class="ipo-action-item">
+        <div v-if="automaticHealthActions.length" class="ipo-action-list">
+          <strong class="ipo-action-section-title">{{ t('pages.ipoRadar.operations.automaticTitle', { count: automaticHealthActions.length }) }}</strong>
+          <div v-for="action in automaticHealthActions" :key="action.key" class="ipo-action-item">
+            <div>
+              <el-tag type="info" effect="plain">{{ t(`pages.ipoRadar.operations.actions.${action.key}.title`, { count: action.count }) }}</el-tag>
+              <span class="ipo-action-description">{{ t(`pages.ipoRadar.operations.actions.${action.key}.description`) }}</span>
+            </div>
+            <el-button size="small" plain @click="handleHealthAction(action)">{{ t(`pages.ipoRadar.operations.actions.${action.key}.button`) }}</el-button>
+          </div>
+        </div>
+        <div v-if="manualHealthActions.length" class="ipo-action-list">
+          <strong class="ipo-action-section-title">{{ t('pages.ipoRadar.operations.manualTitle', { count: manualHealthActions.length }) }}</strong>
+          <div v-for="action in manualHealthActions" :key="action.key" class="ipo-action-item">
             <div>
               <el-tag :type="action.severity === 'danger' ? 'danger' : 'warning'" effect="plain">{{ t(`pages.ipoRadar.operations.actions.${action.key}.title`, { count: action.count }) }}</el-tag>
               <span class="ipo-action-description">{{ t(`pages.ipoRadar.operations.actions.${action.key}.description`) }}</span>
@@ -50,6 +61,7 @@
       <el-tab-pane :label="t('pages.ipoRadar.tabs.companies')" name="companies">
         <el-form :inline="true" :model="companyFilters" class="toolbar">
           <el-form-item :label="t('common.company')"><el-input v-model="companyFilters.company_name" clearable /></el-form-item>
+          <el-form-item :label="t('pages.ipoRadar.ticker')"><el-input v-model="companyFilters.ticker" clearable placeholder="BLSM" /></el-form-item>
           <el-form-item label="CIK"><el-input v-model="companyFilters.cik" clearable /></el-form-item>
           <el-form-item :label="t('common.status')">
             <el-select v-model="companyFilters.status" clearable style="width: 160px">
@@ -67,6 +79,11 @@
           </el-form-item>
           <el-form-item><el-checkbox v-model="companyFilters.include_ended">{{ t('pages.ipoRadar.showEnded') }}</el-checkbox></el-form-item>
           <el-form-item><el-button :loading="companiesLoading" @click="loadCompanies">{{ t('common.query') }}</el-button></el-form-item>
+          <el-form-item>
+            <el-badge :value="followedCount" :hidden="followedCount === 0" type="warning">
+              <el-button type="warning" :plain="!showingFollowedCompanies" :loading="companiesLoading" @click="toggleFollowedCompanies">关注列表</el-button>
+            </el-badge>
+          </el-form-item>
         </el-form>
 
         <el-table
@@ -127,8 +144,9 @@
               <span v-else class="muted-text">{{ t('status.unnotified') }}</span>
             </template>
           </el-table-column>
-          <el-table-column :label="t('common.actions')" width="100" fixed="right">
+          <el-table-column :label="t('common.actions')" width="170" fixed="right">
             <template #default="{ row }">
+              <el-button size="small" :type="row.followed ? 'warning' : 'primary'" plain @click="toggleFollow(row)">{{ row.followed ? '已关注' : '关注' }}</el-button>
               <el-button size="small" @click="openCompanyDetail(row)">{{ t('common.details') }}</el-button>
             </template>
           </el-table-column>
@@ -177,6 +195,25 @@
         </el-table>
         <el-pagination class="pagination" layout="total, prev, pager, next" :total="filingsTotal" :page-size="pageSize" v-model:current-page="filingsPage" @current-change="loadFilings" />
       </el-tab-pane>
+
+      <el-tab-pane :label="t('pages.ipoRadar.tabs.calendar')" name="calendar">
+        <el-alert :title="t('pages.ipoRadar.calendar.intro')" type="info" :closable="false" show-icon class="calendar-notice" />
+        <el-form :inline="true" :model="calendarFilters" class="toolbar">
+          <el-form-item :label="t('common.company')"><el-input v-model="calendarFilters.company_name" clearable /></el-form-item>
+          <el-form-item :label="t('pages.ipoRadar.ticker')"><el-input v-model="calendarFilters.ticker" clearable placeholder="BLSM" /></el-form-item>
+          <el-form-item><el-button :loading="calendarLoading" @click="loadCalendar">{{ t('common.query') }}</el-button></el-form-item>
+        </el-form>
+        <el-table :data="calendarEvents" v-loading="calendarLoading" border :empty-text="t('pages.ipoRadar.calendar.empty')">
+          <el-table-column prop="event_date" :label="t('pages.ipoRadar.calendar.expectedDate')" width="130"><template #default="{ row }">{{ formatDate(row.event_date) }}</template></el-table-column>
+          <el-table-column prop="symbol" :label="t('pages.ipoRadar.ticker')" width="120"><template #default="{ row }">{{ row.symbol || '-' }}</template></el-table-column>
+          <el-table-column prop="company_name" :label="t('common.companyName')" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="market" :label="t('pages.ipoRadar.calendar.market')" width="90"><template #default="{ row }">{{ row.market || '-' }}</template></el-table-column>
+          <el-table-column prop="session" :label="t('pages.ipoRadar.calendar.session')" width="110"><template #default="{ row }">{{ row.session || '-' }}</template></el-table-column>
+          <el-table-column prop="content" :label="t('common.title')" min-width="260" show-overflow-tooltip />
+          <el-table-column prop="last_seen_at" :label="t('pages.ipoRadar.calendar.lastSynced')" width="170"><template #default="{ row }">{{ formatDateTime(row.last_seen_at) }}</template></el-table-column>
+        </el-table>
+        <el-pagination class="pagination" layout="total, prev, pager, next" :total="calendarTotal" :page-size="pageSize" v-model:current-page="calendarPage" @current-change="loadCalendar" />
+      </el-tab-pane>
     </el-tabs>
 
     <el-drawer v-model="detailVisible" :title="selectedCompany?.company_name || t('pages.ipoRadar.companyDetail')" size="640px">
@@ -200,6 +237,7 @@
           <el-descriptions-item :label="t('pages.ipoRadar.sharesOffered')">{{ formatNumber(selectedCompany.shares_offered) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.grossProceeds')">{{ formatMoney(selectedCompany.gross_proceeds) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.lifecycleCheckedAt')">{{ formatDateTime(selectedCompany.lifecycle_checked_at) }}</el-descriptions-item>
+          <el-descriptions-item label="Longbridge 上市核验">{{ longbridgeListingCheckText(selectedCompany) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.listedVerifiedAt')">{{ formatDateTime(selectedCompany.listed_verified_at) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.listingDate')">{{ formatDate(selectedCompany.listing_date) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.ipoRadar.marketDataSource')">{{ marketSourceLabel(selectedCompany) }}</el-descriptions-item>
@@ -283,14 +321,15 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, IPOCompany, IPOFiling, IPOOfferingEvent, IPORadarAction, IPORadarHealth, IPORadarRefreshResult, PageResult } from '@/api/types'
+import type { ApiResponse, IPOCalendarEvent, IPOCompany, IPOFiling, IPOOfferingEvent, IPORadarAction, IPORadarHealth, IPORadarRefreshResult, PageResult } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const ipoStatuses = [
   { value: 'new', label: t('pages.ipoRadar.statuses.new') },
   { value: 'updating', label: t('pages.ipoRadar.statuses.updating') },
@@ -306,16 +345,23 @@ const savingOverride = ref(false)
 const activeTab = ref('companies')
 const filingsLoading = ref(false)
 const companiesLoading = ref(false)
+const calendarLoading = ref(false)
 const filings = ref<IPOFiling[]>([])
 const companies = ref<IPOCompany[]>([])
+const calendarEvents = ref<IPOCalendarEvent[]>([])
 const health = ref<IPORadarHealth | null>(null)
 const filingsTotal = ref(0)
 const companiesTotal = ref(0)
 const filingsPage = ref(1)
 const companiesPage = ref(1)
+const calendarPage = ref(1)
 const pageSize = 20
+
+const automaticHealthActions = computed(() => health.value?.actions.filter((action) => action.disposition !== 'manual') || [])
+const manualHealthActions = computed(() => health.value?.actions.filter((action) => action.disposition === 'manual') || [])
 const filingFilters = reactive({ company_name: '', cik: '', filing_type: '', notified: '' })
-const companyFilters = reactive({ company_name: '', cik: '', status: '', attention: '', include_ended: false })
+const companyFilters = reactive({ company_name: '', ticker: '', cik: '', status: '', attention: '', include_ended: false, followed: '' })
+const calendarFilters = reactive({ company_name: '', ticker: '' })
 const companySort = reactive({ sort_by: '', sort_order: '' })
 const filingDetails = ref<Record<string, IPOFiling[]>>({})
 const offeringEvents = ref<Record<string, IPOOfferingEvent[]>>({})
@@ -328,6 +374,9 @@ const qualitySummary = computed(() => {
   const incomplete = companies.value.filter((item) => item.status_confidence === 'medium').length
   return t('pages.ipoRadar.qualitySummary', { total, incomplete })
 })
+const calendarTotal = ref(0)
+const followedCount = ref(0)
+const showingFollowedCompanies = computed(() => companyFilters.followed === 'true')
 
 async function loadFilings() {
   filingsLoading.value = true
@@ -348,6 +397,28 @@ async function loadCompanies() {
     companiesTotal.value = res.data.data.total
   } finally {
     companiesLoading.value = false
+  }
+}
+
+async function loadFollowedCount() {
+  const res = await apiClient.get<ApiResponse<PageResult<IPOCompany>>>('/ipo-companies', { params: { followed: true, include_ended: true, page: 1, page_size: 1 } })
+  followedCount.value = res.data.data.total
+}
+
+async function toggleFollowedCompanies() {
+  companyFilters.followed = showingFollowedCompanies.value ? '' : 'true'
+  companiesPage.value = 1
+  await loadCompanies()
+}
+
+async function loadCalendar() {
+  calendarLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<PageResult<IPOCalendarEvent>>>('/ipo-calendar', { params: { ...calendarFilters, page: calendarPage.value, page_size: pageSize } })
+    calendarEvents.value = res.data.data.items
+    calendarTotal.value = res.data.data.total
+  } finally {
+    calendarLoading.value = false
   }
 }
 
@@ -398,6 +469,9 @@ async function handleTabChange() {
   if (activeTab.value === 'filings' && filings.value.length === 0) {
     await loadFilings()
   }
+  if (activeTab.value === 'calendar' && calendarEvents.value.length === 0) {
+    await loadCalendar()
+  }
 }
 
 async function onExpandChange(row: IPOCompany) {
@@ -417,6 +491,15 @@ async function openCompanyDetail(row: IPOCompany) {
   overrideForm.note = row.override_note || ''
   detailVisible.value = true
   await Promise.all([onExpandChange(row), loadOfferingEvents(row.cik)])
+}
+
+async function toggleFollow(row: IPOCompany) {
+  const followed = !row.followed
+  await apiClient.patch(`/ipo-companies/${encodeURIComponent(row.cik)}/follow`, { followed })
+  row.followed = followed
+  if (selectedCompany.value?.cik === row.cik) selectedCompany.value.followed = followed
+  followedCount.value = Math.max(0, followedCount.value + (followed ? 1 : -1))
+  ElMessage.success(followed ? '已关注该 IPO 公司，后续进展将按通知渠道配置提醒。' : '已取消关注该 IPO 公司。')
 }
 
 async function loadOfferingEvents(cik: string) {
@@ -456,7 +539,14 @@ function formatMoney(value?: string | null) {
 
 function marketSourceLabel(row: IPOCompany) {
   if (!row.market_data_source) return '-'
-  return `${row.market_data_source === 'manual' ? t('pages.ipoRadar.marketSources.manual') : 'SEC'} · ${row.market_data_confidence || '-'}`
+  const source = row.market_data_source === 'manual'
+    ? t('pages.ipoRadar.marketSources.manual')
+    : row.market_data_source === 'longbridge'
+      ? 'Longbridge'
+      : row.market_data_source === 'longbridge_calendar'
+        ? t('pages.ipoRadar.calendar.source')
+        : 'SEC'
+  return `${source} · ${row.market_data_confidence || '-'}`
 }
 
 function ipoStatusLabel(status: string) {
@@ -490,8 +580,17 @@ function statusReasonText(row: IPOCompany) {
   return confidence ? `${row.status_reason || '-'} · ${confidence}` : row.status_reason || '-'
 }
 
+function longbridgeListingCheckText(row: IPOCompany) {
+  if (!row.longbridge_listing_check_count) return '-'
+  const details = [`已查询 ${row.longbridge_listing_check_count} 次`, row.longbridge_listing_last_result || '-']
+  if (row.longbridge_listing_next_retry_at) details.push(`下次重试 ${formatDateTime(row.longbridge_listing_next_retry_at)}`)
+  return details.join(' · ')
+}
+
 function statusSourceLabel(source?: string) {
-  return source === 'manual' ? t('pages.ipoRadar.sources.manual') : t('pages.ipoRadar.sources.system')
+  if (source === 'manual') return t('pages.ipoRadar.sources.manual')
+  if (source === 'longbridge_calendar') return t('pages.ipoRadar.sources.longbridgeCalendar')
+  return t('pages.ipoRadar.sources.system')
 }
 
 function download(url: string) {
@@ -509,6 +608,8 @@ async function refresh() {
     companiesPage.value = 1
     if (activeTab.value === 'companies') {
       await loadCompanies()
+    } else if (activeTab.value === 'calendar') {
+      await loadCalendar()
     } else {
       await loadFilings()
     }
@@ -533,7 +634,10 @@ function formatDateTime(value?: string | null) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadCompanies(), loadHealth()])
+  if (typeof route.query.cik === 'string') {
+    companyFilters.cik = route.query.cik
+  }
+  await Promise.all([loadCompanies(), loadHealth(), loadFollowedCount()])
 })
 </script>
 
@@ -557,6 +661,11 @@ onMounted(async () => {
   display: grid;
   gap: 8px;
   margin-top: 8px;
+}
+
+.ipo-action-section-title {
+  color: var(--el-text-color-primary);
+  font-size: 13px;
 }
 
 .ipo-action-item {

@@ -1,5 +1,7 @@
 package discovery
 
+import "time"
+
 const (
 	TradeSetupUnavailable    = "unavailable"
 	TradeSetupWatching       = "watching"
@@ -21,15 +23,16 @@ const (
 // deliberately independent from the fundamental candidate score and does not
 // claim intraday execution precision, ATR, or structural-low support.
 type CandidateTradeSetup struct {
-	Status                string   `json:"status"`
-	Bias                  string   `json:"bias"`
-	EntryTrigger          string   `json:"entry_trigger"`
-	StopLossUSD           float64  `json:"stop_loss_usd"`
-	RiskPct               float64  `json:"risk_pct"`
-	TakeProfitZoneLowUSD  float64  `json:"take_profit_zone_low_usd"`
-	TakeProfitZoneHighUSD float64  `json:"take_profit_zone_high_usd"`
-	ExitReason            string   `json:"exit_reason"`
-	Reasons               []string `json:"reasons"`
+	Status                string     `json:"status"`
+	Bias                  string     `json:"bias"`
+	EntryTrigger          string     `json:"entry_trigger"`
+	StopLossUSD           float64    `json:"stop_loss_usd"`
+	RiskPct               float64    `json:"risk_pct"`
+	TakeProfitZoneLowUSD  float64    `json:"take_profit_zone_low_usd"`
+	TakeProfitZoneHighUSD float64    `json:"take_profit_zone_high_usd"`
+	ExitReason            string     `json:"exit_reason"`
+	Reasons               []string   `json:"reasons"`
+	StatusSince           *time.Time `json:"status_since,omitempty"`
 }
 
 func unavailableCandidateTradeSetup(technicalStatus string) CandidateTradeSetup {

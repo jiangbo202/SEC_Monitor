@@ -335,6 +335,30 @@
           </el-tooltip>
         </template>
       </el-table-column>
+      <el-table-column prop="review_priority_score" label="短线复核" width="110" align="right" sortable="custom">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="score-tooltip">
+                <div class="score-tooltip-title">短线复核优先级（0–100）= 质量基础 + 近期变化/交易条件 − 风险</div>
+                <div class="score-reason"><span>质量调整分 × 60%</span><strong>{{ reviewPriorityBaseScore(row) }}</strong></div>
+                <div class="score-tooltip-note">原始质量调整分：{{ row.quality_adjusted_score ?? row.total_score }}；变化状态：{{ changeStatusLabel(row.change_status) }}</div>
+                <div v-if="row.review_priority_reasons?.length" class="score-tooltip-reasons">
+                  <div v-for="reason in row.review_priority_reasons" :key="`${reason.label}-${reason.points}`" class="score-reason">
+                    <span>{{ reason.label }}</span>
+                    <strong>{{ formatReviewPriorityPoints(reason.points) }}</strong>
+                  </div>
+                </div>
+                <div v-else class="score-tooltip-note">暂无可计算的近期变化或交易条件。</div>
+                <div class="score-tooltip-note">成交量：{{ formatVolume(row.price_volume) }}；市值：{{ formatUSD(row.market_cap_usd) }}；市场质量：{{ row.market_quality?.status === 'risk' ? '需复核' : '正常' }}</div>
+                <div class="score-tooltip-total"><span>合计</span><strong>{{ row.review_priority_score ?? 0 }} / 100</strong></div>
+                <div class="score-tooltip-note">用于决定优先复核顺序，不会改变基本面总分或默认排序。</div>
+              </div>
+            </template>
+            <span class="metric-help">{{ row.review_priority_score ?? '-' }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
       <el-table-column v-if="candidateTableView === 'full'" prop="quality_adjusted_score" label="调整分" width="90" align="right">
         <template #default="{ row }">
           <el-tooltip v-if="row.quality_adjusted_score !== row.total_score" content="已按低基数、极端增长、低流动性或融资风险进行上限保护" placement="top">
@@ -897,6 +921,102 @@
         </el-card>
 
         <el-card shadow="never">
+          <template #header>市场一致目标价与合理价值情景</template>
+          <el-alert type="warning" :closable="false" show-icon title="不提供 Longbridge “公允价值”结论：市场一致目标价与本地历史估值情景必须分开阅读，均不构成投资建议。" />
+          <template v-if="candidateDetail.fair_value?.status === 'available'">
+            <el-descriptions :column="3" border size="small" style="margin-top: 12px">
+              <el-descriptions-item label="参考收盘价">{{ formatFairValuePrice(candidateDetail.fair_value.reference_price, candidateDetail.fair_value.currency) }}<span v-if="candidateDetail.fair_value.reference_price_date"> · {{ candidateDetail.fair_value.reference_price_date }}</span></el-descriptions-item>
+              <el-descriptions-item label="市场一致目标价（平均）">{{ formatFairValuePrice(candidateDetail.fair_value.market_consensus_target, candidateDetail.fair_value.currency) }}</el-descriptions-item>
+              <el-descriptions-item label="目标价相对空间">{{ formatForecastNumber(candidateDetail.fair_value.market_consensus_upside_pct, '%') }}</el-descriptions-item>
+              <el-descriptions-item label="市场目标价区间" :span="2">{{ formatFairValuePrice(candidateDetail.fair_value.market_consensus_low, candidateDetail.fair_value.currency) }} - {{ formatFairValuePrice(candidateDetail.fair_value.market_consensus_high, candidateDetail.fair_value.currency) }}</el-descriptions-item>
+              <el-descriptions-item label="机构覆盖数">{{ candidateDetail.fair_value.analyst_count || '-' }}</el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.fair_value.local_historical_scenario" label="本地历史倍数情景（低 / 中 / 高）" :span="3">
+                {{ formatFairValuePrice(candidateDetail.fair_value.local_historical_scenario.low, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(candidateDetail.fair_value.local_historical_scenario.mid, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(candidateDetail.fair_value.local_historical_scenario.high, candidateDetail.fair_value.currency) }}（{{ candidateDetail.fair_value.local_historical_scenario.metrics }} 个可用指标等权）
+              </el-descriptions-item>
+              <el-descriptions-item label="本地参考价来源" :span="3">{{ candidateDetail.fair_value.reference_price_source || '-' }}</el-descriptions-item>
+            </el-descriptions>
+            <div v-if="candidateDetail.fair_value.metric_scenarios.length" class="analyst-rating-provenance-title">本地计算输入与过程</div>
+            <el-table v-if="candidateDetail.fair_value.metric_scenarios.length" :data="candidateDetail.fair_value.metric_scenarios" size="small" border>
+              <el-table-column prop="metric" label="指标" width="75" />
+              <el-table-column label="当前倍数" width="100" align="right"><template #default="{ row }">{{ formatForecastNumber(row.current_multiple) }}</template></el-table-column>
+              <el-table-column label="历史低 / 中 / 高" min-width="180" align="right"><template #default="{ row }">{{ formatForecastNumber(row.historical_low) }} / {{ formatForecastNumber(row.historical_mid) }} / {{ formatForecastNumber(row.historical_high) }}</template></el-table-column>
+              <el-table-column label="推导价格低 / 中 / 高" min-width="210" align="right"><template #default="{ row }">{{ formatFairValuePrice(row.price_low, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(row.price_mid, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(row.price_high, candidateDetail.fair_value.currency) }}</template></el-table-column>
+            </el-table>
+            <el-alert type="info" :closable="false" style="margin-top: 12px" :title="candidateDetail.fair_value.methodology" :description="candidateDetail.fair_value.message" />
+          </template>
+          <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="candidateDetail.fair_value?.message || '尚缺机构目标价或可用估值倍数，无法计算本地历史估值情景。'" />
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header><div class="card-header-actions"><span>估值历史与同业比较（Longbridge）</span><el-button size="small" :loading="valuationResearchRefreshing" @click="refreshCandidateValuationResearch">刷新估值研究</el-button></div></template>
+          <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="小盘与亏损公司可能缺少 PE、同业或历史覆盖；此数据仅用于研究比较，绝不作为候选硬筛选。" />
+          <template v-if="candidateDetail.valuation_research?.latest">
+            <el-table :data="valuationMetricRows(candidateDetail.valuation_research.latest)" size="small" border style="margin-top: 12px">
+              <el-table-column prop="metric" label="指标" width="80" />
+              <el-table-column label="当前" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.current) }}</template></el-table-column>
+              <el-table-column label="历史低 / 中 / 高" min-width="210" align="right"><template #default="{ row }">{{ formatForecastNumber(row.low) }} / {{ formatForecastNumber(row.median) }} / {{ formatForecastNumber(row.high) }}</template></el-table-column>
+              <el-table-column label="行业分位" width="150"><template #default="{ row }">{{ valuationPercentileText(row.percentile) }}</template></el-table-column>
+              <el-table-column label="历史点数" width="100" align="right"><template #default="{ row }">{{ row.history.length }}</template></el-table-column>
+            </el-table>
+            <el-alert v-if="candidateDetail.valuation_research.latest.change_summary" type="warning" :closable="false" style="margin-top: 12px" :title="`估值快照变化：${candidateDetail.valuation_research.latest.change_summary}`" />
+            <div class="analyst-rating-provenance-title">同业比较（Longbridge 返回范围）</div>
+            <el-table :data="candidateDetail.valuation_research.latest.peers" size="small" border empty-text="Longbridge 暂无可比同业覆盖">
+              <el-table-column prop="symbol" label="代码" width="110" />
+              <el-table-column prop="name" label="公司" min-width="200" show-overflow-tooltip />
+              <el-table-column label="PE" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.pe) }}</template></el-table-column>
+              <el-table-column label="PB" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.pb) }}</template></el-table-column>
+              <el-table-column label="PS" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.ps) }}</template></el-table-column>
+            </el-table>
+          </template>
+          <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="candidateDetail.valuation_research?.message || '尚未同步 Longbridge 估值研究'" />
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-header-actions">
+              <span>市场预期、异动与机构持仓（Longbridge）</span>
+              <el-button size="small" :loading="marketResearchRefreshing" @click="refreshCandidateMarketResearch">刷新 P1 市场研究</el-button>
+            </div>
+          </template>
+          <el-alert type="info" :closable="false" show-icon title="这些是独立研究补充，不计入基本面总分。市场异动只会在 72 小时内增加短线复核优先级。" class="business-model-alert" />
+          <template v-if="candidateDetail.market_research?.eps_forecast?.latest">
+            <el-descriptions :column="3" border size="small" style="margin-top: 12px">
+              <el-descriptions-item label="EPS 预期中位数">{{ formatForecastNumber(candidateDetail.market_research.eps_forecast.latest.median) }}</el-descriptions-item>
+              <el-descriptions-item label="EPS 预期区间">{{ formatForecastRange(candidateDetail.market_research.eps_forecast.latest) }}</el-descriptions-item>
+              <el-descriptions-item label="上修 / 下修机构">{{ candidateDetail.market_research.eps_forecast.latest.institution_up }} / {{ candidateDetail.market_research.eps_forecast.latest.institution_down }}（共 {{ candidateDetail.market_research.eps_forecast.latest.institution_total }}）</el-descriptions-item>
+              <el-descriptions-item label="快照时间">{{ formatDateTime(candidateDetail.market_research.eps_forecast.latest.fetched_at) }}</el-descriptions-item>
+              <el-descriptions-item label="预期变化" :span="2">{{ candidateDetail.market_research.eps_forecast.latest.change_summary || '与上一快照无有效变化，或尚无可比较历史。' }}</el-descriptions-item>
+            </el-descriptions>
+          </template>
+          <el-alert v-else type="info" :closable="false" show-icon style="margin-top: 12px" :title="candidateDetail.market_research?.eps_forecast?.message || '尚未同步 EPS 市场预期'" />
+
+          <div class="analyst-rating-provenance-title">近期市场异动（最多 20 条）</div>
+          <el-table :data="candidateDetail.market_research?.anomalies || []" size="small" border empty-text="暂无 Longbridge 异动记录">
+            <el-table-column prop="alert_name" label="异动类型" min-width="150" />
+            <el-table-column label="内容" min-width="180"><template #default="{ row }">{{ anomalyValues(row.values_json) }}</template></el-table-column>
+            <el-table-column label="方向" width="90"><template #default="{ row }"><el-tag :type="row.emotion === 1 ? 'success' : row.emotion === 2 ? 'danger' : 'info'" effect="plain">{{ anomalyEmotionLabel(row.emotion) }}</el-tag></template></el-table-column>
+            <el-table-column label="发生时间" width="170"><template #default="{ row }">{{ formatDateTime(row.alert_time) }}</template></el-table-column>
+          </el-table>
+
+          <div class="analyst-rating-provenance-title">机构股东增减持</div>
+          <el-table :data="candidateDetail.market_research?.institutional_holders || []" size="small" border empty-text="暂无 Longbridge 机构股东数据">
+            <el-table-column prop="holder_name" label="机构" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="institution_type" label="类型" min-width="115" />
+            <el-table-column label="持股比例" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.percent_of_shares, '%') }}</template></el-table-column>
+            <el-table-column label="持股变化" width="120" align="right"><template #default="{ row }">{{ formatForecastNumber(row.shares_changed) }}</template></el-table-column>
+            <el-table-column prop="report_date" label="报告日" width="115" />
+          </el-table>
+
+          <div class="analyst-rating-provenance-title">基金 / ETF 持仓</div>
+          <el-table :data="candidateDetail.market_research?.fund_holders || []" size="small" border empty-text="暂无 Longbridge 基金持仓数据">
+            <el-table-column prop="fund_name" label="基金" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="fund_symbol" label="代码" width="110" />
+            <el-table-column label="持仓权重" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.position_ratio, '%') }}</template></el-table-column>
+            <el-table-column prop="report_date" label="报告日" width="115" />
+          </el-table>
+        </el-card>
+
+        <el-card shadow="never">
           <template #header>
             <div class="card-header-actions">
               <span>机构与分析师共识（Longbridge）</span>
@@ -908,7 +1028,7 @@
               <el-descriptions-item label="共识评级"><el-tag :type="analystRecommendationTagType(candidateDetail.analyst_rating.latest.recommendation)" effect="plain">{{ analystRecommendationLabel(candidateDetail.analyst_rating.latest.recommendation) }}</el-tag></el-descriptions-item>
               <el-descriptions-item label="覆盖数">{{ candidateDetail.analyst_rating.latest.analyst_count }}</el-descriptions-item>
               <el-descriptions-item label="数据源">{{ candidateDetail.analyst_rating.latest.provider }}</el-descriptions-item>
-              <el-descriptions-item label="平均目标价">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_average_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
+              <el-descriptions-item label="市场一致目标价（平均）">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_average_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
               <el-descriptions-item label="目标价区间">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_low_micros, candidateDetail.analyst_rating.latest.currency) }} - {{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_high_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
               <el-descriptions-item label="参考收盘价">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.reference_price_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
               <el-descriptions-item label="评级分布" :span="3">强烈买入 {{ candidateDetail.analyst_rating.latest.strong_buy_count }} · 买入 {{ candidateDetail.analyst_rating.latest.buy_count }} · 持有 {{ candidateDetail.analyst_rating.latest.hold_count }} · 跑输 {{ candidateDetail.analyst_rating.latest.underperform_count }} · 卖出 {{ candidateDetail.analyst_rating.latest.sell_count }}</el-descriptions-item>
@@ -1110,12 +1230,25 @@
               <el-descriptions-item label="研究事件锚定价（日线近似）">{{ anchoredVWAPSummary(candidateDetail.technical) }}</el-descriptions-item>
               <el-descriptions-item label="锚定事件">{{ anchoredVWAPEventSummary(candidateDetail.technical) }}</el-descriptions-item>
 						<el-descriptions-item label="交易计划状态">{{ tradeSetupLabel(candidateDetail.technical.trade_setup.status) }}</el-descriptions-item>
+						<el-descriptions-item label="当前状态开始于">{{ formatDateTime(candidateDetail.technical.trade_setup.status_since) }}</el-descriptions-item>
 						<el-descriptions-item label="入场触发">{{ candidateDetail.technical.trade_setup.entry_trigger || '等待触发条件' }}</el-descriptions-item>
 						<el-descriptions-item label="计划止损">{{ formatTradeStop(candidateDetail.technical) }}</el-descriptions-item>
 						<el-descriptions-item label="20% - 30% 目标区">{{ formatTradeTarget(candidateDetail.technical) }}</el-descriptions-item>
 						<el-descriptions-item label="离场规则" :span="2">{{ candidateDetail.technical.trade_setup.exit_reason || '收盘跌破 MA20 时减仓；跌破 MA50 时趋势失效' }}</el-descriptions-item>
 						<el-descriptions-item label="计划依据" :span="2">{{ candidateDetail.technical.trade_setup.reasons.join('；') || '-' }}</el-descriptions-item>
             </el-descriptions>
+            <div class="trade-setup-history">
+              <div class="technical-history-title">交易计划状态历史（仅记录状态变化）</div>
+              <el-timeline v-if="candidateDetail.trade_setup_history?.length" class="trade-setup-timeline">
+                <el-timeline-item v-for="event in candidateDetail.trade_setup_history" :key="event.id" :timestamp="formatDateTime(event.started_at)" :type="tradeSetupTagType(event.status)">
+                  <strong>{{ tradeSetupLabel(event.status) }}</strong>
+                  <span v-if="event.previous_status">（由 {{ tradeSetupLabel(event.previous_status) }} 变更）</span>
+                  <div class="trade-setup-event-detail">收盘 {{ formatPrice(event.close_usd, 'USD') }} · 止损 {{ formatPrice(event.stop_loss_usd, 'USD') }} · {{ event.entry_trigger || event.exit_reason || '等待触发条件' }}</div>
+                  <div v-if="event.reasons?.length" class="trade-setup-event-detail">{{ event.reasons.join('；') }}</div>
+                </el-timeline-item>
+              </el-timeline>
+              <el-empty v-else :image-size="44" description="尚未记录状态变化；下次日线同步后会建立当前状态基线。" />
+            </div>
           </template>
           <div class="technical-history-heading">
             <div class="technical-history-title">
@@ -1528,6 +1661,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRoute } from 'vue-router'
 import { apiClient } from '@/api/client'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import type {
@@ -1616,11 +1750,14 @@ const effectivenessNotice = computed(() => {
 const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
 const analystRatingRefreshing = ref(false)
+const marketResearchRefreshing = ref(false)
+const valuationResearchRefreshing = ref(false)
 const companyProfileRefreshing = ref(false)
 const businessModelEditorVisible = ref(false)
 const businessModelSaving = ref(false)
 const businessModelEditor = reactive({ ticker: '', business_model: 'unknown', revenue_repeatable_confirmed: false, reason: '', source_url: '', operator: 'local_user', review_due_at: '' })
 const candidateTableView = ref<'compact' | 'full'>('compact')
+const route = useRoute()
 const advancedFiltersVisible = ref(false)
 const supplementalLoading = ref(false)
 const technicalHistoryView = ref<'chart' | 'table'>('chart')
@@ -1631,6 +1768,7 @@ const discoveryStorage = ref<DiscoveryStorageHealth | null>(null)
 const cacheCleanupLoading = ref(false)
 const discoverySyncNow = ref(Date.now())
 let discoverySyncPoll: ReturnType<typeof window.setInterval> | undefined
+let candidateSupplementalTimer: ReturnType<typeof window.setTimeout> | undefined
 const criteria = ref<CandidateSelectionCriteria | null>(null)
 const report = ref<CandidateReport | null>(null)
 const reportVisible = ref(false)
@@ -1750,11 +1888,14 @@ async function load() {
     const res = await apiClient.get<ApiResponse<PageResult<CandidateScore>>>('/discovery/candidates', { params: requestParams() })
     rows.value = res.data.data.items || []
     total.value = res.data.data.total || 0
-    void loadUpcomingEarningsCount()
-    // The table is the primary interaction. Health/overview/storage cards are
-    // helpful diagnostics, but a slow local storage probe or one transient
-    // status endpoint must not keep the candidate list in a loading state.
-    void refreshCandidateSupplementals()
+    // Let Vue paint the primary table before the diagnostic cards start their
+    // own local database work. Otherwise an overview scan can make the page
+    // look busy even after the rows have arrived.
+    if (candidateSupplementalTimer) window.clearTimeout(candidateSupplementalTimer)
+    candidateSupplementalTimer = window.setTimeout(() => {
+      void loadUpcomingEarningsCount()
+      void refreshCandidateSupplementals()
+    }, 120)
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '加载候选失败')
   } finally {
@@ -2141,6 +2282,78 @@ async function refreshCandidateAnalystRating() {
   }
 }
 
+async function refreshCandidateMarketResearch() {
+  if (!candidateDetail.value) return
+  marketResearchRefreshing.value = true
+  try {
+    const ticker = candidateDetail.value.score.ticker
+    const cik = candidateDetail.value.security.cik
+    const response = await apiClient.post<ApiResponse<{ warnings?: string[] }>>(`/discovery/candidates/${encodeURIComponent(ticker)}/market-research/refresh`, null, { params: { cik: cik || undefined } })
+    const detail = await apiClient.get<ApiResponse<CandidateDetail>>(`/discovery/candidates/${encodeURIComponent(ticker)}/detail`)
+    candidateDetail.value = detail.data.data
+    const warnings = response.data.data.warnings || []
+    if (warnings.length) ElMessage.warning(`已部分更新：${warnings.join('；')}`)
+    else ElMessage.success('已更新 Longbridge P1 市场研究数据')
+    load()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '刷新 Longbridge P1 市场研究失败')
+  } finally {
+    marketResearchRefreshing.value = false
+  }
+}
+
+async function refreshCandidateValuationResearch() {
+  if (!candidateDetail.value) return
+  valuationResearchRefreshing.value = true
+  try {
+    const ticker = candidateDetail.value.score.ticker
+    const cik = candidateDetail.value.security.cik
+    await apiClient.post(`/discovery/candidates/${encodeURIComponent(ticker)}/valuation-research/refresh`, null, { params: { cik: cik || undefined } })
+    const detail = await apiClient.get<ApiResponse<CandidateDetail>>(`/discovery/candidates/${encodeURIComponent(ticker)}/detail`)
+    candidateDetail.value = detail.data.data
+    ElMessage.success('已更新 Longbridge 估值历史与同业比较')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '刷新 Longbridge 估值研究失败')
+  } finally {
+    valuationResearchRefreshing.value = false
+  }
+}
+
+function valuationMetricRows(value: NonNullable<CandidateDetail['valuation_research']['latest']>) {
+  return [
+    { metric: 'PE', ...value.metrics.pe, percentile: value.percentiles.pe },
+    { metric: 'PB', ...value.metrics.pb, percentile: value.percentiles.pb },
+    { metric: 'PS', ...value.metrics.ps, percentile: value.percentiles.ps },
+  ]
+}
+
+function valuationPercentileText(value: { ranking?: number | null; rank_index: string; rank_total: string }) {
+  if (value.ranking == null) return '-'
+  const rank = value.rank_index && value.rank_total ? `（${value.rank_index}/${value.rank_total}）` : ''
+  return `${(value.ranking * 100).toFixed(1)}%${rank}`
+}
+
+function formatForecastNumber(value?: number | null, suffix = '') {
+  if (value == null || Number.isNaN(value)) return '-'
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: 3 })}${suffix}`
+}
+
+function formatForecastRange(value?: CandidateDetail['market_research']['eps_forecast']['latest']) {
+  if (!value) return '-'
+  return `${formatForecastNumber(value.low)} – ${formatForecastNumber(value.high)}`
+}
+
+function anomalyValues(value: string) {
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.join(' · ') : String(parsed || '-')
+  } catch {
+    return value || '-'
+  }
+}
+
+function anomalyEmotionLabel(value: number) { return value === 1 ? '偏多' : value === 2 ? '偏空' : '中性' }
+
 function analystRecommendationLabel(value?: string) {
   const labels: Record<string, string> = { strong_buy: '强烈买入', buy: '买入', hold: '持有', underperform: '跑输', sell: '卖出', strong_sell: '强烈卖出', no_opinion: '无观点', unknown: '未评级' }
   return labels[value || 'unknown'] || value || '未评级'
@@ -2156,6 +2369,12 @@ function formatAnalystPrice(micros?: number, currency?: string) {
   if (!micros) return '-'
   const prefix = currency || '$'
   return `${prefix}${(micros / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+}
+
+function formatFairValuePrice(value?: number | null, currency?: string) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return '-'
+  const prefix = currency || '$'
+  return `${prefix}${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
 }
 
 function analystRatingProvenanceRows(snapshot: CandidateDetail['analyst_rating']['latest']) {
@@ -2599,6 +2818,15 @@ function changeStatusTagType(status?: string) {
 }
 
 function scoreHistoryDelta(value?: number | null) {
+  if (value === undefined || value === null) return '-'
+  return value > 0 ? `+${value}` : `${value}`
+}
+
+function reviewPriorityBaseScore(row: CandidateScore) {
+  return Math.floor(((row.quality_adjusted_score ?? row.total_score ?? 0) * 60) / 100)
+}
+
+function formatReviewPriorityPoints(value?: number | null) {
   if (value === undefined || value === null) return '-'
   return value > 0 ? `+${value}` : `${value}`
 }
@@ -3073,11 +3301,12 @@ function tradeSetupTagType(status?: string) {
 
 function tradeSetupSummary(technical?: CandidateScore['technical']) {
   const setup = technical?.trade_setup
-  if (!setup || setup.status === 'unavailable') return setup?.reasons?.[0] || '日线历史不足'
+  const statusSince = setup?.status_since ? '；当前状态始于 ' + formatDateTime(setup.status_since) : '；状态起始时间将在下次日线同步后记录'
+  if (!setup || setup.status === 'unavailable') return (setup?.reasons?.[0] || '日线历史不足') + statusSince
   const stop = formatTradeStop(technical)
-  if (setup.status === 'entry_candidate') return `${setup.entry_trigger}；止损 ${stop}`
-  if (setup.exit_reason) return `${setup.exit_reason}；止损 ${stop}`
-  return `${setup.reasons?.[0] || '等待触发'}；计划止损 ${stop}`
+  if (setup.status === 'entry_candidate') return setup.entry_trigger + '；止损 ' + stop + statusSince
+  if (setup.exit_reason) return setup.exit_reason + '；止损 ' + stop + statusSince
+  return (setup.reasons?.[0] || '等待触发') + '；计划止损 ' + stop + statusSince
 }
 
 function formatTradeStop(technical?: CandidateScore['technical']) {
@@ -3481,6 +3710,8 @@ function filterTechnicalHistoryRange(rows: CandidateTechnicalHistoryRow[], selec
 }
 
 onMounted(() => {
+	const ticker = route.query.ticker
+	if (typeof ticker === 'string') filters.ticker = ticker.toUpperCase()
   load()
   loadCriteria()
   discoverySyncPoll = window.setInterval(() => {
@@ -3490,6 +3721,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (discoverySyncPoll) window.clearInterval(discoverySyncPoll)
+  if (candidateSupplementalTimer) window.clearTimeout(candidateSupplementalTimer)
 })
 </script>
 
@@ -4036,6 +4268,22 @@ onUnmounted(() => {
 
 .score-tooltip-note {
   margin-top: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.trade-setup-history {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.trade-setup-timeline {
+  margin: 14px 0 0;
+}
+
+.trade-setup-event-detail {
+  margin-top: 5px;
   color: var(--el-text-color-secondary);
   font-size: 12px;
 }

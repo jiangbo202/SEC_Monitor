@@ -135,6 +135,144 @@ type AnalystRatingSnapshot struct {
 	CreatedAt             time.Time  `json:"created_at"`
 }
 
+// EPSForecastSnapshot is an immutable provider-issued consensus EPS snapshot.
+// It is research context only and never contributes to the fundamental score.
+type EPSForecastSnapshot struct {
+	ID                 uint      `json:"id"`
+	SecurityID         uint      `json:"security_id" gorm:"index"`
+	Provider           string    `json:"provider" gorm:"size:32;uniqueIndex:idx_eps_forecast_provider_ticker_hash,priority:1;index"`
+	Ticker             string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_eps_forecast_provider_ticker_hash,priority:2;index"`
+	ForecastStartDate  time.Time `json:"forecast_start_date" gorm:"index"`
+	ForecastEndDate    time.Time `json:"forecast_end_date" gorm:"index"`
+	Mean               *float64  `json:"mean,omitempty"`
+	Median             *float64  `json:"median,omitempty"`
+	Low                *float64  `json:"low,omitempty"`
+	High               *float64  `json:"high,omitempty"`
+	InstitutionTotal   int       `json:"institution_total"`
+	InstitutionUp      int       `json:"institution_up"`
+	InstitutionDown    int       `json:"institution_down"`
+	SnapshotHash       string    `json:"snapshot_hash" gorm:"size:64;uniqueIndex:idx_eps_forecast_provider_ticker_hash,priority:3"`
+	ChangeSummary      string    `json:"change_summary" gorm:"type:text"`
+	NotificationStatus string    `json:"notification_status" gorm:"size:32;index"`
+	FetchedAt          time.Time `json:"fetched_at" gorm:"index"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+// MarketAnomalySnapshot records a provider-issued intraday anomaly. It is a
+// short-term review signal only; it does not alter the fundamental score.
+type MarketAnomalySnapshot struct {
+	ID         uint      `json:"id"`
+	SecurityID uint      `json:"security_id" gorm:"index"`
+	Provider   string    `json:"provider" gorm:"size:32;uniqueIndex:idx_market_anomaly_provider_event,priority:1;index"`
+	Ticker     string    `json:"ticker" gorm:"size:32;index"`
+	EventKey   string    `json:"event_key" gorm:"size:128;uniqueIndex:idx_market_anomaly_provider_event,priority:2"`
+	Name       string    `json:"name" gorm:"size:255"`
+	AlertName  string    `json:"alert_name" gorm:"size:255"`
+	AlertTime  time.Time `json:"alert_time" gorm:"index"`
+	ValuesJSON string    `json:"values_json" gorm:"type:text"`
+	Emotion    int       `json:"emotion"`
+	FetchedAt  time.Time `json:"fetched_at" gorm:"index"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// InstitutionalHolderSnapshot preserves a reported major-holder position.
+type InstitutionalHolderSnapshot struct {
+	ID              uint      `json:"id"`
+	SecurityID      uint      `json:"security_id" gorm:"index"`
+	Provider        string    `json:"provider" gorm:"size:32;uniqueIndex:idx_institutional_holder_identity,priority:1;index"`
+	Ticker          string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_institutional_holder_identity,priority:2;index"`
+	HolderName      string    `json:"holder_name" gorm:"size:255;uniqueIndex:idx_institutional_holder_identity,priority:3"`
+	InstitutionType string    `json:"institution_type" gorm:"size:128"`
+	PercentOfShares *float64  `json:"percent_of_shares,omitempty"`
+	SharesChanged   *float64  `json:"shares_changed,omitempty"`
+	ReportDate      string    `json:"report_date" gorm:"size:32;uniqueIndex:idx_institutional_holder_identity,priority:4;index"`
+	SourceURL       string    `json:"source_url" gorm:"size:2048"`
+	FetchedAt       time.Time `json:"fetched_at" gorm:"index"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// FundHolderSnapshot records a fund or ETF's disclosed portfolio weight.
+type FundHolderSnapshot struct {
+	ID            uint      `json:"id"`
+	SecurityID    uint      `json:"security_id" gorm:"index"`
+	Provider      string    `json:"provider" gorm:"size:32;uniqueIndex:idx_fund_holder_identity,priority:1;index"`
+	Ticker        string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_fund_holder_identity,priority:2;index"`
+	FundCode      string    `json:"fund_code" gorm:"size:64;uniqueIndex:idx_fund_holder_identity,priority:3"`
+	FundSymbol    string    `json:"fund_symbol" gorm:"size:96"`
+	FundName      string    `json:"fund_name" gorm:"size:255"`
+	Currency      string    `json:"currency" gorm:"size:16"`
+	PositionRatio float64   `json:"position_ratio"`
+	ReportDate    string    `json:"report_date" gorm:"size:32;uniqueIndex:idx_fund_holder_identity,priority:4;index"`
+	SourceURL     string    `json:"source_url" gorm:"size:2048"`
+	FetchedAt     time.Time `json:"fetched_at" gorm:"index"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// LongbridgeValuationSnapshot keeps a provider-issued valuation research
+// payload (history, industry percentiles and peers) separate from the local
+// SEC-derived valuation used by the candidate workflow.
+type LongbridgeValuationSnapshot struct {
+	ID            uint      `json:"id"`
+	SecurityID    uint      `json:"security_id" gorm:"index"`
+	Provider      string    `json:"provider" gorm:"size:32;uniqueIndex:idx_longbridge_valuation_provider_ticker_hash,priority:1;index"`
+	Ticker        string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_longbridge_valuation_provider_ticker_hash,priority:2;index"`
+	SnapshotHash  string    `json:"snapshot_hash" gorm:"size:64;uniqueIndex:idx_longbridge_valuation_provider_ticker_hash,priority:3"`
+	PayloadJSON   string    `json:"-" gorm:"type:text"`
+	ChangeSummary string    `json:"change_summary" gorm:"type:text"`
+	FetchedAt     time.Time `json:"fetched_at" gorm:"index"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// OptionResearchSnapshot stores one compact, daily options/short-interest
+// observation. It intentionally does not store a full option chain: that data
+// is large and changes intraday, while P0 is a reproducible signal dashboard.
+type OptionResearchSnapshot struct {
+	ID                  uint                    `json:"id"`
+	SecurityID          uint                    `json:"security_id" gorm:"index"`
+	Provider            string                  `json:"provider" gorm:"size:32;uniqueIndex:idx_option_research_provider_ticker_day,priority:1;index"`
+	Ticker              string                  `json:"ticker" gorm:"size:32;uniqueIndex:idx_option_research_provider_ticker_day,priority:2;index"`
+	ObservedDate        string                  `json:"observed_date" gorm:"size:16;uniqueIndex:idx_option_research_provider_ticker_day,priority:3;index"`
+	Status              string                  `json:"status" gorm:"size:24;index"`
+	CallVolume          *int64                  `json:"call_volume,omitempty"`
+	PutVolume           *int64                  `json:"put_volume,omitempty"`
+	PutCallVolumeRatio  *float64                `json:"put_call_volume_ratio,omitempty"`
+	OptionVolumeAsOf    string                  `json:"option_volume_as_of,omitempty"`
+	ShortRatioPct       *float64                `json:"short_ratio_pct,omitempty"`
+	CurrentSharesShort  *int64                  `json:"current_shares_short,omitempty"`
+	AvgDailyShareVolume *int64                  `json:"avg_daily_share_volume,omitempty"`
+	DaysToCover         *float64                `json:"days_to_cover,omitempty"`
+	ShortReportedAt     string                  `json:"short_reported_at,omitempty"`
+	AnomaliesJSON       string                  `json:"-" gorm:"type:text"`
+	FetchedAt           time.Time               `json:"fetched_at" gorm:"index"`
+	CreatedAt           time.Time               `json:"created_at"`
+	UpdatedAt           time.Time               `json:"updated_at"`
+	Anomalies           []OptionResearchAnomaly `json:"anomalies" gorm:"-"`
+}
+
+type OptionResearchAnomaly struct {
+	Kind     string `json:"kind"`
+	Severity string `json:"severity"`
+	Label    string `json:"label"`
+	Detail   string `json:"detail"`
+}
+
+// LongbridgeResearchRefreshState is a shared freshness cursor for a ticker and
+// one Longbridge data family. Candidate and watch-target jobs read the same
+// cursor so overlapping symbols are fetched once per local research day.
+type LongbridgeResearchRefreshState struct {
+	ID            uint       `json:"id"`
+	Ticker        string     `json:"ticker" gorm:"size:32;uniqueIndex:idx_longbridge_refresh_ticker_family,priority:1;index"`
+	Family        string     `json:"family" gorm:"size:32;uniqueIndex:idx_longbridge_refresh_ticker_family,priority:2;index"`
+	LastAttemptAt time.Time  `json:"last_attempt_at"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty" gorm:"index"`
+	Status        string     `json:"status" gorm:"size:16;index"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
 type ClassificationSnapshot struct {
 	ID           uint      `json:"id"`
 	BatchID      string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_classification_batch_security,priority:1;index"`
@@ -237,6 +375,23 @@ type PriceSnapshot struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// TickerEvaluationSnapshot is an immutable result of a user-triggered,
+// single-symbol research evaluation.  It deliberately lives outside the
+// universe batches: an ad-hoc review must not alter the ranked candidate set.
+type TickerEvaluationSnapshot struct {
+	ID          uint      `json:"id"`
+	Ticker      string    `json:"ticker" gorm:"size:32;index:idx_ticker_evaluation_ticker_time,priority:1"`
+	CIK         string    `json:"cik" gorm:"size:10;index"`
+	CompanyName string    `json:"company_name" gorm:"size:255"`
+	TargetType  string    `json:"target_type" gorm:"size:16;index"`
+	Status      string    `json:"status" gorm:"size:32;index"`
+	TotalScore  int       `json:"total_score"`
+	ReviewScore int       `json:"review_score"`
+	ResultJSON  string    `json:"result_json" gorm:"type:text"`
+	EvaluatedAt time.Time `json:"evaluated_at" gorm:"index:idx_ticker_evaluation_ticker_time,priority:2"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 type ShareSnapshot struct {
 	ID            uint      `json:"id"`
 	SecurityID    uint      `json:"security_id" gorm:"uniqueIndex:idx_share_security_instant_accession,priority:1;index"`
@@ -255,17 +410,17 @@ type ShareSnapshot struct {
 
 type FinancialFactSnapshot struct {
 	ID            uint      `json:"id"`
-	SecurityID    uint      `json:"security_id" gorm:"uniqueIndex:idx_financial_fact_identity,priority:1;index"`
-	Metric        string    `json:"metric" gorm:"size:64;uniqueIndex:idx_financial_fact_identity,priority:2;index"`
+	SecurityID    uint      `json:"security_id" gorm:"uniqueIndex:idx_financial_fact_identity,priority:1;index;index:idx_financial_fact_readiness,priority:1"`
+	Metric        string    `json:"metric" gorm:"size:64;uniqueIndex:idx_financial_fact_identity,priority:2;index;index:idx_financial_fact_readiness,priority:2"`
 	Concept       string    `json:"concept" gorm:"size:128;uniqueIndex:idx_financial_fact_identity,priority:3"`
 	PeriodStart   time.Time `json:"period_start" gorm:"uniqueIndex:idx_financial_fact_identity,priority:4"`
-	PeriodEnd     time.Time `json:"period_end" gorm:"uniqueIndex:idx_financial_fact_identity,priority:5;index"`
+	PeriodEnd     time.Time `json:"period_end" gorm:"uniqueIndex:idx_financial_fact_identity,priority:5;index;index:idx_financial_fact_readiness,priority:4"`
 	Accession     string    `json:"accession" gorm:"size:32;uniqueIndex:idx_financial_fact_identity,priority:6"`
 	Unit          string    `json:"unit" gorm:"size:16"`
 	AmountMicros  int64     `json:"amount_micros"`
 	Form          string    `json:"form" gorm:"size:16"`
 	SourceURL     string    `json:"source_url" gorm:"size:2048"`
-	QualityStatus string    `json:"quality_status" gorm:"size:16;index"`
+	QualityStatus string    `json:"quality_status" gorm:"size:16;index;index:idx_financial_fact_readiness,priority:3"`
 	FiledAt       time.Time `json:"filed_at"`
 	AcceptedAt    time.Time `json:"accepted_at"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -570,6 +725,32 @@ type CandidateResearchPosition struct {
 	Note                        string    `json:"note" gorm:"type:text"`
 	CreatedAt                   time.Time `json:"created_at"`
 	UpdatedAt                   time.Time `json:"updated_at"`
+}
+
+// TradeSetupStatusEvent records a state transition of the deterministic
+// daily-close trade plan. It is research history, not an order or execution
+// record. A row is written only when the status changes, so StartedAt answers
+// how long the current condition has been in effect.
+type TradeSetupStatusEvent struct {
+	ID                    uint      `json:"id"`
+	SecurityID            uint      `json:"security_id" gorm:"index"`
+	Ticker                string    `json:"ticker" gorm:"size:32;index:idx_trade_setup_status_ticker_started,priority:1"`
+	TradeDate             string    `json:"trade_date" gorm:"size:10;index"`
+	Status                string    `json:"status" gorm:"size:32;index"`
+	PreviousStatus        string    `json:"previous_status" gorm:"size:32"`
+	Bias                  string    `json:"bias" gorm:"size:32"`
+	EntryTrigger          string    `json:"entry_trigger" gorm:"size:128"`
+	ExitReason            string    `json:"exit_reason" gorm:"type:text"`
+	ReasonsJSON           string    `json:"reasons_json" gorm:"type:text"`
+	Reasons               []string  `json:"reasons" gorm:"-"`
+	CloseUSD              float64   `json:"close_usd"`
+	StopLossUSD           float64   `json:"stop_loss_usd"`
+	RiskPct               float64   `json:"risk_pct"`
+	TakeProfitZoneLowUSD  float64   `json:"take_profit_zone_low_usd"`
+	TakeProfitZoneHighUSD float64   `json:"take_profit_zone_high_usd"`
+	StartedAt             time.Time `json:"started_at" gorm:"index:idx_trade_setup_status_ticker_started,priority:2"`
+	RecordedAt            time.Time `json:"recorded_at" gorm:"index"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 // TradePlanSimulation is a daily-close paper-trade record. It stores the

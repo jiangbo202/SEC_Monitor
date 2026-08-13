@@ -115,10 +115,14 @@ var (
 	offerPricePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(?:public\s+offering\s+price|offering\s+price)\s+(?:is|of|at)\s+\$\s*([0-9]+(?:\.[0-9]{1,4})?)\s+per\s+share`),
 		regexp.MustCompile(`(?i)(?:initial\s+)?public\s+offering\s+price\s+per\s+share\s+(?:is|of|at)\s+\$\s*([0-9]+(?:\.[0-9]{1,4})?)`),
+		// A number of EDGAR 424B4 documents put "of the shares" between the
+		// price label and the amount. Keep this narrowly anchored to avoid
+		// mistaking an indicative range for the final offering price.
+		regexp.MustCompile(`(?i)(?:initial\s+)?public\s+offering\s+price\s+of\s+(?:the\s+)?(?:common\s+)?shares\s+(?:is|was)\s+\$\s*([0-9]+(?:\.[0-9]{1,4})?)\s+per\s+share`),
 	}
 	offerSharesPattern      = regexp.MustCompile(`(?i)(?:we\s+are\s+offering|offering\s+of)\s+([0-9][0-9,]*)\s+(?:ordinary\s+|common\s+)?shares`)
 	tableOfferPricePattern  = regexp.MustCompile(`(?i)public\s+offering\s+price\s+\$\s*([0-9]+(?:\.[0-9]{1,4})?)`)
-	tableOfferSharesPattern = regexp.MustCompile(`(?i)shares\s+offered\s+([0-9][0-9,]*)`)
+	tableOfferSharesPattern = regexp.MustCompile(`(?i)(?:number\s+of\s+)?(?:common\s+stock\s+)?shares\s+offered(?:\s+by\s+us)?\s+([0-9][0-9,]*)`)
 )
 
 func Parse424B4Offering(document string) (IPOOffering, bool) {

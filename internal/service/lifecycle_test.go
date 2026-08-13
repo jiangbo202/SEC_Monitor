@@ -46,7 +46,22 @@ func TestLifecycleServicePreviewAndCleanupPreservesActiveAndResearchData(t *test
 	if err := mainDB.Create(&model.SyncRunDetail{SyncRunID: activeRun.ID, Ticker: "LIVE", Status: "running", StartedAt: oldFinished}).Error; err != nil {
 		t.Fatal(err)
 	}
+	oldTaskExecution := model.TaskExecution{TaskName: "market_trend_sync", Trigger: "scheduled", Status: "success", StartedAt: oldFinished.Add(-time.Minute), FinishedAt: &oldFinished}
+	activeTaskExecution := model.TaskExecution{TaskName: "market_trend_sync", Trigger: "scheduled", Status: "running", StartedAt: oldFinished}
+	if err := mainDB.Create(&[]model.TaskExecution{oldTaskExecution, activeTaskExecution}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := mainDB.Create(&model.OperationalAlertDelivery{Fingerprint: "old", Severity: "warning", UpdatedAt: oldFinished}).Error; err != nil {
+		t.Fatal(err)
+	}
+	batches := []model.NotificationBatch{
+		{SyncRunID: oldRun.ID, Source: "ipo", Trigger: "scheduled", Channel: "telegram", Status: "dead_letter", UpdatedAt: oldFinished},
+		{SyncRunID: activeRun.ID, Source: "candidate", Trigger: "scheduled", Channel: "telegram", Status: "sent", UpdatedAt: now},
+	}
+	if err := mainDB.Create(&batches).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := mainDB.Create(&[]model.NotificationBatchItem{{BatchID: batches[0].ID, EntityKind: "ipo_filing", FilingID: "old", Status: "failed", Reason: "delivery_failed"}, {BatchID: batches[1].ID, EntityKind: "candidate", FilingID: "live", Status: "sent", Reason: "eligible"}}).Error; err != nil {
 		t.Fatal(err)
 	}
 	oldDiscovery := discovery.DiscoverySyncRun{Kind: "incremental", Status: "published", Phase: "complete", StartedAt: oldFinished.Add(-time.Minute), CompletedAt: &oldFinished}
@@ -73,7 +88,7 @@ func TestLifecycleServicePreviewAndCleanupPreservesActiveAndResearchData(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.SyncRuns != 1 || preview.SyncRunDetails != 1 || preview.OperationalAlertDeliveries != 1 || preview.DiscoverySyncRuns != 1 || preview.DiscoverySyncSteps != 1 || preview.Total != 5 {
+	if preview.SyncRuns != 1 || preview.SyncRunDetails != 1 || preview.TaskExecutions != 1 || preview.NotificationBatches != 1 || preview.NotificationBatchItems != 1 || preview.OperationalAlertDeliveries != 1 || preview.DiscoverySyncRuns != 1 || preview.DiscoverySyncSteps != 1 || preview.Total != 8 {
 		t.Fatalf("preview = %#v", preview)
 	}
 	if _, err := svc.Cleanup(ctx, now); err != nil {
@@ -90,6 +105,9 @@ func TestLifecycleServicePreviewAndCleanupPreservesActiveAndResearchData(t *test
 	}{
 		{mainDB, &model.SyncRun{}, 1},
 		{mainDB, &model.SyncRunDetail{}, 1},
+		{mainDB, &model.TaskExecution{}, 1},
+		{mainDB, &model.NotificationBatch{}, 1},
+		{mainDB, &model.NotificationBatchItem{}, 1},
 		{mainDB, &model.OperationalAlertDelivery{}, 0},
 		{discoveryDB, &discovery.DiscoverySyncRun{}, 1},
 		{discoveryDB, &discovery.DiscoverySyncStep{}, 1},

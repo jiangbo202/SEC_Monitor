@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,11 +16,16 @@ import (
 	"sec_monitor/internal/telegram"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var notificationRetryDelays = []time.Duration{5 * time.Minute, 15 * time.Minute, 45 * time.Minute, 2 * time.Hour, 6 * time.Hour}
 
-const notificationRetryLeaseDuration = 30 * time.Minute
+const (
+	notificationRetryLeaseDuration      = 30 * time.Minute
+	notificationDeadLetterRecoveryDelay = 24 * time.Hour
+	notificationDeadLetterRecoveryLimit = 50
+)
 
 type NotificationCandidate struct {
 	EntityKind  string
@@ -43,6 +50,19 @@ type NotificationBatchInput struct {
 	SummaryText string
 }
 
+// NotificationMessageInput represents a system-level event (health report,
+// connection test, etc.) that has no natural filing/candidate collection but
+// must still use the same durable Telegram queue and delivery log.
+type NotificationMessageInput struct {
+	Source      string
+	Trigger     string
+	EventKey    string
+	EntityKind  string
+	Title       string
+	SummaryText string
+	EventAt     time.Time
+}
+
 type NotificationBatchFilter struct {
 	Source   string
 	Status   string
@@ -60,6 +80,23 @@ type NotificationRetryResult struct {
 	DeadLetter int `json:"dead_letter"`
 }
 
+// NotificationDeadLetterRecoveryResult reports only batches that were safely
+// returned to the durable retry queue. Permanent delivery errors deliberately
+// remain visible for operator action.
+type NotificationDeadLetterRecoveryResult struct {
+	Requeued int `json:"requeued"`
+}
+
+// NotificationBulkRequeueResult makes a delivery incident recoverable without
+// asking an operator to click through every failed batch. It only moves the
+// selected durable batches back to the normal retry ladder; it never sends a
+// message synchronously and therefore preserves the existing de-duplication
+// and lease guarantees.
+type NotificationBulkRequeueResult struct {
+	Requeued int `json:"requeued"`
+	Skipped  int `json:"skipped"`
+}
+
 type NotificationBatchService struct {
 	db       *gorm.DB
 	notifier telegram.Notifier
@@ -75,53 +112,88 @@ func (s *NotificationBatchService) Deliver(ctx context.Context, input Notificati
 		return model.NotificationBatch{}, nil
 	}
 	now := time.Now().UTC()
-	eligible := make([]NotificationCandidate, 0, len(input.Candidates))
+	batch := model.NotificationBatch{
+		SyncRunID: input.SyncRunID,
+		Source:    strings.TrimSpace(input.Source),
+		Trigger:   strings.TrimSpace(input.Trigger),
+		Channel:   "telegram",
+		Status:    "pending",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	accepted := make([]NotificationCandidate, 0, len(input.Candidates))
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&batch).Error; err != nil {
+			return err
+		}
+		for _, candidate := range input.Candidates {
+			status := "suppressed"
+			if candidate.Reason == "eligible" {
+				status = "pending"
+			}
+			eventKey := notificationBatchEventKey(batch.Source, candidate)
+			item := model.NotificationBatchItem{
+				BatchID: batch.ID, TargetID: candidate.TargetID, EntityKind: candidate.EntityKind, FilingID: candidate.FilingID,
+				EventKey: &eventKey,
+				Ticker:   candidate.Ticker, CIK: candidate.CIK, CompanyName: candidate.CompanyName,
+				FilingType: candidate.FilingType, Title: candidate.Title, FilingURL: candidate.FilingURL,
+				EventAt: candidate.EventAt, Status: status, Reason: candidate.Reason, CreatedAt: now, UpdatedAt: now,
+			}
+			result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&item)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 1 {
+				accepted = append(accepted, candidate)
+			}
+		}
+		if len(accepted) == 0 {
+			return tx.Delete(&batch).Error
+		}
+		return nil
+	}); err != nil {
+		return model.NotificationBatch{}, err
+	}
+	if len(accepted) == 0 {
+		return model.NotificationBatch{}, nil
+	}
+	eligible := make([]NotificationCandidate, 0, len(accepted))
 	reasonCounts := map[string]int{}
-	for _, candidate := range input.Candidates {
+	for _, candidate := range accepted {
 		if candidate.Reason == "eligible" {
 			eligible = append(eligible, candidate)
 		} else {
 			reasonCounts[candidate.Reason]++
 		}
 	}
-	batch := model.NotificationBatch{
-		SyncRunID:          input.SyncRunID,
-		Source:             strings.TrimSpace(input.Source),
-		Trigger:            strings.TrimSpace(input.Trigger),
-		Channel:            "telegram",
-		Status:             "suppressed",
-		ItemCount:          len(input.Candidates),
-		SuppressedCount:    len(input.Candidates) - len(eligible),
-		SuppressionSummary: formatReasonCounts(reasonCounts),
-		CreatedAt:          now,
-		UpdatedAt:          now,
+	summaryText := strings.TrimSpace(input.SummaryText)
+	// A custom summary may contain identifiers from duplicate candidates. Once
+	// anything was filtered, rebuild it from the accepted immutable events.
+	if summaryText == "" || len(accepted) != len(input.Candidates) {
+		summaryText = renderNotificationBatchSummary(batch.Source, eligible)
 	}
-	if len(eligible) > 0 {
-		batch.Status = "pending"
+	batch.ItemCount = len(accepted)
+	batch.SuppressedCount = len(accepted) - len(eligible)
+	batch.SuppressionSummary = formatReasonCounts(reasonCounts)
+	batch.MessageText = truncateTelegramMessage(summaryText, 4000)
+	if len(eligible) == 0 {
+		batch.Status = "suppressed"
 	}
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&batch).Error; err != nil {
-			return err
-		}
-		items := make([]model.NotificationBatchItem, 0, len(input.Candidates))
-		for _, candidate := range input.Candidates {
-			status := "suppressed"
-			if candidate.Reason == "eligible" {
-				status = "pending"
-			}
-			items = append(items, model.NotificationBatchItem{
-				BatchID: batch.ID, TargetID: candidate.TargetID, EntityKind: candidate.EntityKind, FilingID: candidate.FilingID,
-				Ticker: candidate.Ticker, CIK: candidate.CIK, CompanyName: candidate.CompanyName,
-				FilingType: candidate.FilingType, Title: candidate.Title, FilingURL: candidate.FilingURL,
-				EventAt: candidate.EventAt, Status: status, Reason: candidate.Reason, CreatedAt: now, UpdatedAt: now,
-			})
-		}
-		return tx.Create(&items).Error
-	}); err != nil {
+	if err := s.db.WithContext(ctx).Model(&model.NotificationBatch{}).Where("id = ?", batch.ID).Updates(map[string]any{
+		"status": batch.Status, "item_count": batch.ItemCount, "suppressed_count": batch.SuppressedCount,
+		"suppression_summary": batch.SuppressionSummary, "message_text": batch.MessageText, "updated_at": now,
+	}).Error; err != nil {
 		return model.NotificationBatch{}, err
 	}
 	if len(eligible) == 0 {
 		return batch, nil
+	}
+	channelEnabled, err := s.telegramEventEnabled(ctx, batch.Source)
+	if err != nil {
+		return model.NotificationBatch{}, err
+	}
+	if !channelEnabled {
+		return s.finishSuppressed(ctx, batch, eligible, "event_channel_disabled")
 	}
 
 	cfg, err := s.configs.Telegram(ctx)
@@ -133,11 +205,7 @@ func (s *NotificationBatchService) Deliver(ctx context.Context, input Notificati
 		return s.finishSuppressed(ctx, batch, eligible, "notification_disabled")
 	}
 
-	summaryText := strings.TrimSpace(input.SummaryText)
-	if summaryText == "" {
-		summaryText = renderNotificationBatchSummary(input.Source, eligible)
-	}
-	message := telegram.Message{Text: truncateTelegramMessage(summaryText, 4000)}
+	message := telegram.Message{Text: batch.MessageText}
 	if err := sendWithRetry(ctx, s.notifier, message, 3); err != nil {
 		attemptedAt := time.Now().UTC()
 		batch.Status = "failed"
@@ -159,6 +227,110 @@ func (s *NotificationBatchService) Deliver(ctx context.Context, input Notificati
 		return model.NotificationBatch{}, err
 	}
 	return batch, nil
+}
+
+// notificationBatchEventKey is the global de-duplication boundary of the
+// Telegram queue. It intentionally includes the source: one SEC filing may
+// legitimately be reported by distinct product workflows, while retries and
+// repeated scans of the same workflow must reuse the existing delivery item.
+func notificationBatchEventKey(source string, candidate NotificationCandidate) string {
+	identity := strings.TrimSpace(candidate.FilingID)
+	if identity == "" {
+		identity = fmt.Sprintf("%d:%s:%s:%s", candidate.TargetID, strings.TrimSpace(candidate.Ticker), strings.TrimSpace(candidate.CIK), candidate.EventAt.UTC().Format(time.RFC3339Nano))
+	}
+	// TargetID is part of the identity: one filing may be intentionally
+	// associated with several monitored targets (for example, a fund issuer),
+	// and each association must remain visible in its target-specific audit.
+	raw := strings.Join([]string{strings.TrimSpace(source), strings.TrimSpace(candidate.EntityKind), strconv.FormatUint(uint64(candidate.TargetID), 10), identity}, "\x1f")
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("tg:%x", sum[:])
+}
+
+// telegramEventEnabled is the channel-level control for the research events
+// exposed in System Config. Sources not in the mapping deliberately remain
+// enabled so existing operations, IPO and candidate-summary notifications keep
+// their current behavior.
+func (s *NotificationBatchService) telegramEventEnabled(ctx context.Context, source string) (bool, error) {
+	if s == nil || s.configs == nil {
+		return true, nil
+	}
+	key := ""
+	legacyKey := ""
+	switch strings.TrimSpace(source) {
+	case "earnings_preview_watch_target":
+		key, legacyKey = "telegram_notification.watch_target_earnings_preview_enabled", "telegram_notification.earnings_preview_enabled"
+	case "earnings_preview_candidate":
+		key, legacyKey = "telegram_notification.candidate_earnings_preview_enabled", "telegram_notification.earnings_preview_enabled"
+	case "earnings_release_watch_target":
+		key, legacyKey = "telegram_notification.watch_target_earnings_release_enabled", "telegram_notification.earnings_release_enabled"
+	case "earnings_release_candidate":
+		key, legacyKey = "telegram_notification.candidate_earnings_release_enabled", "telegram_notification.earnings_release_enabled"
+	case "technical_signal_watch_target":
+		key, legacyKey = "telegram_notification.watch_target_technical_signal_enabled", "telegram_notification.technical_signal_enabled"
+	case "technical_signal_candidate":
+		key, legacyKey = "telegram_notification.candidate_technical_signal_enabled", "telegram_notification.technical_signal_enabled"
+	case "major_event_watch_target":
+		key, legacyKey = "telegram_notification.watch_target_major_event_enabled", "telegram_notification.major_event_enabled"
+	case "insider_trading_watch_target":
+		key, legacyKey = "telegram_notification.watch_target_insider_trading_enabled", "telegram_notification.insider_trading_enabled"
+	case "ipo_progress":
+		key = "telegram_notification.ipo_progress_enabled"
+	case "earnings_preview":
+		key = "telegram_notification.earnings_preview_enabled"
+	case "earnings_release":
+		key = "telegram_notification.earnings_release_enabled"
+	case "trade_setup", "technical_signal":
+		key = "telegram_notification.technical_signal_enabled"
+	case "major_event":
+		key = "telegram_notification.major_event_enabled"
+	case "insider_trading":
+		key = "telegram_notification.insider_trading_enabled"
+	}
+	if key == "" {
+		return true, nil
+	}
+	raw, configured, err := s.configs.GetValue(ctx, key)
+	if err != nil {
+		return true, err
+	}
+	if !configured && legacyKey != "" {
+		raw, configured, err = s.configs.GetValue(ctx, legacyKey)
+		if err != nil {
+			return true, err
+		}
+	}
+	if !configured {
+		return true, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return true, nil
+	}
+	return enabled, nil
+}
+
+// DeliverMessage turns a system event into a one-item notification batch.
+// Business modules should use this instead of calling Telegram directly.
+func (s *NotificationBatchService) DeliverMessage(ctx context.Context, input NotificationMessageInput) (model.NotificationBatch, error) {
+	source, eventKey, text := strings.TrimSpace(input.Source), strings.TrimSpace(input.EventKey), strings.TrimSpace(input.SummaryText)
+	if source == "" || eventKey == "" || text == "" {
+		return model.NotificationBatch{}, fmt.Errorf("%w: notification source, event key, and message are required", ErrValidation)
+	}
+	eventAt := input.EventAt.UTC()
+	if eventAt.IsZero() {
+		eventAt = time.Now().UTC()
+	}
+	entityKind := strings.TrimSpace(input.EntityKind)
+	if entityKind == "" {
+		entityKind = "system_event"
+	}
+	return s.Deliver(ctx, NotificationBatchInput{
+		Source: source, Trigger: strings.TrimSpace(input.Trigger), SummaryText: text,
+		Candidates: []NotificationCandidate{{
+			EntityKind: entityKind, FilingID: eventKey, CompanyName: source, FilingType: entityKind,
+			Title: strings.TrimSpace(input.Title), Reason: "eligible", EventAt: eventAt,
+		}},
+	})
 }
 
 func (s *NotificationBatchService) finishSuppressed(ctx context.Context, batch model.NotificationBatch, candidates []NotificationCandidate, reason string) (model.NotificationBatch, error) {
@@ -221,6 +393,7 @@ func batchResultUpdates(batch model.NotificationBatch) map[string]any {
 		"target": batch.Target, "status": batch.Status, "sent_count": batch.SentCount,
 		"suppressed_count": batch.SuppressedCount, "failed_count": batch.FailedCount,
 		"retry_count": batch.RetryCount, "suppression_summary": batch.SuppressionSummary,
+		"message_text":  batch.MessageText,
 		"error_message": SanitizeSensitiveError(batch.ErrorMessage), "sent_at": sentAt,
 		"next_retry_at": nextRetryAt, "last_attempt_at": lastAttemptAt, "updated_at": time.Now().UTC(),
 		"retry_lease_until": nullableNotificationTime(batch.RetryLeaseUntil), "retry_lease_token": batch.RetryLeaseToken,
@@ -274,13 +447,64 @@ func (s *NotificationBatchService) RetryDue(ctx context.Context, now time.Time) 
 	return result, nil
 }
 
+// RecoverTransientDeadLetters gives temporary provider failures one delayed,
+// automated recovery cycle. The normal retry ladder has already exhausted
+// five attempts by the time a batch becomes a dead letter; only errors that
+// look transient (timeouts, rate limits, upstream 5xx) are requeued after a
+// full day. Authentication, configuration, and payload failures stay in the
+// visible dead-letter queue instead of being retried indefinitely.
+func (s *NotificationBatchService) RecoverTransientDeadLetters(ctx context.Context, now time.Time) (NotificationDeadLetterRecoveryResult, error) {
+	now = now.UTC()
+	cutoff := now.Add(-notificationDeadLetterRecoveryDelay)
+	var batches []model.NotificationBatch
+	if err := s.db.WithContext(ctx).
+		Where("status = ? AND updated_at <= ?", "dead_letter", cutoff).
+		Order("updated_at ASC, id ASC").
+		Limit(notificationDeadLetterRecoveryLimit).
+		Find(&batches).Error; err != nil {
+		return NotificationDeadLetterRecoveryResult{}, sanitizeNotificationBatchError(err)
+	}
+	result := NotificationDeadLetterRecoveryResult{}
+	for _, batch := range batches {
+		if !isTransientNotificationDeliveryError(batch.ErrorMessage) {
+			continue
+		}
+		if _, err := s.Requeue(ctx, batch.ID, now); err != nil {
+			return result, sanitizeNotificationBatchError(err)
+		}
+		result.Requeued++
+	}
+	return result, nil
+}
+
+func isTransientNotificationDeliveryError(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	if message == "" {
+		return false
+	}
+	for _, token := range []string{
+		"timeout", "deadline exceeded", "context canceled", "connection reset",
+		"temporarily unavailable", "temporary failure", "rate limit", "too many requests",
+		" 429", "status: 5", "status 5", "bad gateway", "service unavailable", "internal server error",
+	} {
+		if strings.Contains(message, token) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *NotificationBatchService) retryBatch(ctx context.Context, batchID uint, now time.Time) (string, bool, error) {
 	batch, items, leaseToken, claimed, err := s.claimDueBatch(ctx, batchID, now)
 	if err != nil || !claimed {
 		return "", false, err
 	}
 	candidates := notificationCandidatesFromBatchItems(items)
-	message := telegram.Message{Text: truncateTelegramMessage(renderNotificationBatchSummary(batch.Source, candidates), 4000)}
+	messageText := strings.TrimSpace(batch.MessageText)
+	if messageText == "" {
+		messageText = renderNotificationBatchSummary(batch.Source, candidates)
+	}
+	message := telegram.Message{Text: truncateTelegramMessage(messageText, 4000)}
 	batch.LastAttemptAt = &now
 	batch.RetryCount++
 	batch.RetryLeaseUntil = nil
@@ -447,6 +671,35 @@ func (s *NotificationBatchService) Requeue(ctx context.Context, batchID uint, no
 	return batch, nil
 }
 
+// RequeueFailed returns a bounded set of failed/dead-letter batches to the
+// normal durable retry queue. A limit is mandatory so a configuration error
+// cannot create an unbounded burst after an operator action.
+func (s *NotificationBatchService) RequeueFailed(ctx context.Context, now time.Time, limit int) (NotificationBulkRequeueResult, error) {
+	if limit < 1 || limit > 500 {
+		return NotificationBulkRequeueResult{}, fmt.Errorf("%w: notification requeue limit must be between 1 and 500", ErrValidation)
+	}
+	now = now.UTC()
+	var ids []uint
+	if err := s.db.WithContext(ctx).Model(&model.NotificationBatch{}).
+		Where("status IN ?", []string{"failed", "dead_letter"}).
+		Where("retry_lease_until IS NULL OR retry_lease_until <= ?", now).
+		Order("updated_at ASC, id ASC").Limit(limit).Pluck("id", &ids).Error; err != nil {
+		return NotificationBulkRequeueResult{}, sanitizeNotificationBatchError(err)
+	}
+	result := NotificationBulkRequeueResult{}
+	for _, id := range ids {
+		if _, err := s.Requeue(ctx, id, now); err != nil {
+			if errors.Is(err, ErrValidation) {
+				result.Skipped++
+				continue
+			}
+			return result, err
+		}
+		result.Requeued++
+	}
+	return result, nil
+}
+
 func sanitizeNotificationBatchError(err error) error {
 	if err == nil {
 		return nil
@@ -463,9 +716,22 @@ func sanitizeNotificationBatchError(err error) error {
 
 func renderNotificationBatchSummary(source string, candidates []NotificationCandidate) string {
 	title := "SEC 公告"
-	if source == "ipo" {
+	switch source {
+	case "earnings_preview", "earnings_preview_watch_target", "earnings_preview_candidate":
+		title = "财报预告"
+	case "earnings_release", "earnings_release_watch_target", "earnings_release_candidate":
+		title = "财报已发布"
+	case "trade_setup", "technical_signal", "technical_signal_watch_target", "technical_signal_candidate":
+		title = "技术信号变化"
+	case "major_event", "major_event_watch_target":
+		title = "重大事件"
+	case "insider_trading", "insider_trading_watch_target":
+		title = "内幕交易"
+	case "ipo_progress":
+		title = "关注 IPO 进展"
+	case "ipo":
 		title = "IPO 监控"
-	} else if source == "ipo_offering" {
+	case "ipo_offering":
 		title = "IPO 定价"
 	}
 	counts := map[string]int{}
@@ -555,6 +821,7 @@ func (s *NotificationBatchService) List(ctx context.Context, filter Notification
 	var items []model.NotificationBatch
 	err := query.Order("created_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error
 	for i := range items {
+		items[i].MessageText = truncateTelegramMessage(items[i].MessageText, 4000)
 		items[i].ErrorMessage = SanitizeSensitiveError(items[i].ErrorMessage)
 	}
 	return newPageResult(items, total, page, pageSize), err

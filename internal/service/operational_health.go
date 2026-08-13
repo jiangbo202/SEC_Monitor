@@ -22,6 +22,10 @@ const (
 	operationalAlertRepeatAfter      = 12 * time.Hour
 	operationalSECSlowTargetLimit    = 2 * time.Minute
 	operationalSlowObservationWindow = 48 * time.Hour
+	// Seven daily copies of a growing research database can consume a local
+	// Docker volume before a user notices. This is a warning, not automatic
+	// deletion: retention remains an explicit user-controlled setting.
+	operationalBackupCapacityWarningBytes int64 = 50 << 30
 )
 
 // OperationalIssue is an actionable, locally computed observation. Routes are
@@ -49,19 +53,21 @@ type OperationalTaskStatus struct {
 }
 
 type OperationalReport struct {
-	GeneratedAt            time.Time               `json:"generated_at"`
-	Status                 string                  `json:"status"`
-	Issues                 []OperationalIssue      `json:"issues"`
-	Tasks                  []OperationalTaskStatus `json:"tasks"`
-	RetryableTargets       int64                   `json:"retryable_targets"`
-	DeferredTargets        int64                   `json:"deferred_targets"`
-	CompanyProfileRetryDue int64                   `json:"company_profile_retry_due"`
-	MarketPriceRecovery    int                     `json:"market_price_recovery"`
-	LowCoverageProviders   int64                   `json:"low_coverage_providers"`
-	SlowSECTargets         int64                   `json:"slow_sec_targets"`
-	SlowDiscoverySteps     int                     `json:"slow_discovery_steps"`
-	ProviderWarnings       int64                   `json:"provider_warnings"`
-	Summary                string                  `json:"summary"`
+	GeneratedAt               time.Time               `json:"generated_at"`
+	Status                    string                  `json:"status"`
+	Issues                    []OperationalIssue      `json:"issues"`
+	Tasks                     []OperationalTaskStatus `json:"tasks"`
+	RetryableTargets          int64                   `json:"retryable_targets"`
+	DeferredTargets           int64                   `json:"deferred_targets"`
+	CompanyProfileRetryDue    int64                   `json:"company_profile_retry_due"`
+	MarketPriceRecovery       int                     `json:"market_price_recovery"`
+	LowCoverageProviders      int64                   `json:"low_coverage_providers"`
+	SlowSECTargets            int64                   `json:"slow_sec_targets"`
+	SlowDiscoverySteps        int                     `json:"slow_discovery_steps"`
+	ProviderWarnings          int64                   `json:"provider_warnings"`
+	FailedNotificationBatches int64                   `json:"failed_notification_batches"`
+	DeadLetterBatches         int64                   `json:"dead_letter_batches"`
+	Summary                   string                  `json:"summary"`
 }
 
 type OperationalAlertResult struct {
@@ -74,13 +80,22 @@ type OperationalAlertResult struct {
 type OperationalHealthService struct {
 	db          *gorm.DB
 	discoveryDB *gorm.DB
-	notifier    telegram.Notifier
 	configs     *ConfigService
 	backup      *SQLiteBackupService
+	batches     *NotificationBatchService
 }
 
 func NewOperationalHealthService(db, discoveryDB *gorm.DB, notifier telegram.Notifier, configs *ConfigService) *OperationalHealthService {
-	return &OperationalHealthService{db: db, discoveryDB: discoveryDB, notifier: notifier, configs: configs}
+	// Standalone callers get a functional queue; the application router replaces
+	// it with its process-wide center through WithNotificationCenter.
+	return &OperationalHealthService{db: db, discoveryDB: discoveryDB, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
+}
+
+func (s *OperationalHealthService) WithNotificationCenter(center *NotificationBatchService) *OperationalHealthService {
+	if s != nil && center != nil {
+		s.batches = center
+	}
+	return s
 }
 
 func (s *OperationalHealthService) WithBackup(backup *SQLiteBackupService) *OperationalHealthService {
@@ -149,6 +164,20 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	}
 	if err := s.reportSlowSECDetails(ctx, &report, now); err != nil {
 		return report, err
+	}
+	if err := s.db.WithContext(ctx).Model(&model.NotificationBatch{}).Where("status = ?", "failed").Count(&report.FailedNotificationBatches).Error; err != nil {
+		return report, err
+	}
+	if err := s.db.WithContext(ctx).Model(&model.NotificationBatch{}).Where("status = ?", "dead_letter").Count(&report.DeadLetterBatches).Error; err != nil {
+		return report, err
+	}
+	if report.FailedNotificationBatches > 0 || report.DeadLetterBatches > 0 {
+		severity := "warning"
+		if report.DeadLetterBatches > 0 {
+			severity = "critical"
+		}
+		detail := fmt.Sprintf("失败批次 %d 个，死信批次 %d 个；可在通知日志查看明细并按需重新入队", report.FailedNotificationBatches, report.DeadLetterBatches)
+		report.addIssue("notification_delivery_queue", "notification", severity, "通知投递队列需要处理", detail, "notification-logs", now)
 	}
 
 	if s.discoveryDB != nil {
@@ -220,6 +249,9 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 			if backup.IncompletePairs > 0 {
 				report.addIssue("backup_incomplete", "backup", "warning", "发现不完整 SQLite 备份", fmt.Sprintf("%d 组不完整快照不会被作为恢复点", backup.IncompletePairs), "system-health", now)
 			}
+			if backup.TotalBytes >= operationalBackupCapacityWarningBytes {
+				report.addIssue("backup_capacity", "backup", "warning", "SQLite 备份占用较大", fmt.Sprintf("完整备份当前占用 %s；请评估备份保留天数、外部备份目标或在低峰执行数据库压缩", formatOperationalBytes(backup.TotalBytes)), "system-health", now)
+			}
 		}
 		if drill, err := s.backup.LatestRecoveryDrill(ctx); err != nil {
 			report.addIssue("recovery_drill_status_unavailable", "backup", "warning", "恢复演练记录不可读", SanitizeSensitiveError(err.Error()), "system-health", now)
@@ -237,6 +269,13 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	report.Status = operationalReportStatus(report.Issues)
 	report.Summary = renderOperationalSummary(report)
 	return report, nil
+}
+
+func formatOperationalBytes(value int64) string {
+	if value < 1024*1024*1024 {
+		return fmt.Sprintf("%.1f MB", float64(value)/(1024*1024))
+	}
+	return fmt.Sprintf("%.1f GB", float64(value)/(1024*1024*1024))
 }
 
 func (s *OperationalHealthService) reportSlowSECDetails(ctx context.Context, report *OperationalReport, now time.Time) error {
@@ -361,7 +400,7 @@ func (s *OperationalHealthService) Notify(ctx context.Context) (OperationalAlert
 		result.Reason = "operational_report_healthy"
 		return result, SkipTask("运行状态正常，无需发送运行摘要")
 	}
-	if s.configs == nil || s.notifier == nil {
+	if s.configs == nil || s.batches == nil {
 		return result, errors.New("operational alert delivery is not configured")
 	}
 	telegramConfig, err := s.configs.Telegram(ctx)
@@ -383,7 +422,16 @@ func (s *OperationalHealthService) Notify(ctx context.Context) (OperationalAlert
 		return result, err
 	}
 	message := "SEC Monitor 运行摘要\n" + report.Summary
-	if err := s.notifier.Send(ctx, telegram.Message{Text: message}); err != nil {
+	batch, err := s.batches.DeliverMessage(ctx, NotificationMessageInput{
+		Source: "operational_health", Trigger: "scheduler", EventKey: "operational:" + fingerprint,
+		EntityKind: "operational_report", Title: "运行摘要", SummaryText: message, EventAt: report.GeneratedAt,
+	})
+	if err != nil {
+		_ = s.upsertDelivery(ctx, fingerprint, report, nil, err)
+		return result, err
+	}
+	if batch.Status != "sent" {
+		err := PartialTask("运行摘要已进入通知中心，Telegram 投递将按重试策略继续处理")
 		_ = s.upsertDelivery(ctx, fingerprint, report, nil, err)
 		return result, err
 	}
@@ -423,7 +471,7 @@ func taskExpectedWithin(taskName string) time.Duration {
 		return 9 * 24 * time.Hour
 	case "sqlite_backup", "operational_health_notification_sync":
 		return 30 * time.Hour
-	case "macro_calendar_sync":
+	case "macro_calendar_sync", "market_trend_sync", "us_futures_sync", "longbridge_candidate_research_sync", "longbridge_candidate_valuation_sync", "longbridge_watch_target_valuation_sync", "longbridge_watch_target_research_sync":
 		return 30 * time.Hour
 	case "operation_history_cleanup":
 		return 9 * 24 * time.Hour

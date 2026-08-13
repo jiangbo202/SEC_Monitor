@@ -52,6 +52,35 @@ type LongbridgeCompanyProfileOptions struct {
 	NewClient   func(appKey, appSecret, accessToken string) (longbridgeCompanyClient, error)
 }
 
+// FetchLongbridgeCompanyOverview reads one issuer overview without requiring a
+// pre-existing Security/Listing row. It is intended for an explicit ad-hoc
+// evaluation, whose returned snapshot is persisted by the caller; regular
+// detail pages must continue to use RefreshLongbridgeCompanyProfile and the
+// local cache instead.
+func FetchLongbridgeCompanyOverview(ctx context.Context, cfg config.DiscoveryConfig, ticker string) (LongbridgeCompanyOverview, error) {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
+	if ticker == "" {
+		return LongbridgeCompanyOverview{}, errors.New("ticker is required")
+	}
+	if !cfg.LongbridgeCompanyProfileEnabled || cfg.LongbridgeCompanyProfileRequestBudget <= 0 {
+		return LongbridgeCompanyOverview{}, errors.New("Longbridge company profile sync is disabled or budget is 0")
+	}
+	if strings.TrimSpace(cfg.LongbridgeAppKey) == "" || strings.TrimSpace(cfg.LongbridgeAppSecret) == "" || strings.TrimSpace(cfg.LongbridgeAccessToken) == "" {
+		return LongbridgeCompanyOverview{}, errors.New("Longbridge app key, app secret, and access token are required")
+	}
+	client, err := newLongbridgeCompanySDKClient(cfg.LongbridgeAppKey, cfg.LongbridgeAppSecret, cfg.LongbridgeAccessToken)
+	if err != nil {
+		return LongbridgeCompanyOverview{}, fmt.Errorf("create Longbridge company profile client: %w", err)
+	}
+	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 25*time.Second)
+	defer cancel()
+	overview, err := client.Company(requestCtx, ticker+".US")
+	if err != nil {
+		return LongbridgeCompanyOverview{}, fmt.Errorf("load Longbridge company overview: %w", err)
+	}
+	return overview, nil
+}
+
 type CompanyProfileRefreshResult struct {
 	Ticker    string     `json:"ticker"`
 	Fetched   bool       `json:"fetched"`

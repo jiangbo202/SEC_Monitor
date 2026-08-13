@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"sec_monitor/internal/config"
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/telegram"
@@ -18,11 +20,14 @@ import (
 )
 
 type IPORadarService struct {
-	db       *gorm.DB
-	sec      sec.CurrentFilingsClient
-	notifier telegram.Notifier
-	configs  *ConfigService
-	batches  *NotificationBatchService
+	db                             *gorm.DB
+	sec                            sec.CurrentFilingsClient
+	configs                        *ConfigService
+	batches                        *NotificationBatchService
+	inApp                          *InAppNotificationService
+	longbridgeRuntime              config.DiscoveryConfig
+	newLongbridgeListingClient     func(string, string, string) (longbridgeIPOListingClient, error)
+	newLongbridgeIPOCalendarClient func(string, string, string) (longbridgeIPOCalendarClient, error)
 }
 
 type IPOFilingFilter struct {
@@ -38,9 +43,11 @@ type IPOFilingFilter struct {
 type IPOCompanyFilter struct {
 	CompanyName  string
 	CIK          string
+	Ticker       string
 	Status       string
 	Attention    string
 	IncludeEnded bool
+	Followed     *bool
 	SortBy       string
 	SortOrder    string
 	Page         int
@@ -63,12 +70,13 @@ type IPORadarHealth struct {
 // counters. Keys intentionally remain stable so that API clients can localize
 // the copy while the service owns the priority and routing semantics.
 type IPORadarAction struct {
-	Key       string `json:"key"`
-	Severity  string `json:"severity"`
-	Count     int    `json:"count"`
-	Attention string `json:"attention,omitempty"`
-	Route     string `json:"route,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Key         string `json:"key"`
+	Severity    string `json:"severity"`
+	Disposition string `json:"disposition"`
+	Count       int    `json:"count"`
+	Attention   string `json:"attention,omitempty"`
+	Route       string `json:"route,omitempty"`
+	Status      string `json:"status,omitempty"`
 }
 
 type IPORadarSyncHealth struct {
@@ -79,44 +87,48 @@ type IPORadarSyncHealth struct {
 }
 
 type IPOCompanyItem struct {
-	CIK                  string     `json:"cik"`
-	CompanyName          string     `json:"company_name"`
-	Status               string     `json:"status"`
-	FirstFilingDate      time.Time  `json:"first_filing_date"`
-	LatestFilingDate     time.Time  `json:"latest_filing_date"`
-	LatestAcceptedAt     *time.Time `json:"latest_accepted_at"`
-	LatestFilingType     string     `json:"latest_filing_type"`
-	LatestFilingURL      string     `json:"latest_filing_url"`
-	LatestTitle          string     `json:"latest_title"`
-	FilingCount          int        `json:"filing_count"`
-	Notified             bool       `json:"notified"`
-	MatchedTicker        string     `json:"matched_ticker,omitempty"`
-	StatusReason         string     `json:"status_reason"`
-	StatusConfidence     string     `json:"status_confidence"`
-	StatusSource         string     `json:"status_source"`
-	FinalTicker          string     `json:"final_ticker,omitempty"`
-	Exchange             string     `json:"exchange,omitempty"`
-	OfferPrice           string     `json:"offer_price,omitempty"`
-	SharesOffered        int64      `json:"shares_offered,omitempty"`
-	GrossProceeds        string     `json:"gross_proceeds,omitempty"`
-	ListedVerifiedAt     *time.Time `json:"listed_verified_at,omitempty"`
-	ListingDate          *time.Time `json:"listing_date,omitempty"`
-	MarketDataSource     string     `json:"market_data_source,omitempty"`
-	MarketDataConfidence string     `json:"market_data_confidence,omitempty"`
-	MarketDataUpdatedAt  *time.Time `json:"market_data_updated_at,omitempty"`
-	AutomaticTicker      string     `json:"automatic_ticker,omitempty"`
-	AutomaticExchange    string     `json:"automatic_exchange,omitempty"`
-	AutomaticOfferPrice  string     `json:"automatic_offer_price,omitempty"`
-	AutomaticShares      int64      `json:"automatic_shares_offered,omitempty"`
-	AutomaticGross       string     `json:"automatic_gross_proceeds,omitempty"`
-	LifecycleCheckedAt   *time.Time `json:"lifecycle_checked_at,omitempty"`
-	OverrideFinalTicker  string     `json:"override_final_ticker,omitempty"`
-	OverrideExchange     string     `json:"override_exchange,omitempty"`
-	OverrideOfferPrice   string     `json:"override_offer_price,omitempty"`
-	OverrideShares       int64      `json:"override_shares_offered,omitempty"`
-	OverrideListingDate  *time.Time `json:"override_listing_date,omitempty"`
-	OverrideNote         string     `json:"override_note,omitempty"`
-	OverrideUpdatedAt    *time.Time `json:"override_updated_at,omitempty"`
+	CIK                          string     `json:"cik"`
+	CompanyName                  string     `json:"company_name"`
+	Status                       string     `json:"status"`
+	FirstFilingDate              time.Time  `json:"first_filing_date"`
+	LatestFilingDate             time.Time  `json:"latest_filing_date"`
+	LatestAcceptedAt             *time.Time `json:"latest_accepted_at"`
+	LatestFilingType             string     `json:"latest_filing_type"`
+	LatestFilingURL              string     `json:"latest_filing_url"`
+	LatestTitle                  string     `json:"latest_title"`
+	FilingCount                  int        `json:"filing_count"`
+	Notified                     bool       `json:"notified"`
+	MatchedTicker                string     `json:"matched_ticker,omitempty"`
+	StatusReason                 string     `json:"status_reason"`
+	StatusConfidence             string     `json:"status_confidence"`
+	StatusSource                 string     `json:"status_source"`
+	FinalTicker                  string     `json:"final_ticker,omitempty"`
+	Exchange                     string     `json:"exchange,omitempty"`
+	OfferPrice                   string     `json:"offer_price,omitempty"`
+	SharesOffered                int64      `json:"shares_offered,omitempty"`
+	GrossProceeds                string     `json:"gross_proceeds,omitempty"`
+	ListedVerifiedAt             *time.Time `json:"listed_verified_at,omitempty"`
+	ListingDate                  *time.Time `json:"listing_date,omitempty"`
+	LongbridgeListingCheckCount  int        `json:"longbridge_listing_check_count,omitempty"`
+	LongbridgeListingLastResult  string     `json:"longbridge_listing_last_result,omitempty"`
+	LongbridgeListingNextRetryAt *time.Time `json:"longbridge_listing_next_retry_at,omitempty"`
+	MarketDataSource             string     `json:"market_data_source,omitempty"`
+	MarketDataConfidence         string     `json:"market_data_confidence,omitempty"`
+	MarketDataUpdatedAt          *time.Time `json:"market_data_updated_at,omitempty"`
+	AutomaticTicker              string     `json:"automatic_ticker,omitempty"`
+	AutomaticExchange            string     `json:"automatic_exchange,omitempty"`
+	AutomaticOfferPrice          string     `json:"automatic_offer_price,omitempty"`
+	AutomaticShares              int64      `json:"automatic_shares_offered,omitempty"`
+	AutomaticGross               string     `json:"automatic_gross_proceeds,omitempty"`
+	LifecycleCheckedAt           *time.Time `json:"lifecycle_checked_at,omitempty"`
+	OverrideFinalTicker          string     `json:"override_final_ticker,omitempty"`
+	OverrideExchange             string     `json:"override_exchange,omitempty"`
+	OverrideOfferPrice           string     `json:"override_offer_price,omitempty"`
+	OverrideShares               int64      `json:"override_shares_offered,omitempty"`
+	OverrideListingDate          *time.Time `json:"override_listing_date,omitempty"`
+	OverrideNote                 string     `json:"override_note,omitempty"`
+	OverrideUpdatedAt            *time.Time `json:"override_updated_at,omitempty"`
+	Followed                     bool       `json:"followed"`
 }
 
 type IPORadarRefreshResult struct {
@@ -124,6 +136,16 @@ type IPORadarRefreshResult struct {
 	NewFilings int  `json:"new_filings"`
 	Notified   int  `json:"notified"`
 	SyncRunID  uint `json:"sync_run_id"`
+}
+
+// IPOReconciliationResult is the concise, task-level outcome of one isolated
+// compensation stage. It is intentionally separate from the primary filing
+// scan so slow provider work cannot hide whether SEC ingestion succeeded.
+type IPOReconciliationResult struct {
+	Checked   int    `json:"checked"`
+	Updated   int    `json:"updated"`
+	Confirmed int    `json:"confirmed"`
+	Warning   string `json:"warning,omitempty"`
 }
 
 type IPOCompanyOverrideInput struct {
@@ -137,7 +159,28 @@ type IPOCompanyOverrideInput struct {
 }
 
 func NewIPORadarService(db *gorm.DB, secClient sec.CurrentFilingsClient, notifier telegram.Notifier, configs *ConfigService) *IPORadarService {
-	return &IPORadarService{db: db, sec: secClient, notifier: notifier, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
+	return &IPORadarService{db: db, sec: secClient, configs: configs, batches: NewNotificationBatchService(db, notifier, configs), newLongbridgeListingClient: newLongbridgeIPOListingClient, newLongbridgeIPOCalendarClient: newLongbridgeIPOCalendarClient}
+}
+
+func (s *IPORadarService) WithNotificationCenter(center *NotificationBatchService) *IPORadarService {
+	if s != nil && center != nil {
+		s.batches = center
+	}
+	return s
+}
+
+func (s *IPORadarService) WithInAppNotifications(inApp *InAppNotificationService) *IPORadarService {
+	if s != nil && inApp != nil {
+		s.inApp = inApp
+	}
+	return s
+}
+
+// WithLongbridgeListingRuntime supplies the environment defaults that are
+// merged with encrypted, operator-saved Longbridge credentials at run time.
+func (s *IPORadarService) WithLongbridgeListingRuntime(runtime config.DiscoveryConfig) *IPORadarService {
+	s.longbridgeRuntime = runtime
+	return s
 }
 
 // Health summarizes operator-visible IPO work. All timestamps remain UTC so
@@ -158,7 +201,11 @@ func (s *IPORadarService) Health(ctx context.Context, now time.Time) (IPORadarHe
 		if company.Status == "listing_pending" {
 			health.PendingListing++
 		}
-		if activeIPOCompanyStatus(company.Status) && strings.TrimSpace(company.AutomaticTicker) == "" {
+		// A ticker is not normally available while an issuer is only preparing
+		// or amending its registration. Surface a mapping action only once the
+		// SEC lifecycle indicates that the security is close to, or at, listing.
+		// This keeps the operator queue focused on genuinely actionable gaps.
+		if ipoRequiresMarketMapping(company) {
 			health.MissingMarketMapping++
 		}
 		if ipoLifecycleCheckStale(company, staleBefore) {
@@ -199,24 +246,24 @@ func (s *IPORadarService) Health(ctx context.Context, now time.Time) (IPORadarHe
 
 func buildIPORadarActions(health IPORadarHealth) []IPORadarAction {
 	actions := make([]IPORadarAction, 0, 7)
-	add := func(key, severity string, count int, attention, route, status string) {
+	add := func(key, severity, disposition string, count int, attention, route, status string) {
 		if count <= 0 {
 			return
 		}
 		actions = append(actions, IPORadarAction{
-			Key: key, Severity: severity, Count: count, Attention: attention, Route: route, Status: status,
+			Key: key, Severity: severity, Disposition: disposition, Count: count, Attention: attention, Route: route, Status: status,
 		})
 	}
 	// Delivery failures are first because a dead-lettered IPO alert cannot
 	// recover without an explicit operator action.
-	add("review_dead_letters", "danger", health.DeadLetterBatches, "", "notification_logs", "dead_letter")
-	add("retry_notifications", "danger", health.DueRetryBatches, "", "notification_logs", "failed")
-	add("verify_listing", "warning", health.PendingListing, "listing_pending", "", "")
-	add("complete_market_mapping", "warning", health.MissingMarketMapping, "missing_market_mapping", "", "")
-	add("recheck_lifecycle", "warning", health.StaleLifecycleChecks, "lifecycle_stale", "", "")
-	add("review_offering_parse", "warning", health.UnsupportedOfferingEvents, "parse_failed", "", "")
+	add("review_dead_letters", "danger", "manual", health.DeadLetterBatches, "", "notification_logs", "dead_letter")
+	add("retry_notifications", "danger", "automatic", health.DueRetryBatches, "", "notification_logs", "failed")
+	add("verify_listing", "warning", "automatic", health.PendingListing, "listing_pending", "", "")
+	add("complete_market_mapping", "warning", "automatic", health.MissingMarketMapping, "missing_market_mapping", "", "")
+	add("recheck_lifecycle", "warning", "automatic", health.StaleLifecycleChecks, "lifecycle_stale", "", "")
+	add("review_offering_parse", "warning", "automatic", health.UnsupportedOfferingEvents, "parse_failed", "", "")
 	if health.LatestSync != nil && health.LatestSync.Status == "failed" {
-		add("retry_sync", "danger", 1, "", "refresh", "")
+		add("retry_sync", "danger", "manual", 1, "", "refresh", "")
 	}
 	return actions
 }
@@ -328,6 +375,16 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 	for _, row := range marketRows {
 		marketByCIK[row.CIK] = row
 	}
+	var follows []model.IPOCompanyFollow
+	if len(ciks) > 0 && s.db.Migrator().HasTable(&model.IPOCompanyFollow{}) {
+		if err := s.db.WithContext(ctx).Where("cik IN ?", ciks).Find(&follows).Error; err != nil {
+			return PageResult[IPOCompanyItem]{}, err
+		}
+	}
+	followedCIKs := make(map[string]bool, len(follows))
+	for _, follow := range follows {
+		followedCIKs[normalizedIPOCompanyCIK(follow.CIK)] = true
+	}
 	attentionCIKs, staleBefore, err := s.attentionCompanyCIKs(ctx, attention, ciks, now)
 	if err != nil {
 		return PageResult[IPOCompanyItem]{}, err
@@ -342,13 +399,20 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 	items := make([]IPOCompanyItem, 0, len(grouped))
 	for _, group := range grouped {
 		item := buildIPOCompanyItem(group, tickerByCIK, marketByCIK, overrideByCIK, now)
+		item.Followed = followedCIKs[normalizedIPOCompanyCIK(item.CIK)]
+		if filter.Followed != nil && item.Followed != *filter.Followed {
+			continue
+		}
+		if !matchesIPOCompanyTicker(item, filter.Ticker) {
+			continue
+		}
 		if status := strings.TrimSpace(filter.Status); status != "" && item.Status != status {
 			continue
 		}
 		// The default company view is an active IPO work queue. A selected
 		// terminal status or attention filter remains inspectable without
 		// requiring callers to opt into the full historical archive.
-		if strings.TrimSpace(filter.Status) == "" && attention == "" && !filter.IncludeEnded && !activeIPOCompanyStatus(item.Status) {
+		if strings.TrimSpace(filter.Status) == "" && attention == "" && !filter.IncludeEnded && (filter.Followed == nil || !*filter.Followed) && !activeIPOCompanyStatus(item.Status) {
 			continue
 		}
 		if !matchesIPOCompanyAttention(item, attention, attentionCIKs, staleBefore) {
@@ -368,6 +432,76 @@ func (s *IPORadarService) ListCompanies(ctx context.Context, filter IPOCompanyFi
 		end = len(items)
 	}
 	return newPageResult(items[start:end], total, page, pageSize), nil
+}
+
+// SetCompanyFollow changes the local IPO follow list. Enabling follow records
+// the current company snapshot as a baseline, so historical filings never
+// generate an alert simply because an operator started following a company.
+func (s *IPORadarService) SetCompanyFollow(ctx context.Context, cik string, followed bool, now time.Time) (model.IPOCompanyFollow, error) {
+	if s == nil || s.db == nil || !s.db.Migrator().HasTable(&model.IPOCompanyFollow{}) {
+		return model.IPOCompanyFollow{}, fmt.Errorf("%w: ipo follow storage is not initialized", ErrValidation)
+	}
+	cik = strings.TrimSpace(cik)
+	if cik == "" {
+		return model.IPOCompanyFollow{}, fmt.Errorf("%w: cik is required", ErrValidation)
+	}
+	if !followed {
+		if err := s.db.WithContext(ctx).Where("cik = ?", cik).Delete(&model.IPOCompanyFollow{}).Error; err != nil {
+			return model.IPOCompanyFollow{}, err
+		}
+		return model.IPOCompanyFollow{CIK: cik}, nil
+	}
+	company, err := s.companyByCIK(ctx, cik, now)
+	if err != nil {
+		return model.IPOCompanyFollow{}, err
+	}
+	var existing model.IPOCompanyFollow
+	if err := s.db.WithContext(ctx).Where("cik = ?", cik).First(&existing).Error; err == nil {
+		return existing, nil
+	} else if err != gorm.ErrRecordNotFound {
+		return model.IPOCompanyFollow{}, err
+	}
+	follow := model.IPOCompanyFollow{CIK: cik, CompanyName: company.CompanyName, LastProgressKey: ipoCompanyProgressKey(company)}
+	if err := s.db.WithContext(ctx).Create(&follow).Error; err != nil {
+		return model.IPOCompanyFollow{}, err
+	}
+	return follow, nil
+}
+
+func (s *IPORadarService) companyByCIK(ctx context.Context, cik string, now time.Time) (IPOCompanyItem, error) {
+	page, err := s.ListCompanies(ctx, IPOCompanyFilter{CIK: cik, IncludeEnded: true, Page: 1, PageSize: 10}, now)
+	if err != nil {
+		return IPOCompanyItem{}, err
+	}
+	for _, item := range page.Items {
+		if item.CIK == cik || normalizedIPOCompanyCIK(item.CIK) == normalizedIPOCompanyCIK(cik) {
+			return item, nil
+		}
+	}
+	return IPOCompanyItem{}, fmt.Errorf("%w: ipo company not found", ErrNotFound)
+}
+
+// matchesIPOCompanyTicker accepts the final (including manual), automatic,
+// or watch-target ticker. Users may paste a common market suffix or '$'
+// prefix without missing the IPO company.
+func matchesIPOCompanyTicker(item IPOCompanyItem, filter string) bool {
+	filter = normalizeIPOCompanyTicker(filter)
+	if filter == "" {
+		return true
+	}
+	for _, ticker := range []string{item.FinalTicker, item.AutomaticTicker, item.MatchedTicker} {
+		if normalizeIPOCompanyTicker(ticker) == filter {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeIPOCompanyTicker(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "$")
+	value = strings.TrimSuffix(value, ".US")
+	return value
 }
 
 func (s *IPORadarService) allCompanies(ctx context.Context, now time.Time) ([]IPOCompanyItem, error) {
@@ -444,7 +578,7 @@ func matchesIPOCompanyAttention(item IPOCompanyItem, attention string, matchedCI
 	case "lifecycle_stale":
 		return ipoLifecycleCheckStale(item, staleBefore)
 	case "missing_market_mapping":
-		return activeIPOCompanyStatus(item.Status) && strings.TrimSpace(item.AutomaticTicker) == ""
+		return ipoRequiresMarketMapping(item)
 	default:
 		return false
 	}
@@ -517,6 +651,64 @@ func (s *IPORadarService) Refresh(ctx context.Context) (IPORadarRefreshResult, e
 	return s.RefreshWithTrigger(ctx, "ipo_manual")
 }
 
+// ReconcileLifecycle performs only the bounded SEC submissions backfill for
+// active IPO candidates. It is scheduled independently from the current-feed
+// scan so a slow historical CIK cannot delay new IPO detection.
+func (s *IPORadarService) ReconcileLifecycle(ctx context.Context) (IPOReconciliationResult, error) {
+	settings, err := s.configs.IPORadarSettings(ctx)
+	if err != nil {
+		return IPOReconciliationResult{}, err
+	}
+	if !settings.Enabled || !settings.LifecycleSweepEnabled {
+		return IPOReconciliationResult{}, nil
+	}
+	added, err := s.sweepCompanyLifecycleFilings(ctx, settings, map[string]bool{})
+	if err != nil {
+		return IPOReconciliationResult{}, err
+	}
+	return IPOReconciliationResult{Checked: settings.LifecycleMaxCIKs, Updated: len(added)}, nil
+}
+
+// ReconcileOfferings retries a bounded set of historical 424B4 documents.
+// New offerings remain handled during a manual full scan; this job exists to
+// repair temporary document failures and parser improvements independently.
+func (s *IPORadarService) ReconcileOfferings(ctx context.Context) (IPOReconciliationResult, error) {
+	settings, err := s.configs.IPORadarSettings(ctx)
+	if err != nil {
+		return IPOReconciliationResult{}, err
+	}
+	if !settings.Enabled {
+		return IPOReconciliationResult{}, nil
+	}
+	warning, _ := s.enrichIPOMarketDataWithListingMapping(ctx, nil, false, true)
+	if warning != "" {
+		return IPOReconciliationResult{Warning: warning}, nil
+	}
+	return IPOReconciliationResult{Checked: ipoOfferingUnsupportedRetryMaxBatch}, nil
+}
+
+// ReconcileListings queries only the complementary Longbridge sources. The
+// official SEC ticker/exchange mapping remains part of the primary SEC scan.
+func (s *IPORadarService) ReconcileListings(ctx context.Context) (IPOReconciliationResult, error) {
+	settings, err := s.configs.IPORadarSettings(ctx)
+	if err != nil {
+		return IPOReconciliationResult{}, err
+	}
+	if !settings.Enabled {
+		return IPOReconciliationResult{}, nil
+	}
+	confirmed, listingWarning := s.confirmListedCompaniesWithLongbridge(ctx, settings)
+	calendarWarning := s.syncLongbridgeIPOCalendar(ctx, settings)
+	warnings := make([]string, 0, 2)
+	if listingWarning != "" {
+		warnings = append(warnings, listingWarning)
+	}
+	if calendarWarning != "" {
+		warnings = append(warnings, calendarWarning)
+	}
+	return IPOReconciliationResult{Checked: settings.LongbridgeListingRequestBudget, Confirmed: len(confirmed), Warning: strings.Join(warnings, "; ")}, nil
+}
+
 func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string) (IPORadarRefreshResult, error) {
 	startedAt := time.Now().UTC()
 	if strings.TrimSpace(trigger) == "" {
@@ -537,6 +729,15 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		return out, nil
 	}
 	confirmedListedCIKs, listingWarning := s.refreshListedCompanyMappings(ctx)
+	fullReconciliation := trigger != "ipo_scheduler"
+	longbridgeListingWarning := ""
+	if fullReconciliation {
+		longbridgeConfirmedCIKs, warning := s.confirmListedCompaniesWithLongbridge(ctx, settings)
+		longbridgeListingWarning = warning
+		for cik := range longbridgeConfirmedCIKs {
+			confirmedListedCIKs[cik] = true
+		}
+	}
 	var existingFilings int64
 	if err := s.db.WithContext(ctx).Model(&model.IPOFiling{}).Count(&existingFilings).Error; err != nil {
 		s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
@@ -614,15 +815,17 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 			notificationCandidates = append(notificationCandidates, ipoNotificationCandidate(filing, settings, initialBaseline, true))
 		}
 	}
-	sweepAdded, err := s.sweepCompanyLifecycleFilings(ctx, settings, backfilledCIK)
-	if err != nil {
-		s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
-		return out, err
-	}
-	out.NewFilings += len(sweepAdded)
-	newFilings = append(newFilings, sweepAdded...)
-	for _, filing := range sweepAdded {
-		notificationCandidates = append(notificationCandidates, ipoNotificationCandidate(filing, settings, initialBaseline, true))
+	if fullReconciliation {
+		sweepAdded, err := s.sweepCompanyLifecycleFilings(ctx, settings, backfilledCIK)
+		if err != nil {
+			s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
+			return out, err
+		}
+		out.NewFilings += len(sweepAdded)
+		newFilings = append(newFilings, sweepAdded...)
+		for _, filing := range sweepAdded {
+			notificationCandidates = append(notificationCandidates, ipoNotificationCandidate(filing, settings, initialBaseline, true))
+		}
 	}
 	if len(notificationCandidates) > 0 {
 		batch, err := s.batches.Deliver(ctx, NotificationBatchInput{SyncRunID: run.ID, Source: "ipo", Trigger: trigger, Candidates: notificationCandidates})
@@ -632,10 +835,22 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 		}
 		out.Notified = batch.SentCount
 	}
-	warning, offeringCandidates := s.enrichIPOMarketDataWithListingMapping(ctx, newFilings, initialBaseline, true)
-	warnings := make([]string, 0, 2)
+	calendarWarning := ""
+	warning := ""
+	offeringCandidates := []NotificationCandidate(nil)
+	if fullReconciliation {
+		calendarWarning = s.syncLongbridgeIPOCalendar(ctx, settings)
+		warning, offeringCandidates = s.enrichIPOMarketDataWithListingMapping(ctx, newFilings, initialBaseline, true)
+	}
+	warnings := make([]string, 0, 4)
 	if listingWarning != "" {
 		warnings = append(warnings, listingWarning)
+	}
+	if longbridgeListingWarning != "" {
+		warnings = append(warnings, longbridgeListingWarning)
+	}
+	if calendarWarning != "" {
+		warnings = append(warnings, calendarWarning)
 	}
 	if warning != "" {
 		warnings = append(warnings, warning)
@@ -649,8 +864,108 @@ func (s *IPORadarService) RefreshWithTrigger(ctx context.Context, trigger string
 			return out, err
 		}
 	}
+	if err := s.notifyFollowedCompanyProgress(ctx, run.ID, trigger); err != nil {
+		s.finishSyncRun(ctx, run.ID, out, "failed", err.Error())
+		return out, err
+	}
 	s.finishSyncRun(ctx, run.ID, out, "success", "")
 	return out, nil
+}
+
+func (s *IPORadarService) notifyFollowedCompanyProgress(ctx context.Context, syncRunID uint, trigger string) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	if !s.db.Migrator().HasTable(&model.IPOCompanyFollow{}) {
+		return nil
+	}
+	var follows []model.IPOCompanyFollow
+	if err := s.db.WithContext(ctx).Find(&follows).Error; err != nil || len(follows) == 0 {
+		return err
+	}
+	companies, err := s.allCompanies(ctx, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	byCIK := make(map[string]IPOCompanyItem, len(companies))
+	for _, company := range companies {
+		byCIK[normalizedIPOCompanyCIK(company.CIK)] = company
+	}
+	candidates := make([]NotificationCandidate, 0)
+	updates := make([]model.IPOCompanyFollow, 0)
+	for _, follow := range follows {
+		company, found := byCIK[normalizedIPOCompanyCIK(follow.CIK)]
+		if !found {
+			continue
+		}
+		progressKey := ipoCompanyProgressKey(company)
+		if progressKey == "" || progressKey == follow.LastProgressKey {
+			continue
+		}
+		occurredAt := company.LatestFilingDate
+		if company.LatestAcceptedAt != nil {
+			occurredAt = *company.LatestAcceptedAt
+		}
+		if s.inApp != nil {
+			_, _, err := s.inApp.Create(ctx, InAppNotificationInput{
+				EventKey: "ipo-progress:" + company.CIK + ":" + progressKey, Source: "ipo_progress", Scope: "ipo_follow",
+				EntityKind: "ipo_company", Ticker: valueOrDefault(company.FinalTicker, company.MatchedTicker), CompanyName: company.CompanyName,
+				Severity: "info", Title: "关注 IPO 进展：" + company.CompanyName, Body: ipoCompanyProgressText(company), Link: "/ipo-radar?cik=" + company.CIK, OccurredAt: occurredAt,
+			})
+			if err != nil {
+				return err
+			}
+		}
+		candidates = append(candidates, NotificationCandidate{
+			EntityKind: "ipo_company", FilingID: "ipo-follow:" + company.CIK + ":" + progressKey, CIK: company.CIK,
+			Ticker: valueOrDefault(company.FinalTicker, company.MatchedTicker), CompanyName: company.CompanyName, FilingType: company.LatestFilingType,
+			Title: ipoCompanyProgressText(company), FilingURL: company.LatestFilingURL, Reason: "eligible", EventAt: occurredAt,
+		})
+		follow.CompanyName, follow.LastProgressKey = company.CompanyName, progressKey
+		updates = append(updates, follow)
+	}
+	if len(candidates) > 0 {
+		if _, err := s.batches.Deliver(ctx, NotificationBatchInput{SyncRunID: syncRunID, Source: "ipo_progress", Trigger: trigger, Candidates: candidates}); err != nil {
+			return err
+		}
+	}
+	for _, follow := range updates {
+		if err := s.db.WithContext(ctx).Model(&model.IPOCompanyFollow{}).Where("id = ?", follow.ID).Updates(map[string]any{"company_name": follow.CompanyName, "last_progress_key": follow.LastProgressKey}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ipoCompanyProgressKey(item IPOCompanyItem) string {
+	acceptedAt := ""
+	if item.LatestAcceptedAt != nil {
+		acceptedAt = item.LatestAcceptedAt.UTC().Format(time.RFC3339Nano)
+	}
+	listingDate := ""
+	if item.ListingDate != nil {
+		listingDate = item.ListingDate.UTC().Format(time.DateOnly)
+	}
+	raw := strings.Join([]string{item.CIK, acceptedAt, item.LatestFilingType, item.Status, item.FinalTicker, item.Exchange, item.OfferPrice, strconv.FormatInt(item.SharesOffered, 10), item.GrossProceeds, listingDate}, "|")
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func ipoCompanyProgressText(item IPOCompanyItem) string {
+	parts := []string{valueOrDefault(item.LatestFilingType, "IPO 状态更新"), "状态：" + valueOrDefault(item.Status, "未知")}
+	if ticker := valueOrDefault(item.FinalTicker, item.MatchedTicker); ticker != "" {
+		parts = append(parts, "代码："+ticker)
+	}
+	if item.Exchange != "" {
+		parts = append(parts, "交易所："+item.Exchange)
+	}
+	if item.OfferPrice != "" {
+		parts = append(parts, "发行价：$"+item.OfferPrice)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func (s *IPORadarService) backfillCompanyLifecycleFilings(ctx context.Context, seed sec.CurrentFilingResult, settings IPORadarSettings) ([]model.IPOFiling, error) {
@@ -856,7 +1171,7 @@ func (s *IPORadarService) createIfNew(ctx context.Context, filing model.IPOFilin
 
 func currentFilingToIPOModel(item sec.CurrentFilingResult) model.IPOFiling {
 	return model.IPOFiling{
-		FilingID:        valueOrDefault(item.FilingID, item.FilingURL),
+		FilingID:        canonicalIPOFilingID(item.FilingID, item.AccessionNumber, item.FilingURL),
 		AccessionNumber: item.AccessionNumber,
 		CIK:             item.CIK,
 		CompanyName:     valueOrDefault(item.CompanyName, "Unknown"),
@@ -869,17 +1184,36 @@ func currentFilingToIPOModel(item sec.CurrentFilingResult) model.IPOFiling {
 }
 
 func filingResultToIPOModel(item sec.FilingResult, seed sec.CurrentFilingResult) model.IPOFiling {
+	accession := valueOrDefault(item.AccessionNumber, seed.AccessionNumber)
+	filingURL := valueOrDefault(item.FilingURL, seed.FilingURL)
 	return model.IPOFiling{
-		FilingID:        valueOrDefault(item.FilingID, item.FilingURL),
-		AccessionNumber: item.AccessionNumber,
+		FilingID:        canonicalIPOFilingID(item.FilingID, accession, filingURL),
+		AccessionNumber: accession,
 		CIK:             valueOrDefault(item.CIK, seed.CIK),
 		CompanyName:     valueOrDefault(item.CompanyName, valueOrDefault(seed.CompanyName, "Unknown")),
 		FilingType:      item.FilingType,
 		FilingDate:      item.FilingDate,
 		AcceptedAt:      item.PublishedAt,
-		FilingURL:       item.FilingURL,
+		FilingURL:       filingURL,
 		Title:           item.Title,
 	}
+}
+
+var ipoAccessionNumberPattern = regexp.MustCompile(`\b\d{10}-\d{2}-\d{6}\b`)
+
+// canonicalIPOFilingID prevents the same SEC submission from being persisted
+// once under an accession number and again under an EDGAR index URL. The SEC
+// accession is stable across feeds and is therefore the only safe identity.
+func canonicalIPOFilingID(filingID, accessionNumber, filingURL string) string {
+	if accession := strings.TrimSpace(accessionNumber); accession != "" {
+		return accession
+	}
+	for _, value := range []string{filingID, filingURL} {
+		if accession := ipoAccessionNumberPattern.FindString(value); accession != "" {
+			return accession
+		}
+	}
+	return valueOrDefault(strings.TrimSpace(filingID), strings.TrimSpace(filingURL))
 }
 
 func filingResultToCurrent(item sec.FilingResult) sec.CurrentFilingResult {
@@ -1022,8 +1356,18 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 		item.SharesOffered = market.SharesOffered
 		item.GrossProceeds = market.GrossProceeds
 		item.ListedVerifiedAt = market.ListedVerifiedAt
+		item.ListingDate = market.ListingDate
+		item.LongbridgeListingCheckCount = market.LongbridgeListingCheckCount
+		item.LongbridgeListingLastResult = market.LongbridgeListingLastResult
+		item.LongbridgeListingNextRetryAt = market.LongbridgeListingNextRetryAt
 		item.MarketDataUpdatedAt = &market.UpdatedAt
-		if market.Ticker != "" {
+		if market.ListingSource == "longbridge" && market.ListedVerifiedAt != nil {
+			item.MarketDataSource = "longbridge"
+			item.MarketDataConfidence = market.ListingConfidence
+		} else if market.ListingSource == longbridgeIPOCalendarSource || market.TickerSource == longbridgeIPOCalendarSource {
+			item.MarketDataSource = "longbridge_calendar"
+			item.MarketDataConfidence = market.ListingConfidence
+		} else if market.Ticker != "" {
 			item.MarketDataSource = "sec"
 			item.MarketDataConfidence = market.TickerConfidence
 		} else if market.OfferPrice != "" || market.SharesOffered > 0 {
@@ -1041,6 +1385,27 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 	}
 	item.Status, item.StatusReason, item.StatusConfidence = inferIPOCompanyStatus(filings, statusTicker, pendingTicker, item.LatestFilingDate, now)
 	item.StatusSource = "system"
+	if item.Status == "listed" && item.MarketDataSource == "longbridge" {
+		item.StatusReason = "Longbridge confirmed market " + strings.TrimSpace(item.Exchange)
+		item.StatusConfidence = "medium"
+		item.StatusSource = "longbridge"
+	}
+	if item.Status == "listing_pending" && item.LongbridgeListingCheckCount > 0 {
+		switch item.LongbridgeListingLastResult {
+		case "no_data":
+			item.StatusReason = fmt.Sprintf("Longbridge queried %d time(s); no listing market information returned", item.LongbridgeListingCheckCount)
+		case "unavailable":
+			item.StatusReason = fmt.Sprintf("Longbridge queried %d time(s); latest request was unavailable", item.LongbridgeListingCheckCount)
+			if item.LongbridgeListingNextRetryAt != nil {
+				item.StatusReason += "; retry after " + item.LongbridgeListingNextRetryAt.Format(time.RFC3339)
+			}
+		}
+	}
+	if item.MarketDataSource == "longbridge_calendar" && item.ListingDate != nil && item.Status != "listed" && item.Status != "withdrawn" {
+		item.StatusReason = "Longbridge IPO calendar: expected listing " + item.ListingDate.Format(time.DateOnly)
+		item.StatusConfidence = "medium"
+		item.StatusSource = "longbridge_calendar"
+	}
 	if override, ok := overrideByCIK[item.CIK]; ok {
 		item.OverrideFinalTicker = override.FinalTicker
 		item.OverrideExchange = override.Exchange
@@ -1082,7 +1447,11 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 	return item
 }
 
-const ipoOfferingParserVersion = 5
+const (
+	ipoOfferingParserVersion            = 5
+	ipoOfferingUnsupportedRetryAfter    = 24 * time.Hour
+	ipoOfferingUnsupportedRetryMaxBatch = 25
+)
 
 func (s *IPORadarService) enrichIPOMarketData(ctx context.Context, newFilings []model.IPOFiling, initialBaseline bool) (string, []NotificationCandidate) {
 	return s.enrichIPOMarketDataWithListingMapping(ctx, newFilings, initialBaseline, false)
@@ -1205,16 +1574,28 @@ func (s *IPORadarService) pending424B4Filings(ctx context.Context) ([]model.IPOF
 	if err := s.db.WithContext(ctx).Where("filing_id IN ?", filingIDs).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	versions := map[string]int{}
+	events := map[string]model.IPOOfferingEvent{}
 	for _, row := range rows {
-		versions[row.FilingID] = row.ParserVersion
+		events[row.FilingID] = row
 	}
 	pending := make([]model.IPOFiling, 0)
+	unsupportedRetried := 0
+	retryBefore := time.Now().UTC().Add(-ipoOfferingUnsupportedRetryAfter)
 	for _, filing := range filings {
-		if versions[filing.FilingID] >= ipoOfferingParserVersion {
+		event, exists := events[filing.FilingID]
+		if !exists || event.ParserVersion < ipoOfferingParserVersion {
+			pending = append(pending, filing)
 			continue
 		}
-		pending = append(pending, filing)
+		// Parser failures can be caused by a temporarily unavailable SEC
+		// document or a document shape that the parser did not previously
+		// understand. Retry them once a day in a bounded batch so improvements
+		// to the parser repair historical data automatically without turning
+		// each 30-minute IPO scan into a large document crawl.
+		if event.ParseStatus == "unsupported" && event.UpdatedAt.Before(retryBefore) && unsupportedRetried < ipoOfferingUnsupportedRetryMaxBatch {
+			pending = append(pending, filing)
+			unsupportedRetried++
+		}
 	}
 	return pending, nil
 }
@@ -1354,13 +1735,30 @@ func (s *IPORadarService) upsertListedCompanies(ctx context.Context, listed []se
 		} else if err != nil {
 			return err
 		}
-		if strings.TrimSpace(company.Ticker) != "" && strings.TrimSpace(company.Exchange) != "" && row.ListedVerifiedAt == nil {
-			row.ListedVerifiedAt = &now
-		} else if strings.TrimSpace(company.Exchange) == "" {
+		newTicker := strings.ToUpper(strings.TrimSpace(company.Ticker))
+		newExchange := strings.TrimSpace(company.Exchange)
+		keepLongbridgeConfirmation := newTicker != "" && newExchange == "" && row.Ticker == newTicker && row.ListingSource == "longbridge" && row.ListedVerifiedAt != nil && strings.TrimSpace(row.Exchange) != ""
+		if newTicker != "" && newExchange != "" {
+			if row.ListedVerifiedAt == nil {
+				row.ListedVerifiedAt = &now
+			}
+			row.Exchange = newExchange
+			row.ListingSource = "sec"
+			row.ListingConfidence = "high"
+		} else if !keepLongbridgeConfirmation {
+			row.Exchange = ""
 			row.ListedVerifiedAt = nil
+			row.ListingDate = nil
+			row.ListingSource = ""
+			row.ListingConfidence = ""
+			row.ListingCheckedAt = nil
+			if row.Ticker != newTicker {
+				row.LongbridgeListingCheckCount = 0
+				row.LongbridgeListingLastResult = ""
+				row.LongbridgeListingNextRetryAt = nil
+			}
 		}
-		row.Ticker = strings.ToUpper(strings.TrimSpace(company.Ticker))
-		row.Exchange = strings.TrimSpace(company.Exchange)
+		row.Ticker = newTicker
 		row.TickerSource = "https://www.sec.gov/files/company_tickers_exchange.json"
 		row.TickerConfidence = "high"
 		if err := s.db.WithContext(ctx).Save(&row).Error; err != nil {
@@ -1371,9 +1769,18 @@ func (s *IPORadarService) upsertListedCompanies(ctx context.Context, listed []se
 		if matched[storedCIK] {
 			continue
 		}
+		var row model.IPOCompanyMarketData
+		if err := s.db.WithContext(ctx).Where("cik = ?", storedCIK).First(&row).Error; err != nil && err != gorm.ErrRecordNotFound {
+			return err
+		} else if err == nil && (row.TickerSource == longbridgeIPOCalendarSource || row.ListingSource == longbridgeIPOCalendarSource) {
+			// The SEC listed-company file cannot disprove a calendar entry. Keep
+			// the planned ticker/date until an SEC mapping or a future calendar
+			// refresh supersedes it.
+			continue
+		}
 		if err := s.db.WithContext(ctx).Model(&model.IPOCompanyMarketData{}).Where("cik = ?", storedCIK).Updates(map[string]any{
-			"ticker": "", "exchange": "", "listed_verified_at": nil,
-			"ticker_source": "", "ticker_confidence": "", "updated_at": now,
+			"ticker": "", "exchange": "", "listed_verified_at": nil, "listing_date": nil, "listing_checked_at": nil,
+			"ticker_source": "", "ticker_confidence": "", "listing_source": "", "listing_confidence": "", "longbridge_listing_check_count": 0, "longbridge_listing_last_result": "", "longbridge_listing_next_retry_at": nil, "updated_at": now,
 		}).Error; err != nil {
 			return err
 		}
@@ -1524,6 +1931,18 @@ func sortIPOCompanies(items []IPOCompanyItem, sortBy string, sortOrder string) {
 func activeIPOCompanyStatus(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "new", "updating", "effective", "priced", "listing_pending":
+		return true
+	default:
+		return false
+	}
+}
+
+func ipoRequiresMarketMapping(item IPOCompanyItem) bool {
+	if strings.TrimSpace(item.FinalTicker) != "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(item.Status)) {
+	case "effective", "priced", "listing_pending":
 		return true
 	default:
 		return false

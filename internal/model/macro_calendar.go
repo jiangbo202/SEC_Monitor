@@ -2,30 +2,34 @@ package model
 
 import "time"
 
-// MacroRelease is one scheduled or published official economic release. The
-// event and its values are stored separately so later revisions never replace
-// the original, release-time observation.
+// MacroRelease is one scheduled or published economic release. Official agency
+// records remain the primary source; explicitly-labelled market-calendar
+// supplements retain their own provider and source URL for auditability.
 type MacroRelease struct {
-	ID              uint       `gorm:"primaryKey" json:"id"`
-	Provider        string     `gorm:"size:32;not null;uniqueIndex:idx_macro_release_provider_source,priority:1;index" json:"provider"`
-	Category        string     `gorm:"size:64;not null;index" json:"category"`
-	Title           string     `gorm:"size:512;not null" json:"title"`
-	ReferencePeriod string     `gorm:"size:64;index" json:"reference_period"`
-	ReleaseStage    string     `gorm:"size:32;index" json:"release_stage"`
-	Status          string     `gorm:"size:16;not null;index" json:"status"`
-	ScheduledAt     *time.Time `gorm:"index" json:"scheduled_at,omitempty"`
-	PublishedAt     *time.Time `gorm:"index" json:"published_at,omitempty"`
-	SourceURL       string     `gorm:"size:2048;not null;uniqueIndex:idx_macro_release_provider_source,priority:2" json:"source_url"`
-	SourceHash      string     `gorm:"size:64" json:"source_hash,omitempty"`
-	FetchedAt       time.Time  `gorm:"index" json:"fetched_at"`
-	LastError       string     `gorm:"type:text" json:"last_error,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID       uint   `gorm:"primaryKey" json:"id"`
+	Provider string `gorm:"size:32;not null;uniqueIndex:idx_macro_release_provider_source,priority:1;index" json:"provider"`
+	Category string `gorm:"size:64;not null;index" json:"category"`
+	// CanonicalEventKey associates the same economic event across independently
+	// recorded sources. It never replaces a provider's own record or values.
+	CanonicalEventKey string     `gorm:"size:160;index" json:"canonical_event_key,omitempty"`
+	Title             string     `gorm:"size:512;not null" json:"title"`
+	ReferencePeriod   string     `gorm:"size:64;index" json:"reference_period"`
+	ReleaseStage      string     `gorm:"size:32;index" json:"release_stage"`
+	Status            string     `gorm:"size:16;not null;index" json:"status"`
+	ScheduledAt       *time.Time `gorm:"index" json:"scheduled_at,omitempty"`
+	PublishedAt       *time.Time `gorm:"index" json:"published_at,omitempty"`
+	SourceURL         string     `gorm:"size:2048;not null;uniqueIndex:idx_macro_release_provider_source,priority:2" json:"source_url"`
+	SourceHash        string     `gorm:"size:64" json:"source_hash,omitempty"`
+	FetchedAt         time.Time  `gorm:"index" json:"fetched_at"`
+	LastError         string     `gorm:"type:text" json:"last_error,omitempty"`
+	MarketImportance  int        `gorm:"not null;default:0" json:"market_importance,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
-// MacroObservation preserves the official actual value associated with one
-// release. Forecasts are intentionally absent: official agencies do not
-// publish market consensus estimates.
+// MacroObservation preserves the released values associated with one release.
+// ForecastValue is populated only by explicitly-labelled market-calendar
+// supplements; official agencies do not publish consensus estimates.
 type MacroObservation struct {
 	ID                uint       `gorm:"primaryKey" json:"id"`
 	ReleaseID         uint       `gorm:"not null;uniqueIndex:idx_macro_observation_release_indicator,priority:1;index" json:"release_id"`
@@ -35,6 +39,7 @@ type MacroObservation struct {
 	Unit              string     `gorm:"size:64" json:"unit"`
 	ActualValue       *float64   `json:"actual_value,omitempty"`
 	PreviousValue     *float64   `json:"previous_value,omitempty"`
+	ForecastValue     *float64   `json:"forecast_value,omitempty"`
 	PreviousRevised   bool       `json:"previous_revised"`
 	SourceField       string     `gorm:"size:255" json:"source_field"`
 	SourceURL         string     `gorm:"size:2048" json:"source_url"`

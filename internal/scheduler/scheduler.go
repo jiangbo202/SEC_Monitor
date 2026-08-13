@@ -14,20 +14,34 @@ import (
 )
 
 const (
-	candidateNotificationSyncTaskName     = "candidate_notification_sync"
-	tradeSetupNotificationSyncTaskName    = "trade_setup_notification_sync"
-	ipoRadarSyncTaskName                  = "ipo_radar_sync"
-	smallCapDiscoverySyncTaskName         = "small_cap_discovery_sync"
-	smallCapDiscoveryFullSyncTaskName     = "small_cap_discovery_full_sync"
-	watchTargetMarketSyncTaskName         = "watch_target_market_sync"
-	watchTargetEarningsSyncTaskName       = "watch_target_earnings_sync"
-	secFilingSyncTaskName                 = "sec_filing_sync"
-	notificationRetrySyncTaskName         = "notification_retry_sync"
-	sqliteBackupTaskName                  = "sqlite_backup"
-	operationHistoryCleanupTaskName       = "operation_history_cleanup"
-	operationalHealthNotificationTaskName = "operational_health_notification_sync"
-	macroCalendarSyncTaskName             = "macro_calendar_sync"
+	candidateNotificationSyncTaskName               = "candidate_notification_sync"
+	tradeSetupNotificationSyncTaskName              = "trade_setup_notification_sync"
+	ipoRadarSyncTaskName                            = "ipo_radar_sync"
+	ipoLifecycleReconcileSyncTaskName               = "ipo_lifecycle_reconcile_sync"
+	ipoOfferingReconcileSyncTaskName                = "ipo_offering_reconcile_sync"
+	ipoListingReconcileSyncTaskName                 = "ipo_listing_reconcile_sync"
+	smallCapDiscoverySyncTaskName                   = "small_cap_discovery_sync"
+	smallCapDiscoveryFullSyncTaskName               = "small_cap_discovery_full_sync"
+	watchTargetMarketSyncTaskName                   = "watch_target_market_sync"
+	watchTargetEarningsSyncTaskName                 = "watch_target_earnings_sync"
+	secFilingSyncTaskName                           = "sec_filing_sync"
+	notificationRetrySyncTaskName                   = "notification_retry_sync"
+	sqliteBackupTaskName                            = "sqlite_backup"
+	operationHistoryCleanupTaskName                 = "operation_history_cleanup"
+	operationalHealthNotificationTaskName           = "operational_health_notification_sync"
+	macroCalendarSyncTaskName                       = "macro_calendar_sync"
+	marketTrendSyncTaskName                         = "market_trend_sync"
+	usFuturesSyncTaskName                           = "us_futures_sync"
+	institutionalHoldingsSyncTaskName               = "institutional_holdings_sync"
+	longbridgeCandidateResearchSyncTaskName         = "longbridge_candidate_research_sync"
+	longbridgeCandidateValuationSyncTaskName        = "longbridge_candidate_valuation_sync"
+	longbridgeWatchTargetValuationSyncTaskName      = "longbridge_watch_target_valuation_sync"
+	longbridgeWatchTargetResearchSyncTaskName       = "longbridge_watch_target_research_sync"
+	longbridgeCandidateOptionResearchSyncTaskName   = "longbridge_candidate_option_research_sync"
+	longbridgeWatchTargetOptionResearchSyncTaskName = "longbridge_watch_target_option_research_sync"
 )
+
+const ipoRecentManualSuccessCooldown = 10 * time.Minute
 
 type Scheduler struct {
 	cron                    *cron.Cron
@@ -43,6 +57,9 @@ type Scheduler struct {
 	lifecycle               *service.LifecycleService
 	operationalHealth       *service.OperationalHealthService
 	macroCalendar           *service.MacroCalendarService
+	marketTrend             *service.MarketTrendService
+	usFutures               *service.USFuturesService
+	institutionalHoldings   *service.InstitutionalHoldingsService
 	earningsPreview         *service.EarningsPreviewService
 	mu                      sync.Mutex
 	runningTasks            map[string]bool
@@ -60,6 +77,9 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 	var lifecycle *service.LifecycleService
 	var operationalHealth *service.OperationalHealthService
 	var macroCalendar *service.MacroCalendarService
+	var marketTrend *service.MarketTrendService
+	var usFutures *service.USFuturesService
+	var institutionalHoldings *service.InstitutionalHoldingsService
 	var earningsPreview *service.EarningsPreviewService
 	var configs *service.ConfigService
 	for _, svc := range services {
@@ -84,6 +104,12 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 			operationalHealth = typed
 		case *service.MacroCalendarService:
 			macroCalendar = typed
+		case *service.MarketTrendService:
+			marketTrend = typed
+		case *service.USFuturesService:
+			usFutures = typed
+		case *service.InstitutionalHoldingsService:
+			institutionalHoldings = typed
 		case *service.EarningsPreviewService:
 			earningsPreview = typed
 		}
@@ -102,6 +128,9 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 		lifecycle:               lifecycle,
 		operationalHealth:       operationalHealth,
 		macroCalendar:           macroCalendar,
+		marketTrend:             marketTrend,
+		usFutures:               usFutures,
+		institutionalHoldings:   institutionalHoldings,
 		earningsPreview:         earningsPreview,
 		runningTasks:            make(map[string]bool),
 	}
@@ -155,7 +184,7 @@ func (s *Scheduler) Reload(ctx context.Context) error {
 		nextRunAt := schedule.Next(now).UTC()
 		nextRuns[taskName] = &nextRunAt
 		if _, err := nextCron.AddFunc(task.CronExpr, func() {
-			_ = s.RunTask(context.Background(), taskName)
+			_ = s.runTaskWithTrigger(context.Background(), taskName, "scheduled")
 		}); err != nil {
 			return err
 		}
@@ -192,7 +221,11 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	return s.RunTask(ctx, secFilingSyncTaskName)
 }
 
-func (s *Scheduler) RunTask(ctx context.Context, taskName string) (err error) {
+func (s *Scheduler) RunTask(ctx context.Context, taskName string) error {
+	return s.runTaskWithTrigger(ctx, taskName, "manual")
+}
+
+func (s *Scheduler) runTaskWithTrigger(ctx context.Context, taskName, trigger string) (err error) {
 	s.mu.Lock()
 	if s.runningTasks[taskName] {
 		s.mu.Unlock()
@@ -219,12 +252,19 @@ func (s *Scheduler) RunTask(ctx context.Context, taskName string) (err error) {
 		s.mu.Unlock()
 		return err
 	}
+	var executionID uint
+	startedAt := time.Now().UTC()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("scheduler task %s panicked: %v", taskName, recovered)
 			log.Printf("%v", err)
 		}
 		finishedAt := time.Now().UTC()
+		if executionID != 0 {
+			if executionErr := s.tasks.FinishExecution(ctx, executionID, finishedAt, err); executionErr != nil {
+				log.Printf("persist execution history for scheduler task %s: %v", taskName, executionErr)
+			}
+		}
 		if finishErr := s.tasks.MarkRunOutcome(ctx, taskName, finishedAt, err); finishErr != nil {
 			// A persistence error must not be hidden behind an otherwise benign
 			// skipped outcome; operators need to know the task state was not saved.
@@ -247,7 +287,31 @@ func (s *Scheduler) RunTask(ctx context.Context, taskName string) (err error) {
 		}
 		s.mu.Unlock()
 	}()
+	if taskUsesStandaloneDiscoveryLog(taskName) {
+		return s.runTask(ctx, taskName)
+	}
+	execution, executionErr := s.tasks.StartExecution(ctx, taskName, trigger, startedAt)
+	if executionErr != nil {
+		return fmt.Errorf("start execution history for scheduler task %s: %w", taskName, executionErr)
+	}
+	executionID = execution.ID
+	if taskName == ipoRadarSyncTaskName && trigger == "scheduled" {
+		recentManualSuccess, recentErr := s.tasks.HasRecentManualSuccess(ctx, taskName, startedAt.Add(-ipoRecentManualSuccessCooldown))
+		if recentErr != nil {
+			return fmt.Errorf("check recent manual IPO scan: %w", recentErr)
+		}
+		if recentManualSuccess {
+			return service.SkipTask("最近 10 分钟内已手动完成 IPO 扫描；本轮定时扫描自动跳过，避免重复请求 SEC")
+		}
+	}
 	return s.runTask(ctx, taskName)
+}
+
+// Small-cap discovery persists a richer workflow, step and provider trail in
+// its own database. Keeping it out of the generic task timeline avoids two
+// competing histories for the same run.
+func taskUsesStandaloneDiscoveryLog(taskName string) bool {
+	return taskName == smallCapDiscoverySyncTaskName || taskName == smallCapDiscoveryFullSyncTaskName
 }
 
 func (s *Scheduler) refreshTaskNextRun(taskName string, from time.Time) error {
@@ -278,20 +342,20 @@ func (s *Scheduler) refreshTaskNextRun(taskName string, from time.Time) error {
 // The discovery bulk pipeline uses separately cached archives and remains
 // independent so an expensive calibration cannot starve regular filing sync.
 func taskUsesLiveSEC(taskName string) bool {
-	return taskName == secFilingSyncTaskName || taskName == ipoRadarSyncTaskName
+	return taskName == secFilingSyncTaskName || taskName == ipoRadarSyncTaskName || taskName == ipoLifecycleReconcileSyncTaskName || taskName == ipoOfferingReconcileSyncTaskName
 }
 
 func (s *Scheduler) canRunTask(taskName string) bool {
 	switch taskName {
 	case secFilingSyncTaskName:
 		return s.filings != nil
-	case ipoRadarSyncTaskName:
+	case ipoRadarSyncTaskName, ipoLifecycleReconcileSyncTaskName, ipoOfferingReconcileSyncTaskName, ipoListingReconcileSyncTaskName:
 		return s.ipo != nil
 	case candidateNotificationSyncTaskName:
 		return s.candidateNotifications != nil
 	case tradeSetupNotificationSyncTaskName:
 		return s.tradeSetupNotifications != nil
-	case smallCapDiscoverySyncTaskName, smallCapDiscoveryFullSyncTaskName, watchTargetMarketSyncTaskName:
+	case smallCapDiscoverySyncTaskName, smallCapDiscoveryFullSyncTaskName, watchTargetMarketSyncTaskName, longbridgeCandidateResearchSyncTaskName, longbridgeCandidateValuationSyncTaskName, longbridgeWatchTargetValuationSyncTaskName, longbridgeWatchTargetResearchSyncTaskName, longbridgeCandidateOptionResearchSyncTaskName, longbridgeWatchTargetOptionResearchSyncTaskName:
 		return s.discoverySync != nil
 	case watchTargetEarningsSyncTaskName:
 		return s.earningsPreview != nil
@@ -305,6 +369,12 @@ func (s *Scheduler) canRunTask(taskName string) bool {
 		return s.operationalHealth != nil
 	case macroCalendarSyncTaskName:
 		return s.macroCalendar != nil
+	case marketTrendSyncTaskName:
+		return s.marketTrend != nil
+	case usFuturesSyncTaskName:
+		return s.usFutures != nil
+	case institutionalHoldingsSyncTaskName:
+		return s.institutionalHoldings != nil
 	default:
 		return false
 	}
@@ -335,6 +405,33 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 	case ipoRadarSyncTaskName:
 		_, err := s.ipo.RefreshWithTrigger(ctx, "ipo_scheduler")
 		return err
+	case ipoLifecycleReconcileSyncTaskName:
+		result, err := s.ipo.ReconcileLifecycle(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Warning != "" {
+			return service.PartialTask(result.Warning)
+		}
+		return nil
+	case ipoOfferingReconcileSyncTaskName:
+		result, err := s.ipo.ReconcileOfferings(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Warning != "" {
+			return service.PartialTask(result.Warning)
+		}
+		return nil
+	case ipoListingReconcileSyncTaskName:
+		result, err := s.ipo.ReconcileListings(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Warning != "" {
+			return service.PartialTask(result.Warning)
+		}
+		return nil
 	case candidateNotificationSyncTaskName:
 		preview, err := s.candidateNotifications.Preview(ctx)
 		if err != nil {
@@ -354,6 +451,79 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 	case smallCapDiscoveryFullSyncTaskName:
 		_, err := s.discoverySync.Run(ctx)
 		return err
+	case longbridgeCandidateResearchSyncTaskName:
+		result, err := s.discoverySync.SyncLongbridgeCandidateMarketResearch(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Skipped {
+			return service.SkipTask(result.Message)
+		}
+		if result.Failed > 0 || len(result.Warnings) > 0 {
+			return service.PartialTask(fmt.Sprintf("Longbridge P1 已更新 %d/%d 个候选；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+		}
+		return nil
+	case longbridgeCandidateValuationSyncTaskName:
+		result, err := s.discoverySync.SyncLongbridgeCandidateValuationResearch(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Skipped {
+			return service.SkipTask(result.Message)
+		}
+		if result.Failed > 0 || len(result.Warnings) > 0 {
+			return service.PartialTask(fmt.Sprintf("Longbridge P2 已更新 %d/%d 个候选；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+		}
+		return nil
+	case longbridgeWatchTargetValuationSyncTaskName:
+		result, err := s.discoverySync.SyncEnabledWatchTargetValuationResearch(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Skipped {
+			return service.SkipTask(result.Message)
+		}
+		if result.Failed > 0 || len(result.Warnings) > 0 {
+			return service.PartialTask(fmt.Sprintf("Longbridge 监控标的估值已更新 %d/%d 个；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+		}
+		return nil
+	case longbridgeWatchTargetResearchSyncTaskName:
+		result, err := s.discoverySync.SyncEnabledWatchTargetMarketResearch(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Skipped {
+			return service.SkipTask(result.Message)
+		}
+		if result.Failed > 0 || len(result.Warnings) > 0 {
+			return service.PartialTask(fmt.Sprintf("Longbridge 监控标的机构持仓已更新 %d/%d 个；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+		}
+		return nil
+	case longbridgeCandidateOptionResearchSyncTaskName:
+		result, err := s.discoverySync.SyncLongbridgeCandidateOptionResearch(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Skipped {
+			return service.SkipTask(result.Message)
+		}
+		// Partial coverage is recorded per ticker; only failed requests retry.
+		if result.Failed > 0 {
+			return service.PartialTask(fmt.Sprintf("Longbridge 候选期权/空头研究已更新 %d/%d 个；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+		}
+		return nil
+	case longbridgeWatchTargetOptionResearchSyncTaskName:
+		result, err := s.discoverySync.SyncEnabledWatchTargetOptionResearch(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Skipped {
+			return service.SkipTask(result.Message)
+		}
+		if result.Failed > 0 {
+			return service.PartialTask(fmt.Sprintf("Longbridge 监控标的期权/空头研究已更新 %d/%d 个；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+		}
+		return nil
 	case watchTargetMarketSyncTaskName:
 		result, err := s.discoverySync.SyncEnabledWatchTargetMarketPrices(ctx)
 		if err != nil {
@@ -382,6 +552,12 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 		}
 		return nil
 	case notificationRetrySyncTaskName:
+		// The normal delivery ladder handles short failures within hours. A
+		// delayed, conservative recovery then requeues only timeouts/limits/5xx
+		// dead letters; credential and payload failures remain operator-visible.
+		if _, err := s.notificationBatches.RecoverTransientDeadLetters(ctx, time.Now().UTC()); err != nil {
+			return err
+		}
 		_, err := s.notificationBatches.RetryDue(ctx, time.Now().UTC())
 		return err
 	case sqliteBackupTaskName:
@@ -396,6 +572,39 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 	case macroCalendarSyncTaskName:
 		_, err := s.macroCalendar.SyncOfficialBEA(ctx)
 		return err
+	case institutionalHoldingsSyncTaskName:
+		result, err := s.institutionalHoldings.Sync(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Skipped {
+			return service.SkipTask(result.Message)
+		}
+		return nil
+	case marketTrendSyncTaskName:
+		result, err := s.marketTrend.Refresh(ctx)
+		if err != nil {
+			return err
+		}
+		if result.SymbolsUpdated == 0 {
+			return service.SkipTask("Longbridge 大盘趋势暂无可更新日线")
+		}
+		if len(result.Warnings) > 0 {
+			return service.PartialTask(fmt.Sprintf("大盘趋势已更新 %d/%d 个标的；%d 个待下次重试", result.SymbolsUpdated, result.SymbolsRequested, len(result.Warnings)))
+		}
+		return nil
+	case usFuturesSyncTaskName:
+		result, err := s.usFutures.Refresh(ctx)
+		if err != nil {
+			return err
+		}
+		if result.SymbolsUpdated == 0 {
+			return service.SkipTask("美股期货暂无可更新日线")
+		}
+		if len(result.Warnings) > 0 {
+			return service.PartialTask(fmt.Sprintf("美股期货已更新 %d/%d 个连续合约；%d 个待下次重试", result.SymbolsUpdated, result.SymbolsRequested, len(result.Warnings)))
+		}
+		return nil
 	default:
 		return nil
 	}

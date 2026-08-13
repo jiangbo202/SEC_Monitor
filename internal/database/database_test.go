@@ -1,6 +1,7 @@
 package database
 
 import (
+	"strings"
 	"testing"
 
 	"sec_monitor/internal/config"
@@ -35,7 +36,7 @@ func TestOpenTableDriven(t *testing.T) {
 			if !db.Migrator().HasTable(&model.WatchTarget{}) {
 				t.Fatalf("watch_targets table was not migrated")
 			}
-			for _, target := range []any{&model.NotificationBatch{}, &model.NotificationBatchItem{}, &model.OperationalAlertDelivery{}, &model.RecoveryDrill{}, &model.LifecycleCleanupRun{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{}, &model.FundFilingIdentity{}, &model.MacroRelease{}, &model.MacroObservation{}} {
+			for _, target := range []any{&model.TaskExecution{}, &model.NotificationBatch{}, &model.NotificationBatchItem{}, &model.OperationalAlertDelivery{}, &model.RecoveryDrill{}, &model.LifecycleCleanupRun{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{}, &model.IPOCalendarEvent{}, &model.FundFilingIdentity{}, &model.MacroRelease{}, &model.MacroObservation{}, &model.MarketTrendDaily{}} {
 				if !db.Migrator().HasTable(target) {
 					t.Fatalf("table for %T was not migrated", target)
 				}
@@ -53,6 +54,10 @@ func TestOpenTableDriven(t *testing.T) {
 				{model: &model.IPOCompanyMarketData{}, name: "gross_proceeds"},
 				{model: &model.IPOCompanyMarketData{}, name: "offering_checked_at"},
 				{model: &model.IPOCompanyMarketData{}, name: "offering_parser_version"},
+				{model: &model.IPOCompanyMarketData{}, name: "listing_date"},
+				{model: &model.IPOCompanyMarketData{}, name: "listing_checked_at"},
+				{model: &model.IPOCompanyMarketData{}, name: "longbridge_listing_check_count"},
+				{model: &model.IPOCompanyMarketData{}, name: "longbridge_listing_last_result"},
 				{model: &model.FundFilingIdentity{}, name: "accession_number"},
 				{model: &model.FundFilingIdentity{}, name: "parse_status"},
 			} {
@@ -61,5 +66,14 @@ func TestOpenTableDriven(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSQLiteSettingsEnableWALAndBoundedBusyWait(t *testing.T) {
+	settings := withSQLiteSettings("file:test.db?mode=rwc")
+	for _, want := range []string{"_foreign_keys=on", "_journal_mode=WAL", "_synchronous=NORMAL", "_busy_timeout=5000"} {
+		if !strings.Contains(settings, want) {
+			t.Fatalf("settings %q missing %q", settings, want)
+		}
 	}
 }

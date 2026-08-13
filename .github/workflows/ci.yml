@@ -18,7 +18,11 @@ jobs:
           go-version: '1.24.x'
           cache: true
       - run: go vet ./...
-      - run: go test ./...
+      # Keep the current coverage visible on every change. The repository is
+      # still below its documented 80% target, so this reports rather than
+      # falsely introducing a gate that would block all existing branches.
+      - run: go test ./... -coverprofile=coverage.out
+      - run: go tool cover -func=coverage.out
 
   frontend:
     name: Frontend build

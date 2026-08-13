@@ -24,6 +24,9 @@ type LifecycleCleanupPreview struct {
 	Cutoff                     time.Time `json:"cutoff"`
 	SyncRuns                   int64     `json:"sync_runs"`
 	SyncRunDetails             int64     `json:"sync_run_details"`
+	TaskExecutions             int64     `json:"task_executions"`
+	NotificationBatches        int64     `json:"notification_batches"`
+	NotificationBatchItems     int64     `json:"notification_batch_items"`
 	OperationalAlertDeliveries int64     `json:"operational_alert_deliveries"`
 	RecoveryDrills             int64     `json:"recovery_drills"`
 	LifecycleCleanupRuns       int64     `json:"lifecycle_cleanup_runs"`
@@ -73,6 +76,19 @@ func (s *LifecycleService) Preview(ctx context.Context, now time.Time) (Lifecycl
 	if err := s.mainDB.WithContext(ctx).Model(&model.SyncRunDetail{}).
 		Where("sync_run_id IN (?)", s.mainDB.Model(&model.SyncRun{}).Select("id").Where("finished_at IS NOT NULL AND finished_at < ?", preview.Cutoff)).
 		Count(&preview.SyncRunDetails).Error; err != nil {
+		return LifecycleCleanupPreview{}, err
+	}
+	if err := s.mainDB.WithContext(ctx).Model(&model.TaskExecution{}).
+		Where("finished_at IS NOT NULL AND finished_at < ?", preview.Cutoff).Count(&preview.TaskExecutions).Error; err != nil {
+		return LifecycleCleanupPreview{}, err
+	}
+	if err := s.mainDB.WithContext(ctx).Model(&model.NotificationBatch{}).
+		Where("updated_at < ?", preview.Cutoff).Count(&preview.NotificationBatches).Error; err != nil {
+		return LifecycleCleanupPreview{}, err
+	}
+	if err := s.mainDB.WithContext(ctx).Model(&model.NotificationBatchItem{}).
+		Where("batch_id IN (?)", s.mainDB.Model(&model.NotificationBatch{}).Select("id").Where("updated_at < ?", preview.Cutoff)).
+		Count(&preview.NotificationBatchItems).Error; err != nil {
 		return LifecycleCleanupPreview{}, err
 	}
 	if err := s.mainDB.WithContext(ctx).Model(&model.OperationalAlertDelivery{}).
@@ -142,6 +158,22 @@ func (s *LifecycleService) Cleanup(ctx context.Context, now time.Time) (Lifecycl
 			return result.Error
 		}
 		deleted.SyncRuns = result.RowsAffected
+		result = tx.Where("finished_at IS NOT NULL AND finished_at < ?", preview.Cutoff).Delete(&model.TaskExecution{})
+		if result.Error != nil {
+			return result.Error
+		}
+		deleted.TaskExecutions = result.RowsAffected
+		oldNotificationBatches := tx.Model(&model.NotificationBatch{}).Select("id").Where("updated_at < ?", preview.Cutoff)
+		result = tx.Where("batch_id IN (?)", oldNotificationBatches).Delete(&model.NotificationBatchItem{})
+		if result.Error != nil {
+			return result.Error
+		}
+		deleted.NotificationBatchItems = result.RowsAffected
+		result = tx.Where("updated_at < ?", preview.Cutoff).Delete(&model.NotificationBatch{})
+		if result.Error != nil {
+			return result.Error
+		}
+		deleted.NotificationBatches = result.RowsAffected
 		result = tx.Where("updated_at < ?", preview.Cutoff).Delete(&model.OperationalAlertDelivery{})
 		if result.Error != nil {
 			return result.Error
@@ -197,7 +229,7 @@ func (s *LifecycleService) Cleanup(ctx context.Context, now time.Time) (Lifecycl
 }
 
 func lifecycleCleanupTotal(preview LifecycleCleanupPreview) int64 {
-	return preview.SyncRuns + preview.SyncRunDetails + preview.OperationalAlertDeliveries + preview.RecoveryDrills + preview.LifecycleCleanupRuns + preview.DiscoverySyncRuns + preview.DiscoverySyncSteps + preview.SupersededMarketRepairs + preview.MarketRepairUniverseRows + preview.MarketRepairScoreRows
+	return preview.SyncRuns + preview.SyncRunDetails + preview.TaskExecutions + preview.NotificationBatches + preview.NotificationBatchItems + preview.OperationalAlertDeliveries + preview.RecoveryDrills + preview.LifecycleCleanupRuns + preview.DiscoverySyncRuns + preview.DiscoverySyncSteps + preview.SupersededMarketRepairs + preview.MarketRepairUniverseRows + preview.MarketRepairScoreRows
 }
 
 func (s *LifecycleService) retentionDays(ctx context.Context) (int, error) {

@@ -88,6 +88,7 @@ type CandidateScoreResult struct {
 	QualityAdjustedScore  int                            `json:"quality_adjusted_score"`
 	ReviewPriorityScore   int                            `json:"review_priority_score"`
 	ReviewPriorityReasons []ReviewPriorityReason         `json:"review_priority_reasons"`
+	RecentAnomalyLabels   []string                       `json:"recent_anomaly_labels"`
 	ChangeStatus          string                         `json:"change_status"`
 	ChangeReasons         []CandidateChangeReason        `json:"change_reasons"`
 	PreviousTotalScore    *int                           `json:"previous_total_score"`
@@ -328,24 +329,43 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if err = hydrateCandidateBusinessModels(ctx, db, items); err != nil {
 		return result, err
 	}
-	items, err = hydrateCandidateRevenueGrowthEvidence(ctx, db, batch.UniverseSourceVersion, items)
-	if err != nil {
-		return result, err
+	qualityNeeded := candidateQualityNeededBeforePagination(filter)
+	revenueGrowthNeeded := candidateRevenueGrowthNeededBeforePagination(filter) || qualityNeeded
+	if revenueGrowthNeeded {
+		items, err = hydrateCandidateRevenueGrowthEvidence(ctx, db, batch.UniverseSourceVersion, items)
+		if err != nil {
+			return result, err
+		}
 	}
 	items, err = hydrateCandidatePriceEvidence(ctx, db, batch, items)
 	if err != nil {
 		return result, err
 	}
-	if err = hydrateCandidateValuations(ctx, db, batch, batch.UniverseSourceVersion, items); err != nil {
-		return result, err
+	// The default table excludes blocked candidates, so we still compute the
+	// evidence required for that gate across the full A/B universe.  The richer
+	// table-only evidence below (valuation, trade setup, changes and quality
+	// explanations) is deliberately deferred until after pagination unless a
+	// filter or sort depends on it.  This keeps the first 20-row render from
+	// doing detail work for every candidate.
+	valuationNeeded := candidateValuationNeededBeforePagination(filter)
+	if valuationNeeded {
+		if err = hydrateCandidateValuations(ctx, db, batch, batch.UniverseSourceVersion, items); err != nil {
+			return result, err
+		}
 	}
-	technicalPriceHistories, err := candidateTechnicalPriceHistories(ctx, db, items, technicalMA200LookbackDays)
+	// Research-readiness only needs the recent liquidity window. Loading a
+	// full MA200 history for every candidate was the dominant cost on a large
+	// local price store; the selected page receives its longer history below.
+	technicalPriceHistories, err := candidateTechnicalPriceHistories(ctx, db, items, technicalMinimumSamples)
 	if err != nil {
 		return result, err
 	}
 	hydrateCandidateMarketQualityFromPriceHistories(items, technicalPriceHistories)
-	if err = hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx, db, items, technicalPriceHistories); err != nil {
-		return result, err
+	technicalNeeded := strings.TrimSpace(filter.TechnicalSignal) != ""
+	if technicalNeeded {
+		if err = hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx, db, items, technicalPriceHistories); err != nil {
+			return result, err
+		}
 	}
 	riskBatchID := strings.TrimSpace(batch.UniverseSourceVersion)
 	if riskBatchID == "" {
@@ -364,13 +384,18 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if err = hydrateCandidateResearchReadiness(ctx, db, batch, items); err != nil {
 		return result, err
 	}
-	items, err = annotateCandidateChanges(ctx, db, batch, items)
-	if err != nil {
-		return result, err
+	changesNeeded := strings.TrimSpace(filter.ChangeStatus) != ""
+	if changesNeeded {
+		items, err = annotateCandidateChanges(ctx, db, batch, items)
+		if err != nil {
+			return result, err
+		}
 	}
-	annotateCandidateQuality(items)
-	if err = annotateCandidateFollowed(ctx, db, items); err != nil {
-		return result, err
+	if qualityNeeded {
+		if err = hydrateCandidateRecentAnomalies(ctx, db, items); err != nil {
+			return result, err
+		}
+		annotateCandidateQuality(items)
 	}
 	items = filterCandidateScoreResults(items, filter)
 	sortCandidateScoreResults(items, filter.SortBy, filter.SortOrder)
@@ -385,6 +410,41 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		end = len(items)
 	}
 	result.Items = items[start:end]
+	if !valuationNeeded {
+		if err = hydrateCandidateValuations(ctx, db, batch, batch.UniverseSourceVersion, result.Items); err != nil {
+			return result, err
+		}
+	}
+	if !technicalNeeded {
+		pageTechnicalPriceHistories, historyErr := candidateTechnicalPriceHistories(ctx, db, result.Items, technicalMA200LookbackDays)
+		if historyErr != nil {
+			return result, historyErr
+		}
+		if err = hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx, db, result.Items, pageTechnicalPriceHistories); err != nil {
+			return result, err
+		}
+	}
+	if !changesNeeded {
+		result.Items, err = annotateCandidateChanges(ctx, db, batch, result.Items)
+		if err != nil {
+			return result, err
+		}
+	}
+	if !revenueGrowthNeeded {
+		result.Items, err = hydrateCandidateRevenueGrowthEvidence(ctx, db, batch.UniverseSourceVersion, result.Items)
+		if err != nil {
+			return result, err
+		}
+	}
+	if !qualityNeeded {
+		if err = hydrateCandidateRecentAnomalies(ctx, db, result.Items); err != nil {
+			return result, err
+		}
+		annotateCandidateQuality(result.Items)
+	}
+	if err = annotateCandidateFollowed(ctx, db, result.Items); err != nil {
+		return result, err
+	}
 	// Performance is presentation-only and is only visible in the expanded
 	// table. Avoid its per-row historical lookup for the default compact view.
 	if !filter.SkipPerformance {
@@ -393,6 +453,25 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		}
 	}
 	return result, nil
+}
+
+func candidateValuationNeededBeforePagination(filter CandidateScoreQuery) bool {
+	return filter.MaxEVSales != nil || filter.MinNetCashToMarketCapPct != nil ||
+		strings.TrimSpace(filter.SortBy) == "ev_sales" || strings.TrimSpace(filter.SortBy) == "net_cash_to_market_cap"
+}
+
+func candidateRevenueGrowthNeededBeforePagination(filter CandidateScoreQuery) bool {
+	switch strings.TrimSpace(filter.SortBy) {
+	case "quarterly_revenue_yoy_pct", "annual_revenue_yoy_pct", "quarterly_revenue_qoq_pct", "annual_revenue_qoq_pct":
+		return true
+	default:
+		return false
+	}
+}
+
+func candidateQualityNeededBeforePagination(filter CandidateScoreQuery) bool {
+	return strings.TrimSpace(filter.QualityTier) != "" || filter.RecommendedOnly || filter.MinReviewPriorityScore > 0 ||
+		len(filter.ExcludeQualityTags) > 0 || strings.TrimSpace(filter.SortBy) == "review_priority_score"
 }
 
 func annotateCandidateFollowed(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {
@@ -870,6 +949,35 @@ func annotateCandidateQuality(items []CandidateScoreResult) {
 	}
 }
 
+func hydrateCandidateRecentAnomalies(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {
+	if len(items) == 0 {
+		return nil
+	}
+	securityIDs := make([]uint, 0, len(items))
+	for _, item := range items {
+		securityIDs = append(securityIDs, item.SecurityID)
+	}
+	var rows []MarketAnomalySnapshot
+	if err := db.WithContext(ctx).Where("security_id IN ? AND alert_time >= ?", securityIDs, time.Now().UTC().Add(-72*time.Hour)).Order("alert_time DESC, id DESC").Find(&rows).Error; err != nil {
+		return err
+	}
+	bySecurity := make(map[uint][]string, len(items))
+	for _, row := range rows {
+		if len(bySecurity[row.SecurityID]) >= 3 {
+			continue
+		}
+		label := strings.TrimSpace(row.AlertName)
+		if label == "" {
+			label = "市场异动"
+		}
+		bySecurity[row.SecurityID] = append(bySecurity[row.SecurityID], label)
+	}
+	for i := range items {
+		items[i].RecentAnomalyLabels = bySecurity[items[i].SecurityID]
+	}
+	return nil
+}
+
 func filterCandidateScoreResults(items []CandidateScoreResult, filter CandidateScoreQuery) []CandidateScoreResult {
 	qualityTier := strings.TrimSpace(filter.QualityTier)
 	changeStatus := strings.TrimSpace(filter.ChangeStatus)
@@ -1099,6 +1207,13 @@ func candidateReviewPriorityReasons(item CandidateScoreResult) []ReviewPriorityR
 	}
 	if item.RecentQualifiedInsider {
 		add("近期合格内幕买入", 8)
+	}
+	for _, anomaly := range item.RecentAnomalyLabels {
+		points := 4
+		if strings.Contains(anomaly, "大笔") || strings.Contains(strings.ToLower(anomaly), "large") {
+			points = 6
+		}
+		add("异动："+anomaly, points)
 	}
 	if item.PriceSource == "tiingo" {
 		add("价格源：Tiingo", 2)

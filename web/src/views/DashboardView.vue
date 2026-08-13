@@ -2,774 +2,315 @@
   <section class="page dashboard-page">
     <div class="page-header">
       <div>
-        <h1>{{ t('pages.dashboard.title') }}</h1>
-        <p class="page-subtitle">{{ t('pages.dashboard.subtitle') }}</p>
+        <h1>今日决策</h1>
+        <p class="page-subtitle">基于本地已同步快照整理市场环境、可执行交易计划与近期事件；不会在打开页面时请求第三方数据。</p>
       </div>
       <div class="dashboard-actions">
-        <el-button :loading="refreshing" type="primary" @click="refreshFilings">{{ t('pages.dashboard.refreshFilings') }}</el-button>
-        <el-button :loading="refreshingIpo" @click="refreshIpoFilings">{{ t('pages.dashboard.refreshIpoRadar') }}</el-button>
-        <el-button :loading="loading" @click="load">{{ t('common.refreshPanel') }}</el-button>
+        <el-button :icon="Setting" @click="preferencesVisible = true">总览布局</el-button>
+        <el-dropdown>
+          <el-button>手动同步<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item :disabled="refreshing" @click="refreshFilings">刷新 SEC 公告</el-dropdown-item>
+              <el-dropdown-item :disabled="refreshingIpo" @click="refreshIpoFilings">扫描 IPO</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-button type="primary" :loading="loading" :icon="Refresh" @click="load">刷新总览</el-button>
       </div>
     </div>
 
-    <el-dialog v-model="onboardingVisible" :title="t('pages.onboarding.title')" width="720px">
-      <p class="page-subtitle">{{ t('pages.onboarding.description') }}</p>
-      <el-steps direction="vertical" :active="onboardingActiveStep" class="onboarding-steps">
-        <el-step :title="t('pages.onboarding.userAgent')" :description="t('pages.onboarding.userAgentHint')" />
-        <el-step :title="t('pages.onboarding.target')" :description="t('pages.onboarding.targetHint')" />
-        <el-step :title="t('pages.onboarding.telegram')" :description="t('pages.onboarding.telegramHint')" />
-        <el-step :title="t('pages.onboarding.sync')" :description="t('pages.onboarding.syncHint')" />
-      </el-steps>
-      <template #footer>
-        <el-button @click="completeOnboarding">{{ t('pages.onboarding.skip') }}</el-button>
-        <el-button @click="$router.push('/configs')">{{ t('pages.onboarding.goConfigs') }}</el-button>
-        <el-button @click="$router.push('/targets')">{{ t('pages.onboarding.addTarget') }}</el-button>
-        <el-button @click="$router.push('/telegram')">{{ t('pages.onboarding.goTelegram') }}</el-button>
-        <el-button type="primary" :loading="refreshing" @click="refreshFilings">{{ t('pages.onboarding.refreshFilings') }}</el-button>
-        <el-button type="success" @click="completeOnboarding">{{ t('pages.onboarding.finish') }}</el-button>
-      </template>
-    </el-dialog>
-
-    <div class="health-alert-grid">
-      <el-alert
-        v-for="item in healthAlerts"
-        :key="item.title"
-        :title="item.title"
-        :description="item.description"
-        :type="item.type"
-        :closable="false"
-        show-icon
-      />
-    </div>
     <el-alert
-      v-if="dashboardLoadWarnings.length"
-      class="dashboard-load-warning"
-      type="warning"
-      :closable="false"
+      v-for="issue in criticalIssues"
+      :key="issue.key"
+      class="dashboard-alert"
+      type="error"
+      :title="issue.title"
+      :description="issue.detail"
       show-icon
-      :title="t('pages.dashboard.partialDataTitle')"
-      :description="t('pages.dashboard.partialDataDescription', { sections: dashboardLoadWarnings.join('、') })"
+      :closable="false"
     >
-      <template #default><el-button link type="primary" @click="load">{{ t('common.refresh') }}</el-button></template>
+      <template #default>
+        <div class="dashboard-alert-content">
+          <span>{{ issue.detail }}</span>
+          <el-button v-if="issue.action" link type="primary" @click="openOperationalAction(issue.action)">查看处理项</el-button>
+        </div>
+      </template>
+    </el-alert>
+    <el-alert v-if="summary?.warnings.length" class="dashboard-alert" type="warning" :closable="false" show-icon title="部分总览数据暂不可用">
+      <template #default>{{ summary.warnings.join('；') }}</template>
     </el-alert>
 
-    <el-card shadow="never" class="dashboard-panel dashboard-operations-panel">
-      <template #header>
-        <div class="panel-header">
-          <span>{{ t('pages.dashboard.operationalTodo') }}</span>
-          <div class="panel-header-actions">
-            <el-tag :type="operationalStatusType(operational?.status)" effect="plain">{{ operationalStatusLabel(operational?.status) }}</el-tag>
-            <el-link type="primary" @click="router.push('/system-health')">{{ t('pages.dashboard.viewOperationalHealth') }}</el-link>
-          </div>
-        </div>
-      </template>
-      <template v-if="operational">
-        <div class="operational-brief">
-          <div>
-            <span class="operational-brief-kicker">{{ operationalStatusLabel(operational.status) }}</span>
-            <strong>{{ operationalIssueSummary }}</strong>
-          </div>
-        </div>
-        <div v-if="operationalMetrics.length" class="operational-metric-grid">
-          <div v-for="metric in operationalMetrics" :key="metric.key" class="operational-metric" :class="`is-${metric.tone}`">
-            <span>{{ metric.label }}</span>
-            <strong>{{ metric.value }}</strong>
-          </div>
-        </div>
-        <div v-if="operational.issues.length" class="operational-issue-list">
-          <div v-for="issue in operational.issues.slice(0, 4)" :key="issue.key" class="operational-issue-row">
-            <div class="operational-issue-content">
-              <el-tag :type="issue.severity === 'critical' ? 'danger' : 'warning'" size="small" effect="plain">{{ operationalIssueSeverityLabel(issue.severity) }}</el-tag>
-              <div>
-                <strong>{{ issue.title }}</strong>
-                <span>{{ issue.detail }}</span>
+    <el-tabs v-model="activeView" class="dashboard-tabs">
+      <el-tab-pane label="决策" name="decision">
+        <div v-if="isVisible('market')" class="dashboard-grid decision-grid">
+          <el-card shadow="never" class="dashboard-panel panel-wide">
+            <template #header>
+              <div class="panel-header">
+                <span>市场环境</span>
+                <div class="panel-header-actions">
+                  <el-tooltip :content="summary?.decision.market.freshness.detail || '读取本地市场快照状态'">
+                    <el-tag :type="marketFreshnessType(summary?.decision.market.freshness.status)" effect="plain">{{ marketFreshnessLabel(summary?.decision.market.freshness.status) }}</el-tag>
+                  </el-tooltip>
+                  <el-link type="primary" @click="router.push('/market-trend')">查看大盘趋势</el-link>
+                </div>
+              </div>
+            </template>
+            <div class="market-strip">
+              <div v-for="item in summary?.decision.market.market || []" :key="item.symbol" class="market-item">
+                <span>{{ item.label }}</span><strong>{{ formatNumber(item.close) }}</strong><em :class="changeClass(item.change_1d_pct)">{{ formatChange(item.change_1d_pct) }}</em>
+              </div>
+              <div v-if="summary?.decision.market.temperature" class="market-item temperature-item">
+                <span>市场温度</span><strong>{{ summary.decision.market.temperature.temperature }}</strong><em>{{ summary.decision.market.temperature.description || 'Longbridge' }}</em>
               </div>
             </div>
-            <el-button v-if="issue.action" link type="primary" @click="openOperationalAction(issue.action)">{{ t('pages.dashboard.handleOperationalIssue') }}</el-button>
-          </div>
-          <el-link v-if="operational.issues.length > 4" class="operational-more-link" type="primary" @click="router.push('/system-health')">
-            {{ t('pages.dashboard.moreOperationalIssues', { count: operational.issues.length - 4 }) }}
-          </el-link>
-        </div>
-        <el-empty v-else :description="t('pages.dashboard.noOperationalIssues')" :image-size="54" />
-      </template>
-      <el-skeleton v-else :rows="3" animated />
-    </el-card>
-
-    <div class="section-label">{{ t('pages.dashboard.targetMonitor') }}</div>
-    <div class="kpi-grid">
-      <el-card v-for="item in metrics" :key="item.label" shadow="never" class="kpi-card">
-        <div class="kpi-card-inner">
-          <component :is="item.icon" class="kpi-icon" />
-          <div class="metric">
-            <span>{{ item.label }}</span>
-            <strong>{{ item.value }}</strong>
-            <small>{{ item.hint }}</small>
-          </div>
-        </div>
-      </el-card>
-    </div>
-
-    <div class="section-label">{{ t('pages.dashboard.ipoRadar') }}</div>
-    <div class="kpi-grid ipo-kpi-grid">
-      <el-card v-for="item in ipoMetrics" :key="item.label" shadow="never" class="kpi-card">
-        <div class="kpi-card-inner">
-          <component :is="item.icon" class="kpi-icon" />
-          <div class="metric">
-            <span>{{ item.label }}</span>
-            <strong>{{ item.value }}</strong>
-            <small>{{ item.hint }}</small>
-          </div>
-        </div>
-      </el-card>
-    </div>
-
-    <div class="dashboard-grid">
-      <el-card shadow="never" class="dashboard-panel panel-wide">
-        <template #header>
-          <div class="panel-header">
-            <span>{{ t('pages.dashboard.ipoRadar') }}</span>
-            <div class="panel-header-actions">
-              <el-tag v-if="latestIpoSync" :type="syncStatusType(latestIpoSync.status)" effect="plain">{{ triggerLabel(latestIpoSync.trigger) }}</el-tag>
-              <el-link type="primary" @click="$router.push('/ipo-radar')">{{ t('common.viewAll') }}</el-link>
+            <div class="market-subsection">
+              <span class="subsection-label">板块强弱</span>
+              <el-tag v-for="item in summary?.decision.market.sectors || []" :key="item.symbol" :type="changeTagType(item.change_1d_pct)" effect="plain">{{ item.label }} {{ formatChange(item.change_1d_pct) }}</el-tag>
             </div>
-          </div>
-        </template>
-        <div class="ipo-summary-row">
-          <div>
-            <span>{{ t('pages.dashboard.ipoTotal') }}</span>
-            <strong>{{ ipoFilingTotal }}</strong>
-          </div>
-          <div>
-            <span>{{ t('pages.dashboard.ipoLastChecked') }}</span>
-            <strong>{{ latestIpoSync ? formatDateTime(latestIpoSync.started_at) : '-' }}</strong>
-          </div>
-          <div>
-            <span>{{ t('pages.dashboard.ipoLastNew') }}</span>
-            <strong>{{ latestIpoSync?.new_filings ?? 0 }}</strong>
-          </div>
-        </div>
-        <el-table :data="recentIpoFilings" v-loading="loading" border>
-          <el-table-column prop="filing_type" :label="t('common.type')" width="100">
-            <template #default="{ row }"><el-tag type="warning" effect="plain">{{ row.filing_type }}</el-tag></template>
-          </el-table-column>
-          <el-table-column prop="company_name" :label="t('common.company')" min-width="220" show-overflow-tooltip />
-          <el-table-column prop="cik" label="CIK" width="130" />
-          <el-table-column prop="filing_date" :label="t('common.filingDate')" width="130">
-            <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
-          </el-table-column>
-          <el-table-column prop="accepted_at" :label="t('pages.dashboard.secAcceptedAt')" width="170">
-            <template #default="{ row }">{{ formatDateTime(row.accepted_at) }}</template>
-          </el-table-column>
-          <el-table-column prop="title" :label="t('common.title')" min-width="260">
-            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ row.title || row.company_name }}</el-link></template>
-          </el-table-column>
-        </el-table>
-      </el-card>
-
-      <el-card shadow="never" class="dashboard-panel">
-        <template #header>
-          <div class="panel-header">
-            <span>{{ t('pages.dashboard.syncStatus') }}</span>
-            <el-link type="primary" @click="$router.push('/sync-runs')">{{ t('common.history') }}</el-link>
-          </div>
-        </template>
-        <div v-if="latestFilingSync" class="status-block">
-          <el-tag :type="syncStatusType(latestFilingSync.status)" effect="plain">{{ syncStatusLabel(latestFilingSync.status) }}</el-tag>
-          <strong>{{ t('pages.dashboard.newFilings', { count: latestFilingSync.new_filings }) }}</strong>
-          <span>{{ t('pages.dashboard.syncSummary', { targets: latestFilingSync.targets_checked, failed: latestFilingSync.failed_targets }) }}</span>
-          <span>{{ t('pages.dashboard.startedAt', { time: formatDateTime(latestFilingSync.started_at) }) }}</span>
-          <span>{{ t('pages.dashboard.finishedAt', { time: formatDateTime(latestFilingSync.finished_at) }) }}</span>
-        </div>
-        <el-empty v-else :description="t('pages.dashboard.noSyncRuns')" />
-      </el-card>
-
-      <el-card shadow="never" class="dashboard-panel">
-        <template #header>
-          <div class="panel-header">
-            <span>{{ t('pages.dashboard.targetHealth') }}</span>
-            <el-link type="primary" @click="$router.push('/targets')">{{ t('common.manage') }}</el-link>
-          </div>
-        </template>
-        <div class="target-health">
-          <div class="health-row"><span>{{ t('pages.dashboard.enabledTargets') }}</span><strong>{{ enabledTargetTotal }}</strong></div>
-          <div class="health-row"><span>{{ t('pages.dashboard.syncSuccess') }}</span><strong>{{ successfulTargets }}</strong></div>
-          <div class="health-row danger"><span>{{ t('pages.dashboard.syncFailed') }}</span><strong>{{ failedTargets }}</strong></div>
-        </div>
-      </el-card>
-
-      <el-card shadow="never" class="dashboard-panel">
-        <template #header>
-          <div class="panel-header">
-            <span>{{ t('pages.dashboard.activeTargets') }}</span>
-            <el-link type="primary" @click="$router.push('/filings')">{{ t('common.filings') }}</el-link>
-          </div>
-        </template>
-        <div v-if="activeTargets.length" class="rank-list">
-          <div v-for="item in activeTargets" :key="item.ticker" class="rank-row">
-            <div>
-              <strong>{{ item.ticker }}</strong>
-              <span>{{ item.latestType }}</span>
+            <div class="market-subsection">
+              <span class="subsection-label">美股期货</span>
+              <el-tag v-for="item in (summary?.decision.market.futures || []).slice(0, 4)" :key="item.symbol" :type="changeTagType(item.change_1d_pct)" effect="plain">{{ item.label }} {{ formatChange(item.change_1d_pct) }}</el-tag>
+              <el-link type="primary" @click="router.push('/us-futures')">全部期货</el-link>
             </div>
-            <el-tag effect="plain">{{ t('pages.dashboard.countSuffix', { count: item.count }) }}</el-tag>
-          </div>
+          </el-card>
         </div>
-        <el-empty v-else :description="t('pages.dashboard.noActiveTargets')" />
-      </el-card>
 
-      <el-card shadow="never" class="dashboard-panel">
-        <template #header>
-          <div class="panel-header">
-            <span>{{ t('pages.dashboard.failedTargets') }}</span>
-            <el-link type="primary" @click="$router.push('/targets?status=enabled')">{{ t('common.process') }}</el-link>
-          </div>
-        </template>
-        <div v-if="failedTargetItems.length" class="issue-list">
-          <div v-for="item in failedTargetItems" :key="item.id" class="issue-row">
-            <div>
-              <strong>{{ item.ticker }}</strong>
-              <span>{{ item.last_sync_error || t('pages.dashboard.noSyncErrorDetail') }}</span>
-            </div>
-            <el-button size="small" @click="$router.push(`/targets?ticker=${encodeURIComponent(item.ticker)}`)">{{ t('common.view') }}</el-button>
-          </div>
-        </div>
-        <el-empty v-else :description="t('pages.dashboard.noFailedTargets')" />
-      </el-card>
-
-      <el-card shadow="never" class="dashboard-panel panel-wide">
-        <template #header>
-          <div class="panel-header">
-            <span>{{ t('pages.dashboard.latestFilings') }}</span>
-            <el-link type="primary" @click="$router.push('/filings')">{{ t('common.viewAll') }}</el-link>
-          </div>
-        </template>
-        <el-table :data="recentFilings" v-loading="loading" border>
-          <el-table-column prop="filing_type" :label="t('common.type')" width="100">
-            <template #default="{ row }"><el-tag effect="plain">{{ row.filing_type }}</el-tag></template>
-          </el-table-column>
-          <el-table-column prop="ticker" label="Ticker" width="90" />
-          <el-table-column prop="company_name" :label="t('common.company')" min-width="160" show-overflow-tooltip />
-          <el-table-column prop="filing_date" :label="t('common.filingDate')" width="130">
-            <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
-          </el-table-column>
-          <el-table-column prop="pulled_at" :label="t('common.syncTime')" width="180">
-            <template #default="{ row }">{{ formatDateTime(row.pulled_at) }}</template>
-          </el-table-column>
-          <el-table-column :label="t('common.link')" width="80">
-            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ t('common.open') }}</el-link></template>
-          </el-table-column>
-        </el-table>
-      </el-card>
-
-      <el-card shadow="never" class="dashboard-panel panel-wide">
-        <template #header>
-          <div class="panel-header">
-            <span>{{ t('pages.dashboard.recentNotifications') }}</span>
-            <div class="panel-header-actions">
-              <el-tag :type="notificationRateType" effect="plain">{{ t('pages.dashboard.notificationRate', { rate: notificationSuccessRate }) }}</el-tag>
-              <el-link type="primary" @click="$router.push('/notification-logs')">{{ t('nav.notificationLogs') }}</el-link>
-            </div>
-          </div>
-        </template>
-        <el-table :data="recentNotifications" v-loading="loading" border>
-          <el-table-column prop="created_at" :label="t('common.time')" width="180">
-            <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
-          </el-table-column>
-          <el-table-column prop="source" :label="t('pages.notificationLogs.source')" width="120">
-            <template #default="{ row }">{{ notificationSourceLabel(row.source) }}</template>
-          </el-table-column>
-          <el-table-column prop="item_count" :label="t('pages.notificationLogs.totalCount')" width="90" align="right" />
-          <el-table-column prop="sent_count" :label="t('pages.notificationLogs.sentCount')" width="90" align="right" />
-          <el-table-column prop="suppressed_count" :label="t('pages.notificationLogs.suppressedCount')" width="90" align="right" />
-          <el-table-column prop="status" :label="t('common.status')" width="110">
-            <template #default="{ row }">
-              <el-tag class="status-tag" :type="notificationStatusType(row.status)" effect="plain">{{ notificationStatusLabel(row.status) }}</el-tag>
+        <div v-if="isVisible('actions')" class="dashboard-grid decision-grid">
+          <el-card shadow="never" class="dashboard-panel panel-wide">
+            <template #header>
+              <div class="panel-header">
+                <span>候选行动</span>
+                <div class="panel-header-actions">
+                  <el-tag v-if="summary?.decision.review_due.overdue" type="danger" effect="plain">{{ summary.decision.review_due.overdue }} 项复核逾期</el-tag>
+                  <el-tag v-if="summary?.decision.review_due.due_today" type="warning" effect="plain">{{ summary.decision.review_due.due_today }} 项今日复核</el-tag>
+                  <el-link type="primary" @click="router.push('/strategy-pool')">查看策略观察池</el-link>
+                </div>
+              </div>
             </template>
-          </el-table-column>
-          <el-table-column prop="error_message" :label="t('common.error')" min-width="180" show-overflow-tooltip />
-        </el-table>
-      </el-card>
-    </div>
+            <el-table :data="summary?.decision.actions || []" empty-text="当前没有入场候选、离场预警或趋势失效的交易计划">
+              <el-table-column prop="ticker" label="标的" width="110" fixed>
+                <template #default="{ row }"><el-link type="primary" @click="openCandidate(row.ticker)">{{ row.ticker }}</el-link></template>
+              </el-table-column>
+              <el-table-column prop="company_name" label="公司 / 基金" min-width="180" show-overflow-tooltip />
+              <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="tradeStatusType(row.status)" effect="plain">{{ tradeStatusLabel(row.status) }}</el-tag></template></el-table-column>
+              <el-table-column prop="reason" label="触发条件 / 原因" min-width="250" show-overflow-tooltip />
+              <el-table-column label="收盘价" width="115" align="right"><template #default="{ row }">{{ row.close_usd ? `${formatNumber(row.close_usd)} USD` : '-' }}</template></el-table-column>
+              <el-table-column label="基本面" width="100" align="center"><template #default="{ row }"><el-tag v-if="row.score" effect="plain">{{ row.grade }} {{ row.score }}</el-tag><span v-else>-</span></template></el-table-column>
+              <el-table-column label="状态开始" width="165"><template #default="{ row }">{{ formatDateTime(row.since) }}</template></el-table-column>
+            </el-table>
+          </el-card>
+        </div>
+
+        <div v-if="isVisible('calendar')" class="dashboard-grid decision-grid">
+          <el-card shadow="never" class="dashboard-panel panel-wide">
+            <template #header><div class="panel-header"><span>近期事件日历（14 天）</span><el-link type="primary" @click="router.push('/macro-calendar')">宏观日历</el-link></div></template>
+            <el-table :data="summary?.decision.calendar || []" empty-text="未来 14 天暂无已同步事件">
+              <el-table-column label="类型" width="120" fixed><template #default="{ row }"><el-tag :type="calendarTagType(row.kind)" effect="plain">{{ calendarLabel(row) }}</el-tag></template></el-table-column>
+              <el-table-column prop="ticker" label="标的" width="100" />
+              <el-table-column prop="title" label="事件" min-width="300" show-overflow-tooltip />
+              <el-table-column label="时间" width="180"><template #default="{ row }">{{ formatDateTime(row.at) }} {{ row.session || '' }}</template></el-table-column>
+              <el-table-column label="操作" width="100"><template #default="{ row }"><el-link type="primary" @click="row.link && router.push(row.link)">查看</el-link></template></el-table-column>
+            </el-table>
+          </el-card>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="监控" name="monitoring">
+        <div v-if="isVisible('monitoring')" class="dashboard-grid">
+          <el-card shadow="never" class="dashboard-panel metric-card"><span>监控标的</span><strong>{{ summary?.monitoring.enabled_targets || 0 }}</strong><small>共 {{ summary?.monitoring.watch_targets || 0 }} 个标的</small></el-card>
+          <el-card shadow="never" class="dashboard-panel metric-card"><span>近期财报预告</span><strong>{{ summary?.monitoring.upcoming_earnings || 0 }}</strong><small>已同步的未来事件</small></el-card>
+          <el-card shadow="never" class="dashboard-panel metric-card"><span>进行中 IPO</span><strong>{{ summary?.monitoring.ipo.in_progress || 0 }}</strong><small>关注 {{ summary?.monitoring.ipo.followed_total || 0 }} 家</small></el-card>
+        </div>
+        <div v-if="isVisible('monitoring')" class="dashboard-grid monitoring-grid">
+          <el-card shadow="never" class="dashboard-panel panel-wide">
+            <template #header><div class="panel-header"><span>监控标的重要公告</span><el-link type="primary" @click="router.push('/event-radar')">重大事件</el-link></div></template>
+            <el-table :data="summary?.monitoring.recent_filings || []" empty-text="暂无重要公告">
+              <el-table-column prop="ticker" label="标的" width="110" fixed />
+              <el-table-column prop="company_name" label="公司 / 基金" min-width="180" show-overflow-tooltip />
+              <el-table-column prop="filing_type" label="类型" width="105"><template #default="{ row }"><el-tag effect="plain">{{ row.filing_type }}</el-tag></template></el-table-column>
+              <el-table-column prop="title" label="公告" min-width="280" show-overflow-tooltip />
+              <el-table-column label="时间" width="175"><template #default="{ row }">{{ formatDateTime(row.filed_at) }}</template></el-table-column>
+            </el-table>
+          </el-card>
+          <el-card shadow="never" class="dashboard-panel panel-wide">
+            <template #header><div class="panel-header"><span>关注 IPO 进展</span><el-link type="primary" @click="router.push('/ipo-radar')">IPO 监控</el-link></div></template>
+            <el-table :data="summary?.monitoring.ipo.followed || []" empty-text="还没有关注 IPO 公司">
+              <el-table-column prop="company_name" label="公司" min-width="240" fixed show-overflow-tooltip />
+              <el-table-column prop="status" label="进度" width="125"><template #default="{ row }"><el-tag effect="plain">{{ row.status }}</el-tag></template></el-table-column>
+              <el-table-column prop="final_ticker" label="Ticker" width="115" />
+              <el-table-column prop="latest_filing_type" label="最新文件" width="120" />
+              <el-table-column label="最近更新" width="175"><template #default="{ row }">{{ formatDateTime(row.latest_accepted_at || row.latest_filing_date) }}</template></el-table-column>
+            </el-table>
+          </el-card>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="运行健康" name="operations">
+        <div v-if="isVisible('operations')" class="dashboard-grid">
+          <el-card shadow="never" class="dashboard-panel metric-card"><span>运行状态</span><strong>{{ summary?.operations.status || '-' }}</strong><small>来自本地任务与投递记录</small></el-card>
+          <el-card shadow="never" class="dashboard-panel metric-card"><span>通知失败</span><strong>{{ summary?.operations.failed_notification_batches || 0 }}</strong><small>待重试或人工处理</small></el-card>
+          <el-card shadow="never" class="dashboard-panel metric-card"><span>死信</span><strong>{{ summary?.operations.dead_letter_batches || 0 }}</strong><small>需要检查 Telegram 配置或错误</small></el-card>
+        </div>
+        <div v-if="isVisible('operations')" class="dashboard-grid monitoring-grid">
+          <el-card shadow="never" class="dashboard-panel panel-wide">
+            <template #header><div class="panel-header"><span>运行待办</span><el-link type="primary" @click="router.push('/system-health')">系统健康页</el-link></div></template>
+            <el-table :data="summary?.operations.issues || []" empty-text="当前没有运行待办">
+              <el-table-column prop="severity" label="级别" width="105"><template #default="{ row }"><el-tag :type="issueTagType(row.severity)" effect="plain">{{ row.severity }}</el-tag></template></el-table-column>
+              <el-table-column prop="title" label="项目" min-width="200" />
+              <el-table-column prop="detail" label="说明" min-width="400" show-overflow-tooltip />
+              <el-table-column label="操作" width="110"><template #default="{ row }"><el-link v-if="row.action" type="primary" @click="openOperationalAction(row.action)">处理</el-link></template></el-table-column>
+            </el-table>
+          </el-card>
+          <el-card shadow="never" class="dashboard-panel panel-wide">
+            <template #header><div class="panel-header"><span>定时任务摘要</span><el-link type="primary" @click="router.push('/scheduler')">调度任务</el-link></div></template>
+            <el-table :data="summary?.operations.tasks || []" empty-text="暂无任务记录">
+              <el-table-column prop="task_name" label="任务" min-width="260" fixed />
+              <el-table-column label="已启用" width="100"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '开启' : '关闭' }}</el-tag></template></el-table-column>
+              <el-table-column prop="last_status" label="最近状态" width="120"><template #default="{ row }"><el-tag :type="taskStatusType(row.last_status)" effect="plain">{{ row.last_status || '-' }}</el-tag></template></el-table-column>
+              <el-table-column label="上次运行" width="175"><template #default="{ row }">{{ formatDateTime(row.last_run_at) }}</template></el-table-column>
+              <el-table-column label="下次运行" width="175"><template #default="{ row }">{{ formatDateTime(row.next_run_at) }}</template></el-table-column>
+              <el-table-column prop="consecutive_failures" label="连续失败" width="110" />
+            </el-table>
+          </el-card>
+        </div>
+      </el-tab-pane>
+    </el-tabs>
+
+    <el-dialog v-model="preferencesVisible" title="总览布局" width="520px">
+      <p class="page-subtitle">隐藏模块只影响当前本地用户的总览显示，不影响同步、通知或数据保留。</p>
+      <el-checkbox-group v-model="visibleModules" class="dashboard-module-selector">
+        <el-checkbox v-for="module in moduleOptions" :key="module.key" :value="module.key">{{ module.label }}</el-checkbox>
+      </el-checkbox-group>
+      <template #footer>
+        <el-button @click="restoreDefaultModules">还原默认</el-button>
+        <el-button type="primary" :loading="savingPreferences" @click="savePreferences">保存布局</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { Aim, Bell, DataAnalysis, Document, TrendCharts } from '@element-plus/icons-vue'
+import { ArrowDown, Refresh, Setting } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, Filing, IPOCompany, IPOFiling, IPORadarHealth, IPORadarRefreshResult, NotificationBatch, OperationalReport, PageResult, SyncRun, SystemConfig, TaskConfig, WatchTarget } from '@/api/types'
-import { useI18n } from '@/i18n'
+import type { ApiResponse } from '@/api/types'
 
-const { t } = useI18n()
+interface MarketSeries { symbol: string; label: string; close: number; change_1d_pct?: number | null }
+interface CandidateAction { ticker: string; company_name?: string; status: string; entry_trigger?: string; reason?: string; close_usd?: number; score?: number; grade?: string; since: string }
+interface CalendarItem { kind: string; scope: string; ticker?: string; title: string; at?: string | null; session?: string; link?: string }
+interface FilingItem { id: number; ticker: string; company_name: string; filing_type: string; title: string; filed_at: string }
+interface IPOCompany { company_name: string; status: string; final_ticker?: string; latest_filing_type?: string; latest_accepted_at?: string; latest_filing_date?: string }
+interface OperationalIssue { key: string; severity: string; title: string; detail: string; action?: string }
+interface OperationalTask { task_name: string; enabled: boolean; last_status: string; last_run_at?: string; next_run_at?: string; consecutive_failures: number }
+interface DashboardSummary {
+  generated_at: string
+  warnings: string[]
+  preferences: { hidden_modules: string[] }
+  decision: { market: { market: MarketSeries[]; sectors: MarketSeries[]; futures: MarketSeries[]; temperature?: { temperature: number; description?: string }; freshness: { status: string; detail: string } }; actions: CandidateAction[]; calendar: CalendarItem[]; review_due: { overdue: number; due_today: number; upcoming: number } }
+  monitoring: { watch_targets: number; enabled_targets: number; upcoming_earnings: number; recent_filings: FilingItem[]; ipo: { in_progress: number; followed_total: number; followed: IPOCompany[] } }
+  operations: { status: string; critical_issues: OperationalIssue[]; issues: OperationalIssue[]; tasks: OperationalTask[]; failed_notification_batches: number; dead_letter_batches: number }
+}
+
 const router = useRouter()
 const loading = ref(false)
 const refreshing = ref(false)
 const refreshingIpo = ref(false)
-const targetTotal = ref(0)
-const enabledTargetTotal = ref(0)
-const filingTotal = ref(0)
-const notificationTotal = ref(0)
-const syncTotal = ref(0)
-const ipoFilingTotal = ref(0)
-const ipoCompanies = ref<IPOCompany[]>([])
-const recentFilings = ref<Filing[]>([])
-const recentIpoFilings = ref<IPOFiling[]>([])
-const dashboardFilings = ref<Filing[]>([])
-const recentNotifications = ref<NotificationBatch[]>([])
-const ipoHealth = ref<IPORadarHealth | null>(null)
-const operational = ref<OperationalReport | null>(null)
-const dashboardLoadWarnings = ref<string[]>([])
+const savingPreferences = ref(false)
+const preferencesVisible = ref(false)
+const activeView = ref('decision')
+const summary = ref<DashboardSummary | null>(null)
+const defaultModules = ['market', 'actions', 'calendar', 'monitoring', 'operations']
+const visibleModules = ref<string[]>([...defaultModules])
+const moduleOptions = [
+  { key: 'market', label: '市场环境' }, { key: 'actions', label: '候选行动' }, { key: 'calendar', label: '近期事件日历' },
+  { key: 'monitoring', label: '监控概览' }, { key: 'operations', label: '运行健康' }
+]
 
-function notificationSourceLabel(value: string) {
-  if (value === 'ipo') return t('pages.notificationLogs.sources.ipo')
-  if (value === 'ipo_offering') return t('pages.notificationLogs.sources.ipoOffering')
-  return t('pages.notificationLogs.sources.filing')
-}
-const latestFilingSync = ref<SyncRun | null>(null)
-const latestIpoSync = ref<SyncRun | null>(null)
-const successfulTargets = ref(0)
-const failedTargets = ref(0)
-const failedTargetItems = ref<WatchTarget[]>([])
-const telegramEnabled = ref(false)
-const schedulerEnabled = ref(false)
-const onboardingVisible = ref(false)
-const onboardingActiveStep = computed(() => {
-  if (targetTotal.value === 0) return 1
-  if (!telegramEnabled.value) return 2
-  if (!latestFilingSync.value) return 3
-  return 4
-})
+const criticalIssues = computed(() => summary.value?.operations.critical_issues || [])
+const isVisible = (key: string) => visibleModules.value.includes(key)
 
-const metrics = computed(() => [
-  { label: t('nav.targets'), value: targetTotal.value, hint: t('pages.dashboard.enabledTargets') + ` ${enabledTargetTotal.value}`, icon: Aim },
-  { label: t('nav.filings'), value: filingTotal.value, hint: t('common.filings'), icon: Document },
-  { label: t('nav.syncRuns'), value: syncTotal.value, hint: latestFilingSync.value ? syncStatusLabel(latestFilingSync.value.status) : t('pages.dashboard.noSyncRuns'), icon: DataAnalysis },
-  { label: t('nav.notificationLogs'), value: notificationTotal.value, hint: 'Telegram', icon: Bell }
-])
-
-const ipoStatusCounts = computed(() => {
-  const counts = new Map<string, number>()
-  for (const company of ipoCompanies.value) {
-    counts.set(company.status, (counts.get(company.status) || 0) + 1)
-  }
-  return counts
-})
-
-const ipoInProgressTotal = computed(() => {
-  const activeStatuses = new Set(['new', 'updating', 'effective', 'stale'])
-  return ipoCompanies.value.filter((company) => activeStatuses.has(company.status)).length
-})
-
-const ipoMetrics = computed(() => [
-  { label: t('pages.dashboard.ipoInProgress'), value: ipoInProgressTotal.value, hint: t('pages.dashboard.ipoInProgressHint'), icon: TrendCharts },
-  { label: t('pages.ipoRadar.statuses.new'), value: ipoStatusCounts.value.get('new') || 0, hint: t('pages.dashboard.ipoNewHint'), icon: Aim },
-  { label: t('pages.ipoRadar.statuses.updating'), value: ipoStatusCounts.value.get('updating') || 0, hint: t('pages.dashboard.ipoUpdatingHint'), icon: DataAnalysis },
-  { label: t('pages.ipoRadar.statuses.effective'), value: ipoStatusCounts.value.get('effective') || 0, hint: t('pages.dashboard.ipoEffectiveHint'), icon: TrendCharts },
-  { label: t('pages.dashboard.ipoTotal'), value: ipoFilingTotal.value, hint: t('pages.dashboard.ipoStoredHint'), icon: Document },
-  { label: t('pages.dashboard.ipoLastNew'), value: latestIpoSync.value?.new_filings ?? 0, hint: latestIpoSync.value ? formatDateTime(latestIpoSync.value.started_at) : t('pages.dashboard.noIpoRuns'), icon: Bell }
-])
-
-const healthAlerts = computed(() => {
-  const alerts: Array<{ title: string, description: string, type: 'success' | 'warning' | 'error' | 'info' }> = []
-  if (failedTargets.value > 0) {
-    alerts.push({
-      title: t('pages.dashboard.failedTargetsAlertTitle', { count: failedTargets.value }),
-      description: t('pages.dashboard.failedTargetsAlertDescription'),
-      type: 'error'
-    })
-  }
-  if ((ipoHealth.value?.failed_notification_batches || 0) > 0 || (ipoHealth.value?.dead_letter_batches || 0) > 0) {
-    alerts.push({
-      title: t('pages.dashboard.ipoNotificationFailedAlertTitle', { failed: ipoHealth.value?.failed_notification_batches || 0, dead: ipoHealth.value?.dead_letter_batches || 0 }),
-      description: t('pages.dashboard.ipoNotificationFailedAlertDescription'),
-      type: 'error'
-    })
-  }
-  if (!latestFilingSync.value) {
-    alerts.push({ title: t('pages.dashboard.noSyncAlertTitle'), description: t('pages.dashboard.noSyncAlertDescription'), type: 'warning' })
-  } else if (latestSyncAgeHours.value >= 6) {
-    alerts.push({
-      title: t('pages.dashboard.staleSyncAlertTitle', { hours: latestSyncAgeHours.value }),
-      description: t('pages.dashboard.staleSyncAlertDescription'),
-      type: 'warning'
-    })
-  }
-  if (!schedulerEnabled.value) {
-    alerts.push({ title: t('pages.dashboard.schedulerDisabledTitle'), description: t('pages.dashboard.schedulerDisabledDescription'), type: 'warning' })
-  }
-  if (!telegramEnabled.value) {
-    alerts.push({ title: t('pages.dashboard.telegramDisabledTitle'), description: t('pages.dashboard.telegramDisabledDescription'), type: 'info' })
-  }
-  if (alerts.length === 0) {
-    alerts.push({ title: t('pages.dashboard.healthyTitle'), description: t('pages.dashboard.healthyDescription'), type: 'success' })
-  }
-  return alerts.slice(0, 3)
-})
-
-const operationalIssueSummary = computed(() => {
-  const count = operational.value?.issues.length || 0
-  return count > 0
-    ? t('pages.dashboard.operationalIssueSummary', { count })
-    : t('pages.dashboard.noOperationalIssues')
-})
-
-const operationalMetrics = computed(() => {
-  if (!operational.value) return []
-  const report = operational.value
-  return [
-    { key: 'retryable', label: t('pages.dashboard.retryableTargets'), value: report.retryable_targets, tone: 'danger' },
-    { key: 'profiles', label: t('pages.dashboard.profileRetryDue'), value: report.company_profile_retry_due, tone: 'warning' },
-    { key: 'market', label: t('pages.dashboard.marketRecovery'), value: report.market_price_recovery, tone: 'warning' },
-    { key: 'providers', label: t('pages.dashboard.providerWarnings'), value: report.provider_warnings, tone: 'warning' },
-  ].filter((item) => item.value > 0)
-})
-
-const latestSyncAgeHours = computed(() => {
-  if (!latestFilingSync.value?.started_at) return 0
-  const started = new Date(latestFilingSync.value.started_at)
-  if (Number.isNaN(started.getTime())) return 0
-  return Math.floor((Date.now() - started.getTime()) / 36e5)
-})
-
-const activeTargets = computed(() => {
-  const stats = new Map<string, { ticker: string, count: number, latestType: string }>()
-  for (const filing of dashboardFilings.value) {
-    const current = stats.get(filing.ticker) || { ticker: filing.ticker, count: 0, latestType: filing.filing_type }
-    current.count++
-    if (!current.latestType) {
-      current.latestType = filing.filing_type
-    }
-    stats.set(filing.ticker, current)
-  }
-  return Array.from(stats.values()).sort((a, b) => b.count - a.count).slice(0, 5)
-})
-
-const notificationSuccessRate = computed(() => {
-  if (!recentNotifications.value.length) return 100
-  const success = recentNotifications.value.filter((item) => item.status === 'sent' || item.status === 'suppressed').length
-  return Math.round((success / recentNotifications.value.length) * 100)
-})
-
-const notificationRateType = computed(() => {
-  if (notificationSuccessRate.value >= 90) return 'success'
-  if (notificationSuccessRate.value >= 70) return 'warning'
-  return 'danger'
-})
+onMounted(load)
 
 async function load() {
   loading.value = true
-  dashboardLoadWarnings.value = []
-  // The dashboard's operational card is intentionally non-blocking: a local
-  // diagnostics failure must not hide targets, SEC filings, or IPO activity.
-  void loadOperationalReport()
   try {
-    const [targets, enabledTargets, filings, ipoFilings, ipoCompanyRes, ipoHealthRes, syncRuns, notifications, telegramConfigs, taskConfigs, uiConfigs] = await Promise.all([
-      safeDashboardRequest(t('nav.targets'), apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { page: 1, page_size: 10 } })),
-      safeDashboardRequest(t('pages.dashboard.targetHealth'), apiClient.get<ApiResponse<PageResult<WatchTarget>>>('/watch-targets', { params: { status: 'enabled', page: 1, page_size: 200 } })),
-      safeDashboardRequest(t('nav.filings'), apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { page: 1, page_size: 100, sort_by: 'pulled_at', sort_order: 'desc' } })),
-      safeDashboardRequest(t('pages.dashboard.ipoRadar'), apiClient.get<ApiResponse<PageResult<IPOFiling>>>('/ipo-filings', { params: { page: 1, page_size: 6 } })),
-      safeDashboardRequest(t('pages.dashboard.ipoRadar'), apiClient.get<ApiResponse<PageResult<IPOCompany>>>('/ipo-companies', { params: { page: 1, page_size: 500 } })),
-      safeDashboardRequest(t('pages.dashboard.ipoRadar'), apiClient.get<ApiResponse<IPORadarHealth>>('/ipo-health')),
-      safeDashboardRequest(t('pages.dashboard.syncStatus'), apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { page: 1, page_size: 20 } })),
-      safeDashboardRequest(t('pages.dashboard.recentNotifications'), apiClient.get<ApiResponse<PageResult<NotificationBatch>>>('/notification-batches', { params: { page: 1, page_size: 5 } })),
-      safeDashboardRequest('Telegram', apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config')),
-      safeDashboardRequest(t('pages.scheduler.title'), apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs')),
-      safeDashboardRequest(t('pages.configs.title'), apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs', { params: { category: 'ui' } }))
-    ])
-    if (targets) targetTotal.value = targets.total
-    if (enabledTargets) {
-      enabledTargetTotal.value = enabledTargets.total
-      successfulTargets.value = enabledTargets.items.filter((item) => item.last_sync_status === 'success').length
-      failedTargets.value = enabledTargets.items.filter((item) => item.last_sync_status === 'failed').length
-      failedTargetItems.value = enabledTargets.items.filter((item) => item.last_sync_status === 'failed').slice(0, 5)
-    }
-    if (filings) {
-      filingTotal.value = filings.total
-      dashboardFilings.value = filings.items
-      recentFilings.value = filings.items.slice(0, 6)
-    }
-    if (ipoFilings) {
-      ipoFilingTotal.value = ipoFilings.total
-      recentIpoFilings.value = ipoFilings.items
-    }
-    if (ipoCompanyRes) ipoCompanies.value = ipoCompanyRes.items
-    if (ipoHealthRes) ipoHealth.value = ipoHealthRes
-    if (syncRuns) {
-      syncTotal.value = syncRuns.total
-      latestFilingSync.value = syncRuns.items.find((item) => ['manual', 'scheduler', 'target'].includes(item.trigger)) || null
-      latestIpoSync.value = syncRuns.items.find((item) => item.trigger === 'ipo_manual' || item.trigger === 'ipo_scheduler') || null
-    }
-    if (notifications) {
-      notificationTotal.value = notifications.total
-      recentNotifications.value = notifications.items
-    }
-    if (telegramConfigs) telegramEnabled.value = configValue(telegramConfigs, 'telegram.enabled') === 'true'
-    if (taskConfigs) schedulerEnabled.value = taskConfigs.some((item) => item.enabled)
-    if (uiConfigs) onboardingVisible.value = configValue(uiConfigs, 'ui.onboarding_completed') !== 'true'
-  } finally {
-    loading.value = false
-  }
+    const response = await apiClient.get<ApiResponse<DashboardSummary>>('/dashboard/summary')
+    summary.value = response.data.data
+    const hidden = new Set(response.data.data.preferences?.hidden_modules || [])
+    visibleModules.value = defaultModules.filter((key) => !hidden.has(key))
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || error?.message || '总览读取失败')
+  } finally { loading.value = false }
 }
 
-async function safeDashboardRequest<T>(section: string, request: Promise<{ data: ApiResponse<T> }>): Promise<T | null> {
+async function savePreferences() {
+  savingPreferences.value = true
   try {
-    return (await request).data.data
-  } catch {
-    if (!dashboardLoadWarnings.value.includes(section)) dashboardLoadWarnings.value.push(section)
-    return null
-  }
+    const hidden = defaultModules.filter((key) => !visibleModules.value.includes(key))
+    await apiClient.put('/dashboard/preferences', { hidden_modules: hidden })
+    if (summary.value) summary.value.preferences.hidden_modules = hidden
+    preferencesVisible.value = false
+    ElMessage.success('总览布局已保存')
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || error?.message || '保存布局失败')
+  } finally { savingPreferences.value = false }
 }
 
-async function loadOperationalReport() {
-  try {
-    const res = await apiClient.get<ApiResponse<OperationalReport>>('/operational-health')
-    operational.value = res.data.data
-  } catch {
-    // Keep the most recently rendered report. Operational diagnostics are
-    // supplemental and should never break the primary dashboard refresh.
-  }
-}
-
-async function completeOnboarding() {
-  await apiClient.put('/system-configs', [
-    { key: 'ui.onboarding_completed', value: 'true', value_type: 'bool', category: 'ui', encrypted: false }
-  ])
-  onboardingVisible.value = false
-  ElMessage.success(t('messages.onboardingDone'))
-}
-
-function configValue(configs: SystemConfig[], key: string) {
-  return configs.find((item) => item.config_key === key)?.config_value || ''
-}
-
+function restoreDefaultModules() { visibleModules.value = [...defaultModules] }
 async function refreshFilings() {
   refreshing.value = true
-  try {
-    const res = await apiClient.post<ApiResponse<{ new_filings: number }>>('/filings/refresh')
-    ElMessage.success(t('messages.newFilingsAdded', { count: res.data.data.new_filings }))
-    await load()
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.message || error?.message || t('messages.taskTriggerFailed'))
-  } finally {
-    refreshing.value = false
-  }
+  try { const res = await apiClient.post<ApiResponse<{ new_filings: number }>>('/filings/refresh'); ElMessage.success(`已同步 ${res.data.data.new_filings} 条 SEC 公告`); await load() }
+  catch (error: any) { ElMessage.error(error?.response?.data?.message || error?.message || 'SEC 同步失败') }
+  finally { refreshing.value = false }
 }
-
 async function refreshIpoFilings() {
   refreshingIpo.value = true
-  try {
-    const res = await apiClient.post<ApiResponse<IPORadarRefreshResult>>('/ipo-filings/refresh', null, { timeout: 120000 })
-    ElMessage.success(t('messages.ipoRefreshDone', { count: res.data.data.new_filings, notified: res.data.data.notified }))
-    await load()
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.message || error?.message || t('messages.taskTriggerFailed'))
-  } finally {
-    refreshingIpo.value = false
-  }
+  try { const res = await apiClient.post<ApiResponse<{ new_filings: number }>>('/ipo-filings/refresh', null, { timeout: 120000 }); ElMessage.success(`IPO 扫描完成，新增 ${res.data.data.new_filings} 条文件`); await load() }
+  catch (error: any) { ElMessage.error(error?.response?.data?.message || error?.message || 'IPO 扫描失败') }
+  finally { refreshingIpo.value = false }
 }
-
-function formatDate(value?: string | null) {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toISOString().slice(0, 10)
-}
-
-function formatDateTime(value?: string | null) {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString()
-}
-
-function syncStatusType(status?: string) {
-  if (status === 'success') return 'success'
-  if (status === 'partial') return 'warning'
-  if (status === 'failed') return 'danger'
-  return 'info'
-}
-
-function syncStatusLabel(status?: string) {
-  if (status === 'success') return t('status.success')
-  if (status === 'partial') return t('status.partial')
-  if (status === 'failed') return t('status.failed')
-  if (status === 'running') return t('status.running')
-  return status || '-'
-}
-
-function triggerLabel(trigger?: string) {
-  if (trigger === 'ipo_manual') return t('pages.syncRuns.triggers.ipoManual')
-  if (trigger === 'ipo_scheduler') return t('pages.syncRuns.triggers.ipoScheduler')
-  if (trigger === 'manual') return t('pages.syncRuns.triggers.manual')
-  if (trigger === 'scheduler') return t('pages.syncRuns.triggers.scheduler')
-  if (trigger === 'target') return t('pages.syncRuns.triggers.target')
-  return trigger || '-'
-}
-
-function notificationStatusType(status?: string) {
-	if (status === 'sent') return 'success'
-	if (status === 'failed') return 'danger'
-	if (status === 'suppressed') return 'warning'
-	return 'info'
-}
-
-function notificationStatusLabel(status?: string) {
-	if (status === 'sent' || status === 'failed' || status === 'suppressed') return t(`pages.notificationLogs.statuses.${status}`)
-	return status || '-'
-}
-
-function operationalStatusType(status?: string) {
-  if (status === 'ok') return 'success'
-  if (status === 'critical') return 'danger'
-  return 'warning'
-}
-
-function operationalStatusLabel(status?: string) {
-  if (status === 'ok') return t('pages.dashboard.operationalHealthy')
-  if (status === 'critical') return t('pages.dashboard.operationalCritical')
-  return t('pages.dashboard.operationalWarning')
-}
-
-function operationalIssueSeverityLabel(severity?: string) {
-  return severity === 'critical' ? t('pages.dashboard.operationalCritical') : t('pages.dashboard.operationalWarning')
-}
-
-function openOperationalAction(action: string) {
-  const routes: Record<string, string> = {
-    scheduler: '/scheduler',
-    'sync-runs': '/sync-runs',
-    'discovery-logs': '/discovery-logs',
-    'system-health': '/system-health',
-  }
-  router.push(routes[action] || '/system-health')
-}
-
-onMounted(load)
+function openCandidate(ticker: string) { router.push({ path: '/discovery-candidates', query: { ticker } }) }
+function openOperationalAction(action: string) { const routes: Record<string, string> = { notification_logs: '/notification-logs', scheduler: '/scheduler', system_health: '/system-health', refresh: '/ipo-radar', targets: '/targets' }; router.push(routes[action] || '/system-health') }
+function formatNumber(value?: number | null) { return value == null ? '-' : new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value) }
+function formatChange(value?: number | null) { return value == null ? '-' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` }
+function formatDateTime(value?: string | null) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString() }
+function changeClass(value?: number | null) { return value == null ? '' : value >= 0 ? 'positive' : 'negative' }
+function changeTagType(value?: number | null) { return value == null ? 'info' : value >= 0 ? 'success' : 'danger' }
+function calendarTagType(kind: string) { return kind === 'ipo' ? 'warning' : kind === 'macro' ? 'danger' : 'success' }
+function calendarLabel(row: CalendarItem) { if (row.kind === 'ipo') return 'IPO 进展'; if (row.kind === 'macro') return '宏观事件'; return row.scope === 'candidate' ? '候选财报' : '监控财报' }
+function tradeStatusLabel(status: string) { return ({ entry_candidate: '入场候选', exit_warning: '离场预警', invalidated: '趋势失效' } as Record<string, string>)[status] || status }
+function tradeStatusType(status: string) { return status === 'entry_candidate' ? 'success' : status === 'exit_warning' ? 'warning' : 'danger' }
+function issueTagType(severity: string) { return severity === 'critical' || severity === 'danger' ? 'danger' : severity === 'warning' ? 'warning' : 'info' }
+function marketFreshnessType(value?: string) { return value === 'fresh' ? 'success' : value === 'stale' ? 'warning' : value === 'expired' || value === 'unavailable' ? 'danger' : 'info' }
+function marketFreshnessLabel(value?: string) { return ({ fresh: '数据新鲜', stale: '数据偏旧', expired: '数据过期', unavailable: '暂无快照' } as Record<string, string>)[value || ''] || '状态未知' }
+function taskStatusType(status: string) { return status === 'success' ? 'success' : status === 'failed' ? 'danger' : status === 'partial' ? 'warning' : 'info' }
 </script>
 
 <style scoped>
-.dashboard-operations-panel :deep(.el-card__body) {
-  padding-top: 14px;
-}
-
-.operational-brief {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.operational-brief > div {
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-  min-width: 0;
-}
-
-.operational-brief-kicker {
-  flex: none;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.operational-brief strong {
-  overflow: hidden;
-  color: #1f2937;
-  font-size: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.operational-metric-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.operational-metric {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid #e8edf5;
-  border-radius: 8px;
-  background: #fafcff;
-}
-
-.operational-metric span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.operational-metric strong {
-  color: #334155;
-  font-size: 20px;
-  line-height: 1;
-}
-
-.operational-metric.is-danger strong { color: #dc2626; }
-.operational-metric.is-warning strong { color: #d97706; }
-
-.operational-issue-list {
-  border-top: 1px solid #eef2f7;
-}
-
-.operational-issue-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  min-height: 56px;
-  border-bottom: 1px solid #eef2f7;
-}
-
-.operational-issue-content {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.operational-issue-content > div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.operational-issue-content strong {
-  color: #1f2937;
-  font-size: 14px;
-}
-
-.operational-issue-content span {
-  overflow: hidden;
-  color: #64748b;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.operational-more-link {
-  margin-top: 10px;
-  font-size: 13px;
-}
-
-@media (max-width: 720px) {
-  .operational-brief,
-  .operational-brief > div {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .operational-issue-row { align-items: flex-start; padding: 10px 0; }
-  .operational-issue-content { align-items: flex-start; }
-  .operational-issue-content span { white-space: normal; }
-}
+.dashboard-actions { display: flex; gap: 10px; align-items: center; }
+.dashboard-alert { margin-bottom: 12px; }
+.dashboard-alert-content { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.dashboard-tabs :deep(.el-tabs__header) { margin-bottom: 18px; }
+.dashboard-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+.decision-grid, .monitoring-grid { grid-template-columns: 1fr; }
+.dashboard-panel { border-color: var(--el-border-color-lighter); }
+.panel-wide { min-width: 0; }
+.panel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600; }
+.panel-header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.metric-card { min-height: 126px; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+.metric-card span, .metric-card small { color: var(--el-text-color-secondary); }
+.metric-card strong { font-size: 30px; line-height: 1; color: var(--el-text-color-primary); }
+.market-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; }
+.market-item { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 5px; }
+.market-item span, .market-item em { font-size: 13px; color: var(--el-text-color-secondary); font-style: normal; }
+.market-item strong { font-size: 18px; }
+.market-item .positive { color: var(--el-color-success); }.market-item .negative { color: var(--el-color-danger); }
+.temperature-item { background: var(--el-fill-color-light); }
+.market-subsection { margin-top: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.subsection-label { color: var(--el-text-color-secondary); min-width: 70px; }
+.dashboard-module-selector { display: flex; flex-direction: column; gap: 14px; padding: 12px 0; }
+@media (max-width: 900px) { .dashboard-grid { grid-template-columns: 1fr; }.page-header, .dashboard-actions { align-items: flex-start; flex-wrap: wrap; }.dashboard-alert-content { align-items: flex-start; flex-direction: column; } }
 </style>

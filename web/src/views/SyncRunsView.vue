@@ -1,137 +1,154 @@
 <template>
   <section class="page">
     <div class="page-header">
-      <h1>{{ t('pages.syncRuns.title') }}</h1>
-      <div class="page-actions">
-        <el-button :disabled="!selectedRunFailedDetails.length" :loading="retryingAll" type="primary" @click="retrySelectedFailures">{{ t('pages.syncRuns.retryCurrentFailures') }}</el-button>
-        <el-button :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
+      <div>
+        <h1>任务执行历史</h1>
+        <p>查看除“小盘发现”外的全部调度与手动任务记录；小盘发现保留在“发现日志”的独立工作流中。</p>
       </div>
+      <el-button :loading="loading" @click="load">刷新</el-button>
     </div>
-    <el-form :inline="true" :model="filters" class="toolbar">
-      <el-form-item :label="t('common.status')">
-        <el-select v-model="filters.status" clearable style="width: 150px">
-          <el-option label="Success" value="success" />
-          <el-option label="Partial" value="partial" />
-          <el-option label="Failed" value="failed" />
-          <el-option :label="t('status.deferred')" value="deferred" />
-          <el-option label="Running" value="running" />
+
+    <el-form :inline="true" class="toolbar">
+      <el-form-item label="任务">
+        <el-select v-model="filters.task_name" clearable filterable placeholder="全部任务" style="width: 260px">
+          <el-option v-for="task in loggableTasks" :key="task.task_name" :label="taskLabel(task.task_name)" :value="task.task_name">
+            <span>{{ taskLabel(task.task_name) }}</span>
+            <span class="option-code">{{ task.task_name }}</span>
+          </el-option>
         </el-select>
       </el-form-item>
-      <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
+      <el-form-item label="状态">
+        <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 135px">
+          <el-option label="成功" value="success" />
+          <el-option label="部分完成" value="partial" />
+          <el-option label="已跳过" value="skipped" />
+          <el-option label="失败" value="failed" />
+          <el-option label="已中断" value="interrupted" />
+          <el-option label="运行中" value="running" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="触发方式">
+        <el-select v-model="filters.trigger" clearable placeholder="全部方式" style="width: 135px">
+          <el-option label="定时调度" value="scheduled" />
+          <el-option label="手动执行" value="manual" />
+        </el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" :loading="loading" @click="query">查询</el-button>
+        <el-button @click="reset">重置</el-button>
+      </el-form-item>
     </el-form>
-    <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.syncRuns.empty')" @expand-change="onExpandChange" @current-change="onCurrentRunChange">
-      <el-table-column type="expand">
+
+    <el-table :data="rows" v-loading="loading" border :empty-text="'暂无任务执行记录'">
+      <el-table-column label="任务" min-width="245" show-overflow-tooltip>
         <template #default="{ row }">
-          <el-table :data="details[row.id] || []" border class="sync-detail-table">
-            <el-table-column prop="ticker" label="Ticker" width="100" />
-            <el-table-column prop="status" :label="t('common.status')" width="120">
-              <template #default="{ row: detail }">
-                <el-tag class="status-tag" :type="syncStatusType(detail.status)" effect="plain">{{ syncStatusLabel(detail.status) }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" align="right" />
-            <el-table-column :label="t('pages.syncRuns.failureKind')" width="135">
-              <template #default="{ row: detail }">{{ failureKindLabel(detail.failure_kind) }}</template>
-            </el-table-column>
-            <el-table-column prop="attempt_count" :label="t('pages.syncRuns.attempts')" width="80" align="right" />
-            <el-table-column :label="t('pages.syncRuns.nextRetryAt')" width="170">
-              <template #default="{ row: detail }">{{ formatDateTime(detail.next_retry_at) }}</template>
-            </el-table-column>
-            <el-table-column prop="duration_ms" :label="t('common.duration')" width="100">
-              <template #default="{ row: detail }">{{ formatDuration(detail.duration_ms) }}</template>
-            </el-table-column>
-            <el-table-column prop="started_at" :label="t('common.startTime')" width="170">
-              <template #default="{ row: detail }">{{ formatDateTime(detail.started_at) }}</template>
-            </el-table-column>
-            <el-table-column prop="error_message" :label="t('common.error')" min-width="260" show-overflow-tooltip />
-            <el-table-column :label="t('common.actions')" width="150">
-              <template #default="{ row: detail }">
-                <el-button
-                  v-if="detail.status === 'failed' || detail.status === 'deferred'"
-                  size="small"
-                  type="primary"
-                  :loading="retryingTargetId === detail.target_id"
-                  @click="retryTarget(row, detail)"
-                >
-                  {{ t('common.retry') }}
-                </el-button>
-                <el-button v-else size="small" @click="$router.push(`/targets?ticker=${encodeURIComponent(detail.ticker)}`)">{{ t('common.target') }}</el-button>
-                <el-dropdown v-if="detail.status === 'failed' || detail.status === 'deferred'" trigger="click" @command="(command: string) => handleDetailCommand(command, detail)">
-                  <el-button size="small" :icon="MoreFilled" />
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item command="target">{{ t('pages.syncRuns.viewTarget') }}</el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
-              </template>
-            </el-table-column>
-          </el-table>
+          <div>{{ taskLabel(row.task_name) }}</div>
+          <div class="task-code">{{ row.task_name }}</div>
         </template>
       </el-table-column>
-      <el-table-column prop="status" :label="t('common.status')" width="120">
-        <template #default="{ row }">
-          <el-tag class="status-tag" :type="syncStatusType(row.status)" effect="plain">{{ syncStatusLabel(row.status) }}</el-tag>
-        </template>
+      <el-table-column label="状态" width="115">
+        <template #default="{ row }"><el-tag :type="statusType(row.status)" effect="plain">{{ statusLabel(row.status) }}</el-tag></template>
       </el-table-column>
-      <el-table-column prop="trigger" :label="t('common.source')" width="100">
-        <template #default="{ row }">
-          <el-tag type="info" effect="plain">{{ triggerLabel(row.trigger) }}</el-tag>
-        </template>
+      <el-table-column label="触发方式" width="115">
+        <template #default="{ row }"><el-tag type="info" effect="plain">{{ triggerLabel(row.trigger) }}</el-tag></template>
       </el-table-column>
-      <el-table-column prop="started_at" :label="t('common.startTime')" width="170">
+      <el-table-column label="开始时间" width="175">
         <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
       </el-table-column>
-      <el-table-column prop="finished_at" :label="t('common.finishTime')" width="170">
+      <el-table-column label="结束时间" width="175">
         <template #default="{ row }">{{ formatDateTime(row.finished_at) }}</template>
       </el-table-column>
-      <el-table-column prop="targets_checked" :label="t('common.target')" width="80" align="right" />
-      <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" align="right" />
-      <el-table-column prop="failed_targets" :label="t('status.failed')" width="80" align="right" />
-      <el-table-column prop="deferred_targets" :label="t('status.deferred')" width="80" align="right" />
-      <el-table-column prop="warning_message" :label="t('pages.syncRuns.warning')" min-width="200" show-overflow-tooltip />
-      <el-table-column prop="error_message" :label="t('common.error')" min-width="220" />
+      <el-table-column label="耗时" width="100" align="right">
+        <template #default="{ row }">{{ formatDuration(row.duration_ms, row.status) }}</template>
+      </el-table-column>
+      <el-table-column prop="summary" label="执行摘要" min-width="230" show-overflow-tooltip />
+      <el-table-column prop="error_message" label="错误详情" min-width="280" show-overflow-tooltip />
     </el-table>
-    <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />
+    <el-pagination class="pagination" layout="total, sizes, prev, pager, next" :total="total" v-model:page-size="pageSize" v-model:current-page="page" @size-change="query" @current-change="load" />
+
+    <el-divider />
+    <el-card shadow="never">
+      <template #header>
+        <div class="legacy-header">
+          <div>
+            <strong>SEC / IPO 标的同步明细</strong>
+            <span>保留原有标的级结果、失败原因与重试操作。</span>
+          </div>
+          <el-button :loading="legacyLoading" @click="loadLegacyRuns">刷新</el-button>
+        </div>
+      </template>
+      <el-form :inline="true" class="toolbar compact-toolbar">
+        <el-form-item label="状态">
+          <el-select v-model="legacyFilters.status" clearable placeholder="全部状态" style="width: 150px">
+            <el-option label="成功" value="success" /><el-option label="部分完成" value="partial" />
+            <el-option label="失败" value="failed" /><el-option label="暂缓" value="deferred" /><el-option label="运行中" value="running" />
+          </el-select>
+        </el-form-item>
+        <el-form-item><el-button type="primary" :loading="legacyLoading" @click="queryLegacyRuns">查询</el-button></el-form-item>
+      </el-form>
+      <el-table :data="legacyRows" v-loading="legacyLoading" border @expand-change="onLegacyExpand" @current-change="onLegacyCurrentChange">
+        <el-table-column type="expand">
+          <template #default="{ row: run }">
+            <el-table :data="legacyDetails[run.id] || []" border>
+              <el-table-column prop="ticker" label="Ticker" width="100" />
+              <el-table-column label="状态" width="110"><template #default="{ row: detail }"><el-tag :type="statusType(detail.status)" effect="plain">{{ statusLabel(detail.status) }}</el-tag></template></el-table-column>
+              <el-table-column prop="new_filings" label="新增" width="80" align="right" />
+              <el-table-column prop="failure_kind" label="失败类别" width="130"><template #default="{ row: detail }">{{ detail.failure_kind || '-' }}</template></el-table-column>
+              <el-table-column prop="attempt_count" label="尝试" width="70" align="right" />
+              <el-table-column label="下次重试" width="170"><template #default="{ row: detail }">{{ formatDateTime(detail.next_retry_at) }}</template></el-table-column>
+              <el-table-column label="耗时" width="90"><template #default="{ row: detail }">{{ formatDuration(detail.duration_ms, detail.status) }}</template></el-table-column>
+              <el-table-column prop="error_message" label="错误" min-width="220" show-overflow-tooltip />
+              <el-table-column label="操作" width="100" fixed="right"><template #default="{ row: detail }"><el-button v-if="detail.status === 'failed' || detail.status === 'deferred'" link type="primary" :loading="retryingTargetID === detail.target_id" @click="retryTarget(run, detail)">重试</el-button></template></el-table-column>
+            </el-table>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="105"><template #default="{ row }"><el-tag :type="statusType(row.status)" effect="plain">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
+        <el-table-column label="来源" width="115"><template #default="{ row }"><el-tag type="info" effect="plain">{{ syncTriggerLabel(row.trigger) }}</el-tag></template></el-table-column>
+        <el-table-column label="开始时间" width="175"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+        <el-table-column label="结束时间" width="175"><template #default="{ row }">{{ formatDateTime(row.finished_at) }}</template></el-table-column>
+        <el-table-column prop="targets_checked" label="标的数" width="85" align="right" />
+        <el-table-column prop="new_filings" label="新增" width="80" align="right" />
+        <el-table-column prop="failed_targets" label="失败" width="80" align="right" />
+        <el-table-column prop="warning_message" label="警告" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="error_message" label="错误" min-width="220" show-overflow-tooltip />
+      </el-table>
+      <el-pagination class="pagination" layout="total, prev, pager, next" :total="legacyTotal" :page-size="pageSize" v-model:current-page="legacyPage" @current-change="loadLegacyRuns" />
+    </el-card>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, PageResult, SyncRun, SyncRunDetail } from '@/api/types'
-import { useI18n } from '@/i18n'
+import type { ApiResponse, PageResult, SyncRun, SyncRunDetail, TaskConfig, TaskExecution } from '@/api/types'
 
-const { t } = useI18n()
+const route = useRoute()
 const loading = ref(false)
-const rows = ref<SyncRun[]>([])
+const rows = ref<TaskExecution[]>([])
+const tasks = ref<TaskConfig[]>([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = 20
-const filters = reactive({ status: '' })
-const details = ref<Record<number, SyncRunDetail[]>>({})
-const retryingTargetId = ref<number | null>(null)
-const retryingAll = ref(false)
-const currentRun = ref<SyncRun | null>(null)
+const pageSize = ref(20)
+const filters = reactive({ task_name: '', status: '', trigger: '' })
+const standaloneDiscoveryTasks = new Set(['small_cap_discovery_sync', 'small_cap_discovery_full_sync'])
+const legacyLoading = ref(false)
+const legacyRows = ref<SyncRun[]>([])
+const legacyTotal = ref(0)
+const legacyPage = ref(1)
+const legacyFilters = reactive({ status: '' })
+const legacyDetails = ref<Record<number, SyncRunDetail[]>>({})
+const retryingTargetID = ref<number | null>(null)
 
-const selectedRunFailedDetails = computed(() => {
-  if (!currentRun.value) return []
-  return (details.value[currentRun.value.id] || []).filter((item) => item.status === 'failed' || item.status === 'deferred')
-})
-
-function formatDateTime(value?: string | null) {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString()
-}
+const loggableTasks = computed(() => tasks.value.filter((task) => !standaloneDiscoveryTasks.has(task.task_name)))
 
 async function load() {
   loading.value = true
   try {
-    const res = await apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { ...filters, page: page.value, page_size: pageSize } })
+    const res = await apiClient.get<ApiResponse<PageResult<TaskExecution>>>('/task-executions', {
+      params: { ...filters, page: page.value, page_size: pageSize.value }
+    })
     rows.value = res.data.data.items
     total.value = res.data.data.total
   } finally {
@@ -139,101 +156,121 @@ async function load() {
   }
 }
 
-async function onExpandChange(row: SyncRun) {
-  currentRun.value = row
-  if (details.value[row.id]) return
+async function query() {
+  page.value = 1
+  await load()
+}
+
+async function reset() {
+  filters.task_name = ''
+  filters.status = ''
+  filters.trigger = ''
+  await query()
+}
+
+async function loadLegacyRuns() {
+  legacyLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<PageResult<SyncRun>>>('/sync-runs', { params: { ...legacyFilters, page: legacyPage.value, page_size: pageSize.value } })
+    legacyRows.value = res.data.data.items
+    legacyTotal.value = res.data.data.total
+  } finally {
+    legacyLoading.value = false
+  }
+}
+
+async function queryLegacyRuns() {
+  legacyPage.value = 1
+  await loadLegacyRuns()
+}
+
+async function onLegacyExpand(row: SyncRun) {
+  if (legacyDetails.value[row.id]) return
   const res = await apiClient.get<ApiResponse<SyncRunDetail[]>>(`/sync-runs/${row.id}/details`)
-  details.value = { ...details.value, [row.id]: res.data.data }
+  legacyDetails.value = { ...legacyDetails.value, [row.id]: res.data.data }
 }
 
-async function onCurrentRunChange(row?: SyncRun) {
-  if (!row) return
-  currentRun.value = row
-  if (!details.value[row.id]) {
-    await onExpandChange(row)
-  }
+async function onLegacyCurrentChange(row?: SyncRun) {
+  if (row) await onLegacyExpand(row)
 }
 
-function formatDuration(value: number) {
-  if (!value) return '-'
-  if (value < 1000) return `${value} ms`
-  return `${(value / 1000).toFixed(1)} s`
-}
-
-function syncStatusType(status?: string) {
-  if (status === 'success') return 'success'
-  if (status === 'partial') return 'warning'
-  if (status === 'deferred') return 'warning'
-  if (status === 'failed') return 'danger'
-  return 'info'
-}
-
-function syncStatusLabel(status?: string) {
-  if (status === 'success') return t('status.success')
-  if (status === 'partial') return t('status.partial')
-  if (status === 'deferred') return t('status.deferred')
-  if (status === 'failed') return t('status.failed')
-  if (status === 'running') return t('status.running')
-  return '-'
-}
-
-function failureKindLabel(kind?: string) {
-  if (!kind) return '-'
-  const key = `pages.syncRuns.failureKinds.${kind}`
-  const translated = t(key)
-  return translated === key ? kind : translated
-}
-
-function triggerLabel(trigger?: string) {
-  if (trigger === 'manual') return t('pages.syncRuns.triggers.manual')
-  if (trigger === 'scheduler') return t('pages.syncRuns.triggers.scheduler')
-  if (trigger === 'target') return t('pages.syncRuns.triggers.target')
-  if (trigger === 'ipo_manual') return t('pages.syncRuns.triggers.ipoManual')
-  if (trigger === 'ipo_scheduler') return t('pages.syncRuns.triggers.ipoScheduler')
-  return trigger || '-'
-}
-
-function handleDetailCommand(command: string, detail: SyncRunDetail) {
-  if (command === 'target') {
-    window.location.href = `/targets?ticker=${encodeURIComponent(detail.ticker)}`
-  }
+function syncTriggerLabel(trigger: string) {
+  const labels: Record<string, string> = { manual: '手动', scheduler: '调度', target: '单标的', ipo_manual: 'IPO 手动', ipo_scheduler: 'IPO 调度' }
+  return labels[trigger] || trigger || '-'
 }
 
 async function retryTarget(run: SyncRun, detail: SyncRunDetail) {
-  retryingTargetId.value = detail.target_id
+  retryingTargetID.value = detail.target_id
   try {
     const res = await apiClient.post<ApiResponse<{ new_filings: number }>>(`/watch-targets/${detail.target_id}/sync`)
-    ElMessage.success(t('messages.retryDone', { ticker: detail.ticker, count: res.data.data.new_filings }))
-    const nextDetails = { ...details.value }
+    ElMessage.success(`已重试 ${detail.ticker}，新增 ${res.data.data.new_filings} 条公告`)
+    const nextDetails = { ...legacyDetails.value }
     delete nextDetails[run.id]
-    details.value = nextDetails
-    await onExpandChange(run)
-    await load()
+    legacyDetails.value = nextDetails
+    await onLegacyExpand(run)
+    await loadLegacyRuns()
   } finally {
-    retryingTargetId.value = null
+    retryingTargetID.value = null
   }
 }
 
-async function retrySelectedFailures() {
-  if (!currentRun.value || selectedRunFailedDetails.value.length === 0) return
-  retryingAll.value = true
-  try {
-    let totalNew = 0
-    for (const detail of selectedRunFailedDetails.value) {
-      const res = await apiClient.post<ApiResponse<{ new_filings: number }>>(`/watch-targets/${detail.target_id}/sync`)
-      totalNew += res.data.data.new_filings
-    }
-    ElMessage.success(t('messages.retryAllDone', { targets: selectedRunFailedDetails.value.length, count: totalNew }))
-    const run = currentRun.value
-    const nextDetails = { ...details.value }
-    delete nextDetails[run.id]
-    details.value = nextDetails
-    await onExpandChange(run)
-    await load()
-  } finally {
-    retryingAll.value = false
-  }
+function formatDateTime(value?: string | null) {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
-onMounted(load)
+function formatDuration(value: number, status: string) {
+  if (status === 'running') return '进行中'
+  if (!value) return '-'
+  if (value < 1000) return `${value} ms`
+  if (value < 60_000) return `${(value / 1000).toFixed(1)} 秒`
+  return `${Math.floor(value / 60_000)} 分 ${Math.round((value % 60_000) / 1000)} 秒`
+}
+
+function statusType(status: string) {
+  if (status === 'success') return 'success'
+  if (status === 'partial' || status === 'interrupted') return 'warning'
+  if (status === 'failed') return 'danger'
+  if (status === 'running') return 'primary'
+  return 'info'
+}
+
+function statusLabel(status: string) {
+  const labels: Record<string, string> = { success: '成功', partial: '部分完成', skipped: '已跳过', failed: '失败', interrupted: '已中断', running: '运行中' }
+  return labels[status] || status || '-'
+}
+
+function triggerLabel(trigger: string) {
+  return trigger === 'scheduled' ? '定时调度' : trigger === 'manual' ? '手动执行' : trigger || '-'
+}
+
+function taskLabel(value: string) {
+  const labels: Record<string, string> = {
+    watch_target_market_sync: '监控标的每日行情同步', watch_target_earnings_sync: '监控标的财报预告同步',
+    sec_filing_sync: 'SEC 公告同步', ipo_radar_sync: 'IPO 新申报扫描', ipo_lifecycle_reconcile_sync: 'IPO 生命周期补查', ipo_offering_reconcile_sync: 'IPO 发行条款重解析', ipo_listing_reconcile_sync: 'IPO 上市状态核验', macro_calendar_sync: '宏观日历同步',
+    market_trend_sync: '大盘趋势日线同步', us_futures_sync: '美股期货日线同步',
+    longbridge_candidate_research_sync: 'Longbridge P1 候选市场研究', longbridge_candidate_valuation_sync: 'Longbridge P2 候选估值研究',
+    longbridge_watch_target_valuation_sync: 'Longbridge 监控标的估值研究', longbridge_watch_target_research_sync: 'Longbridge 监控标的机构持仓研究',
+    candidate_notification_sync: '候选通知同步', trade_setup_notification_sync: '交易计划通知同步', notification_retry_sync: '通知重试',
+    sqlite_backup: 'SQLite 备份', operation_history_cleanup: '运行历史清理', operational_health_notification_sync: '运行健康告警', institutional_holdings_sync: '机构持仓同步'
+  }
+  return labels[value] || value
+}
+
+onMounted(async () => {
+  const requestedTask = typeof route.query.task_name === 'string' ? route.query.task_name : ''
+  filters.task_name = standaloneDiscoveryTasks.has(requestedTask) ? '' : requestedTask
+  const tasksRes = await apiClient.get<ApiResponse<TaskConfig[]>>('/task-configs')
+  tasks.value = tasksRes.data.data
+	await Promise.all([load(), loadLegacyRuns()])
+})
 </script>
+
+<style scoped>
+.task-code, .option-code { color: var(--el-text-color-secondary); font-size: 12px; }
+.option-code { margin-left: 10px; }
+.legacy-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.legacy-header span { margin-left: 12px; color: var(--el-text-color-secondary); font-size: 13px; }
+.compact-toolbar { margin-bottom: 12px; }
+</style>

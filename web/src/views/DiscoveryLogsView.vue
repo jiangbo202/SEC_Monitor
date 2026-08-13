@@ -321,11 +321,13 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, CompanyProfileBulkRetryResult, CompanyProfileRecoveryItem, CompanyProfileRecoveryQueue, DiscoveryBatch, DiscoverySyncRun, DiscoverySyncRunPage, DiscoverySyncStep, MarketPriceRecoveryItem, MarketPriceRecoveryQueue, PageResult, ProviderHealth, ProviderHealthPage, ProviderObservability, ProviderRun } from '@/api/types'
 
 const pageSize = 20
+const route = useRoute()
 const loading = ref(false)
 
 const healthLoading = ref(false)
@@ -492,7 +494,7 @@ async function loadSyncRuns() {
   syncLoading.value = true
   try {
     const res = await apiClient.get<ApiResponse<DiscoverySyncRunPage>>('/discovery/sync-runs', {
-      params: { page: syncPage.value, page_size: pageSize }
+		  params: { page: syncPage.value, page_size: pageSize, kind: typeof route.query.kind === 'string' ? route.query.kind : '' }
     })
     syncRows.value = res.data.data.items
     syncTotal.value = res.data.data.total

@@ -83,6 +83,33 @@ func TestHTTPClientRetriesRateLimitedRequest(t *testing.T) {
 	}
 }
 
+func TestHTTPClientRetriesTransportTimeout(t *testing.T) {
+	attempts := 0
+	client := NewHTTPClientWithPolicy("https://sec.test", "sec-monitor-test", time.Second, RequestPolicy{
+		RequestsPerSecond: 0,
+		MaxRetries:        1,
+		RetryBaseDelay:    time.Millisecond,
+	})
+	client.Client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, context.DeadlineExceeded
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"0":{"cik_str":1234,"ticker":"ACME","title":"Acme Inc."}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	if _, _, err := client.LookupCIK(context.Background(), "ACME"); err != nil {
+		t.Fatalf("LookupCIK: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestSECUserMessageClassifiesRateLimitAndTimeout(t *testing.T) {
 	tests := []struct {
 		name string

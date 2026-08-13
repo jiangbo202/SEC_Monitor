@@ -229,6 +229,51 @@ func TestDiscoverySyncServiceSyncsEnabledWatchTargetDailyPrices(t *testing.T) {
 	}
 }
 
+func TestDiscoverySyncServiceOptionResearchUsesWatchTargetStatus(t *testing.T) {
+	mainDB := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	if err := mainDB.Create(&model.WatchTarget{Ticker: "DISABLED", CompanyName: "Disabled", TargetType: "stock", Status: "disabled"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// No provider call is expected: the disabled target must be filtered by the
+	// persisted status column. Before the regression fix this query referenced
+	// a non-existent boolean enabled column and failed before it could skip.
+	svc := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{
+		LongbridgeOptionResearchEnabled:           true,
+		LongbridgeWatchTargetOptionResearchBudget: 1,
+	}).WithWatchTargetDB(mainDB)
+	result, err := svc.SyncEnabledWatchTargetOptionResearch(context.Background())
+	if err != nil {
+		t.Fatalf("SyncEnabledWatchTargetOptionResearch: %v", err)
+	}
+	if !result.Skipped || result.Message != "暂无已启用监控标的" {
+		t.Fatalf("result=%+v, want disabled target to be skipped", result)
+	}
+}
+
+func TestWatchTargetMarketSyncFetchesOnlyLocalPriceGaps(t *testing.T) {
+	mainDB := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	if err := mainDB.Create(&[]model.WatchTarget{{Ticker: "CACHED", CompanyName: "Cached", TargetType: "stock", Status: "enabled"}, {Ticker: "MISSING", CompanyName: "Missing", TargetType: "stock", Status: "enabled"}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	newYork, _ := time.LoadLocation("America/New_York")
+	date := time.Date(2026, 7, 21, 0, 0, 0, 0, newYork)
+	if err := discoveryDB.Create(&discovery.PriceSnapshot{Source: "longbridge", SourceVersion: "candidate", Symbol: "CACHED", TradeDate: date, CloseMicros: 10_000_000, Volume: 100_000, Currency: "USD", QualityStatus: discovery.QualityStatusValid}).Error; err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeWatchTargetPriceProvider{records: []discovery.PriceRecord{{Symbol: "MISSING", TradeDate: date, CloseMicros: 20_000_000, Volume: 100_000, Currency: "USD", Adjusted: true, Source: "longbridge"}}}
+	svc := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithWatchTargetDB(mainDB)
+	result, err := svc.syncEnabledWatchTargetMarketPricesWithProvider(context.Background(), &stubServiceCalendar{}, provider, time.Date(2026, 7, 21, 21, 30, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AlreadyCurrentCount != 1 || len(provider.expected) != 1 || provider.expected[0].Ticker != "MISSING" {
+		t.Fatalf("result=%#v expected=%#v", result, provider.expected)
+	}
+}
+
 func TestLatestCompletedWatchTargetTradingDateWaitsForClose(t *testing.T) {
 	date, trading, err := latestCompletedWatchTargetTradingDate(context.Background(), &stubServiceCalendar{}, time.Date(2026, 7, 21, 19, 0, 0, 0, time.UTC)) // 15:00 New York
 	if err != nil || !trading || date.Format(time.DateOnly) != "2026-07-20" {

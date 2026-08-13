@@ -60,7 +60,7 @@ func TestRouterCreatesAndListsWatchTargets(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{}, &model.TaskExecution{},
 		&model.WatchTargetFiling{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
 		&model.IPOFiling{}, &model.IPOCompanyOverride{},
@@ -125,7 +125,7 @@ func TestRouterConstructsWithDiscoveryDatabase(t *testing.T) {
 		t.Fatalf("open main db: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{}, &model.TaskExecution{},
 		&model.WatchTargetFiling{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
 		&model.IPOFiling{}, &model.IPOCompanyOverride{},
@@ -155,7 +155,7 @@ func TestRouterServesWebAppFallback(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{}, &model.TaskExecution{},
 		&model.WatchTargetFiling{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
 		&model.IPOFiling{}, &model.IPOCompanyOverride{},

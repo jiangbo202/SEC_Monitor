@@ -69,6 +69,8 @@ type SQLiteBackupHealth struct {
 	Directory       string     `json:"directory"`
 	CompletePairs   int        `json:"complete_pairs"`
 	IncompletePairs int        `json:"incomplete_pairs"`
+	TotalBytes      int64      `json:"total_bytes"`
+	LatestPairBytes int64      `json:"latest_pair_bytes"`
 	LatestCompleted *time.Time `json:"latest_completed,omitempty"`
 }
 
@@ -261,7 +263,11 @@ func (s *SQLiteBackupService) Health(ctx context.Context) (SQLiteBackupHealth, e
 	if err != nil {
 		return health, err
 	}
-	pairs := map[string]map[string]time.Time{}
+	type backupFile struct {
+		modifiedAt time.Time
+		bytes      int64
+	}
+	pairs := map[string]map[string]backupFile{}
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -275,9 +281,9 @@ func (s *SQLiteBackupService) Health(ctx context.Context) (SQLiteBackupHealth, e
 			return health, infoErr
 		}
 		if pairs[stamp] == nil {
-			pairs[stamp] = map[string]time.Time{}
+			pairs[stamp] = map[string]backupFile{}
 		}
-		pairs[stamp][name] = info.ModTime().UTC()
+		pairs[stamp][name] = backupFile{modifiedAt: info.ModTime().UTC(), bytes: info.Size()}
 	}
 	for _, pair := range pairs {
 		mainAt, hasMain := pair["sec_monitor"]
@@ -287,13 +293,16 @@ func (s *SQLiteBackupService) Health(ctx context.Context) (SQLiteBackupHealth, e
 			continue
 		}
 		health.CompletePairs++
-		completed := mainAt
-		if discoveryAt.Before(completed) {
-			completed = discoveryAt
+		pairBytes := mainAt.bytes + discoveryAt.bytes
+		health.TotalBytes += pairBytes
+		completed := mainAt.modifiedAt
+		if discoveryAt.modifiedAt.Before(completed) {
+			completed = discoveryAt.modifiedAt
 		}
 		if health.LatestCompleted == nil || completed.After(*health.LatestCompleted) {
 			value := completed
 			health.LatestCompleted = &value
+			health.LatestPairBytes = pairBytes
 		}
 	}
 	return health, nil

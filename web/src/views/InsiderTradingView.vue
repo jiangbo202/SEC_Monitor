@@ -37,11 +37,13 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, Filing, PageResult } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
+const route = useRoute()
 const insiderTypes = ['3', '4', '5']
 const loading = ref(false)
 const rows = ref<Filing[]>([])
@@ -75,5 +77,9 @@ function formatDate(value?: string | null) {
   return date.toISOString().slice(0, 10)
 }
 
-onMounted(load)
+onMounted(() => {
+  const ticker = route.query.ticker
+  if (typeof ticker === 'string') filters.ticker = ticker.toUpperCase()
+  load()
+})
 </script>

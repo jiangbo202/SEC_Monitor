@@ -90,7 +90,7 @@ func (f fakeSECClient) ResolveFundTicker(ctx context.Context, ticker string) (se
 		}, nil
 	case "PARTIAL":
 		return sec.FundResolution{Identity: &sec.FundIdentity{
-			Ticker: "PARTIAL", CIK: "0000000003", SeriesID: "S000000003", Source: "sec_filing_index",
+			Ticker: "PARTIAL", CIK: "0000000003", SeriesID: "S000000003", FundName: "Partial Identity ETF", Source: "sec_filing_index",
 		}}, nil
 	default:
 		return sec.FundResolution{Reason: "no exact SEC fund identity found"}, nil
@@ -273,7 +273,7 @@ func TestLookupTickerDoesNotReturnPartialFundIdentity(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sec/tickers/PARTIAL?target_type=etf", nil))
 
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"fund_identity"`) || !strings.Contains(rec.Body.String(), `"resolution_reason"`) {
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"fund_identity"`) || !strings.Contains(rec.Body.String(), `"resolution_reason"`) || !strings.Contains(rec.Body.String(), `"company_name":"Partial Identity ETF"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -908,6 +908,50 @@ func TestAppHandlerRequeuesNotificationBatch(t *testing.T) {
 	}
 }
 
+func TestAppHandlerReloadsSchedulerOnlyForSchedulingConfig(t *testing.T) {
+	r, _, scheduler := testApp(t)
+
+	for _, request := range []struct {
+		name       string
+		body       string
+		wantReload int
+	}{
+		{name: "non scheduling config", body: `[{"key":"system.log_level","value":"debug","value_type":"string","category":"system"}]`, wantReload: 0},
+		{name: "scheduler timezone", body: `[{"key":"scheduler.timezone","value":"Asia/Shanghai","value_type":"string","category":"scheduler"}]`, wantReload: 1},
+	} {
+		t.Run(request.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPut, "/configs", strings.NewReader(request.body))
+			req.Header.Set("Content-Type", "application/json")
+			r.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || scheduler.reloadCalls != request.wantReload {
+				t.Fatalf("status=%d reloads=%d, want %d; body=%s", rec.Code, scheduler.reloadCalls, request.wantReload, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestAppHandlerTelegramTestUsesNotificationCenter(t *testing.T) {
+	r, db, _ := testApp(t)
+	configs := service.NewConfigService(db, service.NewAuditService(db))
+	if err := configs.UpsertMany(context.Background(), []service.ConfigInput{
+		{Key: "telegram.enabled", Value: "true", ValueType: "bool", Category: "telegram"},
+		{Key: "telegram.bot_token", Value: "token", ValueType: "string", Category: "telegram"},
+		{Key: "telegram.chat_id", Value: "chat", ValueType: "string", Category: "telegram"},
+	}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/telegram/test", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"sent":true`) || !strings.Contains(rec.Body.String(), `"source":"system_test"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var batch model.NotificationBatch
+	if err := db.Where("source = ?", "system_test").First(&batch).Error; err != nil || batch.Status != "sent" || batch.MessageText != "SEC Monitor test message" {
+		t.Fatalf("batch=%+v err=%v", batch, err)
+	}
+}
+
 func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -916,7 +960,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 		t.Fatalf("open db: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{}, &model.TaskExecution{},
 		&model.WatchTargetFiling{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{},
 		&model.NotificationBatch{}, &model.NotificationBatchItem{},
@@ -992,6 +1036,7 @@ func testApp(t *testing.T) (*gin.Engine, *gorm.DB, *fakeScheduler) {
 	r.GET("/notification-batches/:id/items", h.ListNotificationBatchItems)
 	r.POST("/notification-batches/:id/retry", h.RequeueNotificationBatch)
 	r.GET("/tasks", h.ListTaskConfigs)
+	r.GET("/task-executions", h.ListTaskExecutions)
 	r.PUT("/tasks/:id", h.UpdateTaskConfig)
 	r.POST("/tasks/:id/run", h.RunTask)
 	r.GET("/list-health", h.ListHealth)
@@ -1233,6 +1278,11 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 				t.Fatalf("body = %s, want ipo company status", rec.Body.String())
 			}
 		}},
+		{name: "filter ipo companies by ticker", method: http.MethodGet, path: "/ipo-companies?ticker=ACME", seed: seedIPOFilingWithTicker, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"company_name":"Acme Space Inc."`) {
+				t.Fatalf("body = %s, want IPO company matched by ticker", rec.Body.String())
+			}
+		}},
 		{name: "reject invalid ipo include ended filter", method: http.MethodGet, path: "/ipo-companies?include_ended=maybe", wantStatus: http.StatusBadRequest},
 		{name: "list ipo offering events", method: http.MethodGet, path: "/ipo-companies/0000000001/offerings?page=1&page_size=10", seed: seedIPOOfferingEvent, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if !strings.Contains(rec.Body.String(), `"offering_type":"initial"`) {
@@ -1258,6 +1308,11 @@ func TestAppHandlerRoutesTableDriven(t *testing.T) {
 			}
 		}},
 		{name: "list sync runs", method: http.MethodGet, path: "/sync-runs?status=success&trigger=manual", seed: seedSyncRunDetail, wantStatus: http.StatusOK},
+		{name: "list task executions by task", method: http.MethodGet, path: "/task-executions?task_name=market_trend_sync&status=success", seed: seedTaskExecution, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
+			if !strings.Contains(rec.Body.String(), `"task_name":"market_trend_sync"`) || !strings.Contains(rec.Body.String(), `"trigger":"scheduled"`) {
+				t.Fatalf("body = %s, want filtered task execution", rec.Body.String())
+			}
+		}},
 		{name: "list sync run details", method: http.MethodGet, path: "/sync-runs/1/details", seed: seedSyncRunDetail, wantStatus: http.StatusOK, assert: func(t *testing.T, rec *httptest.ResponseRecorder, db *gorm.DB, sched *fakeScheduler) {
 			if !strings.Contains(rec.Body.String(), `"ticker":"AAPL"`) || !strings.Contains(rec.Body.String(), `"status":"success"`) {
 				t.Fatalf("body = %s, want sync detail", rec.Body.String())
@@ -1509,6 +1564,14 @@ func seedIPOFiling(t *testing.T, db *gorm.DB) {
 	}
 }
 
+func seedIPOFilingWithTicker(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	seedIPOFiling(t, db)
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0000000001", Ticker: "ACME"}).Error; err != nil {
+		t.Fatalf("seed IPO ticker: %v", err)
+	}
+}
+
 func seedIPOOfferingEvent(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	if err := db.Create(&model.IPOOfferingEvent{FilingID: "offering-1", CIK: "0000000001", CompanyName: "Acme Inc.", OfferingType: "initial", ParseStatus: "parsed", OfferPrice: "16.00", FilingDate: time.Now().UTC(), ParserVersion: 4}).Error; err != nil {
@@ -1583,5 +1646,14 @@ func seedSyncRunDetail(t *testing.T, db *gorm.DB) {
 		DurationMS: 2000,
 	}).Error; err != nil {
 		t.Fatalf("seed sync run detail: %v", err)
+	}
+}
+
+func seedTaskExecution(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	startedAt := time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	if err := db.Create(&model.TaskExecution{TaskName: "market_trend_sync", Trigger: "scheduled", Status: "success", StartedAt: startedAt, FinishedAt: &finishedAt, DurationMS: 1000, Summary: "任务执行完成"}).Error; err != nil {
+		t.Fatalf("seed task execution: %v", err)
 	}
 }

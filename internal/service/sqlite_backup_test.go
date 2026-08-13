@@ -67,7 +67,7 @@ func TestSQLiteBackupServiceCreatesVerifiedSnapshotsAndPrunesExpiredFiles(t *tes
 		}
 	}
 	health, err := service.Health(context.Background())
-	if err != nil || health.CompletePairs != 1 || health.LatestCompleted == nil {
+	if err != nil || health.CompletePairs != 1 || health.LatestCompleted == nil || health.TotalBytes <= 0 || health.LatestPairBytes <= 0 {
 		t.Fatalf("backup health = %#v, %v; want one complete pair", health, err)
 	}
 	verification, err := service.VerifyLatest(context.Background())

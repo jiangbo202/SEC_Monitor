@@ -8,7 +8,23 @@
       </div>
     </div>
 
+    <div class="config-category-bar" aria-label="配置分类">
+      <el-radio-group v-model="activeConfigSection" size="large">
+        <el-radio-button v-for="item in configSections" :key="item.key" :value="item.key">
+          {{ item.label }}
+        </el-radio-button>
+      </el-radio-group>
+      <span class="config-category-hint">{{ activeConfigSectionHint }}</span>
+    </div>
+
     <div class="config-grid">
+      <div v-show="activeConfigSection === 'general'" class="config-section">
+        <div class="config-section-heading">
+          <div>
+            <h2>基础与调度</h2>
+            <p>仅影响界面默认语言和所有 Cron 表达式的解释时区。</p>
+          </div>
+        </div>
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
@@ -26,6 +42,16 @@
         </el-form>
         <el-alert :title="t('pages.configs.defaultLanguageHint')" type="info" :closable="false" show-icon />
       </el-card>
+
+      </div>
+
+      <div v-show="activeConfigSection === 'notifications'" class="config-section">
+        <div class="config-section-heading">
+          <div>
+            <h2>通知规则</h2>
+            <p>统一由通知中心投递和记录；这里仅配置不同业务事件的筛选条件与发送边界。</p>
+          </div>
+        </div>
 
       <el-card shadow="never">
         <template #header>
@@ -53,6 +79,30 @@
             <el-time-picker v-model="notificationForm.quiet_hours_end" format="HH:mm" value-format="HH:mm" />
           </el-form-item>
         </el-form>
+      </el-card>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
+            <span>事件通知渠道</span>
+            <div class="panel-header-actions">
+              <el-tag effect="plain">站内 {{ inAppNotificationEnabledCount }} / {{ notificationChannelRows.length }}</el-tag>
+              <el-tag effect="plain">Telegram {{ telegramNotificationEnabledCount }} / {{ notificationChannelRows.length }}</el-tag>
+            </div>
+          </div>
+        </template>
+        <el-table :data="notificationChannelRows" class="notification-channel-table">
+          <el-table-column prop="menu" label="菜单" width="150" />
+          <el-table-column prop="label" label="事件" width="150" />
+          <el-table-column prop="description" label="触发范围" min-width="360" />
+          <el-table-column label="站内消息" width="140" align="center">
+            <template #default="{ row }"><el-checkbox :model-value="notificationChannelEnabled('in_app', row.key)" @change="setNotificationChannelEnabled('in_app', row.key, $event)">启用</el-checkbox></template>
+          </el-table-column>
+          <el-table-column label="Telegram" width="140" align="center">
+            <template #default="{ row }"><el-checkbox :model-value="notificationChannelEnabled('telegram', row.key)" @change="setNotificationChannelEnabled('telegram', row.key, $event)">启用</el-checkbox></template>
+          </el-table-column>
+        </el-table>
+        <el-alert title="两个渠道独立控制，仅影响后续事件。关闭 Telegram 后不会发送，并会在通知日志记录“按事件频道关闭”；Telegram 仍需启用机器人，且原有范围、阈值、静默时段规则继续生效。" type="info" :closable="false" show-icon />
       </el-card>
 
       <el-card shadow="never">
@@ -123,6 +173,15 @@
         <el-alert title="仅监控已启用标的的日线状态变化。首次扫描只提示入场候选，离场类状态先建立基线；请在“调度任务”中启用 trade_setup_notification_sync 后自动执行。" type="info" :closable="false" show-icon />
       </el-card>
 
+      </div>
+
+      <div v-show="activeConfigSection === 'general'" class="config-section">
+        <div class="config-section-heading">
+          <div>
+            <h2>运行时区</h2>
+            <p>所有调度任务的 Cron 表达式都统一使用这里设置的时区解释。</p>
+          </div>
+        </div>
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
@@ -146,14 +205,23 @@
         <el-alert :title="t('pages.configs.schedulerTimezoneHint')" type="info" :closable="false" show-icon />
       </el-card>
 
+      </div>
+
+      <div v-show="activeConfigSection === 'data'" class="config-section">
+        <div class="config-section-heading">
+          <div>
+            <h2>数据源与研究同步</h2>
+            <p>Longbridge 为主数据源，备用行情源和请求限额收纳在高级配置中；所有结果先写入本地再由页面读取。</p>
+          </div>
+        </div>
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
-            <span>{{ t('pages.configs.discoveryDatasource') }}</span>
+            <span>行情与研究数据源</span>
             <el-tag effect="plain">{{ discoveryDatasourceSummary }}</el-tag>
           </div>
         </template>
-        <el-form :model="discoveryForm" label-width="150px">
+        <el-form :model="discoveryForm" label-width="280px" class="research-settings-form">
           <el-form-item :label="t('pages.configs.discoveryPriceProvider')">
             <el-select v-model="discoveryForm.price_provider" style="width: 220px">
               <el-option :label="t('pages.configs.discoveryProviderAuto')" value="" />
@@ -167,6 +235,10 @@
               <el-option label="Yahoo" value="yahoo" />
               <el-option label="Stooq" value="stooq" />
             </el-select>
+          </el-form-item>
+          <el-form-item label="备用行情源密钥">
+            <el-button type="primary" link @click="openProviderSettings">配置 Tiingo / Twelve Data</el-button>
+            <span class="form-help">仍作为 Longbridge 的备用行情源；仅在价格 Provider 的顺序包含对应来源时调用。</span>
           </el-form-item>
           <el-form-item :label="t('pages.configs.stooqUrls')">
             <el-input
@@ -224,6 +296,46 @@
             <el-switch v-model="discoveryForm.analyst_rating_notify_enabled" />
             <span class="form-help">仅在评级、覆盖数量或目标价出现有效变化时推送；首次建立快照不推送。</span>
           </el-form-item>
+          <el-divider content-position="left">Longbridge 候选研究定时任务</el-divider>
+          <el-form-item label="P1 市场研究同步">
+            <el-switch v-model="discoveryForm.longbridge_candidate_research_enabled" />
+            <span class="form-help">独立更新 EPS 预期、异动及机构/基金持仓；不触发小盘选股或 P2 估值请求。</span>
+          </el-form-item>
+          <el-form-item label="P1 单次候选预算">
+            <el-input-number v-model="discoveryForm.longbridge_candidate_research_request_budget" :min="0" :max="50" controls-position="right" />
+          </el-form-item>
+		  <el-form-item label="监控标的机构持仓研究同步">
+			<el-switch v-model="discoveryForm.longbridge_watch_target_research_enabled" />
+			<span class="form-help">独立更新已启用股票的机构股东、基金/ETF 持仓、EPS 预期与异动；不占用候选 P1 预算。</span>
+		  </el-form-item>
+		  <el-form-item label="监控标的 P1 单次预算">
+			<el-input-number v-model="discoveryForm.longbridge_watch_target_research_request_budget" :min="0" :max="50" controls-position="right" />
+		  </el-form-item>
+          <el-form-item label="P2 估值研究同步">
+            <el-switch v-model="discoveryForm.longbridge_candidate_valuation_enabled" />
+            <span class="form-help">独立更新估值历史、行业分位与同业比较；接口较重，单次预算单独控制。</span>
+          </el-form-item>
+          <el-form-item label="P2 单次候选预算">
+            <el-input-number v-model="discoveryForm.longbridge_candidate_valuation_request_budget" :min="0" :max="50" controls-position="right" />
+          </el-form-item>
+		  <el-form-item label="监控标的估值研究同步">
+			<el-switch v-model="discoveryForm.longbridge_watch_target_valuation_enabled" />
+			<span class="form-help">独立轮换已启用股票监控标的的估值历史、行业分位与同业比较；不占用候选 P2 预算。</span>
+		  </el-form-item>
+		  <el-form-item label="监控标的单次预算">
+			<el-input-number v-model="discoveryForm.longbridge_watch_target_valuation_request_budget" :min="0" :max="50" controls-position="right" />
+		  </el-form-item>
+		  <el-divider content-position="left">Longbridge 期权与空头研究（P0）</el-divider>
+		  <el-form-item label="期权与空头研究同步">
+			<el-switch v-model="discoveryForm.longbridge_option_research_enabled" />
+			<span class="form-help">独立保存 Call/Put 汇总成交量、Put/Call、空头比例与 days to cover；不改变基本面总分。</span>
+		  </el-form-item>
+		  <el-form-item label="候选单次预算">
+			<el-input-number v-model="discoveryForm.longbridge_candidate_option_research_budget" :min="0" :max="50" controls-position="right" />
+		  </el-form-item>
+		  <el-form-item label="监控标的单次预算">
+			<el-input-number v-model="discoveryForm.longbridge_watch_target_option_research_budget" :min="0" :max="50" controls-position="right" />
+		  </el-form-item>
           <el-divider content-position="left">监控标的财报预告</el-divider>
           <el-form-item label="财报预告同步">
             <el-switch v-model="earningsPreviewForm.enabled" />
@@ -245,6 +357,9 @@
             <el-input v-model="earningsPreviewForm.reminder_days" placeholder="7,3,1,0" />
             <span class="form-help">以英文逗号分隔；0 表示预计财报日当天。</span>
           </el-form-item>
+          <el-collapse id="provider-settings" v-model="dataAdvancedPanels" class="config-advanced-collapse">
+            <el-collapse-item title="Tiingo / Twelve Data / Yahoo：备用行情源与运行参数（高级）" name="providers">
+              <p class="form-help collapse-help">仅在 Longbridge 不可用、调试数据源或调整限流/缓存策略时修改。日常使用无需展开。</p>
           <el-form-item :label="t('pages.configs.tiingoApiToken')">
             <el-input
               v-model="discoveryForm.tiingo_api_token"
@@ -331,6 +446,8 @@
           <el-form-item label="SEC 缓存保留天数">
             <el-input-number v-model="discoveryForm.cache_retention_days" :min="1" :max="90" :step="1" controls-position="right" />
           </el-form-item>
+            </el-collapse-item>
+          </el-collapse>
         </el-form>
         <el-alert :title="t('pages.configs.discoveryDatasourceHint')" description="过期缓存只会在同步开始或“小盘候选”页手动清理时删除；不会删除研究库中的候选、评分、公告或研究记录。" type="info" :closable="false" show-icon />
       </el-card>
@@ -362,6 +479,32 @@
           </el-form-item>
           <el-form-item :label="t('pages.configs.ipoKeywords')">
             <el-input v-model="ipoForm.keywords" :placeholder="t('pages.configs.ipoKeywordsPlaceholder')" />
+          </el-form-item>
+          <el-divider content-position="left">Longbridge 自动上市确认</el-divider>
+          <el-form-item label="启用自动确认">
+            <el-switch v-model="ipoForm.longbridge_listing_verification_enabled" />
+            <span class="form-help">SEC 已匹配 Ticker、但交易所缺失时，自动查询 Longbridge 市场资料；查询失败仍保留“待确认”。</span>
+          </el-form-item>
+          <el-form-item label="单次确认预算">
+            <el-input-number v-model="ipoForm.longbridge_listing_request_budget" :min="0" :max="200" controls-position="right" />
+            <span class="form-help">每次 IPO 同步最多确认的待上市公司数。</span>
+          </el-form-item>
+          <el-form-item label="复查间隔（小时）">
+            <el-input-number v-model="ipoForm.longbridge_listing_recheck_hours" :min="1" :max="168" controls-position="right" />
+          </el-form-item>
+          <el-divider content-position="left">Longbridge IPO 日历</el-divider>
+          <el-form-item label="启用 IPO 日历">
+            <el-switch v-model="ipoForm.longbridge_calendar_enabled" />
+            <span class="form-help">每次 IPO 扫描读取并缓存美股 IPO 日历；仅在公司名严格匹配 SEC 候选时补充预计上市日和标的。</span>
+          </el-form-item>
+          <el-form-item label="回看天数">
+            <el-input-number v-model="ipoForm.longbridge_calendar_lookback_days" :min="0" :max="365" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="前瞻天数">
+            <el-input-number v-model="ipoForm.longbridge_calendar_lookahead_days" :min="0" :max="365" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="单次最多页数">
+            <el-input-number v-model="ipoForm.longbridge_calendar_max_pages" :min="1" :max="20" controls-position="right" />
           </el-form-item>
         </el-form>
       </el-card>
@@ -404,6 +547,15 @@
         </div>
       </el-card>
 
+      </div>
+
+      <div v-show="activeConfigSection === 'maintenance'" class="config-section">
+        <div class="config-section-heading">
+          <div>
+            <h2>存储、清理与导出</h2>
+            <p>用于控制本地数据保留、清理预览和备份导出；清理动作始终需要手动确认。</p>
+          </div>
+        </div>
       <el-card shadow="never">
         <template #header>
           <div class="panel-header">
@@ -469,6 +621,7 @@
           <el-descriptions-item :label="t('pages.configs.retentionDays')">{{ lifecycleCleanupPreview.retention_days }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.configs.cleanupCutoff')">{{ formatDateTime(lifecycleCleanupPreview.cutoff) }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.configs.syncRunHistory')">{{ lifecycleCleanupPreview.sync_runs }} / {{ lifecycleCleanupPreview.sync_run_details }}</el-descriptions-item>
+		  <el-descriptions-item label="任务执行记录">{{ lifecycleCleanupPreview.task_executions }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.configs.discoveryRunHistory')">{{ lifecycleCleanupPreview.discovery_sync_runs }} / {{ lifecycleCleanupPreview.discovery_sync_steps }}</el-descriptions-item>
 			<el-descriptions-item :label="t('pages.configs.marketRepairSnapshots')">{{ lifecycleCleanupPreview.superseded_market_repairs }} / {{ lifecycleCleanupPreview.market_repair_universe_rows }} / {{ lifecycleCleanupPreview.market_repair_score_rows }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.configs.operationalAlerts')">{{ lifecycleCleanupPreview.operational_alert_deliveries }}</el-descriptions-item>
@@ -493,6 +646,7 @@
           <el-button type="primary" @click="download('/api/exports/backup.json')">{{ t('pages.configs.exportAll') }}</el-button>
         </div>
       </el-card>
+      </div>
     </div>
   </section>
 </template>
@@ -515,6 +669,15 @@ const cleaningLifecycle = ref(false)
 const lifecycleCleanupPreview = ref<LifecycleCleanupPreview | null>(null)
 const longbridgeProbeLoading = ref(false)
 const longbridgeProbe = ref<LongbridgeQuoteProbeResult | null>(null)
+const activeConfigSection = ref<'general' | 'notifications' | 'data' | 'maintenance'>('general')
+const dataAdvancedPanels = ref<string[]>([])
+const configSections = [
+  { key: 'general', label: '基础与调度', hint: '界面语言与调度时区' },
+  { key: 'notifications', label: '通知规则', hint: '公告、候选与交易计划的通知边界' },
+  { key: 'data', label: '数据源与同步', hint: '行情、研究、IPO 与 SEC 数据策略' },
+  { key: 'maintenance', label: '存储与维护', hint: '保留策略、清理预览与备份导出' }
+] as const
+const activeConfigSectionHint = computed(() => configSections.find((item) => item.key === activeConfigSection.value)?.hint || '')
 
 const secForm = reactive({ user_agent: '', initial_fetch_days: 30, sync_window_days: 30, max_fetch_count: 300, fetch_full_history: false })
 const systemForm = reactive({ data_retention_days: 30, storage_by_day: false, backup_retention_days: 7, operation_history_retention_days: 90, backup_dir: '', storage_warning_pct: 80 })
@@ -527,6 +690,56 @@ const notificationForm = reactive({
   quiet_hours_start: '22:00',
   quiet_hours_end: '08:00'
 })
+const inAppNotificationForm = reactive({
+  watch_target_earnings_preview_enabled: true,
+  watch_target_earnings_release_enabled: true,
+  watch_target_technical_signal_enabled: true,
+  watch_target_major_event_enabled: true,
+  watch_target_insider_trading_enabled: true,
+  candidate_earnings_preview_enabled: true,
+  candidate_earnings_release_enabled: true,
+  candidate_technical_signal_enabled: true,
+  ipo_progress_enabled: true,
+})
+const inAppNotificationEnabledCount = computed(() => Object.values(inAppNotificationForm).filter(Boolean).length)
+const telegramNotificationForm = reactive({
+  watch_target_earnings_preview_enabled: true,
+  watch_target_earnings_release_enabled: true,
+  watch_target_technical_signal_enabled: true,
+  watch_target_major_event_enabled: true,
+  watch_target_insider_trading_enabled: true,
+  candidate_earnings_preview_enabled: true,
+  candidate_earnings_release_enabled: true,
+  candidate_technical_signal_enabled: true,
+  ipo_progress_enabled: true,
+})
+const telegramNotificationEnabledCount = computed(() => Object.values(telegramNotificationForm).filter(Boolean).length)
+const notificationChannelRows = [
+  { menu: '监控标的', key: 'watch_target_earnings_preview_enabled', legacyKey: 'earnings_preview_enabled', label: '财报预告', description: '监控标的的财报日期新增、变更或进入提醒窗口' },
+  { menu: '监控标的', key: 'watch_target_earnings_release_enabled', legacyKey: 'earnings_release_enabled', label: '财报已发布', description: '监控标的的 SEC 定期财报或可识别的业绩公告' },
+  { menu: '监控标的', key: 'watch_target_technical_signal_enabled', legacyKey: 'technical_signal_enabled', label: '技术信号变化', description: '监控标的出现入场候选、离场预警或趋势失效' },
+  { menu: '监控标的', key: 'watch_target_major_event_enabled', legacyKey: 'major_event_enabled', label: '重大事件', description: '8-K、6-K、S-1/S-3、13D 等重大公告' },
+  { menu: '监控标的', key: 'watch_target_insider_trading_enabled', legacyKey: 'insider_trading_enabled', label: '内幕交易', description: 'Form 3、4、5 及修订版本' },
+  { menu: '小盘候选', key: 'candidate_earnings_preview_enabled', legacyKey: 'earnings_preview_enabled', label: '财报预告', description: '小盘候选的财报日期新增、变更或进入提醒窗口' },
+  { menu: '小盘候选', key: 'candidate_earnings_release_enabled', legacyKey: 'earnings_release_enabled', label: '财报已发布', description: '小盘候选对应的 SEC 定期财报或业绩公告' },
+  { menu: '小盘候选', key: 'candidate_technical_signal_enabled', legacyKey: 'technical_signal_enabled', label: '技术信号变化', description: '小盘候选出现入场候选、离场预警或趋势失效' },
+  { menu: 'IPO 监控', key: 'ipo_progress_enabled', legacyKey: 'ipo_progress_enabled', label: '关注 IPO 进展', description: '仅已关注 IPO 公司出现新文件或关键状态、代码、交易所、定价变化时通知' },
+] as const
+type NotificationChannelKey = typeof notificationChannelRows[number]['key']
+
+function notificationChannelEnabled(channel: 'in_app' | 'telegram', key: string) {
+  const normalized = key as NotificationChannelKey
+  return channel === 'in_app' ? inAppNotificationForm[normalized] : telegramNotificationForm[normalized]
+}
+
+function setNotificationChannelEnabled(channel: 'in_app' | 'telegram', key: string, value: boolean | string | number) {
+  const normalized = key as NotificationChannelKey
+  if (channel === 'in_app') {
+    inAppNotificationForm[normalized] = Boolean(value)
+    return
+  }
+  telegramNotificationForm[normalized] = Boolean(value)
+}
 const candidateNotificationForm = reactive({
   enabled: false,
   shadow_mode: false,
@@ -559,6 +772,17 @@ const discoveryForm = reactive({
   longbridge_analyst_rating_enabled: true,
   longbridge_analyst_rating_request_budget: 20,
   longbridge_analyst_rating_target_change_pct: 5,
+  longbridge_candidate_research_enabled: true,
+  longbridge_candidate_research_request_budget: 5,
+	longbridge_watch_target_research_enabled: true,
+	longbridge_watch_target_research_request_budget: 5,
+  longbridge_candidate_valuation_enabled: true,
+  longbridge_candidate_valuation_request_budget: 3,
+	longbridge_watch_target_valuation_enabled: true,
+	longbridge_watch_target_valuation_request_budget: 3,
+	longbridge_option_research_enabled: true,
+	longbridge_candidate_option_research_budget: 5,
+	longbridge_watch_target_option_research_budget: 5,
   analyst_rating_notify_enabled: false,
   tiingo_api_token: '',
   tiingo_api_tokens: '',
@@ -591,7 +815,14 @@ const ipoForm = reactive({
   max_results: 100,
   notify_enabled: true,
   notify_form_types: '',
-  keywords: ''
+  keywords: '',
+  longbridge_listing_verification_enabled: true,
+  longbridge_listing_request_budget: 20,
+  longbridge_listing_recheck_hours: 24,
+  longbridge_calendar_enabled: true,
+  longbridge_calendar_lookback_days: 14,
+  longbridge_calendar_lookahead_days: 30,
+  longbridge_calendar_max_pages: 5
 })
 
 const secRiskHints = computed(() => {
@@ -690,6 +921,13 @@ function localeLabel(value: Locale) {
   return value === 'en-US' ? 'English' : '中文'
 }
 
+function openProviderSettings() {
+  dataAdvancedPanels.value = ['providers']
+  window.requestAnimationFrame(() => {
+    document.getElementById('provider-settings')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+}
+
 async function load() {
   loading.value = true
   try {
@@ -713,6 +951,10 @@ async function load() {
     notificationForm.quiet_hours_enabled = configValue(configs, 'notification.quiet_hours_enabled', 'false') === 'true'
     notificationForm.quiet_hours_start = configValue(configs, 'notification.quiet_hours_start', '22:00')
     notificationForm.quiet_hours_end = configValue(configs, 'notification.quiet_hours_end', '08:00')
+    for (const row of notificationChannelRows) {
+      inAppNotificationForm[row.key] = configValue(configs, `in_app_notification.${row.key}`, configValue(configs, `in_app_notification.${row.legacyKey}`, 'true')) === 'true'
+      telegramNotificationForm[row.key] = configValue(configs, `telegram_notification.${row.key}`, configValue(configs, `telegram_notification.${row.legacyKey}`, 'true')) === 'true'
+    }
     candidateNotificationForm.enabled = configValue(configs, 'candidate_notification.enabled', 'false') === 'true'
     candidateNotificationForm.shadow_mode = configValue(configs, 'candidate_notification.shadow_mode', 'false') === 'true'
     candidateNotificationForm.notify_a = configValue(configs, 'candidate_notification.notify_a', 'false') === 'true'
@@ -739,6 +981,17 @@ async function load() {
     discoveryForm.longbridge_analyst_rating_enabled = configValue(configs, 'discovery.longbridge_analyst_rating_enabled', 'true') === 'true'
     discoveryForm.longbridge_analyst_rating_request_budget = Number(configValue(configs, 'discovery.longbridge_analyst_rating_request_budget', '20'))
     discoveryForm.longbridge_analyst_rating_target_change_pct = Number(configValue(configs, 'discovery.longbridge_analyst_rating_target_change_pct', '5'))
+    discoveryForm.longbridge_candidate_research_enabled = configValue(configs, 'discovery.longbridge_candidate_research_enabled', 'true') === 'true'
+    discoveryForm.longbridge_candidate_research_request_budget = Number(configValue(configs, 'discovery.longbridge_candidate_research_request_budget', '5'))
+		discoveryForm.longbridge_watch_target_research_enabled = configValue(configs, 'discovery.longbridge_watch_target_research_enabled', 'true') === 'true'
+		discoveryForm.longbridge_watch_target_research_request_budget = Number(configValue(configs, 'discovery.longbridge_watch_target_research_request_budget', '5'))
+    discoveryForm.longbridge_candidate_valuation_enabled = configValue(configs, 'discovery.longbridge_candidate_valuation_enabled', 'true') === 'true'
+    discoveryForm.longbridge_candidate_valuation_request_budget = Number(configValue(configs, 'discovery.longbridge_candidate_valuation_request_budget', '3'))
+		discoveryForm.longbridge_watch_target_valuation_enabled = configValue(configs, 'discovery.longbridge_watch_target_valuation_enabled', 'true') === 'true'
+		discoveryForm.longbridge_watch_target_valuation_request_budget = Number(configValue(configs, 'discovery.longbridge_watch_target_valuation_request_budget', '3'))
+		discoveryForm.longbridge_option_research_enabled = configValue(configs, 'discovery.longbridge_option_research_enabled', 'true') === 'true'
+		discoveryForm.longbridge_candidate_option_research_budget = Number(configValue(configs, 'discovery.longbridge_candidate_option_research_budget', '5'))
+		discoveryForm.longbridge_watch_target_option_research_budget = Number(configValue(configs, 'discovery.longbridge_watch_target_option_research_budget', '5'))
     discoveryForm.analyst_rating_notify_enabled = configValue(configs, 'analyst_rating.notify_enabled', 'false') === 'true'
     discoveryForm.tiingo_api_token = configValue(configs, 'discovery.tiingo_api_token', '')
     discoveryForm.tiingo_api_tokens = configValue(configs, 'discovery.tiingo_api_tokens', '')
@@ -768,6 +1021,13 @@ async function load() {
     ipoForm.notify_enabled = configValue(configs, 'ipo.notify_enabled', 'true') === 'true'
     ipoForm.notify_form_types = configValue(configs, 'ipo.notify_form_types', '')
     ipoForm.keywords = configValue(configs, 'ipo.keywords', '')
+    ipoForm.longbridge_listing_verification_enabled = configValue(configs, 'ipo.longbridge_listing_verification_enabled', 'true') === 'true'
+    ipoForm.longbridge_listing_request_budget = Number(configValue(configs, 'ipo.longbridge_listing_request_budget', '20'))
+    ipoForm.longbridge_listing_recheck_hours = Number(configValue(configs, 'ipo.longbridge_listing_recheck_hours', '24'))
+    ipoForm.longbridge_calendar_enabled = configValue(configs, 'ipo.longbridge_calendar_enabled', 'true') === 'true'
+    ipoForm.longbridge_calendar_lookback_days = Number(configValue(configs, 'ipo.longbridge_calendar_lookback_days', '14'))
+    ipoForm.longbridge_calendar_lookahead_days = Number(configValue(configs, 'ipo.longbridge_calendar_lookahead_days', '30'))
+    ipoForm.longbridge_calendar_max_pages = Number(configValue(configs, 'ipo.longbridge_calendar_max_pages', '5'))
   } finally {
     loading.value = false
   }
@@ -795,6 +1055,8 @@ async function save() {
       { key: 'notification.quiet_hours_enabled', value: String(notificationForm.quiet_hours_enabled), value_type: 'bool', category: 'notification', encrypted: false },
       { key: 'notification.quiet_hours_start', value: notificationForm.quiet_hours_start, value_type: 'string', category: 'notification', encrypted: false },
       { key: 'notification.quiet_hours_end', value: notificationForm.quiet_hours_end, value_type: 'string', category: 'notification', encrypted: false },
+      ...notificationChannelRows.map((row) => ({ key: `in_app_notification.${row.key}`, value: String(inAppNotificationForm[row.key]), value_type: 'bool', category: 'in_app_notification', encrypted: false })),
+      ...notificationChannelRows.map((row) => ({ key: `telegram_notification.${row.key}`, value: String(telegramNotificationForm[row.key]), value_type: 'bool', category: 'telegram_notification', encrypted: false })),
       { key: 'candidate_notification.enabled', value: String(candidateNotificationForm.enabled), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.shadow_mode', value: String(candidateNotificationForm.shadow_mode), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.notify_a', value: String(candidateNotificationForm.notify_a), value_type: 'bool', category: 'candidate_notification', encrypted: false },
@@ -821,6 +1083,17 @@ async function save() {
       { key: 'discovery.longbridge_analyst_rating_enabled', value: String(discoveryForm.longbridge_analyst_rating_enabled), value_type: 'bool', category: 'discovery', encrypted: false },
       { key: 'discovery.longbridge_analyst_rating_request_budget', value: String(discoveryForm.longbridge_analyst_rating_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
       { key: 'discovery.longbridge_analyst_rating_target_change_pct', value: String(discoveryForm.longbridge_analyst_rating_target_change_pct), value_type: 'float', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_candidate_research_enabled', value: String(discoveryForm.longbridge_candidate_research_enabled), value_type: 'bool', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_candidate_research_request_budget', value: String(discoveryForm.longbridge_candidate_research_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
+		  { key: 'discovery.longbridge_watch_target_research_enabled', value: String(discoveryForm.longbridge_watch_target_research_enabled), value_type: 'bool', category: 'discovery', encrypted: false },
+		  { key: 'discovery.longbridge_watch_target_research_request_budget', value: String(discoveryForm.longbridge_watch_target_research_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_candidate_valuation_enabled', value: String(discoveryForm.longbridge_candidate_valuation_enabled), value_type: 'bool', category: 'discovery', encrypted: false },
+      { key: 'discovery.longbridge_candidate_valuation_request_budget', value: String(discoveryForm.longbridge_candidate_valuation_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
+		  { key: 'discovery.longbridge_watch_target_valuation_enabled', value: String(discoveryForm.longbridge_watch_target_valuation_enabled), value_type: 'bool', category: 'discovery', encrypted: false },
+		  { key: 'discovery.longbridge_watch_target_valuation_request_budget', value: String(discoveryForm.longbridge_watch_target_valuation_request_budget), value_type: 'int', category: 'discovery', encrypted: false },
+		  { key: 'discovery.longbridge_option_research_enabled', value: String(discoveryForm.longbridge_option_research_enabled), value_type: 'bool', category: 'discovery', encrypted: false },
+		  { key: 'discovery.longbridge_candidate_option_research_budget', value: String(discoveryForm.longbridge_candidate_option_research_budget), value_type: 'int', category: 'discovery', encrypted: false },
+		  { key: 'discovery.longbridge_watch_target_option_research_budget', value: String(discoveryForm.longbridge_watch_target_option_research_budget), value_type: 'int', category: 'discovery', encrypted: false },
       { key: 'analyst_rating.notify_enabled', value: String(discoveryForm.analyst_rating_notify_enabled), value_type: 'bool', category: 'analyst_rating', encrypted: false },
       { key: 'discovery.tiingo_api_token', value: discoveryForm.tiingo_api_token, value_type: 'string', category: 'discovery', encrypted: true },
       { key: 'discovery.tiingo_api_tokens', value: discoveryForm.tiingo_api_tokens, value_type: 'string', category: 'discovery', encrypted: true },
@@ -849,7 +1122,14 @@ async function save() {
       { key: 'ipo.max_results', value: String(ipoForm.max_results), value_type: 'int', category: 'ipo', encrypted: false },
       { key: 'ipo.notify_enabled', value: String(ipoForm.notify_enabled), value_type: 'bool', category: 'ipo', encrypted: false },
       { key: 'ipo.notify_form_types', value: ipoForm.notify_form_types, value_type: 'string', category: 'ipo', encrypted: false },
-      { key: 'ipo.keywords', value: ipoForm.keywords, value_type: 'string', category: 'ipo', encrypted: false }
+      { key: 'ipo.keywords', value: ipoForm.keywords, value_type: 'string', category: 'ipo', encrypted: false },
+      { key: 'ipo.longbridge_listing_verification_enabled', value: String(ipoForm.longbridge_listing_verification_enabled), value_type: 'bool', category: 'ipo', encrypted: false },
+      { key: 'ipo.longbridge_listing_request_budget', value: String(ipoForm.longbridge_listing_request_budget), value_type: 'int', category: 'ipo', encrypted: false },
+      { key: 'ipo.longbridge_listing_recheck_hours', value: String(ipoForm.longbridge_listing_recheck_hours), value_type: 'int', category: 'ipo', encrypted: false },
+      { key: 'ipo.longbridge_calendar_enabled', value: String(ipoForm.longbridge_calendar_enabled), value_type: 'bool', category: 'ipo', encrypted: false },
+      { key: 'ipo.longbridge_calendar_lookback_days', value: String(ipoForm.longbridge_calendar_lookback_days), value_type: 'int', category: 'ipo', encrypted: false },
+      { key: 'ipo.longbridge_calendar_lookahead_days', value: String(ipoForm.longbridge_calendar_lookahead_days), value_type: 'int', category: 'ipo', encrypted: false },
+      { key: 'ipo.longbridge_calendar_max_pages', value: String(ipoForm.longbridge_calendar_max_pages), value_type: 'int', category: 'ipo', encrypted: false }
     ])
     store.applyDefaultLocale(uiForm.default_locale)
     ElMessage.success(t('messages.configSaved'))
@@ -941,3 +1221,65 @@ function formatDateTime(value?: string | null) {
 
 onMounted(load)
 </script>
+
+<style scoped>
+.config-category-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-fill-color-blank);
+}
+
+.config-category-hint,
+.config-section-heading p,
+.collapse-help {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.config-section {
+  display: grid;
+  gap: 16px;
+}
+
+.config-section-heading h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.config-section-heading p {
+  margin: 0;
+}
+
+.config-advanced-collapse {
+  margin-top: 8px;
+}
+
+:deep(.research-settings-form .el-form-item__label) {
+  height: auto;
+  min-height: 32px;
+  line-height: 22px;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+:deep(.research-settings-form .el-form-item__content) {
+  min-height: 32px;
+}
+
+.collapse-help {
+  margin: 0 0 16px;
+}
+
+@media (max-width: 900px) {
+  .config-category-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+</style>

@@ -3,18 +3,18 @@
     <div class="page-header">
       <div>
         <h1>宏观日历</h1>
-        <p>分开跟踪经济数据发布与利率 / 流动性背景：官方公布值、收益率曲线与可追溯原文均来自第一方机构。</p>
+        <p>分开跟踪经济数据发布与利率 / 流动性背景，并单列可追溯的市场一致预期补充。</p>
       </div>
       <div class="header-actions">
-        <el-button type="primary" :loading="syncing" @click="syncOfficialCalendar">刷新官方日历</el-button>
+        <el-button type="primary" :loading="syncing" @click="syncOfficialCalendar">刷新日历</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
     </div>
 
     <el-alert type="info" :closable="false" show-icon class="macro-source-alert">
-      <template #title>公开官方数据，不混用商业预期</template>
-      <div>经济数据来自 BEA、BLS、Census、DOL、EIA 与美联储；利率 / 流动性使用美国财政部每日名义与实际（TIPS）收益率曲线，覆盖 3M、2Y、5Y、10Y、30Y，以及 10Y-2Y / 10Y-3M 利差。预测值、重要性和市场影响不是官方原始数据：未配置可追溯的市场一致预期来源前，会明确显示“未接入 / 待比较”，不会推断。</div>
-      <div class="macro-sync-note">自动同步：<code>macro_calendar_sync</code> 会在工作日发布前记录日历、发布后抓取官方值；也可随时点击“刷新官方日历”。</div>
+      <template #title>官方数据为主，Longbridge 市场日历为补充</template>
+      <div>经济数据与收益率曲线仍以 BEA、BLS、Census、DOL、EIA、美联储和财政部的第一方记录为准。Longbridge 三星美国宏观事件单列显示，提供前值、市场预期、公布值及重要性，不覆盖官方记录。</div>
+      <div class="macro-sync-note">自动同步：<code>macro_calendar_sync</code> 会同步官方日历与 Longbridge 市场日历；也可随时手动刷新。</div>
     </el-alert>
 
     <el-card shadow="never">
@@ -46,6 +46,7 @@
 		  <el-option label="美债名义收益率曲线（3M–30Y）" value="treasury_yields" />
 		  <el-option label="美债实际收益率曲线（TIPS）" value="treasury_real_yields" />
           <el-option label="FOMC 会议" value="fomc" />
+		  <el-option label="Longbridge 高重要性市场日历" value="market_calendar" />
         </el-select>
         <el-select v-model="filters.frequency" clearable placeholder="全部频率" style="width: 130px">
 		  <el-option label="每日" value="daily" />
@@ -61,7 +62,7 @@
         <el-date-picker v-model="filters.range" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" />
         <el-button type="primary" @click="applyFilters">查询</el-button>
         <el-button @click="resetFilters">重置</el-button>
-        <span class="macro-count">共 {{ page.total }} 项官方发布</span>
+        <span class="macro-count">共 {{ page.total }} 项日历记录</span>
       </div>
 
       <div v-if="filters.status === 'published' && latestReleases.length" class="macro-latest-grid">
@@ -119,36 +120,47 @@
       </div>
 
       <div class="macro-table-title">{{ filters.status === 'scheduled' ? '待公布日历' : '已公布记录' }}</div>
-      <el-table :data="page.items" v-loading="loading" row-key="id" border class="macro-release-table" :empty-text="filters.status === 'scheduled' ? '暂无待公布的官方事件。' : '暂无已公布记录；点击“刷新官方日历”开始同步。'">
+      <el-table :data="page.items" v-loading="loading" row-key="id" border class="macro-release-table" :empty-text="filters.status === 'scheduled' ? '暂无待公布事件。' : '暂无已公布记录；点击“刷新日历”开始同步。'">
         <el-table-column type="expand" width="48">
           <template #default="{ row }">
             <div class="macro-observation-detail">
-              <div class="macro-observation-title">官方公布结果</div>
+              <div v-if="row.related_sources?.length" class="macro-source-association">
+                <div class="macro-observation-title">关联来源</div>
+                <div class="macro-source-association-note">按“事件类别 + 美国公布日期”关联；官方记录为主，Longbridge 仅补充预期和市场日历字段。</div>
+                <div class="macro-source-links">
+                  <el-tag v-for="source in row.related_sources" :key="`${source.provider}-${source.source_url}`" :type="source.official ? 'success' : 'info'" effect="plain">
+                    <el-link :href="source.source_url" target="_blank" :type="source.official ? 'success' : 'primary'" :underline="false">{{ providerLabel(source.provider) }}{{ source.official ? '（主）' : '（补充）' }}</el-link>
+                  </el-tag>
+                </div>
+              </div>
+              <div class="macro-observation-title">公布结果与市场预期</div>
               <el-table :data="row.observations" size="small" border empty-text="该官方公告尚未解析到本页支持的指标；可通过“官方来源”查看原始公告。">
                 <el-table-column prop="indicator_name" label="指标" min-width="210" />
                 <el-table-column label="实际值" width="120" align="right"><template #default="{ row: observation }">{{ formatValue(observation.actual_value, observation.unit) }}</template></el-table-column>
                 <el-table-column label="前值" width="120" align="right"><template #default="{ row: observation }">{{ formatValue(observation.previous_value, observation.unit) }}</template></el-table-column>
+                <el-table-column label="市场预期" width="120" align="right"><template #default="{ row: observation }">{{ formatValue(observation.forecast_value, observation.unit) }}</template></el-table-column>
                 <el-table-column prop="frequency" label="频率" width="90"><template #default="{ row: observation }">{{ frequencyLabel(observation.frequency) }}</template></el-table-column>
                 <el-table-column prop="source_field" label="官方字段" min-width="260" show-overflow-tooltip />
                 <el-table-column label="公告时间" width="172"><template #default="{ row: observation }">{{ formatDateTime(observation.provider_updated_at) }}</template></el-table-column>
                 <el-table-column label="来源" width="90"><template #default="{ row: observation }"><el-link :href="observation.source_url" target="_blank" type="primary">官方原文</el-link></template></el-table-column>
               </el-table>
-              <div class="macro-disclaimer">前值来自本地已保存的上一期官方公布值；它可能不同于公告中经修订后的历史值。预测值与市场方向未纳入此表。</div>
+              <div class="macro-disclaimer">官方记录的前值来自本地已保存的上一期公布值；Longbridge 行为市场日历补充，预期值不会覆盖官方数据，也不自动推断利多或利空。</div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="数据类别" width="168"><template #default="{ row }"><el-tag effect="plain">{{ categoryLabel(row.category) }}</el-tag></template></el-table-column>
+		<el-table-column label="数据类别" width="168"><template #default="{ row }"><el-tooltip :content="categoryLabel(row.category)" placement="top"><el-tag class="macro-category-tag" effect="plain">{{ categoryLabel(row.category) }}</el-tag></el-tooltip></template></el-table-column>
         <el-table-column label="频率" width="88"><template #default="{ row }">{{ releaseFrequencyLabel(row.category) }}</template></el-table-column>
-        <el-table-column prop="title" label="官方发布" min-width="320" show-overflow-tooltip />
+		<el-table-column prop="title" label="日历事件" min-width="320"><template #default="{ row }"><el-tooltip :content="row.title" placement="top"><span class="macro-cell-overflow">{{ row.title }}</span></el-tooltip></template></el-table-column>
         <el-table-column prop="reference_period" label="数据期" width="135" />
         <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.status === 'published' ? 'success' : 'info'" effect="plain">{{ row.status === 'published' ? '已公布' : '待公布' }}</el-tag></template></el-table-column>
+        <el-table-column label="关联来源" width="130"><template #default="{ row }"><el-tooltip :content="relatedSourceTooltip(row.related_sources)" placement="top"><el-tag v-if="row.related_sources?.length > 1" type="success" effect="plain">{{ row.related_sources.length }} 个来源</el-tag><span v-else>仅当前来源</span></el-tooltip></template></el-table-column>
         <el-table-column label="前值" width="130" align="right"><template #default="{ row }"><el-tooltip :content="primaryMetricDescription(row)" placement="top"><span>{{ formatValue(primaryObservation(row.observations)?.previous_value, primaryObservation(row.observations)?.unit) }}</span></el-tooltip></template></el-table-column>
-        <el-table-column label="预测值" width="118" align="right"><template #default><el-tooltip content="需要配置一个具备再分发权限、可追溯时间戳的市场一致预期数据源；BEA 不提供预测值。" placement="top"><el-tag type="info" effect="plain">未接入</el-tag></el-tooltip></template></el-table-column>
+        <el-table-column label="预测值" width="118" align="right"><template #default="{ row }"><span v-if="primaryObservation(row.observations)?.forecast_value != null">{{ formatValue(primaryObservation(row.observations)?.forecast_value, primaryObservation(row.observations)?.unit) }}</span><el-tooltip v-else content="官方机构不发布市场一致预期；仅 Longbridge 市场日历补充预期值。" placement="top"><el-tag type="info" effect="plain">-</el-tag></el-tooltip></template></el-table-column>
         <el-table-column label="公布值" width="168" align="right"><template #default="{ row }"><el-tooltip :content="publishedValueDescription(row)" placement="top"><strong :class="publishedValueClass(row)">{{ publishedValueLabel(row) }}</strong></el-tooltip></template></el-table-column>
         <el-table-column label="影响" width="118"><template #default="{ row }"><el-tooltip content="市场影响需要以公布值相对可追溯预测值的“意外程度”计算；当前未接入预测值，故不做利多/利空判断。" placement="top"><el-tag type="info" effect="plain">{{ impactLabel(row) }}</el-tag></el-tooltip></template></el-table-column>
-		<el-table-column label="重要性" width="118"><template #default="{ row }"><el-tooltip content="系统规则分级，不是 BEA 官方评级。核心 PCE/个人收入与支出及 GDP 均列为高重要性。" placement="top"><el-tag type="warning" effect="plain">{{ importanceLabel(row.category) }}</el-tag></el-tooltip></template></el-table-column>
+		<el-table-column label="重要性" width="118"><template #default="{ row }"><el-tooltip :content="row.market_importance ? 'Longbridge 市场日历重要性（星级）。' : '系统规则分级，不是官方评级。'" placement="top"><el-tag type="warning" effect="plain">{{ row.market_importance ? `${row.market_importance} 星` : importanceLabel(row.category) }}</el-tag></el-tooltip></template></el-table-column>
         <el-table-column label="公布时间（上海）" width="175"><template #default="{ row }">{{ formatDateTime(row.scheduled_at) }}</template></el-table-column>
-        <el-table-column label="官方来源" width="105"><template #default="{ row }"><el-link :href="row.source_url" target="_blank" type="primary">{{ providerLabel(row.provider) }}</el-link></template></el-table-column>
+		<el-table-column label="来源" width="105"><template #default="{ row }"><el-link :href="row.source_url" target="_blank" type="primary">{{ providerLabel(row.provider) }}</el-link></template></el-table-column>
       </el-table>
 
       <div class="pagination-row">
@@ -162,7 +174,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, MacroObservation, MacroRelease, PageResult } from '@/api/types'
+import type { ApiResponse, MacroObservation, MacroRelease, MacroReleaseSource, PageResult } from '@/api/types'
 
 type TrendPoint = { date: string, value: number, releaseIndex: number, delta: number | null, x: number, y: number }
 type TrendSeries = { code: string, label: string, unit: string, color: string, gradientId: string, points: TrendPoint[], latest: TrendPoint, path: string, areaPath: string }
@@ -341,11 +353,11 @@ async function syncOfficialCalendar() {
   try {
     const response = await apiClient.post<ApiResponse<{ scheduled_found: number, releases_saved: number, published: number, observations: number, warnings: string[] }>>('/macro/releases/sync')
     const result = response.data.data
-    ElMessage.success(`已同步 ${result.scheduled_found} 项日历，保存 ${result.observations} 个官方结果`)
+    ElMessage.success(`已同步 ${result.scheduled_found} 项日历，保存 ${result.observations} 个数据项`)
     if (result.warnings?.length) ElMessage.warning(`同步完成，但有 ${result.warnings.length} 条提示`)
     await load()
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.message || '同步官方宏观日历失败')
+    ElMessage.error(err?.response?.data?.message || '同步宏观日历失败')
   } finally {
     syncing.value = false
   }
@@ -383,10 +395,11 @@ function categoryLabel(value: string) {
                           : value === 'advance_trade' ? '预先贸易指标'
                             : value === 'treasury_yields' ? '美债名义收益率曲线（3M–30Y）'
                               : value === 'treasury_real_yields' ? '美债实际收益率曲线（TIPS）'
-								: value === 'fomc' ? 'FOMC 会议' : value || '-'
+								: value === 'fomc' ? 'FOMC 会议' : value === 'market_calendar' ? 'Longbridge 高重要性日历' : value || '-'
 }
-function releaseFrequencyLabel(category: string) { return ['treasury_yields', 'treasury_real_yields'].includes(category) ? '每日' : ['initial_claims', 'petroleum_inventories'].includes(category) ? '每周' : category === 'gdp' ? '季度' : category === 'fomc' ? '政策会议' : '月度' }
-function providerLabel(value?: string) { return value === 'bea' ? 'BEA 链接' : value === 'bls' ? 'BLS 链接' : value === 'fred' ? 'FRED（原始来源：BLS）' : value === 'census' ? 'Census 链接' : value === 'dol' ? 'DOL 链接' : value === 'eia' ? 'EIA 链接' : value === 'treasury' ? '财政部链接' : value === 'federal_reserve' ? '美联储链接' : '官方链接' }
+function releaseFrequencyLabel(category: string) { return ['treasury_yields', 'treasury_real_yields'].includes(category) ? '每日' : ['initial_claims', 'petroleum_inventories'].includes(category) ? '每周' : category === 'gdp' ? '季度' : category === 'fomc' ? '政策会议' : category === 'market_calendar' ? '市场日历' : '月度' }
+function providerLabel(value?: string) { return value === 'bea' ? 'BEA 链接' : value === 'bls' ? 'BLS 链接' : value === 'fred' ? 'FRED（原始来源：BLS）' : value === 'census' ? 'Census 链接' : value === 'dol' ? 'DOL 链接' : value === 'eia' ? 'EIA 链接' : value === 'treasury' ? '财政部链接' : value === 'federal_reserve' ? '美联储链接' : value === 'longbridge' ? 'Longbridge' : '来源链接' }
+function relatedSourceTooltip(sources?: MacroReleaseSource[]) { return sources?.length ? sources.map((source) => `${providerLabel(source.provider)}${source.official ? '（官方主源）' : '（市场补充）'}：${source.title}`).join('\n') : '仅当前来源' }
 function formatDateTime(value?: string | null) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) }
 function primaryObservation(observations: MacroObservation[]) {
   const codes = ['treasury_10y_yield', 'treasury_10y_real_yield', 'commercial_crude_oil_inventory_mmbbl', 'initial_claims_k', 'nonfarm_payrolls_change_k', 'job_openings_m', 'cpi_mom', 'ppi_mom', 'retail_sales_mom', 'core_pce_yoy', 'real_gdp_qoq_annualized', 'core_pce_mom', 'pce_mom', 'real_pce_qoq_annualized']
@@ -430,6 +443,8 @@ onMounted(load)
 
 <style scoped>
 .macro-source-alert { margin-bottom: 16px; }
+.macro-category-tag, .macro-cell-overflow { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.macro-category-tag { width: fit-content; }
 .macro-sync-note { margin-top: 6px; font-size: 12px; color: var(--el-text-color-secondary); }
 .macro-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
 .macro-count { margin-left: auto; color: var(--el-text-color-secondary); font-size: 13px; }
@@ -473,6 +488,10 @@ onMounted(load)
 .macro-published-value.is-flat { color: var(--el-text-color-primary); }
 .macro-observation-detail { padding: 4px 14px 12px 54px; }
 .macro-observation-title { margin: 8px 0; font-weight: 600; color: var(--el-text-color-primary); }
+.macro-source-association { margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; background: var(--el-fill-color-lighter); }
+.macro-source-association .macro-observation-title { margin-top: 0; }
+.macro-source-association-note { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.55; }
+.macro-source-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .macro-disclaimer { margin-top: 10px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; }
 .pagination-row { display: flex; justify-content: flex-end; margin-top: 16px; }
 @media (max-width: 900px) { .macro-count { width: 100%; margin-left: 0; } .macro-observation-detail { padding-left: 8px; } }

@@ -19,16 +19,23 @@ import (
 type AnalystRatingNotificationService struct {
 	db          *gorm.DB
 	discoveryDB *gorm.DB
-	notifier    telegram.Notifier
 	configs     *ConfigService
+	batches     *NotificationBatchService
 }
 
 func NewAnalystRatingNotificationService(db, discoveryDB *gorm.DB, notifier telegram.Notifier, configs *ConfigService) *AnalystRatingNotificationService {
-	return &AnalystRatingNotificationService{db: db, discoveryDB: discoveryDB, notifier: notifier, configs: configs}
+	return &AnalystRatingNotificationService{db: db, discoveryDB: discoveryDB, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
+}
+
+func (s *AnalystRatingNotificationService) WithNotificationCenter(center *NotificationBatchService) *AnalystRatingNotificationService {
+	if s != nil && center != nil {
+		s.batches = center
+	}
+	return s
 }
 
 func (s *AnalystRatingNotificationService) DeliverPending(ctx context.Context, snapshots []discovery.AnalystRatingSnapshot) error {
-	if s == nil || s.db == nil || s.discoveryDB == nil || s.notifier == nil || s.configs == nil || len(snapshots) == 0 {
+	if s == nil || s.db == nil || s.discoveryDB == nil || s.batches == nil || s.configs == nil || len(snapshots) == 0 {
 		return nil
 	}
 	enabled, _, err := s.configs.GetValue(ctx, "analyst_rating.notify_enabled")
@@ -54,7 +61,7 @@ func (s *AnalystRatingNotificationService) DeliverPending(ctx context.Context, s
 	if len(candidates) == 0 {
 		return nil
 	}
-	batch, err := NewNotificationBatchService(s.db, s.notifier, s.configs).Deliver(ctx, NotificationBatchInput{
+	batch, err := s.batches.Deliver(ctx, NotificationBatchInput{
 		Source: "analyst_rating", Trigger: "scheduler", Candidates: candidates,
 		SummaryText: renderAnalystRatingNotification(candidates),
 	})

@@ -62,33 +62,42 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		notifier = telegramNotifier{configs: configs}
 	}
 	notificationBatches := service.NewNotificationBatchService(deps.DB, notifier, configs)
-	candidateNotifications := service.NewCandidateNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs)
-	analystRatingNotifications := service.NewAnalystRatingNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs)
-	tradeSetupNotifications := service.NewTradeSetupNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs)
+	inAppNotifications := service.NewInAppNotificationService(deps.DB, configs)
+	candidateNotifications := service.NewCandidateNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs).WithNotificationCenter(notificationBatches)
+	analystRatingNotifications := service.NewAnalystRatingNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs).WithNotificationCenter(notificationBatches)
+	tradeSetupNotifications := service.NewTradeSetupNotificationService(deps.DB, deps.DiscoveryDB, notifier, configs).WithNotificationCenter(notificationBatches).WithInAppNotifications(inAppNotifications)
 	tradePlanSimulations := service.NewTradePlanSimulationService(deps.DB, deps.DiscoveryDB)
-	discoverySync := service.NewDiscoverySyncService(deps.DiscoveryDB, runtimeConfig.Discovery).WithConfigService(configs).WithWatchTargetDB(deps.DB).WithAnalystRatingNotifications(analystRatingNotifications)
+	discoverySync := service.NewDiscoverySyncService(deps.DiscoveryDB, runtimeConfig.Discovery).WithConfigService(configs).WithWatchTargetDB(deps.DB).WithAnalystRatingNotifications(analystRatingNotifications).WithInAppNotifications(inAppNotifications).WithNotificationCenter(notificationBatches)
 	backup := service.NewSQLiteBackupService(deps.DB, deps.DiscoveryDB, runtimeConfig.Database.DSN, runtimeConfig.Discovery.Database.DSN, configs)
 	lifecycle := service.NewLifecycleService(deps.DB, deps.DiscoveryDB, configs)
-	operationalHealth := service.NewOperationalHealthService(deps.DB, deps.DiscoveryDB, notifier, configs).WithBackup(backup)
-	macroCalendar := service.NewMacroCalendarService(deps.DB)
-	earningsPreview := service.NewEarningsPreviewService(deps.DB, runtimeConfig.Discovery, configs, notifier).WithDiscoveryDB(deps.DiscoveryDB)
+	operationalHealth := service.NewOperationalHealthService(deps.DB, deps.DiscoveryDB, notifier, configs).WithBackup(backup).WithNotificationCenter(notificationBatches)
+	macroCalendar := service.NewMacroCalendarService(deps.DB).WithLongbridge(configs, runtimeConfig.Discovery)
+	marketTrend := service.NewMarketTrendService(deps.DB, configs, runtimeConfig.Discovery)
+	usFutures := service.NewUSFuturesService(deps.DB, configs, runtimeConfig.Discovery)
+	institutionalHoldings := service.NewInstitutionalHoldingsService(deps.DB)
+	earningsPreview := service.NewEarningsPreviewService(deps.DB, runtimeConfig.Discovery, configs, notifier).WithDiscoveryDB(deps.DiscoveryDB).WithNotificationCenter(notificationBatches).WithInAppNotifications(inAppNotifications)
 	if recovered, err := tasks.RecoverInterrupted(context.Background()); err != nil {
 		return nil, fmt.Errorf("recover interrupted task states: %w", err)
 	} else if recovered > 0 {
 		log.Printf("cleared %d interrupted scheduler task state(s)", recovered)
+	}
+	if recovered, err := tasks.RecoverInterruptedExecutions(context.Background(), time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("recover interrupted task executions: %w", err)
+	} else if recovered > 0 {
+		log.Printf("closed %d interrupted scheduler execution record(s)", recovered)
 	}
 	if recovered, err := discoverySync.RecoverInterruptedRuns(context.Background()); err != nil {
 		return nil, fmt.Errorf("recover interrupted discovery sync runs: %w", err)
 	} else if recovered > 0 {
 		log.Printf("recovered %d stale discovery sync run(s)", recovered)
 	}
-	filings := service.NewFilingService(deps.DB, secClient, notifier, configs).WithDiscoveryDB(deps.DiscoveryDB)
+	filings := service.NewFilingService(deps.DB, secClient, notifier, configs).WithDiscoveryDB(deps.DiscoveryDB).WithNotificationCenter(notificationBatches).WithInAppNotifications(inAppNotifications)
 	currentFilingsClient, ok := secClient.(sec.CurrentFilingsClient)
 	if !ok {
 		currentFilingsClient = newSECClient(runtimeConfig)
 	}
-	ipoRadar := service.NewIPORadarService(deps.DB, currentFilingsClient, notifier, configs)
-	sched := scheduler.New(tasks, filings, configs, ipoRadar, candidateNotifications, tradeSetupNotifications, discoverySync, notificationBatches, backup, lifecycle, operationalHealth, macroCalendar, earningsPreview)
+	ipoRadar := service.NewIPORadarService(deps.DB, currentFilingsClient, notifier, configs).WithLongbridgeListingRuntime(runtimeConfig.Discovery).WithNotificationCenter(notificationBatches).WithInAppNotifications(inAppNotifications)
+	sched := scheduler.New(tasks, filings, configs, ipoRadar, candidateNotifications, tradeSetupNotifications, discoverySync, notificationBatches, backup, lifecycle, operationalHealth, macroCalendar, marketTrend, usFutures, earningsPreview, institutionalHoldings)
 	if err := sched.Start(context.Background()); err != nil {
 		return nil, fmt.Errorf("start scheduler: %w", err)
 	}
@@ -105,6 +114,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		Audit:                  audit,
 		Notification:           service.NewNotificationService(deps.DB),
 		NotificationBatch:      notificationBatches,
+		InAppNotifications:     inAppNotifications,
 		CandidateNotification:  candidateNotifications,
 		TradeSetupNotification: tradeSetupNotifications,
 		TradePlanSimulation:    tradePlanSimulations,
@@ -113,6 +123,8 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		Lifecycle:              lifecycle,
 		OperationalHealth:      operationalHealth,
 		Macro:                  macroCalendar,
+		MarketTrend:            marketTrend,
+		USFutures:              usFutures,
 		EarningsPreview:        earningsPreview,
 		Scheduler:              sched,
 	}
@@ -121,9 +133,18 @@ func New(deps Dependencies) (*gin.Engine, error) {
 
 	api := r.Group("/api")
 	{
+		api.GET("/dashboard/summary", app.GetDashboardSummary)
+		api.PUT("/dashboard/preferences", app.UpdateDashboardPreferences)
 		api.GET("/sec/tickers/:ticker", app.LookupTicker)
 		api.GET("/macro/releases", app.ListMacroReleases)
 		api.POST("/macro/releases/sync", app.SyncMacroReleases)
+		api.GET("/institutional-filings", app.ListInstitutionalFilings)
+		api.GET("/institutional-filings/:cik", app.GetInstitutionalFilingDetail)
+		api.POST("/institutional-filings/sync", app.SyncInstitutionalFilings)
+		api.GET("/market-trend", app.GetMarketTrend)
+		api.POST("/market-trend/refresh", app.RefreshMarketTrend)
+		api.GET("/us-futures", app.GetUSFutures)
+		api.POST("/us-futures/refresh", app.RefreshUSFutures)
 		api.GET("/discovery/candidates/notification-preview", app.PreviewDiscoveryCandidateNotification)
 		api.POST("/discovery/candidates/notification-send", app.SendDiscoveryCandidateNotification)
 		api.GET("/watch-targets/trade-setup-notification-preview", app.PreviewTradeSetupNotification)
@@ -160,9 +181,21 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.POST("/discovery/providers/longbridge/probe", app.ProbeDiscoveryLongbridgeQuote)
 		api.GET("/discovery/analyst-ratings/:ticker", app.GetDiscoveryAnalystRating)
 		api.POST("/discovery/analyst-ratings/:ticker/refresh", app.RefreshDiscoveryAnalystRating)
+		api.GET("/discovery/fair-values/:ticker", app.GetDiscoveryTickerFairValue)
+		api.POST("/discovery/valuation-research/:ticker/refresh", app.RefreshDiscoveryTickerValuationResearch)
+		api.GET("/discovery/institutional-holdings/:ticker", app.GetDiscoveryTickerInstitutionalHoldings)
+		api.GET("/discovery/options/:ticker", app.GetDiscoveryOptionResearch)
+		api.POST("/discovery/options/:ticker/refresh", app.RefreshDiscoveryOptionResearch)
+		api.GET("/discovery/trade-setup-history/:ticker", app.GetDiscoveryTickerTradeSetupHistory)
+		api.POST("/discovery/market-research/:ticker/refresh", app.RefreshDiscoveryTickerMarketResearch)
+		api.POST("/discovery/candidates/:ticker/market-research/refresh", app.RefreshDiscoveryCandidateMarketResearch)
+		api.POST("/discovery/candidates/:ticker/valuation-research/refresh", app.RefreshDiscoveryCandidateValuationResearch)
 		api.POST("/discovery/candidates/:ticker/business-model", app.UpsertDiscoveryCandidateBusinessModel)
 		api.GET("/discovery/candidates/:ticker/detail", app.GetDiscoveryCandidateDetail)
 		api.GET("/discovery/candidates", app.ListDiscoveryCandidates)
+		api.POST("/ticker-evaluations", app.EvaluateTicker)
+		api.GET("/ticker-evaluations/entry-triggers", app.ListTickerEvaluationEntryTriggers)
+		api.GET("/ticker-evaluations", app.ListTickerEvaluations)
 		api.GET("/discovery/batches", app.ListDiscoveryBatches)
 		api.GET("/discovery/provider-runs", app.ListDiscoveryProviderRuns)
 		api.GET("/discovery/sync-status", app.GetDiscoverySyncStatus)
@@ -192,7 +225,9 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.POST("/filings/refresh", app.RefreshFilings)
 		api.GET("/ipo-health", app.GetIPORadarHealth)
 		api.GET("/ipo-companies", app.ListIPOCompanies)
+		api.GET("/ipo-calendar", app.ListIPOCalendarEvents)
 		api.GET("/ipo-companies/:cik/offerings", app.ListIPOOfferingEvents)
+		api.PATCH("/ipo-companies/:cik/follow", app.SetIPOCompanyFollow)
 		api.PUT("/ipo-companies/:cik/override", app.UpdateIPOCompanyOverride)
 		api.GET("/ipo-filings", app.ListIPORadarFilings)
 		api.POST("/ipo-filings/refresh", app.RefreshIPORadar)
@@ -205,6 +240,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.GET("/sync-runs/:id/details", app.ListSyncRunDetails)
 
 		api.GET("/task-configs", app.ListTaskConfigs)
+		api.GET("/task-executions", app.ListTaskExecutions)
 		api.PUT("/task-configs/:id", app.UpdateTaskConfig)
 		api.POST("/task-configs/:id/run", app.RunTask)
 
@@ -218,9 +254,14 @@ func New(deps Dependencies) (*gin.Engine, error) {
 
 		api.GET("/operation-logs", app.ListOperationLogs)
 		api.GET("/notification-logs", app.ListNotificationLogs)
+		api.GET("/in-app-notifications", app.ListInAppNotifications)
+		api.GET("/in-app-notifications/unread-count", app.GetInAppNotificationUnreadCount)
+		api.PATCH("/in-app-notifications/read-all", app.MarkAllInAppNotificationsRead)
+		api.PATCH("/in-app-notifications/:id/read", app.MarkInAppNotificationRead)
 		api.GET("/notification-batches", app.ListNotificationBatches)
 		api.GET("/notification-batches/:id/items", app.ListNotificationBatchItems)
 		api.POST("/notification-batches/:id/retry", app.RequeueNotificationBatch)
+		api.POST("/notification-batches/requeue-failed", app.RequeueFailedNotificationBatches)
 
 		api.GET("/system-health", app.ListHealth)
 		api.GET("/operational-health", app.GetOperationalHealth)

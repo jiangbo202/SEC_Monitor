@@ -116,7 +116,7 @@ func testDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open db: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{},
+		&model.WatchTarget{}, &model.Filing{}, &model.SyncRun{}, &model.SyncRunDetail{}, &model.TaskConfig{}, &model.TaskExecution{},
 		&model.SystemConfig{}, &model.OperationLog{}, &model.NotificationLog{}, &model.OperationalAlertDelivery{}, &model.RecoveryDrill{}, &model.LifecycleCleanupRun{},
 		&model.NotificationBatch{}, &model.NotificationBatchItem{},
 		&model.IPOFiling{}, &model.IPOCompanyOverride{}, &model.IPOCompanyMarketData{}, &model.IPOOfferingEvent{},
@@ -494,6 +494,41 @@ func TestSchedulerSuppressesDuplicateTaskRun(t *testing.T) {
 	close(runner.unblock)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first task: %v", err)
+	}
+}
+
+func TestSchedulerSkipsScheduledIPORadarAfterRecentManualSuccess(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create(&model.TaskConfig{TaskName: ipoRadarSyncTaskName, CronExpr: "*/30 * * * *", Enabled: true}).Error; err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	audit := service.NewAuditService(db)
+	configs := service.NewConfigService(db, audit)
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	tasks := service.NewTaskConfigService(db, audit)
+	finishedAt := time.Now().UTC().Add(-time.Minute)
+	if err := db.Create(&model.TaskExecution{TaskName: ipoRadarSyncTaskName, Trigger: "manual", Status: "success", StartedAt: finishedAt.Add(-time.Second), FinishedAt: &finishedAt}).Error; err != nil {
+		t.Fatalf("seed manual execution: %v", err)
+	}
+	sched := New(tasks, service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs), service.NewIPORadarService(db, fakeSECClient{}, fakeNotifier{}, configs))
+	if err := sched.runTaskWithTrigger(context.Background(), ipoRadarSyncTaskName, "scheduled"); err != nil {
+		t.Fatalf("scheduled IPO task: %v", err)
+	}
+	var filings int64
+	if err := db.Model(&model.IPOFiling{}).Count(&filings).Error; err != nil {
+		t.Fatal(err)
+	}
+	if filings != 0 {
+		t.Fatalf("IPO filings = %d, want 0 because scheduled scan should be skipped", filings)
+	}
+	var execution model.TaskExecution
+	if err := db.Where("task_name = ? AND trigger = ?", ipoRadarSyncTaskName, "scheduled").Order("id DESC").First(&execution).Error; err != nil {
+		t.Fatal(err)
+	}
+	if execution.Status != "skipped" {
+		t.Fatalf("scheduled execution status = %q, want skipped", execution.Status)
 	}
 }
 

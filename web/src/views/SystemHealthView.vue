@@ -86,6 +86,7 @@
           <el-tag type="success" effect="plain">{{ t('pages.systemHealth.backupReady') }}</el-tag>
           <span>{{ formatDateTime(health.backup.latest_completed) }}</span>
           <span>{{ t('pages.systemHealth.backupPairs', { count: health.backup.complete_pairs }) }}</span>
+			<span>备份占用 {{ formatBytes(health.backup.total_bytes) }}（最新一组 {{ formatBytes(health.backup.latest_pair_bytes) }}）</span>
           <span v-if="health.backup.incomplete_pairs">{{ t('pages.systemHealth.backupIncompletePairs', { count: health.backup.incomplete_pairs }) }}</span>
           <span v-if="health.recovery_drill?.id">{{ t('pages.systemHealth.lastRecoveryDrill', { status: health.recovery_drill.status, time: formatDateTime(health.recovery_drill.started_at) }) }}</span>
           <el-button size="small" :loading="verifyingBackup" @click="verifyLatestBackup">{{ t('pages.systemHealth.recoveryCheck') }}</el-button>
@@ -140,6 +141,8 @@
 			<el-descriptions-item :label="t('pages.systemHealth.slowSECTargets')">{{ operational.slow_sec_targets }}</el-descriptions-item>
 			<el-descriptions-item :label="t('pages.systemHealth.slowDiscoverySteps')">{{ operational.slow_discovery_steps }}</el-descriptions-item>
             <el-descriptions-item :label="t('pages.systemHealth.providerWarnings')">{{ operational.provider_warnings }}</el-descriptions-item>
+			<el-descriptions-item label="失败通知批次">{{ operational.failed_notification_batches }}</el-descriptions-item>
+			<el-descriptions-item label="通知死信批次">{{ operational.dead_letter_batches }}</el-descriptions-item>
           </el-descriptions>
           <p class="operational-summary">{{ operational.summary }}</p>
           <div v-if="operational.issues.length" class="health-alert-grid">
@@ -353,6 +356,7 @@ function openSourceAction(action: string) {
     configs: 'configs',
     discovery_logs: 'discovery-logs',
     'sync-runs': 'sync-runs',
+    'notification-logs': 'notification-logs',
     'system-health': 'system-health'
   }
   const name = routes[action]

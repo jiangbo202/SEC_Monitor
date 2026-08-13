@@ -393,8 +393,15 @@ func retryableRequestError(err error, statusCode int) bool {
 	if statusCode > 0 {
 		return retryableStatus(statusCode)
 	}
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || errors.Is(err, context.Canceled) {
 		return false
+	}
+	// http.Client.Timeout reports context.DeadlineExceeded when it gives up
+	// waiting for response headers. That is an upstream timeout and should
+	// receive the same bounded retry/backoff treatment as other temporary
+	// transport failures. A caller-owned expired context still stops the retry.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
 	}
 	var networkErr net.Error
 	return errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary())

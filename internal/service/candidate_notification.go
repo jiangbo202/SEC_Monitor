@@ -17,8 +17,8 @@ import (
 type CandidateNotificationService struct {
 	db          *gorm.DB
 	discoveryDB *gorm.DB
-	notifier    telegram.Notifier
 	configs     *ConfigService
+	batches     *NotificationBatchService
 }
 
 type CandidateNotificationPreview struct {
@@ -45,7 +45,14 @@ type CandidateNotificationSendResult struct {
 }
 
 func NewCandidateNotificationService(db *gorm.DB, discoveryDB *gorm.DB, notifier telegram.Notifier, configs *ConfigService) *CandidateNotificationService {
-	return &CandidateNotificationService{db: db, discoveryDB: discoveryDB, notifier: notifier, configs: configs}
+	return &CandidateNotificationService{db: db, discoveryDB: discoveryDB, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
+}
+
+func (s *CandidateNotificationService) WithNotificationCenter(center *NotificationBatchService) *CandidateNotificationService {
+	if s != nil && center != nil {
+		s.batches = center
+	}
+	return s
 }
 
 func (s *CandidateNotificationService) Preview(ctx context.Context) (CandidateNotificationPreview, error) {
@@ -97,7 +104,7 @@ func (s *CandidateNotificationService) Send(ctx context.Context, input Candidate
 	if !input.Confirm {
 		return CandidateNotificationSendResult{}, fmt.Errorf("%w: confirm is required", ErrValidation)
 	}
-	if s == nil || s.db == nil || s.notifier == nil || s.configs == nil {
+	if s == nil || s.db == nil || s.batches == nil || s.configs == nil {
 		return CandidateNotificationSendResult{}, errors.New("candidate notification delivery is not configured")
 	}
 	preview, err := s.Preview(ctx)
@@ -124,7 +131,7 @@ func (s *CandidateNotificationService) Send(ctx context.Context, input Candidate
 	if len(candidates) == 0 {
 		return CandidateNotificationSendResult{}, fmt.Errorf("%w: no candidate notification items", ErrValidation)
 	}
-	batch, err := NewNotificationBatchService(s.db, s.notifier, s.configs).Deliver(ctx, NotificationBatchInput{
+	batch, err := s.batches.Deliver(ctx, NotificationBatchInput{
 		Source: "candidate", Trigger: "manual", Candidates: candidates, SummaryText: renderCandidateNotificationMessage(preview),
 	})
 	if err != nil {

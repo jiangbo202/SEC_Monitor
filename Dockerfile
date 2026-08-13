@@ -16,7 +16,7 @@ RUN go build -o /out/discovery-sync ./cmd/discovery-sync
 FROM debian:bookworm-slim
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+	&& apt-get install -y --no-install-recommends ca-certificates tzdata wget \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/data
 COPY --from=backend /out/sec-monitor /app/sec-monitor

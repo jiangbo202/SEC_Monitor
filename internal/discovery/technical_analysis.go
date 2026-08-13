@@ -165,7 +165,7 @@ func hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx context.Context, db
 		items[i].Technical.AnchoredVWAP = buildCandidateAnchoredVWAP(rows, eventsBySecurity[items[i].SecurityID], items[i].PriceTradeDate, items[i].PriceSource)
 		items[i].Technical.TradeSetup = buildCandidateTradeSetup(items[i].Technical)
 	}
-	return nil
+	return hydrateTradeSetupStatusSince(ctx, db, items)
 }
 
 // candidateTechnicalPriceHistories reads the common price-history window for
@@ -181,6 +181,7 @@ func candidateTechnicalPriceHistories(ctx context.Context, db *gorm.DB, items []
 	if limit <= 0 {
 		limit = technicalMinimumSamples
 	}
+	windowDays := candidateTechnicalHistoryWindowDays(limit)
 
 	symbols := make([]string, 0, len(items))
 	sources := make([]string, 0, len(items))
@@ -218,9 +219,7 @@ func candidateTechnicalPriceHistories(ctx context.Context, db *gorm.DB, items []
 		latestCutoff = earliestCutoff
 	}
 	if len(symbols) > 0 && len(sources) > 0 {
-		// 450 calendar days safely covers the 200 completed trading sessions
-		// required by MA200 while preventing a scan of all historical prices.
-		windowStart := earliestCutoff.AddDate(0, 0, -450)
+		windowStart := earliestCutoff.AddDate(0, 0, -windowDays)
 		var raw []PriceSnapshot
 		if err := db.WithContext(ctx).
 			Where("symbol IN ? AND source IN ? AND quality_status = ?", symbols, sources, QualityStatusValid).
@@ -267,7 +266,7 @@ func candidateTechnicalPriceHistories(ctx context.Context, db *gorm.DB, items []
 		}
 	}
 	if len(missingSymbols) > 0 {
-		windowStart := earliestCutoff.AddDate(0, 0, -450)
+		windowStart := earliestCutoff.AddDate(0, 0, -windowDays)
 		var fallbackRaw []PriceSnapshot
 		if err := db.WithContext(ctx).
 			Where("symbol IN ? AND quality_status = ?", missingSymbols, QualityStatusValid).
@@ -294,7 +293,60 @@ func candidateTechnicalPriceHistories(ctx context.Context, db *gorm.DB, items []
 			result[item.SecurityID] = rows
 		}
 	}
+	// A short research-readiness window is enough for most symbols. For an
+	// infrequently traded symbol, retry only that small unresolved set with the
+	// full MA200 range so its investability result remains identical to the
+	// previous all-long-window behavior.
+	if windowDays < 450 {
+		unresolved := make([]string, 0, len(items))
+		unresolvedSeen := make(map[string]struct{}, len(items))
+		for _, item := range items {
+			if len(result[item.SecurityID]) >= limit {
+				continue
+			}
+			symbol := strings.ToUpper(strings.TrimSpace(item.Ticker))
+			if symbol != "" {
+				if _, seen := unresolvedSeen[symbol]; !seen {
+					unresolved = append(unresolved, symbol)
+					unresolvedSeen[symbol] = struct{}{}
+				}
+			}
+		}
+		if len(unresolved) > 0 {
+			var longWindowRows []PriceSnapshot
+			if err := db.WithContext(ctx).
+				Where("symbol IN ? AND quality_status = ?", unresolved, QualityStatusValid).
+				Where("trade_date >= ? AND trade_date <= ?", earliestCutoff.AddDate(0, 0, -450), latestCutoff).
+				Order("trade_date DESC, created_at DESC, id DESC").
+				Find(&longWindowRows).Error; err != nil {
+				return nil, err
+			}
+			bySymbol := make(map[string][]PriceSnapshot, len(unresolved))
+			for _, row := range longWindowRows {
+				symbol := strings.ToUpper(strings.TrimSpace(row.Symbol))
+				bySymbol[symbol] = append(bySymbol[symbol], row)
+			}
+			for _, item := range items {
+				if len(result[item.SecurityID]) >= limit {
+					continue
+				}
+				symbol := strings.ToUpper(strings.TrimSpace(item.Ticker))
+				result[item.SecurityID] = technicalPriceHistoryFromRaw(bySymbol[symbol], item.PriceSource, limit, item.PriceTradeDate)
+			}
+		}
+	}
 	return result, nil
+}
+
+func candidateTechnicalHistoryWindowDays(limit int) int {
+	if limit >= technicalMA200LookbackDays {
+		// 450 calendar days safely covers the 200 completed trading sessions
+		// required by MA200 while preventing a scan of all historical prices.
+		return 450
+	}
+	// A 90-day window is generous for the 21-session liquidity calculation,
+	// including normal exchange holidays. Sparse symbols are retried above.
+	return 90
 }
 
 func candidateTechnicalPriceHistory(ctx context.Context, db *gorm.DB, item CandidateScoreResult) ([]PriceSnapshot, error) {

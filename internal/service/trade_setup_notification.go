@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const tradeSetupNotificationSource = "trade_setup"
+const tradeSetupNotificationSource = "technical_signal_watch_target"
 
 type TradeSetupNotificationEvent struct {
 	TargetID       uint    `json:"target_id"`
@@ -62,12 +62,27 @@ type tradeSetupObservation struct {
 type TradeSetupNotificationService struct {
 	db          *gorm.DB
 	discoveryDB *gorm.DB
-	notifier    telegram.Notifier
 	configs     *ConfigService
+	batches     *NotificationBatchService
+	inApp       *InAppNotificationService
 }
 
 func NewTradeSetupNotificationService(db, discoveryDB *gorm.DB, notifier telegram.Notifier, configs *ConfigService) *TradeSetupNotificationService {
-	return &TradeSetupNotificationService{db: db, discoveryDB: discoveryDB, notifier: notifier, configs: configs}
+	return &TradeSetupNotificationService{db: db, discoveryDB: discoveryDB, configs: configs, batches: NewNotificationBatchService(db, notifier, configs)}
+}
+
+func (s *TradeSetupNotificationService) WithNotificationCenter(center *NotificationBatchService) *TradeSetupNotificationService {
+	if s != nil && center != nil {
+		s.batches = center
+	}
+	return s
+}
+
+func (s *TradeSetupNotificationService) WithInAppNotifications(inApp *InAppNotificationService) *TradeSetupNotificationService {
+	if s != nil && inApp != nil {
+		s.inApp = inApp
+	}
+	return s
 }
 
 func (s *TradeSetupNotificationService) Preview(ctx context.Context) (TradeSetupNotificationPreview, []tradeSetupObservation, error) {
@@ -79,12 +94,10 @@ func (s *TradeSetupNotificationService) Preview(ctx context.Context) (TradeSetup
 		return TradeSetupNotificationPreview{}, nil, err
 	}
 	result := TradeSetupNotificationPreview{Enabled: settings.Enabled, Settings: settings, Events: []TradeSetupNotificationEvent{}}
-	if !settings.Enabled {
-		result.SuppressedReason = "trade_setup_notification_disabled"
-		return result, nil, nil
-	}
 	if settings.ShadowMode {
 		result.SuppressedReason = "trade_setup_notification_shadow_mode"
+	} else if !settings.Enabled {
+		result.SuppressedReason = "trade_setup_notification_disabled"
 	}
 	var targets []model.WatchTarget
 	if err := s.db.WithContext(ctx).Where("status = ?", "enabled").Order("ticker ASC").Find(&targets).Error; err != nil {
@@ -133,9 +146,12 @@ func (s *TradeSetupNotificationService) Preview(ctx context.Context) (TradeSetup
 				event.Reason = tradeSetupNotificationReason(settings, setup.Status)
 			}
 		} else if setup.Status == discovery.TradeSetupEntryCandidate {
-			event.Reason = tradeSetupNotificationReason(settings, setup.Status)
+			event.Reason = "eligible"
 		} else {
 			event.Reason = "initial_state_baseline"
+		}
+		if found && previous.Status != setup.Status {
+			event.Reason = "eligible"
 		}
 		if event.Reason == "eligible" {
 			result.EligibleCount++
@@ -170,7 +186,7 @@ func (s *TradeSetupNotificationService) Send(ctx context.Context, input TradeSet
 	if !input.Confirm {
 		return TradeSetupNotificationSendResult{}, fmt.Errorf("%w: confirm is required", ErrValidation)
 	}
-	if s == nil || s.notifier == nil {
+	if s == nil || s.batches == nil {
 		return TradeSetupNotificationSendResult{}, errors.New("trade setup notification delivery is not configured")
 	}
 	preview, observations, err := s.Preview(ctx)
@@ -180,28 +196,55 @@ func (s *TradeSetupNotificationService) Send(ctx context.Context, input TradeSet
 	if preview.SuppressedReason == "trade_setup_notification_shadow_mode" {
 		return TradeSetupNotificationSendResult{Preview: preview}, nil
 	}
-	if preview.SuppressedReason != "" {
-		return TradeSetupNotificationSendResult{}, fmt.Errorf("%w: %s", ErrValidation, preview.SuppressedReason)
+	if err := s.createInAppNotifications(ctx, preview.Events); err != nil {
+		return TradeSetupNotificationSendResult{}, err
+	}
+	if err := s.persistObservations(ctx, observations); err != nil {
+		return TradeSetupNotificationSendResult{}, err
+	}
+	if !preview.Enabled {
+		return TradeSetupNotificationSendResult{Preview: preview}, nil
 	}
 	candidates := notificationCandidatesFromTradeSetupEvents(preview.Events)
 	if len(candidates) == 0 {
-		if err := s.persistObservations(ctx, observations); err != nil {
-			return TradeSetupNotificationSendResult{}, err
-		}
 		return TradeSetupNotificationSendResult{Preview: preview}, nil
 	}
-	batch, err := NewNotificationBatchService(s.db, s.notifier, s.configs).Deliver(ctx, NotificationBatchInput{
+	batch, err := s.batches.Deliver(ctx, NotificationBatchInput{
 		Source: tradeSetupNotificationSource, Trigger: "manual", Candidates: candidates, SummaryText: renderTradeSetupNotificationMessage(preview.Events),
 	})
 	if err != nil {
 		return TradeSetupNotificationSendResult{}, err
 	}
-	if batch.Status == "sent" {
-		if err := s.persistObservations(ctx, observations); err != nil {
-			return TradeSetupNotificationSendResult{}, err
+	return TradeSetupNotificationSendResult{Preview: preview, Batch: batch}, nil
+}
+
+func (s *TradeSetupNotificationService) createInAppNotifications(ctx context.Context, events []TradeSetupNotificationEvent) error {
+	if s == nil || s.inApp == nil {
+		return nil
+	}
+	for _, event := range events {
+		if event.Reason != "eligible" {
+			continue
+		}
+		body := event.EntryTrigger
+		if body == "" {
+			body = event.ExitReason
+		}
+		severity := "info"
+		if event.Status == discovery.TradeSetupExitWarning {
+			severity = "warning"
+		} else if event.Status == discovery.TradeSetupInvalidated {
+			severity = "danger"
+		}
+		if _, _, err := s.inApp.Create(ctx, InAppNotificationInput{
+			EventKey: fmt.Sprintf("technical-signal:watch_target:%d:%s:%s", event.TargetID, event.Status, event.TradeDate), Source: "technical_signal_watch_target",
+			Scope: "watch_target", EntityKind: "trade_setup", TargetID: event.TargetID, Ticker: event.Ticker, CompanyName: event.CompanyName,
+			Severity: severity, Title: "技术信号变化：" + tradeSetupStatusLabel(event.Status), Body: body, Link: "/targets", OccurredAt: time.Now().UTC(),
+		}); err != nil {
+			return err
 		}
 	}
-	return TradeSetupNotificationSendResult{Preview: preview, Batch: batch}, nil
+	return nil
 }
 
 func (s *TradeSetupNotificationService) persistObservations(ctx context.Context, observations []tradeSetupObservation) error {
