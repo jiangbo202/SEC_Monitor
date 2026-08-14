@@ -123,6 +123,16 @@ func testDB(t *testing.T) *gorm.DB {
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	// SQLite's :memory: databases are scoped to one physical connection. The
+	// scheduler executes jobs in a goroutine, so keep the test database on one
+	// connection; otherwise a concurrent query can see a fresh database without
+	// the migrated task_configs table.
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get sql db: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 	return db
 }
 
