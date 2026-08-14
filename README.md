@@ -155,7 +155,3 @@ docs/               详细设计、API 与运维文档
 ## 许可证
 
 [MIT License](LICENSE)
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=jiangbo202/SEC_Monitor&type=Date)](https://star-history.com/#jiangbo202/SEC_Monitor&Date)
