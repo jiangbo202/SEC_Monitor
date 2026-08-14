@@ -12,8 +12,8 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/shopspring/decimal v1.3.1
 	golang.org/x/net v0.55.0
-	gorm.io/driver/sqlite v1.5.7
-	gorm.io/gorm v1.25.12
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.2
 )
 
 require (
