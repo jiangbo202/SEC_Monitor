@@ -1,5 +1,21 @@
 # SEC Monitor
 
+<p align="center">
+  <a href="https://github.com/jiangbo202/SEC_Monitor/blob/main/LICENSE"><img src="https://img.shields.io/github/license/jiangbo202/SEC_Monitor?style=flat" alt="License"></a>
+  <a href="https://github.com/jiangbo202/SEC_Monitor/stargazers"><img src="https://img.shields.io/github/stars/jiangbo202/SEC_Monitor?style=flat&logo=github" alt="GitHub Stars"></a>
+  <a href="https://github.com/jiangbo202/SEC_Monitor/releases"><img src="https://img.shields.io/github/v/release/jiangbo202/SEC_Monitor?display_name=tag&style=flat" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Go-1.24-00ADD8?style=flat&logo=go" alt="Go 1.24">
+  <img src="https://img.shields.io/badge/Vue-3-42B883?style=flat&logo=vuedotjs" alt="Vue 3">
+</p>
+
+<p align="center">
+  <a href="./README.md">简体中文</a> ·
+  <a href="./README.en.md">English</a> ·
+  <a href="https://github.com/jiangbo202/SEC_Monitor/releases">版本发布</a> ·
+  <a href="https://github.com/jiangbo202/SEC_Monitor/issues">问题反馈</a> ·
+  <a href="https://github.com/jiangbo202/SEC_Monitor/pulls">Pull Requests</a>
+</p>
+
 本地优先的美股研究与 SEC 情报工作台。它把公告、监控标的、IPO、宏观数据、小盘候选、机构持仓和手动 AI 研判沉淀到本地 SQLite，便于持续复核；不构成投资建议，也不自动交易。
 
 > **安全边界：local-first、无内置认证、不要公网裸露部署。** Docker 默认仅绑定 `127.0.0.1:9090`。如需远程访问，请通过 VPN 或已配置登录、TLS 与访问控制的反向代理，不要直接暴露应用端口。
@@ -130,6 +146,16 @@ docs/               详细设计、API 与运维文档
 
 详细资料请查阅 [docs](docs/)；备份与恢复边界见 [docs/operations/backup-and-recovery.md](docs/operations/backup-and-recovery.md)。
 
+## 反馈与贡献
+
+- 发现问题或有功能建议，请提交 [Issue](https://github.com/jiangbo202/SEC_Monitor/issues)。
+- 欢迎提交 [Pull Request](https://github.com/jiangbo202/SEC_Monitor/pulls)，请先阅读 [贡献指南](CONTRIBUTING.md)。
+- 安全漏洞请勿公开提交 Issue，按 [安全策略](SECURITY.md) 私密报告。
+
 ## 许可证
 
 [MIT License](LICENSE)
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=jiangbo202/SEC_Monitor&type=Date)](https://star-history.com/#jiangbo202/SEC_Monitor&Date)

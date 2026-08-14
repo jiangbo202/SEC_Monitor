@@ -1,6 +1,20 @@
 # SEC Monitor
 
-[简体中文](./README.md) | English
+<p align="center">
+  <a href="https://github.com/jiangbo202/SEC_Monitor/blob/main/LICENSE"><img src="https://img.shields.io/github/license/jiangbo202/SEC_Monitor?style=flat" alt="License"></a>
+  <a href="https://github.com/jiangbo202/SEC_Monitor/stargazers"><img src="https://img.shields.io/github/stars/jiangbo202/SEC_Monitor?style=flat&logo=github" alt="GitHub Stars"></a>
+  <a href="https://github.com/jiangbo202/SEC_Monitor/releases"><img src="https://img.shields.io/github/v/release/jiangbo202/SEC_Monitor?display_name=tag&style=flat" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Go-1.24-00ADD8?style=flat&logo=go" alt="Go 1.24">
+  <img src="https://img.shields.io/badge/Vue-3-42B883?style=flat&logo=vuedotjs" alt="Vue 3">
+</p>
+
+<p align="center">
+  <a href="./README.md">简体中文</a> ·
+  <a href="./README.en.md">English</a> ·
+  <a href="https://github.com/jiangbo202/SEC_Monitor/releases">Releases</a> ·
+  <a href="https://github.com/jiangbo202/SEC_Monitor/issues">Issues</a> ·
+  <a href="https://github.com/jiangbo202/SEC_Monitor/pulls">Pull Requests</a>
+</p>
 
 A local-first US equity research and SEC intelligence workspace. It keeps
 filings, watch targets, IPOs, macro data, small-cap research, institutional
@@ -160,6 +174,19 @@ See [docs](docs/) for detailed material and
 for backup/restore boundaries. See [SECURITY.md](SECURITY.md) for the security
 policy and deployment boundary.
 
+## Feedback and contributions
+
+- Report bugs or propose features through
+  [Issues](https://github.com/jiangbo202/SEC_Monitor/issues).
+- Pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md)
+  first.
+- Do not report vulnerabilities in a public issue; follow
+  [SECURITY.md](SECURITY.md) instead.
+
 ## License
 
 [MIT License](LICENSE)
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=jiangbo202/SEC_Monitor&type=Date)](https://star-history.com/#jiangbo202/SEC_Monitor&Date)
