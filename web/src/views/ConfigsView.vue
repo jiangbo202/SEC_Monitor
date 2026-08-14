@@ -588,7 +588,7 @@
               <el-form-item label="提示词"><el-input v-model="template.content" type="textarea" :rows="11" resize="vertical" /></el-form-item>
             </el-form>
           </div>
-          <p class="form-help ai-prompt-template-help"><code v-pre>{{research_facts_json}}</code> 为必填变量；还可使用 <code v-pre>{{ticker}}</code>、<code v-pre>{{company_name}}</code>、<code v-pre>{{target_type}}</code>、<code v-pre>{{as_of}}</code>、<code v-pre>{{filing_url}}</code>、<code v-pre>{{filing_type}}</code>。未提供的数据会留空；评分、候选等级和交易规则结论不会被写入事实研究包。至少保留一个模板，点击页面右上角“保存”后生效。</p>
+          <p class="form-help ai-prompt-template-help">标的评估、小盘候选或监控标的模板必须含 <code v-pre>{{research_facts_json}}</code>；仅用于 SEC 公告的模板必须含 <code v-pre>{{sec_filing_content}}</code>，其内容仅含公告元数据与原文正文，不会包含基本面、估值、技术面或系统评分。还可使用 <code v-pre>{{ticker}}</code>、<code v-pre>{{company_name}}</code>、<code v-pre>{{target_type}}</code>、<code v-pre>{{as_of}}</code>、<code v-pre>{{filing_url}}</code>、<code v-pre>{{filing_type}}</code>。至少保留一个模板，点击页面右上角“保存”后生效。</p>
         </el-card>
       </div>
 

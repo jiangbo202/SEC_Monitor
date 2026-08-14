@@ -427,6 +427,7 @@ type aiAnalysisPromptTemplateValues struct {
 	TargetType        string
 	AsOf              string
 	ResearchFactsJSON string
+	SECFilingContent  string
 	FilingURL         string
 	FilingType        string
 }
@@ -448,6 +449,7 @@ func (s *AIAnalysisService) configuredAIAnalysisPrompts(ctx context.Context, sna
 		TargetType:        targetType,
 		AsOf:              requestedAt.Format(time.RFC3339),
 		ResearchFactsJSON: snapshot,
+		SECFilingContent:  snapshot,
 		FilingURL:         input.SourceURL,
 		FilingType:        filingTypeFromSnapshot(snapshot),
 	})
@@ -475,8 +477,8 @@ func aiAnalysisPromptTemplateVersion(template string) string {
 
 func renderAIAnalysisPromptTemplate(template string, values aiAnalysisPromptTemplateValues) (string, error) {
 	template = strings.TrimSpace(template)
-	if template == "" || !strings.Contains(template, "{{research_facts_json}}") {
-		return "", fmt.Errorf("%w: AI 提示词模板必须包含 {{research_facts_json}}", ErrValidation)
+	if template == "" || (!strings.Contains(template, "{{research_facts_json}}") && !strings.Contains(template, "{{sec_filing_content}}")) {
+		return "", fmt.Errorf("%w: AI 提示词模板必须包含事实包变量", ErrValidation)
 	}
 	allowed := map[string]string{
 		"ticker":              values.Ticker,
@@ -484,6 +486,7 @@ func renderAIAnalysisPromptTemplate(template string, values aiAnalysisPromptTemp
 		"target_type":         values.TargetType,
 		"as_of":               values.AsOf,
 		"research_facts_json": values.ResearchFactsJSON,
+		"sec_filing_content":  values.SECFilingContent,
 		"filing_url":          values.FilingURL,
 		"filing_type":         values.FilingType,
 	}
@@ -508,6 +511,27 @@ func renderAIAnalysisPromptTemplate(template string, values aiAnalysisPromptTemp
 		replacerValues = append(replacerValues, "{{"+name+"}}", value)
 	}
 	return strings.NewReplacer(replacerValues...).Replace(template), nil
+}
+
+func validateAIPromptTemplate(template AIPromptTemplate) (string, error) {
+	content, err := renderAIAnalysisPromptTemplate(template.Content, aiAnalysisPromptTemplateValues{})
+	if err != nil {
+		return "", err
+	}
+	hasResearchFacts := strings.Contains(template.Content, "{{research_facts_json}}")
+	hasSECFilingContent := strings.Contains(template.Content, "{{sec_filing_content}}")
+	needsResearchFacts, needsSECFilingContent := len(template.Scopes) == 0, false
+	for _, scope := range template.Scopes {
+		if scope == "sec_filing" {
+			needsSECFilingContent = true
+		} else {
+			needsResearchFacts = true
+		}
+	}
+	if (needsResearchFacts && !hasResearchFacts) || (needsSECFilingContent && !hasSECFilingContent) {
+		return "", fmt.Errorf("%w: 所选功能区缺少对应事实包变量", ErrValidation)
+	}
+	return content, nil
 }
 
 // buildAIResearchSnapshot makes the third-party request independent from this

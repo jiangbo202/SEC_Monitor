@@ -188,7 +188,7 @@ func TestSECFilingAnalysisFetchesPersistedDocumentAndAllowsOtherFilings(t *testi
 func TestAIPromptTemplatesValidateAndFilterScopes(t *testing.T) {
 	_, configs, _ := newAIAnalysisTestServices(t)
 	ctx := context.Background()
-	secTemplate := AIPromptTemplate{ID: "sec-only", Name: "SEC", Scopes: []string{"sec_filing"}, Content: "{{filing_url}} {{filing_type}} {{research_facts_json}}"}
+	secTemplate := AIPromptTemplate{ID: "sec-only", Name: "SEC", Scopes: []string{"sec_filing"}, Content: "{{filing_url}} {{filing_type}} {{sec_filing_content}}"}
 	if err := configs.SaveAIPromptTemplates(ctx, []AIPromptTemplate{secTemplate}, "tester"); err != nil {
 		t.Fatal(err)
 	}
