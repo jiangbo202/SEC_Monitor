@@ -4,16 +4,62 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    # Keep routine Go maintenance reviewable: one grouped minor/patch PR per
+    # weekly run. Major upgrades remain an explicit engineering decision.
+    open-pull-requests-limit: 1
+    groups:
+      go-routine-updates:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: npm
     directory: "/web"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: monday
+      time: "09:15"
+      timezone: Asia/Shanghai
+    # One frontend maintenance PR prevents independent Vue/Vite/plugin update
+    # PRs from overwhelming the repository.
+    open-pull-requests-limit: 1
+    groups:
+      frontend-routine-updates:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: monday
+      time: "09:30"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 1
+    groups:
+      github-actions-routine-updates:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
