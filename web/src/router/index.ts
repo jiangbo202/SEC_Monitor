@@ -28,6 +28,7 @@ const InstitutionalHoldingsView = () => import('@/views/InstitutionalHoldingsVie
 const StrategyPoolView = () => import('@/views/StrategyPoolView.vue')
 const TickerEvaluationView = () => import('@/views/TickerEvaluationView.vue')
 const OptionResearchView = () => import('@/views/OptionResearchView.vue')
+const AIAnalysesView = () => import('@/views/AIAnalysesView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -43,6 +44,7 @@ const router = createRouter({
         { path: 'strategy-pool', name: 'strategy-pool', component: StrategyPoolView },
 		{ path: 'ticker-evaluation', name: 'ticker-evaluation', component: TickerEvaluationView },
 		{ path: 'option-research', name: 'option-research', component: OptionResearchView },
+        { path: 'ai-analyses', name: 'ai-analyses', component: AIAnalysesView },
         { path: 'discovery-logs', name: 'discovery-logs', component: DiscoveryLogsView },
         { path: 'macro-calendar', name: 'macro-calendar', component: MacroCalendarView },
 		{ path: 'market-trend', name: 'market-trend', component: MarketTrendView },

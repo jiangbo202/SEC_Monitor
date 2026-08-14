@@ -1938,6 +1938,33 @@ func TestIPORadarLongbridgeListingFailureUsesRecheckWindow(t *testing.T) {
 	}
 }
 
+func TestIPORadarLongbridgeListingEscalatesPersistentMissToWeeklyReview(t *testing.T) {
+	db := testDB(t)
+	past := time.Now().UTC().Add(-48 * time.Hour)
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0002112497", Ticker: "PERSIST", TickerSource: "sec", TickerConfidence: "high", ListingCheckedAt: &past, LongbridgeListingCheckCount: longbridgeIPOListingEscalationCount - 1}).Error; err != nil {
+		t.Fatalf("seed ticker-only mapping: %v", err)
+	}
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	client := &fakeLongbridgeIPOListingClient{overviews: map[string]longbridgeIPOListingOverview{"PERSIST.US": {}}}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, configs).
+		WithLongbridgeListingRuntime(config.DiscoveryConfig{LongbridgeAppKey: "key", LongbridgeAppSecret: "secret", LongbridgeAccessToken: "token"})
+	svc.newLongbridgeListingClient = func(string, string, string) (longbridgeIPOListingClient, error) { return client, nil }
+	settings := IPORadarSettings{LongbridgeListingVerificationEnabled: true, LongbridgeListingRequestBudget: 20, LongbridgeListingRecheckHours: 24}
+	if _, warning := svc.confirmListedCompaniesWithLongbridge(context.Background(), settings); warning != "" {
+		t.Fatalf("persistent miss should move to review without partial task warning, got %q", warning)
+	}
+	var row model.IPOCompanyMarketData
+	if err := db.Where("cik = ?", "0002112497").First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.LongbridgeListingCheckCount != longbridgeIPOListingEscalationCount || row.LongbridgeListingLastResult != "no_data_review" || row.LongbridgeListingNextRetryAt == nil || row.LongbridgeListingNextRetryAt.Before(time.Now().UTC().Add(6*24*time.Hour)) {
+		t.Fatalf("persistent review row=%+v", row)
+	}
+}
+
 func TestIPORadarWithdrawalOverridesListingMapping(t *testing.T) {
 	now := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
 	db := testDB(t)

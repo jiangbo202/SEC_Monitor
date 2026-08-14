@@ -15,7 +15,11 @@ import (
 	lbfundamental "github.com/longbridge/openapi-go/fundamental"
 )
 
-const longbridgeIPOListingConcurrency = 4
+const (
+	longbridgeIPOListingConcurrency     = 4
+	longbridgeIPOListingEscalationCount = 6
+	longbridgeIPOListingEscalationDelay = 7 * 24 * time.Hour
+)
 
 // longbridgeIPOListingOverview contains the two fields needed to turn a SEC
 // ticker-only mapping into a conservative listing confirmation. The ticker
@@ -138,13 +142,25 @@ func (s *IPORadarService) confirmListedCompaniesWithLongbridge(ctx context.Conte
 		candidate.LongbridgeListingCheckCount++
 		market := strings.TrimSpace(overview.Market)
 		if fetchErr != nil || market == "" {
-			failures++
 			result := "no_data"
 			if fetchErr != nil {
 				result = "unavailable"
 			}
+			// A missing Longbridge profile is not evidence that an SEC filing is
+			// unlisted. After several attempts, retain the audit trail but move it
+			// to a weekly observation window and stop marking every hourly run as
+			// partially failed.
+			activeRetry := candidate.LongbridgeListingCheckCount < longbridgeIPOListingEscalationCount
+			if !activeRetry {
+				result += "_review"
+			} else {
+				failures++
+			}
 			nextRetryAt := any(nil)
-			if result == "unavailable" {
+			if !activeRetry {
+				next := now.Add(longbridgeIPOListingEscalationDelay)
+				nextRetryAt = &next
+			} else if result == "unavailable" {
 				next := nextLongbridgeIPOListingRetryAt(candidate.LongbridgeListingCheckCount, now)
 				nextRetryAt = &next
 			}
@@ -181,6 +197,9 @@ func (s *IPORadarService) confirmListedCompaniesWithLongbridge(ctx context.Conte
 }
 
 func nextLongbridgeIPOListingRetryAt(checkCount int, now time.Time) time.Time {
+	if checkCount >= longbridgeIPOListingEscalationCount {
+		return now.Add(longbridgeIPOListingEscalationDelay)
+	}
 	delays := []time.Duration{30 * time.Minute, 2 * time.Hour, 6 * time.Hour, 24 * time.Hour}
 	index := checkCount - 1
 	if index < 0 {

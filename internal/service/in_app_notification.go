@@ -134,6 +134,8 @@ func inAppNotificationConfigKeys(source string) (string, string, bool) {
 		return "in_app_notification.watch_target_insider_trading_enabled", "in_app_notification.insider_trading_enabled", true
 	case "ipo_progress":
 		return "in_app_notification.ipo_progress_enabled", "", true
+	case "ai_analysis":
+		return "in_app_notification.ai_analysis_enabled", "", true
 	// Retain the names used by historical messages and any external callers.
 	case "earnings_preview":
 		return "in_app_notification.earnings_preview_enabled", "", true
@@ -161,7 +163,10 @@ func (s *InAppNotificationService) List(ctx context.Context, filter InAppNotific
 		return PageResult[model.InAppNotification]{}, err
 	}
 	items := []model.InAppNotification{}
-	if err := query.Order("occurred_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error; err != nil {
+	// The inbox is a delivery log. Sort it by when a notification was created,
+	// rather than by the event's effective time (which can be a future earnings
+	// date), so future scheduled events never appear as if they were sent later.
+	if err := query.Order("created_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error; err != nil {
 		return PageResult[model.InAppNotification]{}, err
 	}
 	return newPageResult(items, total, page, pageSize), nil

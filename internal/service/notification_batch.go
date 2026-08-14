@@ -275,6 +275,8 @@ func (s *NotificationBatchService) telegramEventEnabled(ctx context.Context, sou
 		key, legacyKey = "telegram_notification.watch_target_insider_trading_enabled", "telegram_notification.insider_trading_enabled"
 	case "ipo_progress":
 		key = "telegram_notification.ipo_progress_enabled"
+	case "ai_analysis":
+		key = "telegram_notification.ai_analysis_enabled"
 	case "earnings_preview":
 		key = "telegram_notification.earnings_preview_enabled"
 	case "earnings_release":

@@ -59,6 +59,27 @@ func TestInAppNotificationCreateDeduplicatesAndTracksReadState(t *testing.T) {
 	}
 }
 
+func TestInAppNotificationListOrdersByCreationTimeNotFutureEventTime(t *testing.T) {
+	db := testDB(t)
+	if err := db.AutoMigrate(&model.InAppNotification{}); err != nil {
+		t.Fatalf("migrate in-app notifications: %v", err)
+	}
+	now := time.Date(2026, 8, 13, 15, 0, 0, 0, time.UTC)
+	service := NewInAppNotificationService(db)
+	service.now = func() time.Time { return now }
+	if _, inserted, err := service.Create(context.Background(), InAppNotificationInput{EventKey: "earnings:future", Source: "earnings_preview", Title: "未来财报预告", OccurredAt: now.Add(24 * time.Hour)}); err != nil || !inserted {
+		t.Fatalf("create future earnings notification = (%v, %v), want (true, nil)", inserted, err)
+	}
+	now = now.Add(time.Minute)
+	if _, inserted, err := service.Create(context.Background(), InAppNotificationInput{EventKey: "technical:latest", Source: "technical_signal", Title: "最新技术信号", OccurredAt: now.Add(-24 * time.Hour)}); err != nil || !inserted {
+		t.Fatalf("create latest technical notification = (%v, %v), want (true, nil)", inserted, err)
+	}
+	page, err := service.List(context.Background(), InAppNotificationFilter{Page: 1, PageSize: 20})
+	if err != nil || len(page.Items) != 2 || page.Items[0].EventKey != "technical:latest" {
+		t.Fatalf("List = (%+v, %v), want latest created notification first", page.Items, err)
+	}
+}
+
 func TestInAppFilingClassifiers(t *testing.T) {
 	tests := []struct {
 		form           string

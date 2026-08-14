@@ -249,6 +249,46 @@ func TestSyncFREDCPIBackfillsAndSkipsExistingReferencePeriods(t *testing.T) {
 	}
 }
 
+func TestSyncFREDEmploymentAndPPIBackfillWhenBLSCalendarIsUnavailable(t *testing.T) {
+	db := testDB(t)
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	const employmentURL = "https://fred.test/employment.csv?id=PAYEMS,UNRATE,CES0500000003"
+	const ppiURL = "https://fred.test/ppi.csv?id=PPIFIS,WPSFD49116"
+	service := NewMacroCalendarService(db)
+	service.now = func() time.Time { return now }
+	service.fredEmploymentURL = employmentURL
+	service.fredPPIURL = ppiURL
+	service.client = macroRoundTripper{
+		employmentURL: `observation_date,PAYEMS,UNRATE,CES0500000003
+2026-05-01,158000,4.2,37.00
+2026-06-01,158147,4.1,37.11
+2026-07-01,158120,4.0,37.22
+`,
+		ppiURL: `observation_date,PPIFIS,WPSFD49116
+2026-05-01,156.000,142.000
+2026-06-01,156.312,142.284
+2026-07-01,156.156,142.711
+`,
+	}
+	result := MacroCalendarSyncResult{Warnings: []string{}}
+	if err := service.syncFREDEmployment(context.Background(), &result); err != nil {
+		t.Fatalf("syncFREDEmployment: %v", err)
+	}
+	if err := service.syncFREDPPI(context.Background(), &result); err != nil {
+		t.Fatalf("syncFREDPPI: %v", err)
+	}
+	employment, err := service.List(context.Background(), MacroReleaseFilter{Category: "employment", SortOrder: "desc", Page: 1, PageSize: 10})
+	if err != nil || employment.Total != 2 || employment.Items[0].Provider != MacroProviderFRED || employment.Items[0].ReleaseStage != "fred_mirror" {
+		t.Fatalf("employment=%+v err=%v", employment, err)
+	}
+	assertMacroValues(t, employment.Items[0].Observations, map[string]float64{"nonfarm_payrolls_change_k": -27, "unemployment_rate": 4, "average_hourly_earnings_mom": 0.3})
+	ppi, err := service.List(context.Background(), MacroReleaseFilter{Category: "ppi", SortOrder: "desc", Page: 1, PageSize: 10})
+	if err != nil || ppi.Total != 2 || ppi.Items[0].Provider != MacroProviderFRED || ppi.Items[0].ReleaseStage != "fred_mirror" {
+		t.Fatalf("ppi=%+v err=%v", ppi, err)
+	}
+	assertMacroValues(t, ppi.Items[0].Observations, map[string]float64{"ppi_mom": -0.1, "core_ppi_mom": 0.3})
+}
+
 func TestParseCensusRetailScheduleAndHeadline(t *testing.T) {
 	schedule := `<table><tr><td>June 2026</td><td>July 16, 2026</td><td>Advance Monthly Retail Trade Report</td></tr><tr><td>July 2026</td><td>August 14, 2026</td><td>Advance Monthly Retail Trade Report</td></tr></table>`
 	events, err := parseCensusRetailSchedule(schedule, "https://census.test/retail")

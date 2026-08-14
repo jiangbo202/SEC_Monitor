@@ -149,6 +149,9 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 			report.addIssue("task_stale:"+task.TaskName, "task", "warning", "调度任务长时间未更新", fmt.Sprintf("%s 距上次完成已 %s（预期不超过 %s）", task.TaskName, formatOperationalDuration(now.Sub(*task.LastRunAt)), formatOperationalDuration(expected)), "scheduler", now)
 		}
 	}
+	if err := s.reportMacroCoverage(ctx, &report, tasks, now); err != nil {
+		return report, err
+	}
 
 	if err := s.db.WithContext(ctx).Model(&model.SyncRunDetail{}).Where("status = ? AND retryable = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", "failed", true, now).Count(&report.RetryableTargets).Error; err != nil {
 		return report, err
@@ -213,10 +216,16 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 			}
 			report.ProviderWarnings++
 			severity := "warning"
-			if provider.Status == discovery.ProviderStatusFailed || provider.FailureStreak >= 3 {
+			detail := fmt.Sprintf("%s：状态 %s，连续失败 %d 次，最近交易日 %s", provider.Provider, provider.Status, provider.FailureStreak, valueOrDash(provider.LastTradeDate))
+			if provider.Status == discovery.ProviderStatusValidation {
+				// Validation is intentionally conservative: a provider can return
+				// complete data while it is still accumulating its immutable gold
+				// evidence window. Do not surface that as a production outage.
+				detail = fmt.Sprintf("%s：正在验证数据证据（已完成 %d 个交易日），最近交易日 %s；尚未达到稳定源资格", provider.Provider, provider.QualifiedTradingDays, valueOrDash(provider.LastTradeDate))
+			} else if provider.Status == discovery.ProviderStatusFailed || provider.FailureStreak >= 3 {
 				severity = "critical"
 			}
-			report.addIssue("provider:"+provider.Provider, "market", severity, "行情数据源需要关注", fmt.Sprintf("%s：状态 %s，连续失败 %d 次，最近交易日 %s", provider.Provider, provider.Status, provider.FailureStreak, valueOrDash(provider.LastTradeDate)), "discovery-logs", now)
+			report.addIssue("provider:"+provider.Provider, "market", severity, "行情数据源需要关注", detail, "discovery-logs", now)
 		}
 		var dueProfiles int64
 		if err := s.discoveryDB.WithContext(ctx).Model(&discovery.CompanyProfileSnapshot{}).
@@ -269,6 +278,39 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	report.Status = operationalReportStatus(report.Issues)
 	report.Summary = renderOperationalSummary(report)
 	return report, nil
+}
+
+// reportMacroCoverage catches the subtle failure mode where the calendar task
+// itself succeeds, but a provider blocks a subset of high-impact reports. It
+// only evaluates the check after the macro task has actually run, so a fresh
+// installation is not shown as unhealthy before its first scheduled sync.
+func (s *OperationalHealthService) reportMacroCoverage(ctx context.Context, report *OperationalReport, tasks []model.TaskConfig, now time.Time) error {
+	macroRan := false
+	for _, task := range tasks {
+		if task.TaskName == "macro_calendar_sync" && task.LastRunAt != nil {
+			macroRan = true
+			break
+		}
+	}
+	if !macroRan {
+		return nil
+	}
+	for _, item := range []struct {
+		category string
+		label    string
+	}{
+		{category: "employment", label: "就业报告 / 非农"},
+		{category: "ppi", label: "PPI / 核心 PPI"},
+	} {
+		var count int64
+		if err := s.db.WithContext(ctx).Model(&model.MacroRelease{}).Where("category = ? AND status = ?", item.category, MacroReleasePublished).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			report.addIssue("macro_coverage:"+item.category, "macro", "warning", "宏观数据尚未入库", item.label+"尚无已公布记录；下一次同步会使用 BLS 官方日历，若被拦截则回退 FRED 的 BLS 原始系列镜像。", "macro-calendar", now)
+		}
+	}
+	return nil
 }
 
 func formatOperationalBytes(value int64) string {

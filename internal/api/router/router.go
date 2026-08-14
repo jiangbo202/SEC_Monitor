@@ -74,6 +74,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 	macroCalendar := service.NewMacroCalendarService(deps.DB).WithLongbridge(configs, runtimeConfig.Discovery)
 	marketTrend := service.NewMarketTrendService(deps.DB, configs, runtimeConfig.Discovery)
 	usFutures := service.NewUSFuturesService(deps.DB, configs, runtimeConfig.Discovery)
+	aiAnalysis := service.NewAIAnalysisService(deps.DB, configs, audit).WithInAppNotifications(inAppNotifications).WithNotificationCenter(notificationBatches)
 	institutionalHoldings := service.NewInstitutionalHoldingsService(deps.DB)
 	earningsPreview := service.NewEarningsPreviewService(deps.DB, runtimeConfig.Discovery, configs, notifier).WithDiscoveryDB(deps.DiscoveryDB).WithNotificationCenter(notificationBatches).WithInAppNotifications(inAppNotifications)
 	if recovered, err := tasks.RecoverInterrupted(context.Background()); err != nil {
@@ -125,6 +126,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		Macro:                  macroCalendar,
 		MarketTrend:            marketTrend,
 		USFutures:              usFutures,
+		AIAnalysis:             aiAnalysis,
 		EarningsPreview:        earningsPreview,
 		Scheduler:              sched,
 	}
@@ -194,6 +196,14 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.GET("/discovery/candidates/:ticker/detail", app.GetDiscoveryCandidateDetail)
 		api.GET("/discovery/candidates", app.ListDiscoveryCandidates)
 		api.POST("/ticker-evaluations", app.EvaluateTicker)
+		api.POST("/ai/ticker-evaluations", app.GenerateTickerAIAnalysis)
+		api.POST("/ai/analyses", app.GenerateAIAnalysis)
+		api.GET("/ai/analyses", app.ListAIAnalyses)
+		api.GET("/ai/providers", app.ListAIProviders)
+		api.GET("/ai/providers/config", app.GetAIProviderConfig)
+		api.PUT("/ai/providers/config", app.UpdateAIProviderConfig)
+		api.GET("/ai/prompt-templates", app.ListAIPromptTemplates)
+		api.PUT("/ai/prompt-templates", app.UpdateAIPromptTemplates)
 		api.GET("/ticker-evaluations/entry-triggers", app.ListTickerEvaluationEntryTriggers)
 		api.GET("/ticker-evaluations", app.ListTickerEvaluations)
 		api.GET("/discovery/batches", app.ListDiscoveryBatches)

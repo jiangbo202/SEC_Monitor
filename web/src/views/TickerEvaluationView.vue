@@ -31,8 +31,28 @@
           <h3>{{ selected.ticker }} <small>{{ selected.company_name || '-' }}</small></h3>
           <p>评估时间：{{ formatDate(selected.evaluated_at) }} · {{ selected.target_type === 'etf' ? 'ETF' : '股票' }} · <el-tag size="small" :type="selected.status === 'ready' ? 'success' : 'warning'">{{ selected.status === 'ready' ? '完整' : '部分数据' }}</el-tag> <el-tag size="small" effect="plain" :type="selected.data_source === 'ad_hoc_evaluation' ? 'primary' : 'info'">{{ sourceLabel(selected.data_source) }}</el-tag></p>
         </div>
-        <el-button @click="loadHistory">刷新历史</el-button>
+        <div class="ai-actions">
+          <el-select v-model="selectedAIProvider" placeholder="选择 AI 模型" style="width: 210px" :disabled="!aiProviders.length">
+            <el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" />
+          </el-select>
+          <el-select v-model="selectedAIPromptTemplate" placeholder="选择模板" style="width: 190px" :disabled="!aiPromptTemplates.length"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select>
+          <el-button type="primary" :loading="generatingAI" :disabled="!selectedAIProvider || !selectedAIPromptTemplate" @click="generateAIAnalysis">AI 研判（手动）</el-button>
+          <el-button @click="loadHistory">刷新历史</el-button>
+        </div>
       </div>
+      <el-alert v-if="!aiProviders.length" type="info" :closable="false" class="warnings" title="尚未配置可用 AI 模型；请在“系统配置 → AI 分析”添加 DeepSeek 或其他 OpenAI 兼容供应商。" />
+      <el-card v-if="aiAnalyses.length" shadow="never" class="discipline ai-analysis-card">
+        <template #header><div class="ai-analysis-heading"><strong>AI 研判记录</strong><span>仅由手动点击生成；结果基于当次本地评估快照，不会改变评分或交易纪律。</span></div></template>
+        <el-select v-model="selectedAnalysisID" size="small" class="ai-analysis-select"><el-option v-for="item in aiAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDate(item.requested_at)}`" :value="item.id" /></el-select>
+        <template v-if="activeAIAnalysis">
+          <el-alert v-if="activeAIAnalysis.status === 'queued' || activeAIAnalysis.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" class="warnings" />
+          <el-alert v-else-if="activeAIAnalysis.status === 'failed'" type="error" :closable="false" :title="activeAIAnalysis.error_message || 'AI 调用失败'" class="warnings" />
+          <template v-else>
+            <AIRequestPrompt :system-prompt="activeAIAnalysis.system_prompt" :user-prompt="activeAIAnalysis.user_prompt" />
+            <div class="ai-analysis-content"><MarkdownContent :content="activeAIAnalysis.content" /></div>
+          </template>
+        </template>
+      </el-card>
       <el-alert v-if="selected.warnings?.length" type="warning" :closable="false" class="warnings">
         <template #title>数据边界</template>
         <div v-for="warning in selected.warnings" :key="warning">{{ warning }}</div>
@@ -86,7 +106,7 @@
         <el-table-column label="止损" width="120" align="right"><template #default="{ row }">{{ price(row.candidate_score?.technical?.trade_setup?.stop_loss_usd) }} USD</template></el-table-column>
         <el-table-column label="止盈区间" width="178" align="right"><template #default="{ row }">{{ takeProfitZone(row) }}</template></el-table-column>
         <el-table-column prop="evaluated_at" label="评估时间" width="170" sortable="custom"><template #default="{ row }">{{ formatDate(row.evaluated_at) }}</template></el-table-column>
-        <el-table-column label="操作" width="88" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="selected = row">查看</el-button></template></el-table-column>
+        <el-table-column label="操作" width="88" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="selectHistory(row)">查看</el-button></template></el-table-column>
       </el-table>
       <el-pagination v-model:current-page="historyPage" v-model:page-size="historyPageSize" :total="historyTotal" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" class="pagination" @current-change="loadHistory" @size-change="applyHistoryFilters" />
     </el-card>
@@ -94,9 +114,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
+import AIRequestPrompt from '@/components/AIRequestPrompt.vue'
+import MarkdownContent from '@/components/MarkdownContent.vue'
 
 type Evaluation = any
 const ticker = ref('')
@@ -113,6 +135,18 @@ const historyPageSize = ref(20)
 const historyTotal = ref(0)
 const historySortBy = ref('evaluated_at')
 const historySortOrder = ref<'asc' | 'desc'>('desc')
+type AIProvider = { id: string; name: string; model: string }
+type AIPromptTemplate = { id: string; name: string }
+type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; system_prompt?: string; user_prompt?: string; requested_at: string }
+const aiProviders = ref<AIProvider[]>([])
+const aiPromptTemplates = ref<AIPromptTemplate[]>([])
+const selectedAIProvider = ref('')
+const selectedAIPromptTemplate = ref('')
+const generatingAI = ref(false)
+const aiAnalyses = ref<AIAnalysis[]>([])
+const selectedAnalysisID = ref<number | null>(null)
+const activeAIAnalysis = computed(() => aiAnalyses.value.find((item) => item.id === selectedAnalysisID.value) || aiAnalyses.value[0])
+let aiPollingTimer: number | undefined
 
 async function evaluate() {
   const symbol = ticker.value.trim().toUpperCase()
@@ -124,11 +158,44 @@ async function evaluate() {
     ticker.value = symbol
     historyTicker.value = symbol
     historyPage.value = 1
-    await Promise.all([loadHistory(), loadHistoryEntryTriggerOptions()])
+    await Promise.all([loadHistory(), loadHistoryEntryTriggerOptions(), loadAIAnalyses()])
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '评估失败，请检查标的和数据源配置')
   } finally { evaluating.value = false }
 }
+async function loadAIProviders() {
+  try {
+    const [response, templateResponse] = await Promise.all([apiClient.get('/ai/providers'), apiClient.get('/ai/prompt-templates')])
+    aiProviders.value = response.data.data || []; aiPromptTemplates.value = templateResponse.data.data || []
+    if (!selectedAIProvider.value && aiProviders.value.length) selectedAIProvider.value = aiProviders.value[0].id
+    if (!selectedAIPromptTemplate.value && aiPromptTemplates.value.length) selectedAIPromptTemplate.value = aiPromptTemplates.value[0].id
+  } catch { aiProviders.value = []; aiPromptTemplates.value = [] }
+}
+async function loadAIAnalyses() {
+  const symbol = selected.value?.ticker || historyTicker.value
+  if (!symbol) { aiAnalyses.value = []; return }
+  try {
+    const response = await apiClient.get('/ai/analyses', { params: { ticker: symbol, page: 1, page_size: 20 } })
+    aiAnalyses.value = response.data.data.items || []
+    selectedAnalysisID.value = aiAnalyses.value[0]?.id || null
+    if (aiAnalyses.value.some((item) => item.status === 'queued' || item.status === 'running')) scheduleAIPoll()
+  } catch { aiAnalyses.value = [] }
+}
+function scheduleAIPoll() {
+  if (aiPollingTimer !== undefined) return
+  aiPollingTimer = window.setTimeout(() => { aiPollingTimer = undefined; void loadAIAnalyses() }, 2000)
+}
+async function generateAIAnalysis() {
+  if (!selected.value || !selectedAIProvider.value || !selectedAIPromptTemplate.value) return
+  generatingAI.value = true
+  try {
+    const response = await apiClient.post('/ai/ticker-evaluations', { provider_id: selectedAIProvider.value, template_id: selectedAIPromptTemplate.value, evaluation: selected.value }, { timeout: 315000 })
+    ElMessage.success('AI 研判已提交，正在后台处理')
+    await loadAIAnalyses()
+    selectedAnalysisID.value = response.data.data.id
+  } catch (err: any) { ElMessage.error(err?.response?.data?.message || 'AI 研判请求超时或失败；请检查供应商配置、额度或适当提高模型超时后手动重试') } finally { generatingAI.value = false }
+}
+function selectHistory(row: Evaluation) { selected.value = row; void loadAIAnalyses() }
 async function loadHistory() {
   historyLoading.value = true
   try {
@@ -153,6 +220,7 @@ function signedMetricClass(value?: number) { return Number(value) > 0 ? 'positiv
 function ratio(value?: number) { return Number.isFinite(value) ? `${Number(value).toFixed(2)}×` : '-' }
 function topRows<T>(items: T[] | undefined, max: number) { return (items || []).slice(0, max) }
 function researchStatus(value?: string) { return ({ available: '可用', partial: '部分', no_coverage: '暂无覆盖', not_synced: '未同步', unavailable: '不可用' } as Record<string, string>)[value || ''] || (value || '未标注') }
+onUnmounted(() => { if (aiPollingTimer !== undefined) window.clearTimeout(aiPollingTimer) })
 function takeProfitZone(row: Evaluation) { const setup = row.candidate_score?.technical?.trade_setup; return setup?.take_profit_zone_low_usd != null && setup?.take_profit_zone_high_usd != null ? `${price(setup.take_profit_zone_low_usd)} – ${price(setup.take_profit_zone_high_usd)} USD` : '-' }
 function historicalClose(row: Evaluation) { const score = row.candidate_score || {}; return Number.isFinite(score.price_close_usd) ? `${price(score.price_close_usd)} ${score.price_currency || 'USD'}` : '-' }
 function priceFreshnessLabel(value?: string) { return ({ current: '当日', previous_trading_day: '上一交易日', stale: '滞后', future: '日期异常', missing: '缺失' } as Record<string, string>)[value || ''] || (value || '未标注') }
@@ -160,9 +228,9 @@ function priceSnapshotTooltip(row: Evaluation) { const score = row.candidate_sco
 function fundamentalTooltip(row: Evaluation) { const score = row.candidate_score || {}; if (row.fundamental_status === 'not_applicable') return 'ETF：不适用 SEC 发行人基本面与 Form 4 规则。'; return [`总分：${score.total_score ?? '-'} / 100 · ${score.grade || '未分级'}`, `收入增长：${score.revenue_growth_score ?? '-'} / 30（${pct(score.revenue_growth_pct)}）`, `现金储备：${score.cash_runway_score ?? '-'} / 20（${Number.isFinite(score.cash_runway_months) ? `${Number(score.cash_runway_months).toFixed(1)} 个月` : '-'}）`, `内幕买入：${score.insider_score ?? '-'} / 20${score.recent_qualified_insider ? '（近期合格）' : ''}`, `毛利率：${score.gross_margin_score ?? '-'} / 10`, `稀释风险：${score.dilution_risk_score ?? '-'} / 10`, `赛道：${score.sector_score ?? '-'} / 10`, score.reason_code ? `评分说明：${score.reason_code}` : ''].filter(Boolean).join('\n') }
 function reviewTooltip(row: Evaluation) { const score = row.candidate_score || {}; const reasons = (score.review_priority_reasons || []).map((reason: { label?: string, points?: number }) => `${reason.label || '未命名项'}：${Number(reason.points) > 0 ? '+' : ''}${reason.points ?? 0}`).join('\n'); return [`短线复核：${score.review_priority_score ?? '-'} / 100`, reasons || '本次无可用的短线复核构成。', score.recent_anomaly_labels?.length ? `异动：${score.recent_anomaly_labels.join('、')}` : ''].filter(Boolean).join('\n') }
 function sourceLabel(value?: string) { return ({ candidate_cache: '小盘候选缓存', watch_target_cache: '监控标的缓存', ad_hoc_evaluation: '即时评估快照', ad_hoc_evaluation_cooldown_cache: '即时评估缓存' } as Record<string, string>)[value || ''] || '本地数据' }
-onMounted(() => { void loadHistory(); void loadHistoryEntryTriggerOptions() })
+onMounted(() => { void loadHistory(); void loadHistoryEntryTriggerOptions(); void loadAIProviders() })
 </script>
 
 <style scoped>
-.query-card,.discipline,.history,.warnings{margin-top:16px}.result-heading,.history-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}.result-heading h3{margin:18px 0 4px}.result-heading small{font-weight:normal;color:var(--el-text-color-secondary)}.result-heading p{margin:0 0 14px;color:var(--el-text-color-secondary)}.score{display:flex;align-items:baseline;gap:8px;margin-bottom:14px}.score strong{font-size:34px}.score span{color:var(--el-text-color-secondary)}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px}.metrics span{display:flex;justify-content:space-between;gap:8px;color:var(--el-text-color-secondary)}.metrics b{color:var(--el-text-color-primary)}.positive{color:var(--el-color-success)!important}.negative{color:var(--el-color-danger)!important}.history-filters{display:flex;gap:8px}.history-filters .el-input,.history-filters .el-select{width:190px}.history-hint{margin-left:12px;color:var(--el-text-color-secondary);font-size:12px;font-weight:normal}.pagination{margin-top:16px;justify-content:flex-end}.research-details{padding:4px 12px 16px;background:var(--el-fill-color-lighter)}.research-title{font-weight:600;margin:8px 0 14px}.research-title span,.research-note{font-size:12px;font-weight:normal;color:var(--el-text-color-secondary);margin-left:8px}.research-section{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:4px;padding:12px;height:100%;box-sizing:border-box}.research-section h4{margin:0 0 10px;font-size:14px}.business-summary{white-space:pre-wrap;line-height:1.6}.holding-row,.option-summary{margin-top:14px}.research-foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;color:var(--el-text-color-secondary);font-size:12px}.research-foot span{max-width:100%;word-break:break-word}@media(max-width:768px){.result-heading,.history-heading{align-items:flex-start;flex-direction:column}.metrics{grid-template-columns:1fr}.history-hint{display:block;margin:6px 0 0}.history-filters{width:100%;flex-direction:column}.history-filters .el-input,.history-filters .el-select{width:100%}.research-details{padding:4px}}
+.query-card,.discipline,.history,.warnings{margin-top:16px}.result-heading,.history-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}.result-heading h3{margin:18px 0 4px}.result-heading small{font-weight:normal;color:var(--el-text-color-secondary)}.result-heading p{margin:0 0 14px;color:var(--el-text-color-secondary)}.score{display:flex;align-items:baseline;gap:8px;margin-bottom:14px}.score strong{font-size:34px}.score span{color:var(--el-text-color-secondary)}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px}.metrics span{display:flex;justify-content:space-between;gap:8px;color:var(--el-text-color-secondary)}.metrics b{color:var(--el-text-color-primary)}.positive{color:var(--el-color-success)!important}.negative{color:var(--el-color-danger)!important}.history-filters,.ai-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.history-filters .el-input,.history-filters .el-select{width:190px}.history-hint{margin-left:12px;color:var(--el-text-color-secondary);font-size:12px;font-weight:normal}.pagination{margin-top:16px;justify-content:flex-end}.research-details{padding:4px 12px 16px;background:var(--el-fill-color-lighter)}.research-title{font-weight:600;margin:8px 0 14px}.research-title span,.research-note,.ai-analysis-heading span{font-size:12px;font-weight:normal;color:var(--el-text-color-secondary);margin-left:8px}.research-section{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:4px;padding:12px;height:100%;box-sizing:border-box}.research-section h4{margin:0 0 10px;font-size:14px}.business-summary,.ai-analysis-content{white-space:pre-wrap;line-height:1.6}.holding-row,.option-summary{margin-top:14px}.research-foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;color:var(--el-text-color-secondary);font-size:12px}.research-foot span{max-width:100%;word-break:break-word}.ai-analysis-select{width:min(100%,460px);margin-bottom:12px}.ai-analysis-content{padding:12px;background:var(--el-fill-color-light);border-radius:4px}@media(max-width:768px){.result-heading,.history-heading{align-items:flex-start;flex-direction:column}.metrics{grid-template-columns:1fr}.history-hint{display:block;margin:6px 0 0}.history-filters{width:100%;flex-direction:column}.history-filters .el-input,.history-filters .el-select{width:100%}.research-details{padding:4px}}
 </style>

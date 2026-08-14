@@ -1,0 +1,558 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"sec_monitor/internal/discovery"
+	"sec_monitor/internal/model"
+
+	"gorm.io/gorm"
+)
+
+const (
+	aiAnalysisPromptVersion           = "ticker-v2-facts-only"
+	aiAnalysisPromptTemplateConfigKey = "ai_analysis.user_prompt_template"
+	aiAnalysisMaxInputBytes           = 48_000
+	aiAnalysisMaxOutputTokens         = 2_400
+	aiAnalysisDefaultTimeout          = 120 * time.Second
+	aiAnalysisMaxArrayItems           = 12
+)
+
+const aiAnalysisSystemPrompt = "你必须清楚区分事实、推断和数据缺口。"
+
+// aiAnalysisDefaultUserPromptTemplate is deliberately a facts-only template.
+// The project fills the research package at request time, rather than sending
+// its own scores, grades or trading-rule conclusions to a third-party model.
+// Users can adjust the wording in System Config → AI Analysis; the placeholder
+// remains mandatory so every manual analysis still has its local evidence.
+const aiAnalysisPreviousDefaultUserPromptTemplate = "你是审慎的美股研究助理。仅基于下方本地事实研究包，用中文输出：\n1. 核心结论（不构成投资建议）；\n2. 基本面、趋势/动量、量价的支持与风险；\n3. 数据缺口与需要人工验证的事项；\n4. 不要编造任何未在研究包中出现的事实、价格、日期或持仓。\n5. 研究包已主动移除本系统的评分、候选等级、入场/离场规则结论；请独立分析，勿将缺失字段视为负面事实。\n\n本地事实研究包：\n{{research_facts_json}}"
+
+const aiAnalysisDefaultUserPromptTemplate = "你是一位审慎的美股研究助理。仅基于下方本地事实研究包完成一次真正的研究判断，不要逐字段复述研究包，也不构成投资建议。\n\n输出请严格采用以下结构：\n\n## 1. 研究结论\n用 2–4 句话给出“关注 / 观望 / 回避”的研究倾向及最重要的原因；若证据不足，明确写“证据不足”，不要勉强下结论。\n\n## 2. 最关键的证据与推断\n挑选最多 4 项最具解释力的事实。每项都要先写事实（带可用的数值、日期或变化），再说明它为何会影响成长、盈利质量、估值预期或市场行为；不要把所有字段重新罗列一遍。\n\n## 3. 反证、风险与失效条件\n说明与结论相矛盾的事实、主要风险，以及哪些后续事实会推翻当前判断。\n\n## 4. 近期催化剂与观察重点\n仅在研究包有依据时，列出未来财报、公告、价格/成交量变化、分析师或持仓变化等值得跟踪的催化剂；没有依据则说明未识别到。\n\n## 5. 数据缺口与下一步验证\n只列出会实质改变判断的缺失数据或待核验事项，并说明应验证什么。\n\n写作要求：\n- 清楚标注“事实”“推断”“待验证”，推断必须能回溯到研究包中的事实。\n- 优先分析变化、趋势、矛盾和相对重要性，而不是同义改写数字。\n- 研究包已主动移除本系统的评分、候选等级、入场/离场规则结论；不得猜测或恢复这些内容。\n- 不得编造研究包中不存在的事实、价格、日期、持仓或市场共识；缺失数据不等同于负面事实。\n- 避免泛泛而谈的免责声明和重复表述，正文应尽量具体、紧凑。\n\n本地事实研究包：\n{{research_facts_json}}"
+
+type AIAnalysisInput struct {
+	ProviderID  string                           `json:"provider_id"`
+	TemplateID  string                           `json:"template_id,omitempty"`
+	Scope       string                           `json:"scope,omitempty"`
+	Ticker      string                           `json:"ticker,omitempty"`
+	CompanyName string                           `json:"company_name,omitempty"`
+	TargetType  string                           `json:"target_type,omitempty"`
+	Context     any                              `json:"context,omitempty"`
+	Evaluation  discovery.TickerEvaluationResult `json:"evaluation"`
+}
+
+type AIAnalysisListFilter struct {
+	Ticker   string
+	Scope    string
+	Page     int
+	PageSize int
+}
+
+type AIAnalysisService struct {
+	db                 *gorm.DB
+	configs            *ConfigService
+	audit              *AuditService
+	inApp              *InAppNotificationService
+	notificationCenter *NotificationBatchService
+	httpClient         *http.Client
+	queueMu            sync.Mutex
+}
+
+func NewAIAnalysisService(db *gorm.DB, configs *ConfigService, audit *AuditService) *AIAnalysisService {
+	return &AIAnalysisService{db: db, configs: configs, audit: audit, httpClient: &http.Client{Timeout: aiAnalysisDefaultTimeout}}
+}
+
+func (s *AIAnalysisService) WithHTTPClient(client *http.Client) *AIAnalysisService {
+	if client != nil {
+		s.httpClient = client
+	}
+	return s
+}
+
+func (s *AIAnalysisService) WithInAppNotifications(notifications *InAppNotificationService) *AIAnalysisService {
+	s.inApp = notifications
+	return s
+}
+
+func (s *AIAnalysisService) WithNotificationCenter(notifications *NotificationBatchService) *AIAnalysisService {
+	s.notificationCenter = notifications
+	return s
+}
+
+// QueueTickerAnalysis persists a user-approved AI request without holding an
+// HTTP connection open. It is never used by schedules, page views, or events.
+func (s *AIAnalysisService) QueueTickerAnalysis(ctx context.Context, input AIAnalysisInput, operator string) (model.AIAnalysis, error) {
+	if s == nil || s.db == nil || s.configs == nil {
+		return model.AIAnalysis{}, errors.New("AI analysis service is not configured")
+	}
+	evaluation := input.Evaluation
+	ticker := strings.ToUpper(strings.TrimSpace(input.Ticker))
+	companyName, targetType := strings.TrimSpace(input.CompanyName), strings.TrimSpace(input.TargetType)
+	snapshotValue := input.Context
+	if ticker == "" {
+		evaluation.Ticker = strings.ToUpper(strings.TrimSpace(evaluation.Ticker))
+		ticker, companyName, targetType, snapshotValue = evaluation.Ticker, evaluation.CompanyName, evaluation.TargetType, evaluation
+	}
+	if ticker == "" || strings.TrimSpace(input.ProviderID) == "" || snapshotValue == nil {
+		return model.AIAnalysis{}, ErrValidation
+	}
+	providers, err := s.configs.AIProviders(ctx)
+	if err != nil {
+		return model.AIAnalysis{}, err
+	}
+	var provider *AIProviderConfig
+	for index := range providers {
+		if providers[index].ID == strings.ToLower(strings.TrimSpace(input.ProviderID)) && providers[index].Enabled {
+			provider = &providers[index]
+			break
+		}
+	}
+	if provider == nil {
+		return model.AIAnalysis{}, errors.New("selected AI provider is unavailable or disabled")
+	}
+	if strings.TrimSpace(provider.APIKey) == "" {
+		return model.AIAnalysis{}, errors.New("selected AI provider has no API key")
+	}
+
+	snapshot, err := buildAIResearchSnapshot(snapshotValue)
+	if err != nil {
+		return model.AIAnalysis{}, err
+	}
+	if len(snapshot) > aiAnalysisMaxInputBytes {
+		snapshot = snapshot[:aiAnalysisMaxInputBytes]
+	}
+	now := time.Now().UTC()
+	systemPrompt, userPrompt, promptVersion, template, err := s.configuredAIAnalysisPrompts(ctx, string(snapshot), input, ticker, companyName, targetType, now)
+	if err != nil {
+		return model.AIAnalysis{}, err
+	}
+	hash := sha256.Sum256(snapshot)
+	scope := strings.TrimSpace(input.Scope)
+	if scope == "" {
+		scope = "ticker_evaluation"
+	}
+	record := model.AIAnalysis{Scope: scope, Ticker: ticker, CompanyName: companyName, TargetType: targetType, ProviderID: provider.ID, ProviderName: provider.Name, Model: provider.Model, TemplateID: template.ID, TemplateName: template.Name, PromptVersion: promptVersion, SystemPrompt: systemPrompt, UserPrompt: userPrompt, InputSHA256: hex.EncodeToString(hash[:]), InputSnapshot: string(snapshot), Status: "queued", RequestedAt: now}
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	var existing model.AIAnalysis
+	err = s.db.WithContext(ctx).Where("scope = ? AND ticker = ? AND provider_id = ? AND status IN ?", scope, ticker, provider.ID, []string{"queued", "running"}).Order("id DESC").First(&existing).Error
+	if err == nil {
+		return model.AIAnalysis{}, TaskAlreadyRunning("ai_analysis:" + scope + ":" + ticker + ":" + provider.ID)
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.AIAnalysis{}, err
+	}
+	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
+		return model.AIAnalysis{}, err
+	}
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, operator, "queue", "ai_analysis", fmt.Sprintf("%d", record.ID), nil, map[string]any{"ticker": record.Ticker, "provider_id": record.ProviderID, "model": record.Model, "status": record.Status, "prompt_version": record.PromptVersion})
+	}
+	return record, nil
+}
+
+// ProcessTickerAnalysis claims a queued request and performs the provider call
+// independently from the original browser request. The durable status change
+// makes refreshes and restarts observable instead of silently losing work.
+func (s *AIAnalysisService) ProcessTickerAnalysis(ctx context.Context, id uint, operator string) (model.AIAnalysis, error) {
+	if s == nil || s.db == nil || s.configs == nil {
+		return model.AIAnalysis{}, errors.New("AI analysis service is not configured")
+	}
+	claim := s.db.WithContext(ctx).Model(&model.AIAnalysis{}).Where("id = ? AND status = ?", id, "queued").Update("status", "running")
+	if claim.Error != nil {
+		return model.AIAnalysis{}, claim.Error
+	}
+	if claim.RowsAffected == 0 {
+		return model.AIAnalysis{}, TaskAlreadyRunning(fmt.Sprintf("ai_analysis:%d", id))
+	}
+	var record model.AIAnalysis
+	if err := s.db.WithContext(ctx).First(&record, id).Error; err != nil {
+		return model.AIAnalysis{}, err
+	}
+	providers, err := s.configs.AIProviders(ctx)
+	if err != nil {
+		return s.finishAIAnalysis(ctx, record, "", err, operator)
+	}
+	var provider *AIProviderConfig
+	for index := range providers {
+		if providers[index].ID == record.ProviderID && providers[index].Enabled && strings.TrimSpace(providers[index].APIKey) != "" {
+			provider = &providers[index]
+			break
+		}
+	}
+	if provider == nil {
+		return s.finishAIAnalysis(ctx, record, "", errors.New("selected AI provider is unavailable or disabled"), operator)
+	}
+	systemPrompt, userPrompt := record.SystemPrompt, record.UserPrompt
+	if strings.TrimSpace(systemPrompt) == "" || strings.TrimSpace(userPrompt) == "" {
+		// Records made before request prompts were persisted remain executable.
+		systemPrompt, userPrompt = aiAnalysisPrompts(record.InputSnapshot)
+	}
+	content, callErr := s.callOpenAICompatibleWithPrompts(ctx, *provider, systemPrompt, userPrompt)
+	return s.finishAIAnalysis(ctx, record, content, callErr, operator)
+}
+
+func (s *AIAnalysisService) finishAIAnalysis(ctx context.Context, record model.AIAnalysis, content string, callErr error, operator string) (model.AIAnalysis, error) {
+	completed := time.Now().UTC()
+	record.DurationMS = completed.Sub(record.RequestedAt).Milliseconds()
+	if record.DurationMS < 0 {
+		record.DurationMS = 0
+	}
+	updates := map[string]any{"completed_at": &completed, "duration_ms": record.DurationMS}
+	if callErr != nil {
+		record.Status = "failed"
+		record.ErrorMessage = SanitizeSensitiveError(callErr.Error())
+		updates["status"], updates["error_message"] = record.Status, record.ErrorMessage
+	} else {
+		record.Status, record.Content = "success", content
+		updates["status"], updates["content"] = record.Status, record.Content
+	}
+	record.CompletedAt = &completed
+	if err := s.db.WithContext(ctx).Model(&model.AIAnalysis{}).Where("id = ?", record.ID).Updates(updates).Error; err != nil {
+		return model.AIAnalysis{}, err
+	}
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, operator, "complete", "ai_analysis", fmt.Sprintf("%d", record.ID), nil, map[string]any{"ticker": record.Ticker, "provider_id": record.ProviderID, "model": record.Model, "status": record.Status, "prompt_version": record.PromptVersion, "duration_ms": record.DurationMS})
+	}
+	if s.inApp != nil {
+		severity, title := "success", fmt.Sprintf("%s | AI 研判已完成", record.Ticker)
+		body := fmt.Sprintf("%s · %s · 耗时 %s", record.ProviderName, record.Model, formatAIAnalysisDuration(record.DurationMS))
+		if record.Status != "success" {
+			severity, title = "warning", fmt.Sprintf("%s | AI 研判失败", record.Ticker)
+			body = fmt.Sprintf("%s · %s · 耗时 %s。%s", record.ProviderName, record.Model, formatAIAnalysisDuration(record.DurationMS), record.ErrorMessage)
+		}
+		_, _, _ = s.inApp.Create(ctx, InAppNotificationInput{EventKey: fmt.Sprintf("ai_analysis:%d:%s", record.ID, record.Status), Source: "ai_analysis", Scope: record.Scope, EntityKind: "ai_analysis", Ticker: record.Ticker, CompanyName: record.CompanyName, Severity: severity, Title: title, Body: body, Link: "/ai-analyses", OccurredAt: completed})
+	}
+	if s.notificationCenter != nil {
+		statusText := "已完成"
+		if record.Status != "success" {
+			statusText = "失败"
+		}
+		_, _ = s.notificationCenter.DeliverMessage(ctx, NotificationMessageInput{Source: "ai_analysis", Trigger: "completion", EventKey: fmt.Sprintf("ai_analysis:%d:%s", record.ID, record.Status), EntityKind: "ai_analysis", Title: fmt.Sprintf("%s | AI 研判%s", record.Ticker, statusText), SummaryText: fmt.Sprintf("%s | AI 研判%s\n模型：%s · %s\n耗时：%s", record.Ticker, statusText, record.ProviderName, record.Model, formatAIAnalysisDuration(record.DurationMS)), EventAt: completed})
+	}
+	if callErr != nil {
+		return record, callErr
+	}
+	return record, nil
+}
+
+func formatAIAnalysisDuration(durationMS int64) string {
+	if durationMS <= 0 {
+		return "-"
+	}
+	if durationMS < 1000 {
+		return fmt.Sprintf("%d ms", durationMS)
+	}
+	return fmt.Sprintf("%.2f 秒", float64(durationMS)/1000)
+}
+
+// GenerateTickerAnalysis keeps the synchronous service API available for
+// focused tests and internal callers. HTTP handlers use QueueTickerAnalysis
+// plus ProcessTickerAnalysis in a background goroutine instead.
+func (s *AIAnalysisService) GenerateTickerAnalysis(ctx context.Context, input AIAnalysisInput, operator string) (model.AIAnalysis, error) {
+	record, err := s.QueueTickerAnalysis(ctx, input, operator)
+	if err != nil {
+		return model.AIAnalysis{}, err
+	}
+	return s.ProcessTickerAnalysis(ctx, record.ID, operator)
+}
+
+func (s *AIAnalysisService) List(ctx context.Context, filter AIAnalysisListFilter) (PageResult[model.AIAnalysis], error) {
+	page, pageSize := normalizePage(filter.Page, filter.PageSize)
+	query := s.db.WithContext(ctx).Model(&model.AIAnalysis{})
+	if ticker := strings.ToUpper(strings.TrimSpace(filter.Ticker)); ticker != "" {
+		query = query.Where("ticker = ?", ticker)
+	}
+	if scope := strings.TrimSpace(filter.Scope); scope != "" {
+		query = query.Where("scope = ?", scope)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return PageResult[model.AIAnalysis]{}, err
+	}
+	var rows []model.AIAnalysis
+	err := query.Order("requested_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error
+	for index := range rows {
+		// Input snapshots can be large and are not needed for normal list views;
+		// hashes + prompt version retain the audit reference without network I/O.
+		rows[index].InputSnapshot = ""
+		rows[index].ErrorMessage = SanitizeSensitiveError(rows[index].ErrorMessage)
+	}
+	return newPageResult(rows, total, page, pageSize), err
+}
+
+func aiAnalysisPrompts(snapshot string) (string, string) {
+	userPrompt, _ := renderAIAnalysisPromptTemplate(aiAnalysisDefaultUserPromptTemplate, aiAnalysisPromptTemplateValues{ResearchFactsJSON: snapshot})
+	return aiAnalysisSystemPrompt, userPrompt
+}
+
+type aiAnalysisPromptTemplateValues struct {
+	Ticker            string
+	CompanyName       string
+	TargetType        string
+	AsOf              string
+	ResearchFactsJSON string
+}
+
+func (s *AIAnalysisService) configuredAIAnalysisPrompts(ctx context.Context, snapshot string, input AIAnalysisInput, ticker, companyName, targetType string, requestedAt time.Time) (string, string, string, AIPromptTemplate, error) {
+	template, err := s.configs.AIPromptTemplate(ctx, input.TemplateID)
+	if err != nil {
+		return "", "", "", AIPromptTemplate{}, err
+	}
+	if companyName == "" {
+		companyName = strings.TrimSpace(input.Evaluation.CompanyName)
+	}
+	if targetType == "" {
+		targetType = strings.TrimSpace(input.Evaluation.TargetType)
+	}
+	userPrompt, err := renderAIAnalysisPromptTemplate(template.Content, aiAnalysisPromptTemplateValues{
+		Ticker:            ticker,
+		CompanyName:       companyName,
+		TargetType:        targetType,
+		AsOf:              requestedAt.Format(time.RFC3339),
+		ResearchFactsJSON: snapshot,
+	})
+	if err != nil {
+		return "", "", "", AIPromptTemplate{}, err
+	}
+	return aiAnalysisSystemPrompt, userPrompt, aiAnalysisPromptTemplateVersion(template.Content), template, nil
+}
+
+func aiAnalysisPromptTemplateVersion(template string) string {
+	if template == aiAnalysisDefaultUserPromptTemplate {
+		return aiAnalysisPromptVersion
+	}
+	sum := sha256.Sum256([]byte(template))
+	return "custom-" + hex.EncodeToString(sum[:])[:12]
+}
+
+func renderAIAnalysisPromptTemplate(template string, values aiAnalysisPromptTemplateValues) (string, error) {
+	template = strings.TrimSpace(template)
+	if template == "" || !strings.Contains(template, "{{research_facts_json}}") {
+		return "", fmt.Errorf("%w: AI 提示词模板必须包含 {{research_facts_json}}", ErrValidation)
+	}
+	allowed := map[string]string{
+		"ticker":              values.Ticker,
+		"company_name":        values.CompanyName,
+		"target_type":         values.TargetType,
+		"as_of":               values.AsOf,
+		"research_facts_json": values.ResearchFactsJSON,
+	}
+	for remaining := template; ; {
+		start := strings.Index(remaining, "{{")
+		if start < 0 {
+			break
+		}
+		remaining = remaining[start+2:]
+		end := strings.Index(remaining, "}}")
+		if end < 0 {
+			return "", fmt.Errorf("%w: AI 提示词模板存在未闭合变量", ErrValidation)
+		}
+		name := strings.TrimSpace(remaining[:end])
+		if _, ok := allowed[name]; !ok {
+			return "", fmt.Errorf("%w: AI 提示词模板包含不支持的变量 {{%s}}", ErrValidation, name)
+		}
+		remaining = remaining[end+2:]
+	}
+	replacerValues := make([]string, 0, len(allowed)*2)
+	for name, value := range allowed {
+		replacerValues = append(replacerValues, "{{"+name+"}}", value)
+	}
+	return strings.NewReplacer(replacerValues...).Replace(template), nil
+}
+
+// buildAIResearchSnapshot makes the third-party request independent from this
+// product's own scoring and trading-rule outcomes. It keeps factual research
+// evidence only, removes empty/missing values, and bounds repeated history so
+// a detailed page cannot unexpectedly consume an excessive model context.
+func buildAIResearchSnapshot(value any) ([]byte, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, err
+	}
+	cleaned, keep := compactAIResearchValue(decoded, "")
+	if !keep {
+		return json.Marshal(map[string]any{})
+	}
+	return json.Marshal(cleaned)
+}
+
+var aiPromptExcludedFields = map[string]bool{
+	"id": true, "batch_id": true, "security_id": true, "candidate_score": false,
+	"grade": true, "eligible_a": true, "eligible_b": true, "total_score": true,
+	"revenue_growth_score": true, "cash_runway_score": true, "insider_score": true,
+	"gross_margin_score": true, "dilution_risk_score": true, "sector_score": true,
+	"review_priority_score": true, "review_priority_reasons": true,
+	"quality_tier": true, "quality_tags": true, "quality_adjusted_score": true,
+	"quality_adjustments": true, "active_blocks_a": true, "active_blocks_b": true,
+	"reason_code": true, "scoring_version": true, "business_model_at_score": true,
+	"revenue_score_cap_reason": true, "score": true, "score_history": true,
+	"sector_rating_score": true, "revenue_score_cap": true, "followed": true,
+	"signal_events": true, "signals": true, "trade_setup": true, "trade_setup_history": true,
+	"investability": true, "research_readiness": true, "research_next_step": true,
+	"performance": true, "data_quality": true, "data_lineage": true,
+	"warnings": true, "refresh_notes": true, "sources": true,
+	"reasons": true, "message": true, "holdings_scope_note": true,
+	"status": true, "data_source": true,
+	"change_status": true, "change_reasons": true, "previous_total_score": true,
+	"previous_grade": true, "entry_trigger": true, "exit_reason": true,
+	"technical_signals": true, "created_at": true, "updated_at": true,
+	"parser_version": true, "score_effective_date": true,
+}
+
+func compactAIResearchValue(value any, key string) (any, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, false
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" || isAIMissingValue(trimmed) {
+			return nil, false
+		}
+		return trimmed, true
+	case bool:
+		return typed, typed
+	case float64:
+		return typed, typed != 0
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for rawKey, child := range typed {
+			childKey := strings.ToLower(strings.TrimSpace(rawKey))
+			if aiPromptExcludedFields[childKey] {
+				continue
+			}
+			cleaned, keep := compactAIResearchValue(child, childKey)
+			if keep {
+				result[rawKey] = cleaned
+			}
+		}
+		return result, len(result) > 0
+	case []any:
+		result := make([]any, 0, min(len(typed), aiAnalysisMaxArrayItems))
+		for _, child := range typed {
+			cleaned, keep := compactAIResearchValue(child, key)
+			if keep {
+				result = append(result, cleaned)
+			}
+			if len(result) == aiAnalysisMaxArrayItems {
+				break
+			}
+		}
+		return result, len(result) > 0
+	default:
+		return typed, true
+	}
+}
+
+func isAIMissingValue(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "missing" || value == "unavailable" || value == "not_applicable" || value == "insufficient" || value == "unknown" || value == "n/a" || value == "-" || strings.HasPrefix(value, "0001-01-01t00:00:00")
+}
+
+func (s *AIAnalysisService) callOpenAICompatible(ctx context.Context, provider AIProviderConfig, snapshot string) (string, error) {
+	systemPrompt, userPrompt := aiAnalysisPrompts(snapshot)
+	return s.callOpenAICompatibleWithPrompts(ctx, provider, systemPrompt, userPrompt)
+}
+
+func (s *AIAnalysisService) callOpenAICompatibleWithPrompts(ctx context.Context, provider AIProviderConfig, systemPrompt, userPrompt string) (string, error) {
+	requestPayload := map[string]any{
+		"model":       provider.Model,
+		"messages":    []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}},
+		"temperature": 0.2,
+		"max_tokens":  aiAnalysisMaxOutputTokens,
+		"stream":      false,
+	}
+	// DeepSeek V4 thinking mode consumes the shared max_tokens budget before a
+	// final answer is produced. This product needs a concise research result,
+	// not a chain-of-thought, so explicitly disable it on the official endpoint.
+	if isDeepSeekProvider(provider) {
+		requestPayload["thinking"] = map[string]string{"type": "disabled"}
+	}
+	body, _ := json.Marshal(requestPayload)
+	endpoint := strings.TrimRight(provider.APIBaseURL, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	client := *s.httpClient
+	timeout := aiProviderTimeout(provider)
+	client.Timeout = timeout
+	response, err := client.Do(req)
+	if err != nil {
+		return "", explainAIProviderError(err, timeout)
+	}
+	defer response.Body.Close()
+	limited := io.LimitReader(response.Body, 2<<20)
+	payload, err := io.ReadAll(limited)
+	if err != nil {
+		return "", explainAIProviderError(err, timeout)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("AI provider returned HTTP %d: %s", response.StatusCode, SanitizeSensitiveError(strings.TrimSpace(string(payload))))
+	}
+	var parsed struct {
+		Choices []struct {
+			Message struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return "", fmt.Errorf("parse AI response: %w", err)
+	}
+	if len(parsed.Choices) == 0 {
+		return "", errors.New("AI 提供商未返回可用的分析结果")
+	}
+	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
+	if content != "" {
+		return content, nil
+	}
+	// A few OpenAI-compatible reasoning implementations omit final content but
+	// do return reasoning_content. Preserve it as a clearly-labelled fallback
+	// instead of throwing away a completed, billable response.
+	if reasoning := strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent); reasoning != "" {
+		return "模型未输出最终结论；以下为可供人工复核的推理内容：\n\n" + reasoning, nil
+	}
+	finishReason := strings.TrimSpace(parsed.Choices[0].FinishReason)
+	if finishReason == "" {
+		finishReason = "未提供完成原因"
+	}
+	return "", fmt.Errorf("AI 提供商未输出分析正文（完成原因：%s）；请重试，或在系统配置中使用非推理模型", finishReason)
+}
+
+func isDeepSeekProvider(provider AIProviderConfig) bool {
+	return strings.Contains(strings.ToLower(provider.APIBaseURL), "deepseek.com") || strings.HasPrefix(strings.ToLower(provider.Model), "deepseek-v4")
+}
+
+func aiProviderTimeout(provider AIProviderConfig) time.Duration {
+	if provider.TimeoutSeconds >= 30 && provider.TimeoutSeconds <= 300 {
+		return time.Duration(provider.TimeoutSeconds) * time.Second
+	}
+	return aiAnalysisDefaultTimeout
+}
+
+func explainAIProviderError(err error, timeout time.Duration) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("AI 提供商在 %d 秒内未完成响应；可在系统配置 → AI 分析中提高该模型的请求超时后手动重试: %w", int(timeout.Seconds()), err)
+	}
+	return err
+}

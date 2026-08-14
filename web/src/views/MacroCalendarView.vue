@@ -159,7 +159,7 @@
         <el-table-column label="公布值" width="168" align="right"><template #default="{ row }"><el-tooltip :content="publishedValueDescription(row)" placement="top"><strong :class="publishedValueClass(row)">{{ publishedValueLabel(row) }}</strong></el-tooltip></template></el-table-column>
         <el-table-column label="影响" width="118"><template #default="{ row }"><el-tooltip content="市场影响需要以公布值相对可追溯预测值的“意外程度”计算；当前未接入预测值，故不做利多/利空判断。" placement="top"><el-tag type="info" effect="plain">{{ impactLabel(row) }}</el-tag></el-tooltip></template></el-table-column>
 		<el-table-column label="重要性" width="118"><template #default="{ row }"><el-tooltip :content="row.market_importance ? 'Longbridge 市场日历重要性（星级）。' : '系统规则分级，不是官方评级。'" placement="top"><el-tag type="warning" effect="plain">{{ row.market_importance ? `${row.market_importance} 星` : importanceLabel(row.category) }}</el-tag></el-tooltip></template></el-table-column>
-        <el-table-column label="公布时间（上海）" width="175"><template #default="{ row }">{{ formatDateTime(row.scheduled_at) }}</template></el-table-column>
+		<el-table-column label="公布时间（上海）" width="175"><template #default="{ row }"><el-tooltip :content="releaseTimeTooltip(row)" placement="top"><span>{{ releaseTimeLabel(row) }}</span></el-tooltip></template></el-table-column>
 		<el-table-column label="来源" width="105"><template #default="{ row }"><el-link :href="row.source_url" target="_blank" type="primary">{{ providerLabel(row.provider) }}</el-link></template></el-table-column>
       </el-table>
 
@@ -399,6 +399,8 @@ function categoryLabel(value: string) {
 }
 function releaseFrequencyLabel(category: string) { return ['treasury_yields', 'treasury_real_yields'].includes(category) ? '每日' : ['initial_claims', 'petroleum_inventories'].includes(category) ? '每周' : category === 'gdp' ? '季度' : category === 'fomc' ? '政策会议' : category === 'market_calendar' ? '市场日历' : '月度' }
 function providerLabel(value?: string) { return value === 'bea' ? 'BEA 链接' : value === 'bls' ? 'BLS 链接' : value === 'fred' ? 'FRED（原始来源：BLS）' : value === 'census' ? 'Census 链接' : value === 'dol' ? 'DOL 链接' : value === 'eia' ? 'EIA 链接' : value === 'treasury' ? '财政部链接' : value === 'federal_reserve' ? '美联储链接' : value === 'longbridge' ? 'Longbridge' : '来源链接' }
+function releaseTimeLabel(row: MacroRelease) { return row.release_stage === 'fred_mirror' ? `${formatDateOnly(row.scheduled_at)}（数据期）` : formatDateTime(row.scheduled_at) }
+function releaseTimeTooltip(row: MacroRelease) { return row.release_stage === 'fred_mirror' ? 'FRED 镜像按 BLS 数据期索引，不代表精确的官方公布时点。' : '按上海时区显示官方公布时间。' }
 function relatedSourceTooltip(sources?: MacroReleaseSource[]) { return sources?.length ? sources.map((source) => `${providerLabel(source.provider)}${source.official ? '（官方主源）' : '（市场补充）'}：${source.title}`).join('\n') : '仅当前来源' }
 function formatDateTime(value?: string | null) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) }
 function primaryObservation(observations: MacroObservation[]) {

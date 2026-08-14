@@ -549,6 +549,48 @@
 
       </div>
 
+      <div v-show="activeConfigSection === 'ai'" class="config-section">
+        <div class="config-section-heading">
+          <div>
+            <h2>AI 分析</h2>
+            <p>仅在您于业务页面点击“AI 研判”时调用第三方模型；没有自动任务、页面加载调用或消息触发。</p>
+          </div>
+        </div>
+        <el-card shadow="never">
+          <template #header><div class="panel-header"><span>模型供应商（OpenAI 兼容协议）</span><el-button @click="addDeepSeekProvider">添加 DeepSeek</el-button></div></template>
+          <el-alert title="API Key 仅加密存储在服务端。保存后会显示为掩码；不配置或禁用的供应商不会出现在“标的评估”的选择列表中。超时时间仅影响手动 AI 请求。" type="info" :closable="false" show-icon />
+          <el-table :data="aiProviders" border class="ai-provider-table">
+            <el-table-column label="启用" width="80"><template #default="{ row }"><el-switch v-model="row.enabled" /></template></el-table-column>
+            <el-table-column label="ID" width="150"><template #default="{ row }"><el-input v-model="row.id" placeholder="deepseek" /></template></el-table-column>
+            <el-table-column label="名称" width="150"><template #default="{ row }"><el-input v-model="row.name" placeholder="DeepSeek" /></template></el-table-column>
+            <el-table-column label="API Base URL" min-width="250"><template #default="{ row }"><el-input v-model="row.api_base_url" placeholder="https://api.deepseek.com/v1" /></template></el-table-column>
+            <el-table-column label="模型" width="190"><template #default="{ row }"><el-input v-model="row.model" placeholder="deepseek-chat" /></template></el-table-column>
+            <el-table-column label="超时（秒）" width="130"><template #default="{ row }"><el-input-number v-model="row.timeout_seconds" :min="30" :max="300" :step="15" /></template></el-table-column>
+            <el-table-column label="API Key" min-width="220"><template #default="{ row }"><el-input v-model="row.api_key" show-password placeholder="保存后显示为掩码" /></template></el-table-column>
+            <el-table-column label="操作" width="80" fixed="right"><template #default="{ $index }"><el-button link type="danger" @click="aiProviders.splice($index, 1)">删除</el-button></template></el-table-column>
+          </el-table>
+          <p class="form-help">可添加任何支持 <code>/chat/completions</code> 的供应商。默认超时为 120 秒（可设 30–300 秒）；每一次调用均会记录模型、提示词版本、输入快照摘要、结果、状态与耗时，便于审计与费用控制。</p>
+        </el-card>
+
+        <el-card shadow="never" class="ai-prompt-template-card">
+          <template #header>
+            <div class="panel-header">
+              <span>AI 研判提示词模板</span>
+              <div class="panel-header-actions"><el-tag effect="plain">{{ aiPromptTemplates.length }} 个模板</el-tag><el-button @click="addAIPromptTemplate">新增模板</el-button></div>
+            </div>
+          </template>
+          <el-alert type="info" :closable="false" show-icon title="模型与模板独立选择。每次手动研判会保存所选模板、模板版本及实际发送内容；删除模板不会影响历史记录。" />
+          <div v-for="(template, index) in aiPromptTemplates" :key="template.id || index" class="ai-prompt-template-editor">
+            <div class="ai-prompt-template-editor-header"><strong>模板 {{ index + 1 }}</strong><el-button link type="danger" :disabled="aiPromptTemplates.length === 1" @click="removeAIPromptTemplate(index)">删除</el-button></div>
+            <el-form label-width="90px" class="ai-prompt-template-form">
+              <el-form-item label="名称"><el-input v-model="template.name" placeholder="研究判断（默认）" /></el-form-item>
+              <el-form-item label="提示词"><el-input v-model="template.content" type="textarea" :rows="11" resize="vertical" /></el-form-item>
+            </el-form>
+          </div>
+          <p class="form-help ai-prompt-template-help"><code v-pre>{{research_facts_json}}</code> 为必填变量；还可使用 <code v-pre>{{ticker}}</code>、<code v-pre>{{company_name}}</code>、<code v-pre>{{target_type}}</code>、<code v-pre>{{as_of}}</code>。未提供的数据会留空；评分、候选等级和交易规则结论不会被写入事实研究包。至少保留一个模板，点击页面右上角“保存”后生效。</p>
+        </el-card>
+      </div>
+
       <div v-show="activeConfigSection === 'maintenance'" class="config-section">
         <div class="config-section-heading">
           <div>
@@ -669,12 +711,13 @@ const cleaningLifecycle = ref(false)
 const lifecycleCleanupPreview = ref<LifecycleCleanupPreview | null>(null)
 const longbridgeProbeLoading = ref(false)
 const longbridgeProbe = ref<LongbridgeQuoteProbeResult | null>(null)
-const activeConfigSection = ref<'general' | 'notifications' | 'data' | 'maintenance'>('general')
+const activeConfigSection = ref<'general' | 'notifications' | 'data' | 'ai' | 'maintenance'>('general')
 const dataAdvancedPanels = ref<string[]>([])
 const configSections = [
   { key: 'general', label: '基础与调度', hint: '界面语言与调度时区' },
   { key: 'notifications', label: '通知规则', hint: '公告、候选与交易计划的通知边界' },
   { key: 'data', label: '数据源与同步', hint: '行情、研究、IPO 与 SEC 数据策略' },
+  { key: 'ai', label: 'AI 分析', hint: '手动调用的模型供应商与密钥' },
   { key: 'maintenance', label: '存储与维护', hint: '保留策略、清理预览与备份导出' }
 ] as const
 const activeConfigSectionHint = computed(() => configSections.find((item) => item.key === activeConfigSection.value)?.hint || '')
@@ -700,6 +743,7 @@ const inAppNotificationForm = reactive({
   candidate_earnings_release_enabled: true,
   candidate_technical_signal_enabled: true,
   ipo_progress_enabled: true,
+  ai_analysis_enabled: true,
 })
 const inAppNotificationEnabledCount = computed(() => Object.values(inAppNotificationForm).filter(Boolean).length)
 const telegramNotificationForm = reactive({
@@ -712,6 +756,7 @@ const telegramNotificationForm = reactive({
   candidate_earnings_release_enabled: true,
   candidate_technical_signal_enabled: true,
   ipo_progress_enabled: true,
+  ai_analysis_enabled: false,
 })
 const telegramNotificationEnabledCount = computed(() => Object.values(telegramNotificationForm).filter(Boolean).length)
 const notificationChannelRows = [
@@ -724,6 +769,7 @@ const notificationChannelRows = [
   { menu: '小盘候选', key: 'candidate_earnings_release_enabled', legacyKey: 'earnings_release_enabled', label: '财报已发布', description: '小盘候选对应的 SEC 定期财报或业绩公告' },
   { menu: '小盘候选', key: 'candidate_technical_signal_enabled', legacyKey: 'technical_signal_enabled', label: '技术信号变化', description: '小盘候选出现入场候选、离场预警或趋势失效' },
   { menu: 'IPO 监控', key: 'ipo_progress_enabled', legacyKey: 'ipo_progress_enabled', label: '关注 IPO 进展', description: '仅已关注 IPO 公司出现新文件或关键状态、代码、交易所、定价变化时通知' },
+  { menu: 'AI 分析', key: 'ai_analysis_enabled', legacyKey: 'ai_analysis_enabled', label: 'AI 任务完成', description: '手动提交的 AI 研判在后台成功或失败后通知；可跳转查看结果' },
 ] as const
 type NotificationChannelKey = typeof notificationChannelRows[number]['key']
 
@@ -824,6 +870,52 @@ const ipoForm = reactive({
   longbridge_calendar_lookahead_days: 30,
   longbridge_calendar_max_pages: 5
 })
+type AIProvider = { id: string; name: string; api_base_url: string; api_key: string; model: string; timeout_seconds: number; enabled: boolean }
+type AIPromptTemplate = { id: string; name: string; content: string }
+const aiProviders = ref<AIProvider[]>([])
+const defaultAIPromptTemplate = `你是一位审慎的美股研究助理。仅基于下方本地事实研究包完成一次真正的研究判断，不要逐字段复述研究包，也不构成投资建议。
+
+输出请严格采用以下结构：
+
+## 1. 研究结论
+用 2–4 句话给出“关注 / 观望 / 回避”的研究倾向及最重要的原因；若证据不足，明确写“证据不足”，不要勉强下结论。
+
+## 2. 最关键的证据与推断
+挑选最多 4 项最具解释力的事实。每项都要先写事实（带可用的数值、日期或变化），再说明它为何会影响成长、盈利质量、估值预期或市场行为；不要把所有字段重新罗列一遍。
+
+## 3. 反证、风险与失效条件
+说明与结论相矛盾的事实、主要风险，以及哪些后续事实会推翻当前判断。
+
+## 4. 近期催化剂与观察重点
+仅在研究包有依据时，列出未来财报、公告、价格/成交量变化、分析师或持仓变化等值得跟踪的催化剂；没有依据则说明未识别到。
+
+## 5. 数据缺口与下一步验证
+只列出会实质改变判断的缺失数据或待核验事项，并说明应验证什么。
+
+写作要求：
+- 清楚标注“事实”“推断”“待验证”，推断必须能回溯到研究包中的事实。
+- 优先分析变化、趋势、矛盾和相对重要性，而不是同义改写数字。
+- 研究包已主动移除本系统的评分、候选等级、入场/离场规则结论；不得猜测或恢复这些内容。
+- 不得编造研究包中不存在的事实、价格、日期、持仓或市场共识；缺失数据不等同于负面事实。
+- 避免泛泛而谈的免责声明和重复表述，正文应尽量具体、紧凑。
+
+本地事实研究包：
+{{research_facts_json}}`
+const aiPromptTemplates = ref<AIPromptTemplate[]>([])
+
+function addDeepSeekProvider() {
+  const suffix = aiProviders.value.some((item) => item.id === 'deepseek') ? `-${aiProviders.value.length + 1}` : ''
+  aiProviders.value.push({ id: `deepseek${suffix}`, name: 'DeepSeek', api_base_url: 'https://api.deepseek.com/v1', api_key: '', model: 'deepseek-chat', timeout_seconds: 120, enabled: true })
+}
+
+function addAIPromptTemplate() {
+  const serial = aiPromptTemplates.value.length + 1
+  aiPromptTemplates.value.push({ id: '', name: `研究模板 ${serial}`, content: defaultAIPromptTemplate })
+}
+
+function removeAIPromptTemplate(index: number) {
+  if (aiPromptTemplates.value.length > 1) aiPromptTemplates.value.splice(index, 1)
+}
 
 const secRiskHints = computed(() => {
   const hints: Array<{ title: string, description: string, type: 'warning' | 'info' }> = []
@@ -931,8 +1023,14 @@ function openProviderSettings() {
 async function load() {
   loading.value = true
   try {
-    const res = await apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs')
+    const [res, aiRes, templateRes] = await Promise.all([
+      apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs'),
+      apiClient.get<ApiResponse<AIProvider[]>>('/ai/providers/config'),
+      apiClient.get<ApiResponse<AIPromptTemplate[]>>('/ai/prompt-templates')
+    ])
     const configs = res.data.data
+    aiProviders.value = (aiRes.data.data || []).map((item) => ({ ...item, timeout_seconds: item.timeout_seconds || 120 }))
+    aiPromptTemplates.value = templateRes.data.data || [{ id: 'research', name: '研究判断（默认）', content: defaultAIPromptTemplate }]
     secForm.user_agent = configValue(configs, 'sec.user_agent', '')
     secForm.initial_fetch_days = Number(configValue(configs, 'sec.initial_fetch_days', '30'))
     secForm.sync_window_days = Number(configValue(configs, 'sec.sync_window_days', '30'))
@@ -1131,6 +1229,8 @@ async function save() {
       { key: 'ipo.longbridge_calendar_lookahead_days', value: String(ipoForm.longbridge_calendar_lookahead_days), value_type: 'int', category: 'ipo', encrypted: false },
       { key: 'ipo.longbridge_calendar_max_pages', value: String(ipoForm.longbridge_calendar_max_pages), value_type: 'int', category: 'ipo', encrypted: false }
     ])
+    await apiClient.put('/ai/providers/config', aiProviders.value)
+    await apiClient.put('/ai/prompt-templates', aiPromptTemplates.value)
     store.applyDefaultLocale(uiForm.default_locale)
     ElMessage.success(t('messages.configSaved'))
     cleanupPreview.value = null

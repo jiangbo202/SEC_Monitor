@@ -890,6 +890,14 @@
           <el-descriptions-item label="SIC">{{ candidateDetail.security.sic || '-' }}</el-descriptions-item>
         </el-descriptions>
 
+        <el-card shadow="never" class="candidate-ai-card">
+          <template #header><div class="card-header-actions"><span>AI 研判（手动）</span><el-space><el-select v-model="candidateAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select v-model="candidateAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!candidateAIProvider || !candidateAIPromptTemplate" :loading="candidateAIGenerating" @click="generateCandidateAI">生成研判</el-button></el-space></div></template>
+          <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
+          <template v-else-if="candidateAIAnalyses.length"><el-select v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><MarkdownContent :content="activeCandidateAIAnalysis?.content" /></div></template></template>
+          <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
+          <el-alert v-show="activeCandidateAIAnalysis?.status === 'queued' || activeCandidateAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
+        </el-card>
+
         <el-card v-if="candidateDetail.company_profile" shadow="never">
           <template #header>
             <div class="card-header-actions">
@@ -1663,6 +1671,8 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { apiClient } from '@/api/client'
+import AIRequestPrompt from '@/components/AIRequestPrompt.vue'
+import MarkdownContent from '@/components/MarkdownContent.vue'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import type {
   ApiResponse,
@@ -1749,6 +1759,18 @@ const effectivenessNotice = computed(() => {
 })
 const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
+type AIProvider = { id: string; name: string; model: string }
+type AIPromptTemplate = { id: string; name: string }
+type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; system_prompt?: string; user_prompt?: string; requested_at: string }
+const aiProviders = ref<AIProvider[]>([])
+const aiPromptTemplates = ref<AIPromptTemplate[]>([])
+const candidateAIProvider = ref('')
+const candidateAIPromptTemplate = ref('')
+const candidateAIGenerating = ref(false)
+const candidateAIAnalyses = ref<AIAnalysis[]>([])
+const candidateAIAnalysisID = ref<number | null>(null)
+const activeCandidateAIAnalysis = computed(() => candidateAIAnalyses.value.find((item) => item.id === candidateAIAnalysisID.value) || candidateAIAnalyses.value[0])
+let candidateAIPollingTimer: number | undefined
 const analystRatingRefreshing = ref(false)
 const marketResearchRefreshing = ref(false)
 const valuationResearchRefreshing = ref(false)
@@ -2242,11 +2264,49 @@ async function openDetail(row: CandidateScore) {
     const res = await apiClient.get<ApiResponse<CandidateDetail>>(`/discovery/candidates/${row.ticker}/detail`)
     candidateDetail.value = res.data.data
     detailVisible.value = true
+		await loadCandidateAIAnalyses()
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '加载候选详情失败')
   } finally {
     detailLoadingTicker.value = ''
   }
+}
+
+async function loadAIProviders() {
+	try {
+		const [response, templateResponse] = await Promise.all([apiClient.get('/ai/providers'), apiClient.get('/ai/prompt-templates')])
+		aiProviders.value = response.data.data || []; aiPromptTemplates.value = templateResponse.data.data || []
+		if (!candidateAIProvider.value && aiProviders.value.length) candidateAIProvider.value = aiProviders.value[0].id
+		if (!candidateAIPromptTemplate.value && aiPromptTemplates.value.length) candidateAIPromptTemplate.value = aiPromptTemplates.value[0].id
+	} catch { aiProviders.value = []; aiPromptTemplates.value = [] }
+}
+
+async function loadCandidateAIAnalyses() {
+	const ticker = candidateDetail.value?.score.ticker
+	if (!ticker) { candidateAIAnalyses.value = []; return }
+	try {
+		const response = await apiClient.get('/ai/analyses', { params: { ticker, page: 1, page_size: 50 } })
+		candidateAIAnalyses.value = (response.data.data.items || []).filter((item: AIAnalysis & { scope?: string }) => item.scope === 'candidate_detail')
+		candidateAIAnalysisID.value = candidateAIAnalyses.value[0]?.id || null
+		if (candidateAIAnalyses.value.some((item) => item.status === 'queued' || item.status === 'running')) scheduleCandidateAIPoll()
+	} catch { candidateAIAnalyses.value = [] }
+}
+
+function scheduleCandidateAIPoll() {
+	if (candidateAIPollingTimer !== undefined) return
+	candidateAIPollingTimer = window.setTimeout(() => { candidateAIPollingTimer = undefined; void loadCandidateAIAnalyses() }, 2000)
+}
+
+async function generateCandidateAI() {
+	const detail = candidateDetail.value
+	if (!detail || !candidateAIProvider.value || !candidateAIPromptTemplate.value) return
+	candidateAIGenerating.value = true
+	try {
+		const response = await apiClient.post('/ai/analyses', { provider_id: candidateAIProvider.value, template_id: candidateAIPromptTemplate.value, scope: 'candidate_detail', ticker: detail.score.ticker, company_name: detail.security.company_name, target_type: 'stock', context: detail }, { timeout: 315000 })
+		ElMessage.success('AI 研判已提交，正在后台处理')
+		await loadCandidateAIAnalyses()
+		candidateAIAnalysisID.value = response.data.data.id
+	} catch (err: any) { ElMessage.error(err?.response?.data?.message || 'AI 研判请求超时或失败；请检查供应商配置、额度或适当提高模型超时后手动重试') } finally { candidateAIGenerating.value = false }
 }
 
 async function refreshCandidateCompanyProfile() {
@@ -3714,6 +3774,7 @@ onMounted(() => {
 	if (typeof ticker === 'string') filters.ticker = ticker.toUpperCase()
   load()
   loadCriteria()
+  void loadAIProviders()
   discoverySyncPoll = window.setInterval(() => {
     void loadDiscoverySyncStatus()
   }, 15_000)
@@ -3722,6 +3783,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (discoverySyncPoll) window.clearInterval(discoverySyncPoll)
   if (candidateSupplementalTimer) window.clearTimeout(candidateSupplementalTimer)
+  if (candidateAIPollingTimer !== undefined) window.clearTimeout(candidateAIPollingTimer)
 })
 </script>
 
@@ -3999,6 +4061,9 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 12px;
 }
+
+.candidate-ai-card { margin-top: 16px; }
+.ai-analysis-content { white-space: pre-wrap; line-height: 1.65; padding: 12px; border-radius: 4px; background: var(--el-fill-color-light); }
 
 .capital-risk-summary {
   margin-bottom: 10px;

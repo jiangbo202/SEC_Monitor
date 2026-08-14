@@ -18,6 +18,10 @@ func Created(c *gin.Context, data any) {
 	c.JSON(http.StatusCreated, gin.H{"code": 0, "message": "ok", "data": data})
 }
 
+func Accepted(c *gin.Context, data any) {
+	c.JSON(http.StatusAccepted, gin.H{"code": 0, "message": "accepted", "data": data})
+}
+
 func NoContent(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }

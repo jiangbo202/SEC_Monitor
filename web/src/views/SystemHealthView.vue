@@ -354,9 +354,11 @@ function openSourceAction(action: string) {
   const routes: Record<string, string> = {
     scheduler: 'scheduler',
     configs: 'configs',
+    'discovery-logs': 'discovery-logs',
     discovery_logs: 'discovery-logs',
     'sync-runs': 'sync-runs',
     'notification-logs': 'notification-logs',
+    'macro-calendar': 'macro-calendar',
     'system-health': 'system-health'
   }
   const name = routes[action]

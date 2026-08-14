@@ -93,6 +93,30 @@ func TestOperationalHealthReportsProviderCoverageAndProfileRecovery(t *testing.T
 	}
 }
 
+func TestOperationalHealthTreatsProviderValidationAsWarningAndReportsMissingMacroCoverage(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	if err := db.Create(&model.TaskConfig{TaskName: "macro_calendar_sync", CronExpr: "45 20 * * 1-5", Enabled: true, LastStatus: "success", LastRunAt: ptrOperationalTime(now.Add(-time.Hour))}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.ProviderHealth{Provider: "chain", Status: discovery.ProviderStatusValidation, QualifiedTradingDays: 20, FailureStreak: 31, LastTradeDate: "2026-08-13", UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	report, err := NewOperationalHealthService(db, discoveryDB, nil, nil).ReportAt(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasOperationalIssue(report.Issues, "macro_coverage:employment") || !hasOperationalIssue(report.Issues, "macro_coverage:ppi") {
+		t.Fatalf("macro issues = %+v", report.Issues)
+	}
+	for _, issue := range report.Issues {
+		if issue.Key == "provider:chain" && issue.Severity != "warning" {
+			t.Fatalf("validation provider should be warning, issue=%+v", issue)
+		}
+	}
+}
+
 func TestClassifyOperationalExternalFailure(t *testing.T) {
 	for _, test := range []struct{ message, want string }{
 		{"HTTP 429 rate limited", "限流"},

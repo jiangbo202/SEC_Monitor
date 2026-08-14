@@ -40,6 +40,7 @@ export interface InAppNotification {
   body?: string
   link?: string
   occurred_at: string
+  created_at: string
   read_at?: string | null
 }
 

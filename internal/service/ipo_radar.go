@@ -1394,8 +1394,15 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 		switch item.LongbridgeListingLastResult {
 		case "no_data":
 			item.StatusReason = fmt.Sprintf("Longbridge queried %d time(s); no listing market information returned", item.LongbridgeListingCheckCount)
+		case "no_data_review":
+			item.StatusReason = fmt.Sprintf("Longbridge queried %d time(s); no listing market information returned; moved to weekly automatic review", item.LongbridgeListingCheckCount)
 		case "unavailable":
 			item.StatusReason = fmt.Sprintf("Longbridge queried %d time(s); latest request was unavailable", item.LongbridgeListingCheckCount)
+			if item.LongbridgeListingNextRetryAt != nil {
+				item.StatusReason += "; retry after " + item.LongbridgeListingNextRetryAt.Format(time.RFC3339)
+			}
+		case "unavailable_review":
+			item.StatusReason = fmt.Sprintf("Longbridge queried %d time(s); requests remain unavailable; moved to weekly automatic review", item.LongbridgeListingCheckCount)
 			if item.LongbridgeListingNextRetryAt != nil {
 				item.StatusReason += "; retry after " + item.LongbridgeListingNextRetryAt.Format(time.RFC3339)
 			}

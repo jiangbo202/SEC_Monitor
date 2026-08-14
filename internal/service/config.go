@@ -2,7 +2,11 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +17,32 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// AIProviderConfig describes one user-configured OpenAI-compatible endpoint.
+// DeepSeek uses this protocol, while the shape also supports future providers
+// without coupling the product to a single vendor.
+type AIProviderConfig struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	APIBaseURL string `json:"api_base_url"`
+	APIKey     string `json:"api_key"`
+	Model      string `json:"model"`
+	// TimeoutSeconds caps one explicitly triggered request. Zero is retained for
+	// older saved provider records and uses the service default.
+	TimeoutSeconds int  `json:"timeout_seconds"`
+	Enabled        bool `json:"enabled"`
+}
+
+// AIPromptTemplate is an editable, named research instruction. It contains no
+// credentials; the actual data package is rendered only when a user manually
+// requests an AI analysis.
+type AIPromptTemplate struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+const aiPromptTemplatesConfigKey = "ai.prompt_templates"
 
 type ConfigService struct {
 	db                 *gorm.DB
@@ -110,6 +140,7 @@ var sensitiveConfigKeys = map[string]struct{}{
 	"discovery.longbridge_app_key":      {},
 	"discovery.longbridge_app_secret":   {},
 	"discovery.longbridge_access_token": {},
+	"ai.providers":                      {},
 }
 
 func NewConfigService(db *gorm.DB, audit *AuditService, system ...config.SystemConfig) *ConfigService {
@@ -219,7 +250,7 @@ func sanitizeStoredNotificationErrors(tx *gorm.DB) error {
 }
 
 func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
-	return s.UpsertMissing(ctx, []ConfigInput{
+	if err := s.UpsertMissing(ctx, []ConfigInput{
 		{Key: "sec.user_agent", Value: "", ValueType: "string", Category: "sec"},
 		{Key: "sec.initial_fetch_days", Value: "30", ValueType: "int", Category: "sec"},
 		{Key: "sec.sync_window_days", Value: "30", ValueType: "int", Category: "sec"},
@@ -237,6 +268,9 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "scheduler.timezone", Value: "UTC", ValueType: "string", Category: "scheduler"},
 		{Key: "ui.default_locale", Value: "zh-CN", ValueType: "string", Category: "ui"},
 		{Key: "ui.onboarding_completed", Value: "false", ValueType: "bool", Category: "ui"},
+		// This is a user-editable template rather than an automatic AI trigger.
+		// It is rendered only after an explicit manual AI research request.
+		{Key: aiAnalysisPromptTemplateConfigKey, Value: aiAnalysisDefaultUserPromptTemplate, ValueType: "string", Category: "ai_analysis"},
 		// The landing page reads this local preference together with its compact
 		// aggregate. It only controls widget visibility; collection jobs and
 		// cached research snapshots are intentionally unaffected.
@@ -287,6 +321,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "in_app_notification.major_event_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.insider_trading_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.ipo_progress_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
+		{Key: "in_app_notification.ai_analysis_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		// Telegram shares the durable notification queue with every business
 		// module. These event switches are a final, channel-specific gate: the
 		// underlying module's own scope, threshold and quiet-hour rules still
@@ -297,6 +332,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "telegram_notification.major_event_enabled", Value: "true", ValueType: "bool", Category: "telegram_notification"},
 		{Key: "telegram_notification.insider_trading_enabled", Value: "true", ValueType: "bool", Category: "telegram_notification"},
 		{Key: "telegram_notification.ipo_progress_enabled", Value: "true", ValueType: "bool", Category: "telegram_notification"},
+		{Key: "telegram_notification.ai_analysis_enabled", Value: "false", ValueType: "bool", Category: "telegram_notification"},
 		{Key: "discovery.price_provider", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.stooq_urls", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.tiingo_api_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
@@ -348,7 +384,50 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "social_heat.provider", Value: "manual", ValueType: "string", Category: "social_heat"},
 		{Key: "social_heat.lookback_hours", Value: "24", ValueType: "int", Category: "social_heat"},
 		{Key: "social_heat.baseline_days", Value: "30", ValueType: "int", Category: "social_heat"},
-	}, "system")
+	}, "system"); err != nil {
+		return err
+	}
+	if err := s.upgradeAIAnalysisDefaultPromptTemplate(ctx); err != nil {
+		return err
+	}
+	return s.ensureAIPromptTemplates(ctx)
+}
+
+// upgradeAIAnalysisDefaultPromptTemplate upgrades only the known project
+// default from the previous release. Any user-authored template remains
+// untouched, including templates that intentionally differ from the default.
+func (s *ConfigService) upgradeAIAnalysisDefaultPromptTemplate(ctx context.Context) error {
+	value, found, err := s.GetValue(ctx, aiAnalysisPromptTemplateConfigKey)
+	if err != nil || !found || normalizePromptTemplate(value) != normalizePromptTemplate(aiAnalysisPreviousDefaultUserPromptTemplate) {
+		return err
+	}
+	return s.UpsertMany(ctx, []ConfigInput{{
+		Key:       aiAnalysisPromptTemplateConfigKey,
+		Value:     aiAnalysisDefaultUserPromptTemplate,
+		ValueType: "string",
+		Category:  "ai_analysis",
+	}}, "system")
+}
+
+func normalizePromptTemplate(value string) string {
+	return strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
+}
+
+func defaultAIPromptTemplate() AIPromptTemplate {
+	return AIPromptTemplate{ID: "research", Name: "研究判断（默认）", Content: aiAnalysisDefaultUserPromptTemplate}
+}
+
+func (s *ConfigService) ensureAIPromptTemplates(ctx context.Context) error {
+	if _, found, err := s.GetValue(ctx, aiPromptTemplatesConfigKey); err != nil || found {
+		return err
+	}
+	template := defaultAIPromptTemplate()
+	if legacy, found, err := s.GetValue(ctx, aiAnalysisPromptTemplateConfigKey); err != nil {
+		return err
+	} else if found && strings.TrimSpace(legacy) != "" {
+		template.Content = legacy
+	}
+	return s.SaveAIPromptTemplates(ctx, []AIPromptTemplate{template}, "system")
 }
 
 func (s *ConfigService) UpsertMissing(ctx context.Context, inputs []ConfigInput, operator string) error {
@@ -439,6 +518,13 @@ func isSensitiveConfigKey(key string) bool {
 
 func validateConfigInput(key string, value string) error {
 	switch key {
+	case aiAnalysisPromptTemplateConfigKey:
+		if len(value) > 32_000 {
+			return ErrValidation
+		}
+		if _, err := renderAIAnalysisPromptTemplate(value, aiAnalysisPromptTemplateValues{}); err != nil {
+			return err
+		}
 	case "scheduler.timezone":
 		if _, err := schedulerLocationFromValue(value); err != nil {
 			return err
@@ -494,6 +580,181 @@ func (s *ConfigService) List(ctx context.Context, category string, maskSensitive
 		}
 	}
 	return configs, nil
+}
+
+// AIProviders returns decrypted providers for server-side use. The API layer
+// must use AIProviderConfigForDisplay so credentials never reach a browser.
+func (s *ConfigService) AIProviders(ctx context.Context) ([]AIProviderConfig, error) {
+	value, found, err := s.GetValue(ctx, "ai.providers")
+	if err != nil || !found || strings.TrimSpace(value) == "" {
+		return []AIProviderConfig{}, err
+	}
+	var providers []AIProviderConfig
+	if err := json.Unmarshal([]byte(value), &providers); err != nil {
+		return nil, fmt.Errorf("parse AI provider configuration: %w", err)
+	}
+	return providers, nil
+}
+
+// AIProviderConfigForDisplay deliberately masks API keys while preserving the
+// rest of the editable multi-provider configuration.
+func (s *ConfigService) AIProviderConfigForDisplay(ctx context.Context) ([]AIProviderConfig, error) {
+	providers, err := s.AIProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for index := range providers {
+		if providers[index].APIKey != "" {
+			providers[index].APIKey = maskedSecretMarker
+		}
+		// Older provider entries predate the timeout field. Expose the effective
+		// default so the UI can show the actual behaviour rather than a misleading
+		// zero value.
+		if providers[index].TimeoutSeconds == 0 {
+			providers[index].TimeoutSeconds = int(aiAnalysisDefaultTimeout.Seconds())
+		}
+	}
+	return providers, nil
+}
+
+func (s *ConfigService) AIPromptTemplates(ctx context.Context) ([]AIPromptTemplate, error) {
+	value, found, err := s.GetValue(ctx, aiPromptTemplatesConfigKey)
+	if err != nil {
+		return nil, err
+	}
+	if !found || strings.TrimSpace(value) == "" {
+		return []AIPromptTemplate{defaultAIPromptTemplate()}, nil
+	}
+	var templates []AIPromptTemplate
+	if err := json.Unmarshal([]byte(value), &templates); err != nil {
+		return nil, fmt.Errorf("parse AI prompt template configuration: %w", err)
+	}
+	return templates, nil
+}
+
+func (s *ConfigService) AIPromptTemplate(ctx context.Context, id string) (AIPromptTemplate, error) {
+	templates, err := s.AIPromptTemplates(ctx)
+	if err != nil {
+		return AIPromptTemplate{}, err
+	}
+	if id == "" && len(templates) == 1 {
+		return templates[0], nil
+	}
+	for _, template := range templates {
+		if template.ID == strings.TrimSpace(id) {
+			return template, nil
+		}
+	}
+	return AIPromptTemplate{}, fmt.Errorf("%w: selected AI prompt template is unavailable", ErrValidation)
+}
+
+func (s *ConfigService) SaveAIPromptTemplates(ctx context.Context, input []AIPromptTemplate, operator string) error {
+	if len(input) < 1 || len(input) > 20 {
+		return ErrValidation
+	}
+	seen := make(map[string]struct{}, len(input))
+	for index := range input {
+		template := &input[index]
+		template.ID = strings.ToLower(strings.TrimSpace(template.ID))
+		template.Name = strings.TrimSpace(template.Name)
+		template.Content = strings.TrimSpace(template.Content)
+		if template.ID == "" {
+			template.ID = newAIPromptTemplateID(template.Name, index, seen)
+		}
+		if len(template.ID) > 64 || len(template.Name) == 0 || len(template.Name) > 128 || len(template.Content) > 32_000 || !validAIPromptTemplateID(template.ID) {
+			return ErrValidation
+		}
+		if _, err := renderAIAnalysisPromptTemplate(template.Content, aiAnalysisPromptTemplateValues{}); err != nil {
+			return err
+		}
+		if _, exists := seen[template.ID]; exists {
+			return ErrValidation
+		}
+		seen[template.ID] = struct{}{}
+	}
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	return s.UpsertMany(ctx, []ConfigInput{{Key: aiPromptTemplatesConfigKey, Value: string(payload), ValueType: "json", Category: "ai_analysis"}}, operator)
+}
+
+func newAIPromptTemplateID(name string, index int, existing map[string]struct{}) string {
+	for attempt := 0; ; attempt++ {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d:%d", name, index, attempt, time.Now().UnixNano())))
+		id := "template-" + hex.EncodeToString(sum[:])[:12]
+		if _, used := existing[id]; !used {
+			return id
+		}
+	}
+}
+
+func validAIPromptTemplateID(value string) bool {
+	for _, char := range value {
+		if !(char >= 'a' && char <= 'z') && !(char >= '0' && char <= '9') && char != '-' && char != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *ConfigService) SaveAIProviders(ctx context.Context, input []AIProviderConfig, operator string) error {
+	if len(input) > 10 {
+		return ErrValidation
+	}
+	current, err := s.AIProviders(ctx)
+	if err != nil {
+		return err
+	}
+	currentKeys := make(map[string]string, len(current))
+	for _, provider := range current {
+		currentKeys[provider.ID] = provider.APIKey
+	}
+	seen := map[string]struct{}{}
+	for index := range input {
+		provider := &input[index]
+		provider.ID = strings.ToLower(strings.TrimSpace(provider.ID))
+		provider.Name = strings.TrimSpace(provider.Name)
+		provider.APIBaseURL = strings.TrimRight(strings.TrimSpace(provider.APIBaseURL), "/")
+		provider.Model = strings.TrimSpace(provider.Model)
+		if IsMaskedSecret(provider.APIKey) {
+			provider.APIKey = currentKeys[provider.ID]
+		}
+		if err := validateAIProvider(*provider); err != nil {
+			return err
+		}
+		if _, exists := seen[provider.ID]; exists {
+			return ErrValidation
+		}
+		seen[provider.ID] = struct{}{}
+	}
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	return s.UpsertMany(ctx, []ConfigInput{{Key: "ai.providers", Value: string(payload), ValueType: "json", Category: "ai", Encrypted: true}}, operator)
+}
+
+func validateAIProvider(provider AIProviderConfig) error {
+	if provider.ID == "" || provider.Name == "" || provider.APIBaseURL == "" || provider.Model == "" {
+		return ErrValidation
+	}
+	for _, char := range provider.ID {
+		if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-' || char == '_') {
+			return ErrValidation
+		}
+	}
+	parsed, err := url.Parse(provider.APIBaseURL)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return ErrValidation
+	}
+	if provider.Enabled && strings.TrimSpace(provider.APIKey) == "" {
+		return ErrValidation
+	}
+	if provider.TimeoutSeconds != 0 && (provider.TimeoutSeconds < 30 || provider.TimeoutSeconds > 300) {
+		return ErrValidation
+	}
+	return nil
 }
 
 func (s *ConfigService) GetValue(ctx context.Context, key string) (string, bool, error) {

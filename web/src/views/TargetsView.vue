@@ -277,6 +277,17 @@
 
         <div class="target-detail-section">
           <div class="panel-header target-detail-section-title">
+            <span>AI 研判（手动）</span>
+            <el-space><el-select v-model="targetAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select v-model="targetAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!targetAIProvider || !targetAIPromptTemplate" :loading="targetAIGenerating" @click="generateTargetAI">生成研判</el-button></el-space>
+          </div>
+          <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
+          <template v-else-if="targetAIAnalyses.length"><el-select v-model="targetAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in targetAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeTargetAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeTargetAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeTargetAIAnalysis?.system_prompt" :user-prompt="activeTargetAIAnalysis?.user_prompt" /><div style="padding:12px;background:var(--el-fill-color-light);border-radius:4px"><MarkdownContent :content="activeTargetAIAnalysis?.content" /></div></template></template>
+          <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
+          <el-alert v-show="activeTargetAIAnalysis?.status === 'queued' || activeTargetAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
+        </div>
+
+        <div class="target-detail-section">
+          <div class="panel-header target-detail-section-title">
             <span>公司概览（SEC + Longbridge）</span>
             <el-button v-if="detailTarget.target_type === 'stock'" size="small" :loading="detailCompanyProfileRefreshing" @click="refreshTargetCompanyProfile">刷新公司资料</el-button>
           </div>
@@ -505,11 +516,13 @@
 
 <script setup lang="ts">
 import axios from 'axios'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
+import AIRequestPrompt from '@/components/AIRequestPrompt.vue'
+import MarkdownContent from '@/components/MarkdownContent.vue'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
 import type { AnalystRatingView, ApiResponse, CandidateFairValueEstimate, CandidateTechnicalHistoryRow, CompanyProfile, EarningsPreview, EarningsPreviewRefreshResult, EarningsPreviewView, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerInstitutionalHoldingHistory, TickerLookup, TickerTechnicalHistory, TradePlanSimulationRebuildResult, TradePlanSimulationReport, TradeSetupStatusEvent, WatchTarget } from '@/api/types'
@@ -546,6 +559,18 @@ const detailMarketResearchRefreshing = ref(false)
 const detailEarningsPreview = ref<EarningsPreviewView | null>(null)
 const detailEarningsRefreshing = ref(false)
 const detailTechnicalBackfilling = ref(false)
+type AIProvider = { id: string; name: string; model: string }
+type AIPromptTemplate = { id: string; name: string }
+type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; system_prompt?: string; user_prompt?: string; requested_at: string }
+const aiProviders = ref<AIProvider[]>([])
+const aiPromptTemplates = ref<AIPromptTemplate[]>([])
+const targetAIProvider = ref('')
+const targetAIPromptTemplate = ref('')
+const targetAIGenerating = ref(false)
+const targetAIAnalyses = ref<AIAnalysis[]>([])
+const targetAIAnalysisID = ref<number | null>(null)
+const activeTargetAIAnalysis = computed(() => targetAIAnalyses.value.find((item) => item.id === targetAIAnalysisID.value) || targetAIAnalyses.value[0])
+let targetAIPollingTimer: number | undefined
 const simulationVisible = ref(false)
 const simulationLoading = ref(false)
 const simulationRebuilding = ref(false)
@@ -881,7 +906,8 @@ async function loadTargetDetailData(row: WatchTarget) {
 	detailAnalystRating.value = null
 	detailFairValue.value = null
 	detailInstitutionalHoldings.value = null
-	detailEarningsPreview.value = null
+		detailEarningsPreview.value = null
+		targetAIAnalyses.value = []
 	try {
     const [filings, syncDetails, configs, tradeSetupHistory] = await Promise.all([
       apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', {
@@ -939,9 +965,48 @@ async function loadTargetDetailData(row: WatchTarget) {
 				detailProfitHistory.value = null
 			}
 		}
+		await loadTargetAIAnalyses()
   } finally {
     detailLoading.value = false
   }
+}
+
+async function loadAIProviders() {
+	try {
+		const [response, templateResponse] = await Promise.all([apiClient.get('/ai/providers'), apiClient.get('/ai/prompt-templates')])
+		aiProviders.value = response.data.data || []; aiPromptTemplates.value = templateResponse.data.data || []
+		if (!targetAIProvider.value && aiProviders.value.length) targetAIProvider.value = aiProviders.value[0].id
+		if (!targetAIPromptTemplate.value && aiPromptTemplates.value.length) targetAIPromptTemplate.value = aiPromptTemplates.value[0].id
+	} catch { aiProviders.value = []; aiPromptTemplates.value = [] }
+}
+
+async function loadTargetAIAnalyses() {
+	const ticker = detailTarget.value?.ticker
+	if (!ticker) return
+	try {
+		const response = await apiClient.get('/ai/analyses', { params: { ticker, page: 1, page_size: 50 } })
+		targetAIAnalyses.value = (response.data.data.items || []).filter((item: AIAnalysis & { scope?: string }) => item.scope === 'watch_target_detail')
+		targetAIAnalysisID.value = targetAIAnalyses.value[0]?.id || null
+		if (targetAIAnalyses.value.some((item) => item.status === 'queued' || item.status === 'running')) scheduleTargetAIPoll()
+	} catch { targetAIAnalyses.value = [] }
+}
+
+function scheduleTargetAIPoll() {
+	if (targetAIPollingTimer !== undefined) return
+	targetAIPollingTimer = window.setTimeout(() => { targetAIPollingTimer = undefined; void loadTargetAIAnalyses() }, 2000)
+}
+
+async function generateTargetAI() {
+	const target = detailTarget.value
+	if (!target || !targetAIProvider.value || !targetAIPromptTemplate.value) return
+	targetAIGenerating.value = true
+	try {
+		const context = { target, company_profile: detailCompanyProfile.value, analyst_rating: detailAnalystRating.value, fair_value: detailFairValue.value, institutional_holdings: detailInstitutionalHoldings.value, earnings_preview: detailEarningsPreview.value, technical_history: detailTechnicalHistory.value, trade_setup_history: detailTradeSetupHistory.value, recent_filings: detailFilings.value }
+		const response = await apiClient.post('/ai/analyses', { provider_id: targetAIProvider.value, template_id: targetAIPromptTemplate.value, scope: 'watch_target_detail', ticker: target.ticker, company_name: target.company_name, target_type: target.target_type, context }, { timeout: 315000 })
+		ElMessage.success('AI 研判已提交，正在后台处理')
+		await loadTargetAIAnalyses()
+		targetAIAnalysisID.value = response.data.data.id
+	} catch (err: any) { ElMessage.error(err?.response?.data?.message || 'AI 研判请求超时或失败；请检查供应商配置、额度或适当提高模型超时后手动重试') } finally { targetAIGenerating.value = false }
 }
 
 async function refreshTargetEarningsPreview() {
@@ -1303,5 +1368,7 @@ onMounted(() => {
     filters.status = status
   }
   load()
+	void loadAIProviders()
 })
+onUnmounted(() => { if (targetAIPollingTimer !== undefined) window.clearTimeout(targetAIPollingTimer) })
 </script>

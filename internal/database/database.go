@@ -84,6 +84,7 @@ func Migrate(db *gorm.DB) error {
 		&model.NotificationBatch{},
 		&model.NotificationBatchItem{},
 		&model.InAppNotification{},
+		&model.AIAnalysis{},
 		&model.TradeSetupNotificationState{},
 		&model.MacroRelease{},
 		&model.MacroObservation{},

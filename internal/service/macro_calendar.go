@@ -58,6 +58,12 @@ const (
 	defaultEIAWeeklyPetroleumURL     = "https://www.eia.gov/petroleum/supply/weekly/"
 	defaultEIAWeeklyPetroleumTable4  = "https://ir.eia.gov/wpsr/table4.csv"
 	defaultFREDCPIURL                = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL,CPILFESL"
+	// BLS occasionally rejects automated requests to its public iCalendar and
+	// release pages. These public FRED mirrors retain BLS as their original
+	// source and give the calendar a durable, auditable fallback for the two
+	// most market-sensitive BLS reports.
+	defaultFREDEmploymentURL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PAYEMS,UNRATE,CES0500000003"
+	defaultFREDPPIURL        = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PPIFIS,WPSFD49116"
 )
 
 type macroHTTPClient interface {
@@ -129,6 +135,8 @@ type MacroCalendarService struct {
 	eiaWeeklyPetroleumTable4  string
 	fomcScheduleURL           string
 	fredCPIURL                string
+	fredEmploymentURL         string
+	fredPPIURL                string
 	now                       func() time.Time
 	configs                   *ConfigService
 	runtime                   config.DiscoveryConfig
@@ -155,6 +163,8 @@ func NewMacroCalendarService(db *gorm.DB) *MacroCalendarService {
 		eiaWeeklyPetroleumURL:     defaultEIAWeeklyPetroleumURL,
 		eiaWeeklyPetroleumTable4:  defaultEIAWeeklyPetroleumTable4,
 		fredCPIURL:                defaultFREDCPIURL,
+		fredEmploymentURL:         defaultFREDEmploymentURL,
+		fredPPIURL:                defaultFREDPPIURL,
 	}
 }
 
@@ -241,67 +251,69 @@ func (s *MacroCalendarService) SyncOfficialBEA(ctx context.Context) (MacroCalend
 	if s == nil || s.db == nil || s.client == nil {
 		return result, errors.New("macro calendar service is not configured")
 	}
+	// The individual official sources are independent.  Do not let a BEA
+	// outage prevent the BLS/FRED, Fed, Treasury, Census, DOL, EIA, or
+	// Longbridge portions of the calendar from refreshing.
 	body, err := s.fetch(ctx, s.scheduleURL)
 	if err != nil {
-		return result, fmt.Errorf("load BEA release schedule: %w", err)
-	}
-	events, err := parseBEASchedule(body, s.scheduleURL, s.now().UTC())
-	if err != nil {
-		return result, fmt.Errorf("parse BEA release schedule: %w", err)
-	}
-	result.ScheduledFound = len(events)
-	for _, event := range events {
-		release, saved, saveErr := s.upsertRelease(ctx, event)
-		if saveErr != nil {
-			result.Warnings = append(result.Warnings, "保存官方日历事件失败："+sanitizeMacroError(saveErr))
-			continue
-		}
-		if saved {
-			result.ReleasesSaved++
-		}
-		// Published releases are immutable release-time records. Re-fetch only
-		// entries we have not successfully captured yet; this keeps the daily
-		// calendar job small and avoids repeatedly hitting the public site for
-		// historical data that is already locally auditable.
-		if release.Status == MacroReleasePublished && strings.TrimSpace(release.SourceHash) != "" {
-			continue
-		}
-		if event.ReleaseURL == "" || event.ScheduledAt.After(s.now().UTC().Add(5*time.Minute)) {
-			continue
-		}
-		releaseBody, fetchErr := s.fetch(ctx, event.ReleaseURL)
-		if fetchErr != nil {
-			result.Warnings = append(result.Warnings, event.Title+"：官方公告暂不可读取（"+sanitizeMacroError(fetchErr)+"）")
-			continue
-		}
-		observations := parseBEAReleaseObservations(event, releaseBody)
-		if len(observations) == 0 {
-			// A scheduled entry can legally point to an explanatory page rather
-			// than a release. Preserve the calendar item without fabricating data.
-			continue
-		}
-		publishedAt := event.ScheduledAt
-		if err := s.db.WithContext(ctx).Model(&model.MacroRelease{}).Where("id = ?", release.ID).Updates(map[string]any{
-			"status": MacroReleasePublished, "published_at": &publishedAt, "source_hash": hashMacroBody(releaseBody), "fetched_at": s.now().UTC(), "last_error": "",
-		}).Error; err != nil {
-			return result, err
-		}
-		result.Published++
-		for _, observation := range observations {
-			observation.ReleaseID = release.ID
-			observation.SourceURL = event.ReleaseURL
-			observation.ProviderUpdatedAt = &publishedAt
-			observation.FetchedAt = s.now().UTC()
-			if prior, priorErr := s.previousOfficialValue(ctx, release.Provider, observation.IndicatorCode, release.ID, event.ScheduledAt); priorErr == nil {
-				observation.PreviousValue = prior
+		result.Warnings = append(result.Warnings, "BEA 官方日历同步提示："+sanitizeMacroError(err))
+	} else if events, parseErr := parseBEASchedule(body, s.scheduleURL, s.now().UTC()); parseErr != nil {
+		result.Warnings = append(result.Warnings, "BEA 官方日历解析提示："+sanitizeMacroError(parseErr))
+	} else {
+		result.ScheduledFound = len(events)
+		for _, event := range events {
+			release, saved, saveErr := s.upsertRelease(ctx, event)
+			if saveErr != nil {
+				result.Warnings = append(result.Warnings, "保存官方日历事件失败："+sanitizeMacroError(saveErr))
+				continue
 			}
-			if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "release_id"}, {Name: "indicator_code"}},
-				DoUpdates: clause.AssignmentColumns([]string{"indicator_name", "frequency", "unit", "actual_value", "previous_value", "previous_revised", "source_field", "source_url", "provider_updated_at", "fetched_at", "updated_at"}),
-			}).Create(&observation).Error; err != nil {
+			if saved {
+				result.ReleasesSaved++
+			}
+			// Published releases are immutable release-time records. Re-fetch only
+			// entries we have not successfully captured yet; this keeps the daily
+			// calendar job small and avoids repeatedly hitting the public site for
+			// historical data that is already locally auditable.
+			if release.Status == MacroReleasePublished && strings.TrimSpace(release.SourceHash) != "" {
+				continue
+			}
+			if event.ReleaseURL == "" || event.ScheduledAt.After(s.now().UTC().Add(5*time.Minute)) {
+				continue
+			}
+			releaseBody, fetchErr := s.fetch(ctx, event.ReleaseURL)
+			if fetchErr != nil {
+				result.Warnings = append(result.Warnings, event.Title+"：官方公告暂不可读取（"+sanitizeMacroError(fetchErr)+"）")
+				continue
+			}
+			observations := parseBEAReleaseObservations(event, releaseBody)
+			if len(observations) == 0 {
+				// A scheduled entry can legally point to an explanatory page rather
+				// than a release. Preserve the calendar item without fabricating data.
+				continue
+			}
+			publishedAt := event.ScheduledAt
+			if err := s.db.WithContext(ctx).Model(&model.MacroRelease{}).Where("id = ?", release.ID).Updates(map[string]any{
+				"status": MacroReleasePublished, "published_at": &publishedAt, "source_hash": hashMacroBody(releaseBody), "fetched_at": s.now().UTC(), "last_error": "",
+			}).Error; err != nil {
 				return result, err
 			}
-			result.Observations++
+			result.Published++
+			for _, observation := range observations {
+				observation.ReleaseID = release.ID
+				observation.SourceURL = event.ReleaseURL
+				observation.ProviderUpdatedAt = &publishedAt
+				observation.FetchedAt = s.now().UTC()
+				if prior, priorErr := s.previousOfficialValue(ctx, release.Provider, observation.IndicatorCode, release.ID, event.ScheduledAt); priorErr == nil {
+					observation.PreviousValue = prior
+				}
+				if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "release_id"}, {Name: "indicator_code"}},
+					DoUpdates: clause.AssignmentColumns([]string{"indicator_name", "frequency", "unit", "actual_value", "previous_value", "previous_revised", "source_field", "source_url", "provider_updated_at", "fetched_at", "updated_at"}),
+				}).Create(&observation).Error; err != nil {
+					return result, err
+				}
+				result.Observations++
+			}
 		}
 	}
 	// BLS and the Federal Reserve are independent official sources. A transient
@@ -315,6 +327,12 @@ func (s *MacroCalendarService) SyncOfficialBEA(ctx context.Context) (MacroCalend
 	// without fabricating a release from an unofficial estimate.
 	if err := s.syncFREDCPI(ctx, &result); err != nil {
 		result.Warnings = append(result.Warnings, "FRED CPI 回填提示："+sanitizeMacroError(err))
+	}
+	if err := s.syncFREDEmployment(ctx, &result); err != nil {
+		result.Warnings = append(result.Warnings, "FRED 就业报告回填提示："+sanitizeMacroError(err))
+	}
+	if err := s.syncFREDPPI(ctx, &result); err != nil {
+		result.Warnings = append(result.Warnings, "FRED PPI 回填提示："+sanitizeMacroError(err))
 	}
 	if err := s.syncOfficialFOMC(ctx, &result); err != nil {
 		result.Warnings = append(result.Warnings, "美联储 FOMC 日历同步提示："+sanitizeMacroError(err))
@@ -601,6 +619,10 @@ func macroPercentChange(value, base *float64) *float64 {
 }
 
 func fredCPIObservationURL(rawURL string, period time.Time) string {
+	return fredObservationURL(rawURL, period)
+}
+
+func fredObservationURL(rawURL string, period time.Time) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return rawURL + "#" + period.Format("2006-01-02")
@@ -609,6 +631,213 @@ func fredCPIObservationURL(rawURL string, period time.Time) string {
 	query.Set("observation_date", period.Format("2006-01-02"))
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
+}
+
+type fredEmploymentRecord struct {
+	Period         time.Time
+	PayrollsK      *float64
+	Unemployment   *float64
+	HourlyEarnings *float64
+}
+
+type fredPPIRecord struct {
+	Period time.Time
+	PPI    *float64
+	Core   *float64
+}
+
+// syncFREDEmployment stores a BLS-backed fallback when BLS's public calendar
+// is unavailable. FRED's CSV is indexed by reference month, not release time;
+// the release stage deliberately makes that distinction visible to the UI.
+func (s *MacroCalendarService) syncFREDEmployment(ctx context.Context, result *MacroCalendarSyncResult) error {
+	if strings.TrimSpace(s.fredEmploymentURL) == "" {
+		return nil
+	}
+	body, err := s.fetchCSV(ctx, s.fredEmploymentURL)
+	if err != nil {
+		return fmt.Errorf("load FRED employment series: %w", err)
+	}
+	records, err := parseFREDEmploymentRecords(body)
+	if err != nil {
+		return err
+	}
+	return s.syncFREDMonthlyFallback(ctx, "employment", "美国就业报告 / 非农（FRED 镜像，原始来源：BLS）", s.fredEmploymentURL, body, len(records), func(index int) (time.Time, []model.MacroObservation) {
+		return records[index].Period, buildFREDEmploymentObservations(records, index)
+	}, result)
+}
+
+func parseFREDEmploymentRecords(raw string) ([]fredEmploymentRecord, error) {
+	reader := csv.NewReader(strings.NewReader(raw))
+	rows, err := reader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	columns := macroCSVColumns(rows)
+	dateColumn, hasDate := columns["OBSERVATION_DATE"]
+	payrollColumn, hasPayroll := columns["PAYEMS"]
+	unemploymentColumn, hasUnemployment := columns["UNRATE"]
+	hourlyColumn, hasHourly := columns["CES0500000003"]
+	if !hasDate || !hasPayroll || !hasUnemployment || !hasHourly {
+		return nil, errors.New("CSV did not contain PAYEMS, UNRATE, and CES0500000003")
+	}
+	result := make([]fredEmploymentRecord, 0, len(rows)-1)
+	for _, row := range rows[1:] {
+		if len(row) <= maxMacroColumn(dateColumn, payrollColumn, unemploymentColumn, hourlyColumn) {
+			continue
+		}
+		period, parseErr := time.Parse("2006-01-02", strings.TrimSpace(row[dateColumn]))
+		if parseErr != nil {
+			continue
+		}
+		result = append(result, fredEmploymentRecord{Period: period.UTC(), PayrollsK: macroFloat(strings.TrimSpace(row[payrollColumn])), Unemployment: macroFloat(strings.TrimSpace(row[unemploymentColumn])), HourlyEarnings: macroFloat(strings.TrimSpace(row[hourlyColumn]))})
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left].Period.Before(result[right].Period) })
+	if len(result) < 2 {
+		return nil, errors.New("FRED employment series did not contain enough monthly observations")
+	}
+	return result, nil
+}
+
+func buildFREDEmploymentObservations(records []fredEmploymentRecord, index int) []model.MacroObservation {
+	if index < 1 || index >= len(records) {
+		return nil
+	}
+	current, prior := records[index], records[index-1]
+	observations := make([]model.MacroObservation, 0, 3)
+	if current.PayrollsK != nil && prior.PayrollsK != nil {
+		change := math.Round((*current.PayrollsK-*prior.PayrollsK)*10) / 10
+		observations = append(observations, model.MacroObservation{IndicatorCode: "nonfarm_payrolls_change_k", IndicatorName: "非农就业人数变动", Frequency: "monthly", Unit: "K", ActualValue: &change, SourceField: "FRED PAYEMS（原始来源：BLS；季调总非农就业）"})
+	}
+	if current.Unemployment != nil {
+		value := *current.Unemployment
+		observations = append(observations, model.MacroObservation{IndicatorCode: "unemployment_rate", IndicatorName: "失业率", Frequency: "monthly", Unit: "%", ActualValue: &value, SourceField: "FRED UNRATE（原始来源：BLS）"})
+	}
+	if change := macroPercentChange(current.HourlyEarnings, prior.HourlyEarnings); change != nil {
+		observations = append(observations, model.MacroObservation{IndicatorCode: "average_hourly_earnings_mom", IndicatorName: "平均时薪月率", Frequency: "monthly", Unit: "%", ActualValue: change, SourceField: "FRED CES0500000003（原始来源：BLS；季调）"})
+	}
+	return observations
+}
+
+func (s *MacroCalendarService) syncFREDPPI(ctx context.Context, result *MacroCalendarSyncResult) error {
+	if strings.TrimSpace(s.fredPPIURL) == "" {
+		return nil
+	}
+	body, err := s.fetchCSV(ctx, s.fredPPIURL)
+	if err != nil {
+		return fmt.Errorf("load FRED PPI series: %w", err)
+	}
+	records, err := parseFREDPPIRecords(body)
+	if err != nil {
+		return err
+	}
+	return s.syncFREDMonthlyFallback(ctx, "ppi", "美国 PPI / 核心 PPI（FRED 镜像，原始来源：BLS）", s.fredPPIURL, body, len(records), func(index int) (time.Time, []model.MacroObservation) {
+		return records[index].Period, buildFREDPPIObservations(records, index)
+	}, result)
+}
+
+func parseFREDPPIRecords(raw string) ([]fredPPIRecord, error) {
+	reader := csv.NewReader(strings.NewReader(raw))
+	rows, err := reader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	columns := macroCSVColumns(rows)
+	dateColumn, hasDate := columns["OBSERVATION_DATE"]
+	ppiColumn, hasPPI := columns["PPIFIS"]
+	coreColumn, hasCore := columns["WPSFD49116"]
+	if !hasDate || !hasPPI || !hasCore {
+		return nil, errors.New("CSV did not contain PPIFIS and WPSFD49116")
+	}
+	result := make([]fredPPIRecord, 0, len(rows)-1)
+	for _, row := range rows[1:] {
+		if len(row) <= maxMacroColumn(dateColumn, ppiColumn, coreColumn) {
+			continue
+		}
+		period, parseErr := time.Parse("2006-01-02", strings.TrimSpace(row[dateColumn]))
+		if parseErr != nil {
+			continue
+		}
+		result = append(result, fredPPIRecord{Period: period.UTC(), PPI: macroFloat(strings.TrimSpace(row[ppiColumn])), Core: macroFloat(strings.TrimSpace(row[coreColumn]))})
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left].Period.Before(result[right].Period) })
+	if len(result) < 2 {
+		return nil, errors.New("FRED PPI series did not contain enough monthly observations")
+	}
+	return result, nil
+}
+
+func buildFREDPPIObservations(records []fredPPIRecord, index int) []model.MacroObservation {
+	if index < 1 || index >= len(records) {
+		return nil
+	}
+	current, prior := records[index], records[index-1]
+	observations := make([]model.MacroObservation, 0, 2)
+	if change := macroPercentChange(current.PPI, prior.PPI); change != nil {
+		observations = append(observations, model.MacroObservation{IndicatorCode: "ppi_mom", IndicatorName: "PPI 月率", Frequency: "monthly", Unit: "%", ActualValue: change, SourceField: "FRED PPIFIS（原始来源：BLS；季调最终需求）"})
+	}
+	if change := macroPercentChange(current.Core, prior.Core); change != nil {
+		observations = append(observations, model.MacroObservation{IndicatorCode: "core_ppi_mom", IndicatorName: "核心 PPI 月率", Frequency: "monthly", Unit: "%", ActualValue: change, SourceField: "FRED WPSFD49116（原始来源：BLS；季调，不含食品、能源和贸易服务）"})
+	}
+	return observations
+}
+
+func (s *MacroCalendarService) syncFREDMonthlyFallback(ctx context.Context, category, title, sourceURL, body string, recordCount int, observationAt func(int) (time.Time, []model.MacroObservation), result *MacroCalendarSyncResult) error {
+	if recordCount < 2 {
+		return nil
+	}
+	var existing int64
+	if err := s.db.WithContext(ctx).Model(&model.MacroRelease{}).Where("provider = ? AND category = ?", MacroProviderFRED, category).Count(&existing).Error; err != nil {
+		return err
+	}
+	limit := 3
+	if existing == 0 {
+		limit = 36
+	}
+	start := recordCount - limit
+	if start < 1 {
+		start = 1
+	}
+	for index := start; index < recordCount; index++ {
+		period, observations := observationAt(index)
+		if len(observations) == 0 {
+			continue
+		}
+		referencePeriod := period.Format("January 2006")
+		var duplicate int64
+		if err := s.db.WithContext(ctx).Model(&model.MacroRelease{}).Where("category = ? AND reference_period = ? AND status = ?", category, referencePeriod, MacroReleasePublished).Count(&duplicate).Error; err != nil {
+			return err
+		}
+		if duplicate > 0 {
+			continue
+		}
+		event := beaScheduleEvent{Provider: MacroProviderFRED, Category: category, Title: title, ReferencePeriod: referencePeriod, ReleaseStage: "fred_mirror", ScheduledAt: period.UTC(), SourceURL: fredObservationURL(sourceURL, period)}
+		release, saved, err := s.upsertRelease(ctx, event)
+		if err != nil {
+			return err
+		}
+		if saved {
+			result.ReleasesSaved++
+		}
+		result.ScheduledFound++
+		if release.Status == MacroReleasePublished && strings.TrimSpace(release.SourceHash) != "" {
+			continue
+		}
+		if err := s.publishMacroRelease(ctx, &release, event.SourceURL, body, observations, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func macroCSVColumns(rows [][]string) map[string]int {
+	columns := map[string]int{}
+	if len(rows) == 0 {
+		return columns
+	}
+	for index, name := range rows[0] {
+		columns[strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(name, "\ufeff")))] = index
+	}
+	return columns
 }
 
 func maxMacroColumn(values ...int) int {

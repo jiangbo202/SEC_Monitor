@@ -11,6 +11,7 @@
         <el-menu-item index="/strategy-pool"><el-icon><Compass /></el-icon><span>{{ t('nav.strategyPool') }}</span></el-menu-item>
 		<el-menu-item index="/ticker-evaluation"><el-icon><MagicStick /></el-icon><span>{{ t('nav.tickerEvaluation') }}</span></el-menu-item>
 		<el-menu-item index="/option-research"><el-icon><DataAnalysis /></el-icon><span>期权与多空研究</span></el-menu-item>
+        <el-menu-item index="/ai-analyses"><el-icon><MagicStick /></el-icon><span>AI 分析记录</span></el-menu-item>
         <el-menu-item index="/targets"><el-icon><Aim /></el-icon><span>{{ t('nav.targets') }}</span></el-menu-item>
         <el-menu-item index="/filings"><el-icon><Document /></el-icon><span>{{ t('nav.filings') }}</span></el-menu-item>
         <el-menu-item index="/event-radar"><el-icon><Warning /></el-icon><span>{{ t('nav.eventRadar') }}</span></el-menu-item>
@@ -77,7 +78,7 @@
       <button v-for="item in inboxItems" :key="item.id" class="inbox-item" :class="[{ unread: !item.read_at }, `severity-${item.severity}`]" @click="openMessage(item)">
         <div class="inbox-item-head">
           <el-tag size="small" :type="sourceTagType(item.source)" effect="plain">{{ sourceLabel(item.source) }}</el-tag>
-          <time>{{ formatMessageTime(item.occurred_at) }}</time>
+          <time :title="'通知生成时间'">{{ formatMessageTime(item.created_at) }}</time>
         </div>
         <strong>{{ item.ticker ? `${item.ticker}｜` : '' }}{{ item.title }}</strong>
         <p v-if="item.body">{{ item.body }}</p>
@@ -154,11 +155,11 @@ async function openMessage(item: InAppNotification) {
 }
 
 function sourceLabel(source: string) {
-  return ({ earnings_preview: '财报预告', earnings_preview_watch_target: '监控标的 · 财报预告', earnings_preview_candidate: '小盘候选 · 财报预告', earnings_release: '财报发布', earnings_release_watch_target: '监控标的 · 财报发布', earnings_release_candidate: '小盘候选 · 财报发布', technical_signal: '技术信号', technical_signal_watch_target: '监控标的 · 技术信号', technical_signal_candidate: '小盘候选 · 技术信号', major_event: '重大事件', major_event_watch_target: '监控标的 · 重大事件', insider_trading: '内幕交易', insider_trading_watch_target: '监控标的 · 内幕交易', ipo_progress: '关注 IPO 进展' } as Record<string, string>)[source] || source
+  return ({ earnings_preview: '财报预告', earnings_preview_watch_target: '监控标的 · 财报预告', earnings_preview_candidate: '小盘候选 · 财报预告', earnings_release: '财报发布', earnings_release_watch_target: '监控标的 · 财报发布', earnings_release_candidate: '小盘候选 · 财报发布', technical_signal: '技术信号', technical_signal_watch_target: '监控标的 · 技术信号', technical_signal_candidate: '小盘候选 · 技术信号', major_event: '重大事件', major_event_watch_target: '监控标的 · 重大事件', insider_trading: '内幕交易', insider_trading_watch_target: '监控标的 · 内幕交易', ipo_progress: '关注 IPO 进展', ai_analysis: 'AI 研判' } as Record<string, string>)[source] || source
 }
 
 function sourceTagType(source: string) {
-  return ({ earnings_preview: 'info', earnings_preview_watch_target: 'info', earnings_preview_candidate: 'info', earnings_release: 'success', earnings_release_watch_target: 'success', earnings_release_candidate: 'success', technical_signal: 'warning', technical_signal_watch_target: 'warning', technical_signal_candidate: 'warning', major_event: 'danger', major_event_watch_target: 'danger', insider_trading: 'warning', insider_trading_watch_target: 'warning', ipo_progress: 'primary' } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[source] || 'info'
+  return ({ earnings_preview: 'info', earnings_preview_watch_target: 'info', earnings_preview_candidate: 'info', earnings_release: 'success', earnings_release_watch_target: 'success', earnings_release_candidate: 'success', technical_signal: 'warning', technical_signal_watch_target: 'warning', technical_signal_candidate: 'warning', major_event: 'danger', major_event_watch_target: 'danger', insider_trading: 'warning', insider_trading_watch_target: 'warning', ipo_progress: 'primary', ai_analysis: 'primary' } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[source] || 'info'
 }
 
 function formatMessageTime(value: string) {

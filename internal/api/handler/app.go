@@ -49,6 +49,7 @@ type AppHandler struct {
 	Macro                  *service.MacroCalendarService
 	MarketTrend            *service.MarketTrendService
 	USFutures              *service.USFuturesService
+	AIAnalysis             *service.AIAnalysisService
 	EarningsPreview        *service.EarningsPreviewService
 	Scheduler              SchedulerController
 	tickerEvaluationMu     sync.Mutex
