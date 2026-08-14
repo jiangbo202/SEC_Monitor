@@ -66,7 +66,14 @@ type CurrentFilingsClient interface {
 }
 
 type IPOMarketClient interface {
+	FilingDocumentFetcher
 	ListListedCompanies(ctx context.Context) ([]ListedCompany, error)
+}
+
+// FilingDocumentFetcher is intentionally narrow so manual features such as
+// SEC filing AI analysis can fetch a known, persisted EDGAR document without
+// gaining a general-purpose outbound HTTP capability.
+type FilingDocumentFetcher interface {
 	FetchFilingDocument(ctx context.Context, filingURL string) (string, error)
 }
 

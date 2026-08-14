@@ -973,7 +973,7 @@ async function loadTargetDetailData(row: WatchTarget) {
 
 async function loadAIProviders() {
 	try {
-		const [response, templateResponse] = await Promise.all([apiClient.get('/ai/providers'), apiClient.get('/ai/prompt-templates')])
+		const [response, templateResponse] = await Promise.all([apiClient.get('/ai/providers'), apiClient.get('/ai/prompt-templates', { params: { scope: 'watch_target_detail' } })])
 		aiProviders.value = response.data.data || []; aiPromptTemplates.value = templateResponse.data.data || []
 		if (!targetAIProvider.value && aiProviders.value.length) targetAIProvider.value = aiProviders.value[0].id
 		if (!targetAIPromptTemplate.value && aiPromptTemplates.value.length) targetAIPromptTemplate.value = aiPromptTemplates.value[0].id

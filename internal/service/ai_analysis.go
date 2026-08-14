@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
+	"sec_monitor/internal/sec"
 
 	"gorm.io/gorm"
 )
@@ -27,6 +29,7 @@ const (
 	aiAnalysisMaxOutputTokens         = 2_400
 	aiAnalysisDefaultTimeout          = 120 * time.Second
 	aiAnalysisMaxArrayItems           = 12
+	aiAnalysisMaxSECDocumentBytes     = 36_000
 )
 
 const aiAnalysisSystemPrompt = "你必须清楚区分事实、推断和数据缺口。"
@@ -47,6 +50,8 @@ type AIAnalysisInput struct {
 	Ticker      string                           `json:"ticker,omitempty"`
 	CompanyName string                           `json:"company_name,omitempty"`
 	TargetType  string                           `json:"target_type,omitempty"`
+	SourceID    string                           `json:"source_id,omitempty"`
+	SourceURL   string                           `json:"source_url,omitempty"`
 	Context     any                              `json:"context,omitempty"`
 	Evaluation  discovery.TickerEvaluationResult `json:"evaluation"`
 }
@@ -65,6 +70,7 @@ type AIAnalysisService struct {
 	inApp              *InAppNotificationService
 	notificationCenter *NotificationBatchService
 	httpClient         *http.Client
+	secFilingFetcher   sec.FilingDocumentFetcher
 	queueMu            sync.Mutex
 }
 
@@ -75,6 +81,13 @@ func NewAIAnalysisService(db *gorm.DB, configs *ConfigService, audit *AuditServi
 func (s *AIAnalysisService) WithHTTPClient(client *http.Client) *AIAnalysisService {
 	if client != nil {
 		s.httpClient = client
+	}
+	return s
+}
+
+func (s *AIAnalysisService) WithSECFilingFetcher(fetcher sec.FilingDocumentFetcher) *AIAnalysisService {
+	if fetcher != nil {
+		s.secFilingFetcher = fetcher
 	}
 	return s
 }
@@ -106,6 +119,11 @@ func (s *AIAnalysisService) QueueTickerAnalysis(ctx context.Context, input AIAna
 	if ticker == "" || strings.TrimSpace(input.ProviderID) == "" || snapshotValue == nil {
 		return model.AIAnalysis{}, ErrValidation
 	}
+	scope := strings.TrimSpace(input.Scope)
+	if scope == "" {
+		scope = "ticker_evaluation"
+	}
+	input.Scope = scope
 	providers, err := s.configs.AIProviders(ctx)
 	if err != nil {
 		return model.AIAnalysis{}, err
@@ -137,15 +155,18 @@ func (s *AIAnalysisService) QueueTickerAnalysis(ctx context.Context, input AIAna
 		return model.AIAnalysis{}, err
 	}
 	hash := sha256.Sum256(snapshot)
-	scope := strings.TrimSpace(input.Scope)
-	if scope == "" {
-		scope = "ticker_evaluation"
-	}
-	record := model.AIAnalysis{Scope: scope, Ticker: ticker, CompanyName: companyName, TargetType: targetType, ProviderID: provider.ID, ProviderName: provider.Name, Model: provider.Model, TemplateID: template.ID, TemplateName: template.Name, PromptVersion: promptVersion, SystemPrompt: systemPrompt, UserPrompt: userPrompt, InputSHA256: hex.EncodeToString(hash[:]), InputSnapshot: string(snapshot), Status: "queued", RequestedAt: now}
+	record := model.AIAnalysis{Scope: scope, SourceID: strings.TrimSpace(input.SourceID), SourceURL: strings.TrimSpace(input.SourceURL), Ticker: ticker, CompanyName: companyName, TargetType: targetType, ProviderID: provider.ID, ProviderName: provider.Name, Model: provider.Model, TemplateID: template.ID, TemplateName: template.Name, PromptVersion: promptVersion, SystemPrompt: systemPrompt, UserPrompt: userPrompt, InputSHA256: hex.EncodeToString(hash[:]), InputSnapshot: string(snapshot), Status: "queued", RequestedAt: now}
 	s.queueMu.Lock()
 	defer s.queueMu.Unlock()
 	var existing model.AIAnalysis
-	err = s.db.WithContext(ctx).Where("scope = ? AND ticker = ? AND provider_id = ? AND status IN ?", scope, ticker, provider.ID, []string{"queued", "running"}).Order("id DESC").First(&existing).Error
+	activeQuery := s.db.WithContext(ctx).Where("scope = ? AND ticker = ? AND provider_id = ? AND status IN ?", scope, ticker, provider.ID, []string{"queued", "running"})
+	// SEC analyses are tied to one persisted filing. Different filings for the
+	// same ticker may be analysed at the same time; only the same document is
+	// deduplicated while it is queued or running.
+	if scope == "sec_filing" {
+		activeQuery = activeQuery.Where("source_id = ?", strings.TrimSpace(input.SourceID))
+	}
+	err = activeQuery.Order("id DESC").First(&existing).Error
 	if err == nil {
 		return model.AIAnalysis{}, TaskAlreadyRunning("ai_analysis:" + scope + ":" + ticker + ":" + provider.ID)
 	}
@@ -159,6 +180,24 @@ func (s *AIAnalysisService) QueueTickerAnalysis(ctx context.Context, input AIAna
 		_ = s.audit.Record(ctx, operator, "queue", "ai_analysis", fmt.Sprintf("%d", record.ID), nil, map[string]any{"ticker": record.Ticker, "provider_id": record.ProviderID, "model": record.Model, "status": record.Status, "prompt_version": record.PromptVersion})
 	}
 	return record, nil
+}
+
+// QueueSECFilingAnalysis creates an auditable, explicitly requested SEC
+// analysis. The source URL comes only from a persisted Filing record; callers
+// cannot use this path as an arbitrary server-side URL fetcher.
+func (s *AIAnalysisService) QueueSECFilingAnalysis(ctx context.Context, providerID, templateID string, filing model.Filing, operator string) (model.AIAnalysis, error) {
+	if filing.ID == 0 || strings.TrimSpace(filing.Ticker) == "" || !isAllowedSECFilingURL(filing.FilingURL) {
+		return model.AIAnalysis{}, ErrValidation
+	}
+	contextValue := map[string]any{
+		"filing_id": filing.FilingID, "accession_number": filing.AccessionNumber,
+		"filing_type": filing.FilingType, "filing_date": filing.FilingDate.Format("2006-01-02"),
+		"published_at": filing.PublishedAt, "title": filing.Title, "filing_url": filing.FilingURL,
+	}
+	return s.QueueTickerAnalysis(ctx, AIAnalysisInput{
+		ProviderID: providerID, TemplateID: templateID, Scope: "sec_filing", SourceID: fmt.Sprintf("%d", filing.ID), SourceURL: filing.FilingURL,
+		Ticker: filing.Ticker, CompanyName: filing.CompanyName, TargetType: "sec_filing", Context: contextValue,
+	}, operator)
 }
 
 // ProcessTickerAnalysis claims a queued request and performs the provider call
@@ -193,6 +232,11 @@ func (s *AIAnalysisService) ProcessTickerAnalysis(ctx context.Context, id uint, 
 	if provider == nil {
 		return s.finishAIAnalysis(ctx, record, "", errors.New("selected AI provider is unavailable or disabled"), operator)
 	}
+	if record.Scope == "sec_filing" {
+		if record, err = s.enrichSECFilingAnalysis(ctx, record); err != nil {
+			return s.finishAIAnalysis(ctx, record, "", err, operator)
+		}
+	}
 	systemPrompt, userPrompt := record.SystemPrompt, record.UserPrompt
 	if strings.TrimSpace(systemPrompt) == "" || strings.TrimSpace(userPrompt) == "" {
 		// Records made before request prompts were persisted remain executable.
@@ -200,6 +244,83 @@ func (s *AIAnalysisService) ProcessTickerAnalysis(ctx context.Context, id uint, 
 	}
 	content, callErr := s.callOpenAICompatibleWithPrompts(ctx, *provider, systemPrompt, userPrompt)
 	return s.finishAIAnalysis(ctx, record, content, callErr, operator)
+}
+
+func (s *AIAnalysisService) enrichSECFilingAnalysis(ctx context.Context, record model.AIAnalysis) (model.AIAnalysis, error) {
+	if s.secFilingFetcher == nil {
+		return record, errors.New("SEC filing document fetcher is not configured")
+	}
+	if !isAllowedSECFilingURL(record.SourceURL) {
+		return record, ErrValidation
+	}
+	document, err := s.secFilingFetcher.FetchFilingDocument(ctx, record.SourceURL)
+	if err != nil {
+		return record, fmt.Errorf("fetch persisted SEC filing document: %w", err)
+	}
+	text := compactSECFilingDocument(document)
+	if text == "" {
+		return record, errors.New("SEC filing document has no readable text")
+	}
+	var snapshotValue map[string]any
+	if err := json.Unmarshal([]byte(record.InputSnapshot), &snapshotValue); err != nil {
+		return record, fmt.Errorf("parse SEC filing analysis snapshot: %w", err)
+	}
+	snapshotValue["document_text"] = text
+	snapshot, err := buildAIResearchSnapshot(snapshotValue)
+	if err != nil {
+		return record, err
+	}
+	if len(snapshot) > aiAnalysisMaxInputBytes {
+		snapshot = snapshot[:aiAnalysisMaxInputBytes]
+	}
+	input := AIAnalysisInput{TemplateID: record.TemplateID, Scope: record.Scope, SourceURL: record.SourceURL}
+	systemPrompt, userPrompt, promptVersion, template, err := s.configuredAIAnalysisPrompts(ctx, string(snapshot), input, record.Ticker, record.CompanyName, record.TargetType, record.RequestedAt)
+	if err != nil {
+		return record, err
+	}
+	hash := sha256.Sum256(snapshot)
+	updates := map[string]any{
+		"input_snapshot": string(snapshot), "input_sha256": hex.EncodeToString(hash[:]), "system_prompt": systemPrompt,
+		"user_prompt": userPrompt, "prompt_version": promptVersion, "template_name": template.Name,
+	}
+	if err := s.db.WithContext(ctx).Model(&model.AIAnalysis{}).Where("id = ?", record.ID).Updates(updates).Error; err != nil {
+		return record, err
+	}
+	record.InputSnapshot, record.InputSHA256, record.SystemPrompt, record.UserPrompt = string(snapshot), hex.EncodeToString(hash[:]), systemPrompt, userPrompt
+	record.PromptVersion, record.TemplateName = promptVersion, template.Name
+	return record, nil
+}
+
+func isAllowedSECFilingURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "sec.gov" || host == "www.sec.gov" || host == "archives.sec.gov"
+}
+
+func compactSECFilingDocument(value string) string {
+	// EDGAR primary documents are usually HTML. A deliberately conservative
+	// text normalisation keeps the factual content readable without executing
+	// or forwarding markup to the third-party model.
+	value = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ", "&nbsp;", " ").Replace(value)
+	for {
+		start := strings.Index(value, "<")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(value[start:], ">")
+		if end < 0 {
+			break
+		}
+		value = value[:start] + " " + value[start+end+1:]
+	}
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > aiAnalysisMaxSECDocumentBytes {
+		value = value[:aiAnalysisMaxSECDocumentBytes] + " [正文已截断]"
+	}
+	return strings.TrimSpace(value)
 }
 
 func (s *AIAnalysisService) finishAIAnalysis(ctx context.Context, record model.AIAnalysis, content string, callErr error, operator string) (model.AIAnalysis, error) {
@@ -231,7 +352,11 @@ func (s *AIAnalysisService) finishAIAnalysis(ctx context.Context, record model.A
 			severity, title = "warning", fmt.Sprintf("%s | AI 研判失败", record.Ticker)
 			body = fmt.Sprintf("%s · %s · 耗时 %s。%s", record.ProviderName, record.Model, formatAIAnalysisDuration(record.DurationMS), record.ErrorMessage)
 		}
-		_, _, _ = s.inApp.Create(ctx, InAppNotificationInput{EventKey: fmt.Sprintf("ai_analysis:%d:%s", record.ID, record.Status), Source: "ai_analysis", Scope: record.Scope, EntityKind: "ai_analysis", Ticker: record.Ticker, CompanyName: record.CompanyName, Severity: severity, Title: title, Body: body, Link: "/ai-analyses", OccurredAt: completed})
+		link := "/ai-analyses"
+		if record.Scope == "sec_filing" {
+			link = fmt.Sprintf("/ai-analyses?scope=sec_filing&ticker=%s", url.QueryEscape(record.Ticker))
+		}
+		_, _, _ = s.inApp.Create(ctx, InAppNotificationInput{EventKey: fmt.Sprintf("ai_analysis:%d:%s", record.ID, record.Status), Source: "ai_analysis", Scope: record.Scope, EntityKind: "ai_analysis", Ticker: record.Ticker, CompanyName: record.CompanyName, Severity: severity, Title: title, Body: body, Link: link, OccurredAt: completed})
 	}
 	if s.notificationCenter != nil {
 		statusText := "已完成"
@@ -302,10 +427,12 @@ type aiAnalysisPromptTemplateValues struct {
 	TargetType        string
 	AsOf              string
 	ResearchFactsJSON string
+	FilingURL         string
+	FilingType        string
 }
 
 func (s *AIAnalysisService) configuredAIAnalysisPrompts(ctx context.Context, snapshot string, input AIAnalysisInput, ticker, companyName, targetType string, requestedAt time.Time) (string, string, string, AIPromptTemplate, error) {
-	template, err := s.configs.AIPromptTemplate(ctx, input.TemplateID)
+	template, err := s.configs.AIPromptTemplateForScope(ctx, input.TemplateID, input.Scope)
 	if err != nil {
 		return "", "", "", AIPromptTemplate{}, err
 	}
@@ -321,11 +448,21 @@ func (s *AIAnalysisService) configuredAIAnalysisPrompts(ctx context.Context, sna
 		TargetType:        targetType,
 		AsOf:              requestedAt.Format(time.RFC3339),
 		ResearchFactsJSON: snapshot,
+		FilingURL:         input.SourceURL,
+		FilingType:        filingTypeFromSnapshot(snapshot),
 	})
 	if err != nil {
 		return "", "", "", AIPromptTemplate{}, err
 	}
 	return aiAnalysisSystemPrompt, userPrompt, aiAnalysisPromptTemplateVersion(template.Content), template, nil
+}
+
+func filingTypeFromSnapshot(snapshot string) string {
+	var value struct {
+		FilingType string `json:"filing_type"`
+	}
+	_ = json.Unmarshal([]byte(snapshot), &value)
+	return value.FilingType
 }
 
 func aiAnalysisPromptTemplateVersion(template string) string {
@@ -347,6 +484,8 @@ func renderAIAnalysisPromptTemplate(template string, values aiAnalysisPromptTemp
 		"target_type":         values.TargetType,
 		"as_of":               values.AsOf,
 		"research_facts_json": values.ResearchFactsJSON,
+		"filing_url":          values.FilingURL,
+		"filing_type":         values.FilingType,
 	}
 	for remaining := template; ; {
 		start := strings.Index(remaining, "{{")
