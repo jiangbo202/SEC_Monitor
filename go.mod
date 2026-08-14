@@ -8,7 +8,7 @@ toolchain go1.25.13
 
 require (
 	github.com/gin-gonic/gin v1.10.0
-	github.com/longbridge/openapi-go v0.25.2
+	github.com/longbridge/openapi-go v0.26.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/shopspring/decimal v1.3.1
 	golang.org/x/net v0.55.0
