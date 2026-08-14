@@ -4,7 +4,7 @@
   <a href="https://github.com/jiangbo202/SEC_Monitor/blob/main/LICENSE"><img src="https://img.shields.io/github/license/jiangbo202/SEC_Monitor?style=flat" alt="License"></a>
   <a href="https://github.com/jiangbo202/SEC_Monitor/stargazers"><img src="https://img.shields.io/github/stars/jiangbo202/SEC_Monitor?style=flat&logo=github" alt="GitHub Stars"></a>
   <a href="https://github.com/jiangbo202/SEC_Monitor/releases"><img src="https://img.shields.io/github/v/release/jiangbo202/SEC_Monitor?display_name=tag&style=flat" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/Go-1.24-00ADD8?style=flat&logo=go" alt="Go 1.24">
+  <img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go" alt="Go 1.25">
   <img src="https://img.shields.io/badge/Vue-3-42B883?style=flat&logo=vuedotjs" alt="Vue 3">
 </p>
 
@@ -98,7 +98,7 @@ configuration will no longer be readable.
 
 ### Local development
 
-Prerequisites: Go 1.24+, Node.js 20+ and npm.
+Prerequisites: Go 1.25+, Node.js 20+ and npm. With the default automatic toolchain setting, Go 1.24+ downloads and uses Go 1.25 according to `go.mod`; installing Go 1.25 directly is also supported.
 
 ```bash
 make start      # API :8080, frontend :5173

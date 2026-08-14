@@ -4,7 +4,7 @@
   <a href="https://github.com/jiangbo202/SEC_Monitor/blob/main/LICENSE"><img src="https://img.shields.io/github/license/jiangbo202/SEC_Monitor?style=flat" alt="License"></a>
   <a href="https://github.com/jiangbo202/SEC_Monitor/stargazers"><img src="https://img.shields.io/github/stars/jiangbo202/SEC_Monitor?style=flat&logo=github" alt="GitHub Stars"></a>
   <a href="https://github.com/jiangbo202/SEC_Monitor/releases"><img src="https://img.shields.io/github/v/release/jiangbo202/SEC_Monitor?display_name=tag&style=flat" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/Go-1.24-00ADD8?style=flat&logo=go" alt="Go 1.24">
+  <img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go" alt="Go 1.25">
   <img src="https://img.shields.io/badge/Vue-3-42B883?style=flat&logo=vuedotjs" alt="Vue 3">
 </p>
 
@@ -80,7 +80,7 @@ SEC_USER_AGENT=SEC Monitor your-email@example.com
 
 ### 本地开发
 
-前置条件：Go 1.24+、Node.js 20+、npm。
+前置条件：Go 1.25+、Node.js 20+、npm。Go 1.24+ 在默认自动工具链设置下会按 `go.mod` 下载并使用 Go 1.25；也可自行安装 Go 1.25。
 
 ```bash
 make start      # 后端 :8080，前端 :5173
