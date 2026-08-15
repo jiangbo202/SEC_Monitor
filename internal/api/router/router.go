@@ -75,6 +75,9 @@ func New(deps Dependencies) (*gin.Engine, error) {
 	marketTrend := service.NewMarketTrendService(deps.DB, configs, runtimeConfig.Discovery)
 	usFutures := service.NewUSFuturesService(deps.DB, configs, runtimeConfig.Discovery)
 	aiAnalysis := service.NewAIAnalysisService(deps.DB, configs, audit).WithInAppNotifications(inAppNotifications).WithNotificationCenter(notificationBatches)
+	if fetcher, ok := secClient.(sec.FilingDocumentFetcher); ok {
+		aiAnalysis.WithSECFilingFetcher(fetcher)
+	}
 	institutionalHoldings := service.NewInstitutionalHoldingsService(deps.DB)
 	earningsPreview := service.NewEarningsPreviewService(deps.DB, runtimeConfig.Discovery, configs, notifier).WithDiscoveryDB(deps.DiscoveryDB).WithNotificationCenter(notificationBatches).WithInAppNotifications(inAppNotifications)
 	if recovered, err := tasks.RecoverInterrupted(context.Background()); err != nil {
@@ -198,6 +201,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.POST("/ticker-evaluations", app.EvaluateTicker)
 		api.POST("/ai/ticker-evaluations", app.GenerateTickerAIAnalysis)
 		api.POST("/ai/analyses", app.GenerateAIAnalysis)
+		api.POST("/ai/sec-filings/:id", app.GenerateSECFilingAIAnalysis)
 		api.GET("/ai/analyses", app.ListAIAnalyses)
 		api.GET("/ai/providers", app.ListAIProviders)
 		api.GET("/ai/providers/config", app.GetAIProviderConfig)

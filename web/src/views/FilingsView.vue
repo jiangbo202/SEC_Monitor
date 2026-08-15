@@ -105,6 +105,12 @@
           <span v-else class="muted-text">{{ t('status.unnotified') }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="AI 研判" width="165" fixed="right" align="center">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="openAIAnalysis(row)">AI 分析</el-button>
+          <el-button link @click="viewAIHistory(row)">记录</el-button>
+        </template>
+      </el-table-column>
     </el-table>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />
 
@@ -117,12 +123,29 @@
         <el-table-column prop="read" :label="t('pages.filings.typeRead')" min-width="240" />
       </el-table>
     </el-dialog>
+
+    <el-dialog v-model="aiDialogVisible" :title="aiFiling ? `${aiFiling.ticker} · SEC 公告 AI 分析` : 'SEC 公告 AI 分析'" width="720px" destroy-on-close>
+      <template v-if="aiFiling">
+        <el-alert type="info" :closable="false" show-icon title="仅在确认后手动执行。后台将从已入库的 SEC 公告链接获取原文，连同链接和公告元数据发送给所选模型；本次请求及结果会留档。" />
+        <el-descriptions :column="2" border size="small" style="margin-top:16px">
+          <el-descriptions-item label="标的">{{ aiFiling.ticker }}</el-descriptions-item>
+          <el-descriptions-item label="文件类型">{{ aiFiling.filing_type }}</el-descriptions-item>
+          <el-descriptions-item label="公司" :span="2">{{ aiFiling.company_name }}</el-descriptions-item>
+          <el-descriptions-item label="公告链接" :span="2"><el-link :href="aiFiling.filing_url" target="_blank" type="primary">查看 SEC 原文</el-link></el-descriptions-item>
+        </el-descriptions>
+        <el-form label-width="92px" style="margin-top:16px">
+          <el-form-item label="模型"><el-select v-model="selectedAIProvider" placeholder="选择模型" style="width:100%"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select></el-form-item>
+          <el-form-item label="提示词模板"><el-select v-model="selectedAIPromptTemplate" placeholder="选择 SEC 公告模板" style="width:100%"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select></el-form-item>
+        </el-form>
+      </template>
+      <template #footer><el-button @click="aiDialogVisible = false">取消</el-button><el-button type="primary" :loading="generatingAI" :disabled="!selectedAIProvider || !selectedAIPromptTemplate" @click="generateAIAnalysis">开始分析</el-button></template>
+    </el-dialog>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
@@ -170,6 +193,7 @@ const filingTypes = computed<FilingTypeInfo[]>(() => filingTypeCatalog.map((item
 const loading = ref(false)
 const refreshing = ref(false)
 const route = useRoute()
+const router = useRouter()
 const typeHelpVisible = ref(false)
 const rows = ref<Filing[]>([])
 const total = ref(0)
@@ -181,6 +205,15 @@ const visibleFilingTypes = ref<FilingTypeInfo[]>([])
 const activeQuickFilter = ref('')
 const activeSavedView = ref('')
 const savedViews = ref<Array<{ name: string, filters: typeof filters, sort: typeof sort }>>([])
+type AIProvider = { id: string; name: string; model: string }
+type AIPromptTemplate = { id: string; name: string; scopes?: string[] }
+const aiProviders = ref<AIProvider[]>([])
+const aiPromptTemplates = ref<AIPromptTemplate[]>([])
+const aiFiling = ref<Filing | null>(null)
+const aiDialogVisible = ref(false)
+const selectedAIProvider = ref('')
+const selectedAIPromptTemplate = ref('')
+const generatingAI = ref(false)
 const quickFilters = computed(() => [
   { label: t('pages.filings.filters.recent7Days'), dateDays: 7 },
   { label: t('pages.filings.filters.majorEvents'), filingType: '8-K' },
@@ -291,6 +324,45 @@ async function refresh() {
   }
 }
 
+async function loadAIOptions() {
+  try {
+    const [providerResponse, templateResponse] = await Promise.all([
+      apiClient.get<ApiResponse<AIProvider[]>>('/ai/providers'),
+      apiClient.get<ApiResponse<AIPromptTemplate[]>>('/ai/prompt-templates', { params: { scope: 'sec_filing' } })
+    ])
+    aiProviders.value = providerResponse.data.data || []
+    aiPromptTemplates.value = templateResponse.data.data || []
+    if (!selectedAIProvider.value && aiProviders.value.length) selectedAIProvider.value = aiProviders.value[0].id
+    if (!selectedAIPromptTemplate.value && aiPromptTemplates.value.length) selectedAIPromptTemplate.value = aiPromptTemplates.value[0].id
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || '加载 AI 模型或模板失败')
+  }
+}
+
+function openAIAnalysis(filing: Filing) {
+  aiFiling.value = filing
+  aiDialogVisible.value = true
+  void loadAIOptions()
+}
+
+function viewAIHistory(filing: Filing) {
+  void router.push({ path: '/ai-analyses', query: { ticker: filing.ticker, scope: 'sec_filing' } })
+}
+
+async function generateAIAnalysis() {
+  if (!aiFiling.value || !selectedAIProvider.value || !selectedAIPromptTemplate.value) return
+  generatingAI.value = true
+  try {
+    await apiClient.post(`/ai/sec-filings/${aiFiling.value.id}`, { provider_id: selectedAIProvider.value, template_id: selectedAIPromptTemplate.value })
+    ElMessage.success('已加入 AI 分析队列；完成后可在“AI 分析记录”查看结果。')
+    aiDialogVisible.value = false
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || '提交 SEC 公告 AI 分析失败')
+  } finally {
+    generatingAI.value = false
+  }
+}
+
 function loadSavedViews() {
   try {
     savedViews.value = JSON.parse(localStorage.getItem('sec-monitor-filing-views') || '[]')
@@ -343,6 +415,7 @@ function onSortChange({ prop, order }: { prop?: string, order?: string | null })
 onMounted(() => {
   loadSavedViews()
   visibleFilingTypes.value = filingTypes.value
+  void loadAIOptions()
   const ticker = route.query.ticker
   if (typeof ticker === 'string') {
     filters.ticker = ticker

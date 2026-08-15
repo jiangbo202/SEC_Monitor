@@ -579,15 +579,16 @@
               <div class="panel-header-actions"><el-tag effect="plain">{{ aiPromptTemplates.length }} 个模板</el-tag><el-button @click="addAIPromptTemplate">新增模板</el-button></div>
             </div>
           </template>
-          <el-alert type="info" :closable="false" show-icon title="模型与模板独立选择。每次手动研判会保存所选模板、模板版本及实际发送内容；删除模板不会影响历史记录。" />
+          <el-alert type="info" :closable="false" show-icon title="模型与模板独立选择。可为模板指定适用功能区；每次手动研判会保存所选模板、模板版本及实际发送内容，删除模板不会影响历史记录。" />
           <div v-for="(template, index) in aiPromptTemplates" :key="template.id || index" class="ai-prompt-template-editor">
             <div class="ai-prompt-template-editor-header"><strong>模板 {{ index + 1 }}</strong><el-button link type="danger" :disabled="aiPromptTemplates.length === 1" @click="removeAIPromptTemplate(index)">删除</el-button></div>
             <el-form label-width="90px" class="ai-prompt-template-form">
               <el-form-item label="名称"><el-input v-model="template.name" placeholder="研究判断（默认）" /></el-form-item>
+              <el-form-item label="适用功能区"><el-checkbox-group v-model="template.scopes"><el-checkbox label="ticker_evaluation">标的评估</el-checkbox><el-checkbox label="candidate_detail">小盘候选详情</el-checkbox><el-checkbox label="watch_target_detail">监控标的详情</el-checkbox><el-checkbox label="sec_filing">SEC 公告</el-checkbox></el-checkbox-group><span class="form-help">不选择时作为通用模板，可在全部功能区使用。</span></el-form-item>
               <el-form-item label="提示词"><el-input v-model="template.content" type="textarea" :rows="11" resize="vertical" /></el-form-item>
             </el-form>
           </div>
-          <p class="form-help ai-prompt-template-help"><code v-pre>{{research_facts_json}}</code> 为必填变量；还可使用 <code v-pre>{{ticker}}</code>、<code v-pre>{{company_name}}</code>、<code v-pre>{{target_type}}</code>、<code v-pre>{{as_of}}</code>。未提供的数据会留空；评分、候选等级和交易规则结论不会被写入事实研究包。至少保留一个模板，点击页面右上角“保存”后生效。</p>
+          <p class="form-help ai-prompt-template-help">标的评估、小盘候选或监控标的模板必须含 <code v-pre>{{research_facts_json}}</code>；仅用于 SEC 公告的模板必须含 <code v-pre>{{sec_filing_content}}</code>，其内容仅含公告元数据与原文正文，不会包含基本面、估值、技术面或系统评分。还可使用 <code v-pre>{{ticker}}</code>、<code v-pre>{{company_name}}</code>、<code v-pre>{{target_type}}</code>、<code v-pre>{{as_of}}</code>、<code v-pre>{{filing_url}}</code>、<code v-pre>{{filing_type}}</code>。至少保留一个模板，点击页面右上角“保存”后生效。</p>
         </el-card>
       </div>
 
@@ -871,7 +872,7 @@ const ipoForm = reactive({
   longbridge_calendar_max_pages: 5
 })
 type AIProvider = { id: string; name: string; api_base_url: string; api_key: string; model: string; timeout_seconds: number; enabled: boolean }
-type AIPromptTemplate = { id: string; name: string; content: string }
+type AIPromptTemplate = { id: string; name: string; content: string; scopes: string[] }
 const aiProviders = ref<AIProvider[]>([])
 const defaultAIPromptTemplate = `你是一位审慎的美股研究助理。仅基于下方本地事实研究包完成一次真正的研究判断，不要逐字段复述研究包，也不构成投资建议。
 
@@ -910,7 +911,7 @@ function addDeepSeekProvider() {
 
 function addAIPromptTemplate() {
   const serial = aiPromptTemplates.value.length + 1
-  aiPromptTemplates.value.push({ id: '', name: `研究模板 ${serial}`, content: defaultAIPromptTemplate })
+  aiPromptTemplates.value.push({ id: '', name: `研究模板 ${serial}`, content: defaultAIPromptTemplate, scopes: ['ticker_evaluation', 'candidate_detail', 'watch_target_detail'] })
 }
 
 function removeAIPromptTemplate(index: number) {
@@ -1030,7 +1031,7 @@ async function load() {
     ])
     const configs = res.data.data
     aiProviders.value = (aiRes.data.data || []).map((item) => ({ ...item, timeout_seconds: item.timeout_seconds || 120 }))
-    aiPromptTemplates.value = templateRes.data.data || [{ id: 'research', name: '研究判断（默认）', content: defaultAIPromptTemplate }]
+    aiPromptTemplates.value = (templateRes.data.data || [{ id: 'research', name: '研究判断（默认）', content: defaultAIPromptTemplate, scopes: ['ticker_evaluation', 'candidate_detail', 'watch_target_detail'] }]).map((item) => ({ ...item, scopes: item.scopes || [] }))
     secForm.user_agent = configValue(configs, 'sec.user_agent', '')
     secForm.initial_fetch_days = Number(configValue(configs, 'sec.initial_fetch_days', '30'))
     secForm.sync_window_days = Number(configValue(configs, 'sec.sync_window_days', '30'))

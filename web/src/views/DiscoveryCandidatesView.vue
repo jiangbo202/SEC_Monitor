@@ -2274,7 +2274,7 @@ async function openDetail(row: CandidateScore) {
 
 async function loadAIProviders() {
 	try {
-		const [response, templateResponse] = await Promise.all([apiClient.get('/ai/providers'), apiClient.get('/ai/prompt-templates')])
+		const [response, templateResponse] = await Promise.all([apiClient.get('/ai/providers'), apiClient.get('/ai/prompt-templates', { params: { scope: 'candidate_detail' } })])
 		aiProviders.value = response.data.data || []; aiPromptTemplates.value = templateResponse.data.data || []
 		if (!candidateAIProvider.value && aiProviders.value.length) candidateAIProvider.value = aiProviders.value[0].id
 		if (!candidateAIPromptTemplate.value && aiPromptTemplates.value.length) candidateAIPromptTemplate.value = aiPromptTemplates.value[0].id

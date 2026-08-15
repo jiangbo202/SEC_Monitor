@@ -17,6 +17,11 @@ type aiTickerAnalysisRequest struct {
 	Evaluation discovery.TickerEvaluationResult `json:"evaluation"`
 }
 
+type aiSECFilingAnalysisRequest struct {
+	ProviderID string `json:"provider_id"`
+	TemplateID string `json:"template_id"`
+}
+
 // ListAIProviders returns only safe display fields. API keys remain encrypted
 // server-side and are intentionally unavailable to the assessment UI.
 func (h *AppHandler) ListAIProviders(c *gin.Context) {
@@ -75,7 +80,7 @@ func (h *AppHandler) ListAIPromptTemplates(c *gin.Context) {
 		Error(c, errors.New("configuration service is not configured"))
 		return
 	}
-	templates, err := h.Configs.AIPromptTemplates(c.Request.Context())
+	templates, err := h.Configs.AIPromptTemplatesForScope(c.Request.Context(), c.Query("scope"))
 	if err != nil {
 		Error(c, err)
 		return
@@ -154,6 +159,38 @@ func (h *AppHandler) GenerateAIAnalysis(c *gin.Context) {
 		return
 	}
 	result, err := h.AIAnalysis.QueueTickerAnalysis(c.Request.Context(), request, operator(c))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	go h.runAIAnalysis(result.ID, operator(c))
+	Accepted(c, result)
+}
+
+// GenerateSECFilingAIAnalysis accepts only a persisted filing ID. The SEC URL
+// is loaded server-side from that record and fetched by the background worker,
+// preventing this manual research feature from becoming an arbitrary URL API.
+func (h *AppHandler) GenerateSECFilingAIAnalysis(c *gin.Context) {
+	if h.AIAnalysis == nil || h.Filings == nil {
+		Error(c, errors.New("AI analysis service is not configured"))
+		return
+	}
+	var request aiSECFilingAnalysisRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	request.ProviderID, request.TemplateID = strings.TrimSpace(request.ProviderID), strings.TrimSpace(request.TemplateID)
+	if request.ProviderID == "" || request.TemplateID == "" {
+		Error(c, service.ErrValidation)
+		return
+	}
+	filing, err := h.Filings.Get(c.Request.Context(), uintParam(c, "id"))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	result, err := h.AIAnalysis.QueueSECFilingAnalysis(c.Request.Context(), request.ProviderID, request.TemplateID, filing, operator(c))
 	if err != nil {
 		Error(c, err)
 		return

@@ -23,6 +23,19 @@ type aiRoundTripper func(*http.Request) (*http.Response, error)
 
 func (fn aiRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) { return fn(request) }
 
+type fakeSECFilingFetcher struct {
+	url      string
+	document string
+	err      error
+}
+
+func (fetcher fakeSECFilingFetcher) FetchFilingDocument(_ context.Context, filingURL string) (string, error) {
+	if fetcher.url != filingURL {
+		return "", errors.New("unexpected filing URL")
+	}
+	return fetcher.document, fetcher.err
+}
+
 func newAIAnalysisTestServices(t *testing.T) (*gorm.DB, *ConfigService, *AIAnalysisService) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
@@ -124,6 +137,86 @@ func TestQueueTickerAnalysisRejectsDuplicateActiveRequest(t *testing.T) {
 	}
 	if _, err := analyses.QueueTickerAnalysis(context.Background(), input, "tester"); !errors.Is(err, ErrTaskAlreadyRunning) {
 		t.Fatalf("duplicate error=%v", err)
+	}
+}
+
+func TestSECFilingAnalysisFetchesPersistedDocumentAndAllowsOtherFilings(t *testing.T) {
+	_, configs, analyses := newAIAnalysisTestServices(t)
+	ctx := context.Background()
+	if err := configs.SaveAIProviders(ctx, []AIProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://example.test/v1", APIKey: "secret-value", Model: "deepseek-chat", Enabled: true}}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	analyses.WithSECFilingFetcher(fakeSECFilingFetcher{
+		url:      "https://www.sec.gov/Archives/edgar/data/123/acme-8k.htm",
+		document: "<html><body><h1>Item 2.02 Results of Operations</h1><p>Revenue increased 20%.</p></body></html>",
+	})
+	analyses.WithHTTPClient(&http.Client{Transport: aiRoundTripper(func(request *http.Request) (*http.Response, error) {
+		var payload struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if len(payload.Messages) != 2 || !strings.Contains(payload.Messages[1].Content, "Revenue increased 20%") {
+			t.Errorf("SEC document was not rendered into request: %+v", payload.Messages)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"公告分析完成"}}]}`))}, nil
+	})})
+	firstURL := "https://www.sec.gov/Archives/edgar/data/123/acme-8k.htm"
+	filing := model.Filing{ID: 11, FilingID: "000000-01", Ticker: "ACME", CompanyName: "Acme Corp", FilingType: "8-K", FilingDate: time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC), FilingURL: firstURL}
+	queued, err := analyses.QueueSECFilingAnalysis(ctx, "deepseek", "", filing, "tester")
+	if err != nil || queued.Scope != "sec_filing" || queued.SourceID != "11" || queued.SourceURL != filing.FilingURL {
+		t.Fatalf("queued=%+v err=%v", queued, err)
+	}
+	// A second filing for the same ticker is a separate document and must not
+	// be rejected as a duplicate active request.
+	filing.ID, filing.FilingID = 12, "000000-02"
+	filing.FilingURL = "https://www.sec.gov/Archives/edgar/data/123/acme-8k-2.htm"
+	second, err := analyses.QueueSECFilingAnalysis(ctx, "deepseek", "", filing, "tester")
+	if err != nil || second.ID == queued.ID {
+		t.Fatalf("second=%+v err=%v", second, err)
+	}
+	// Process the first request using the persisted URL, not browser input.
+	completed, err := analyses.ProcessTickerAnalysis(ctx, queued.ID, "tester")
+	if err != nil || completed.Status != "success" || !strings.Contains(completed.Content, "公告分析完成") || !strings.Contains(completed.InputSnapshot, "Revenue increased 20%") || !strings.Contains(completed.UserPrompt, firstURL) {
+		t.Fatalf("completed=%+v err=%v", completed, err)
+	}
+}
+
+func TestCompactSECFilingDocumentRemovesPresentationMarkup(t *testing.T) {
+	result := compactSECFilingDocument(`<!doctype html><html><head><style>.fakeTextBox { border: 2px solid #999; width: 800px; }</style><script>window.ignore = true</script></head><body><!-- display only --><p>Revenue &amp; margin improved.</p><table><tr><td>Item 2.02</td></tr></table></body></html>`)
+	for _, unwanted := range []string{"fakeTextBox", "border:", "window.ignore", "display only"} {
+		if strings.Contains(result, unwanted) {
+			t.Fatalf("presentation markup %q remained in %q", unwanted, result)
+		}
+	}
+	for _, expected := range []string{"Revenue & margin improved.", "Item 2.02"} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("readable SEC text %q missing from %q", expected, result)
+		}
+	}
+}
+
+func TestAIPromptTemplatesValidateAndFilterScopes(t *testing.T) {
+	_, configs, _ := newAIAnalysisTestServices(t)
+	ctx := context.Background()
+	secTemplate := AIPromptTemplate{ID: "sec-only", Name: "SEC", Scopes: []string{"sec_filing"}, Content: "{{filing_url}} {{filing_type}} {{sec_filing_content}}"}
+	if err := configs.SaveAIPromptTemplates(ctx, []AIPromptTemplate{secTemplate}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	available, err := configs.AIPromptTemplatesForScope(ctx, "sec_filing")
+	if err != nil || len(available) != 1 || available[0].ID != secTemplate.ID {
+		t.Fatalf("available=%+v err=%v", available, err)
+	}
+	if _, err := configs.AIPromptTemplateForScope(ctx, secTemplate.ID, "ticker_evaluation"); !errors.Is(err, ErrValidation) {
+		t.Fatalf("scope error=%v", err)
+	}
+	invalid := secTemplate
+	invalid.Scopes = []string{"not-supported"}
+	if err := configs.SaveAIPromptTemplates(ctx, []AIPromptTemplate{invalid}, "tester"); !errors.Is(err, ErrValidation) {
+		t.Fatalf("invalid scope error=%v", err)
 	}
 }
 

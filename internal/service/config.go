@@ -40,6 +40,10 @@ type AIPromptTemplate struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
+	// Scopes selects the functional areas that can use this template. An empty
+	// list remains universal for compatibility with templates saved before
+	// scope selection was introduced.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 const aiPromptTemplatesConfigKey = "ai.prompt_templates"
@@ -414,12 +418,50 @@ func normalizePromptTemplate(value string) string {
 }
 
 func defaultAIPromptTemplate() AIPromptTemplate {
-	return AIPromptTemplate{ID: "research", Name: "研究判断（默认）", Content: aiAnalysisDefaultUserPromptTemplate}
+	return AIPromptTemplate{ID: "research", Name: "研究判断（默认）", Content: aiAnalysisDefaultUserPromptTemplate, Scopes: []string{"ticker_evaluation", "candidate_detail", "watch_target_detail"}}
+}
+
+func defaultSECFilingAIPromptTemplate() AIPromptTemplate {
+	return AIPromptTemplate{
+		ID:      "sec-filing-analysis",
+		Name:    "SEC 公告解读（默认）",
+		Scopes:  []string{"sec_filing"},
+		Content: defaultSECFilingAIPromptTemplateContent,
+	}
+}
+
+const defaultSECFilingAIPromptTemplateContent = "你是一位审慎的 SEC 公告研究助理。仅基于下方已入库的 SEC 公告信息完成解读；公告原文链接为 {{filing_url}}。不要使用或推测标的基本面、估值、技术面或本系统评分，也不构成投资建议。\n\n请严格按以下结构输出：\n\n## 1. 公告核心事项\n用 2–4 句话说明这份 {{filing_type}} 公告披露了什么，以及其潜在重要性；若正文证据不足，请明确说明。\n\n## 2. 关键事实与影响\n挑选最多 5 项关键事实。每项先写“事实”，再写“可能影响/推断”；不要编造正文未出现的金额、日期、交易或管理层意图。\n\n## 3. 风险、反证与待核验\n说明稀释、流动性、经营、合规、治理或事件执行层面的风险；区分已披露事实和需要人工阅读原文确认的事项。\n\n## 4. 后续观察点\n仅依据本文件提出需要持续跟踪的公告、财报、融资、审批或其他触发条件。\n\n写作要求：\n- 明确标注“事实”“推断”“待核验”。\n- 文件链接用于人工追溯，不能声称已访问链接以外的信息。\n- 若文件正文为空或被截断，必须把结论限定为证据不足。\n\nSEC 公告内容（仅公告元数据与原文正文）：\n{{sec_filing_content}}"
+
+func legacyDefaultSECFilingAIPromptTemplateContent() string {
+	value := strings.Replace(defaultSECFilingAIPromptTemplateContent,
+		"仅基于下方已入库的 SEC 公告信息完成解读；公告原文链接为 {{filing_url}}。不要使用或推测标的基本面、估值、技术面或本系统评分，也不构成投资建议。",
+		"仅基于下方已入库的 SEC 文件事实包完成解读；公告原文链接为 {{filing_url}}。不要把元数据逐项复述，也不构成投资建议。", 1)
+	return strings.Replace(value, "SEC 公告内容（仅公告元数据与原文正文）：\n{{sec_filing_content}}", "SEC 文件事实包：\n{{research_facts_json}}", 1)
 }
 
 func (s *ConfigService) ensureAIPromptTemplates(ctx context.Context) error {
-	if _, found, err := s.GetValue(ctx, aiPromptTemplatesConfigKey); err != nil || found {
+	value, found, err := s.GetValue(ctx, aiPromptTemplatesConfigKey)
+	if err != nil {
 		return err
+	}
+	if found && strings.TrimSpace(value) != "" {
+		var templates []AIPromptTemplate
+		if err := json.Unmarshal([]byte(value), &templates); err != nil {
+			return fmt.Errorf("parse AI prompt template configuration: %w", err)
+		}
+		for index, template := range templates {
+			if template.ID == defaultSECFilingAIPromptTemplate().ID {
+				// Upgrade only the previous project default. User-authored SEC
+				// templates remain untouched.
+				if template.Content == legacyDefaultSECFilingAIPromptTemplateContent() {
+					templates[index] = defaultSECFilingAIPromptTemplate()
+					return s.SaveAIPromptTemplates(ctx, templates, "system")
+				}
+				return nil
+			}
+		}
+		templates = append(templates, defaultSECFilingAIPromptTemplate())
+		return s.SaveAIPromptTemplates(ctx, templates, "system")
 	}
 	template := defaultAIPromptTemplate()
 	if legacy, found, err := s.GetValue(ctx, aiAnalysisPromptTemplateConfigKey); err != nil {
@@ -427,7 +469,7 @@ func (s *ConfigService) ensureAIPromptTemplates(ctx context.Context) error {
 	} else if found && strings.TrimSpace(legacy) != "" {
 		template.Content = legacy
 	}
-	return s.SaveAIPromptTemplates(ctx, []AIPromptTemplate{template}, "system")
+	return s.SaveAIPromptTemplates(ctx, []AIPromptTemplate{template, defaultSECFilingAIPromptTemplate()}, "system")
 }
 
 func (s *ConfigService) UpsertMissing(ctx context.Context, inputs []ConfigInput, operator string) error {
@@ -623,7 +665,7 @@ func (s *ConfigService) AIPromptTemplates(ctx context.Context) ([]AIPromptTempla
 		return nil, err
 	}
 	if !found || strings.TrimSpace(value) == "" {
-		return []AIPromptTemplate{defaultAIPromptTemplate()}, nil
+		return []AIPromptTemplate{defaultAIPromptTemplate(), defaultSECFilingAIPromptTemplate()}, nil
 	}
 	var templates []AIPromptTemplate
 	if err := json.Unmarshal([]byte(value), &templates); err != nil {
@@ -648,6 +690,43 @@ func (s *ConfigService) AIPromptTemplate(ctx context.Context, id string) (AIProm
 	return AIPromptTemplate{}, fmt.Errorf("%w: selected AI prompt template is unavailable", ErrValidation)
 }
 
+func (s *ConfigService) AIPromptTemplatesForScope(ctx context.Context, scope string) ([]AIPromptTemplate, error) {
+	templates, err := s.AIPromptTemplates(ctx)
+	if err != nil || strings.TrimSpace(scope) == "" {
+		return templates, err
+	}
+	result := make([]AIPromptTemplate, 0, len(templates))
+	for _, template := range templates {
+		if templateSupportsScope(template, scope) {
+			result = append(result, template)
+		}
+	}
+	return result, nil
+}
+
+func (s *ConfigService) AIPromptTemplateForScope(ctx context.Context, id, scope string) (AIPromptTemplate, error) {
+	if strings.TrimSpace(id) == "" {
+		templates, err := s.AIPromptTemplates(ctx)
+		if err != nil {
+			return AIPromptTemplate{}, err
+		}
+		for _, template := range templates {
+			if templateSupportsScope(template, scope) {
+				return template, nil
+			}
+		}
+		return AIPromptTemplate{}, fmt.Errorf("%w: no AI prompt template supports this feature", ErrValidation)
+	}
+	template, err := s.AIPromptTemplate(ctx, id)
+	if err != nil {
+		return AIPromptTemplate{}, err
+	}
+	if !templateSupportsScope(template, scope) {
+		return AIPromptTemplate{}, fmt.Errorf("%w: selected AI prompt template does not support this feature", ErrValidation)
+	}
+	return template, nil
+}
+
 func (s *ConfigService) SaveAIPromptTemplates(ctx context.Context, input []AIPromptTemplate, operator string) error {
 	if len(input) < 1 || len(input) > 20 {
 		return ErrValidation
@@ -658,13 +737,18 @@ func (s *ConfigService) SaveAIPromptTemplates(ctx context.Context, input []AIPro
 		template.ID = strings.ToLower(strings.TrimSpace(template.ID))
 		template.Name = strings.TrimSpace(template.Name)
 		template.Content = strings.TrimSpace(template.Content)
+		var scopeErr error
+		template.Scopes, scopeErr = normalizeAIPromptTemplateScopes(template.Scopes)
+		if scopeErr != nil {
+			return ErrValidation
+		}
 		if template.ID == "" {
 			template.ID = newAIPromptTemplateID(template.Name, index, seen)
 		}
 		if len(template.ID) > 64 || len(template.Name) == 0 || len(template.Name) > 128 || len(template.Content) > 32_000 || !validAIPromptTemplateID(template.ID) {
 			return ErrValidation
 		}
-		if _, err := renderAIAnalysisPromptTemplate(template.Content, aiAnalysisPromptTemplateValues{}); err != nil {
+		if _, err := validateAIPromptTemplate(*template); err != nil {
 			return err
 		}
 		if _, exists := seen[template.ID]; exists {
@@ -677,6 +761,38 @@ func (s *ConfigService) SaveAIPromptTemplates(ctx context.Context, input []AIPro
 		return err
 	}
 	return s.UpsertMany(ctx, []ConfigInput{{Key: aiPromptTemplatesConfigKey, Value: string(payload), ValueType: "json", Category: "ai_analysis"}}, operator)
+}
+
+var aiPromptTemplateScopes = map[string]struct{}{
+	"ticker_evaluation": {}, "candidate_detail": {}, "watch_target_detail": {}, "sec_filing": {},
+}
+
+func normalizeAIPromptTemplateScopes(scopes []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if _, valid := aiPromptTemplateScopes[scope]; !valid {
+			return nil, ErrValidation
+		}
+		if _, exists := seen[scope]; !exists {
+			seen[scope] = struct{}{}
+			result = append(result, scope)
+		}
+	}
+	return result, nil
+}
+
+func templateSupportsScope(template AIPromptTemplate, scope string) bool {
+	if len(template.Scopes) == 0 || strings.TrimSpace(scope) == "" {
+		return true
+	}
+	for _, item := range template.Scopes {
+		if item == scope {
+			return true
+		}
+	}
+	return false
 }
 
 func newAIPromptTemplateID(name string, index int, existing map[string]struct{}) string {

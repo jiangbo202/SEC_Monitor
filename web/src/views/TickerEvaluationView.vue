@@ -165,7 +165,7 @@ async function evaluate() {
 }
 async function loadAIProviders() {
   try {
-    const [response, templateResponse] = await Promise.all([apiClient.get('/ai/providers'), apiClient.get('/ai/prompt-templates')])
+    const [response, templateResponse] = await Promise.all([apiClient.get('/ai/providers'), apiClient.get('/ai/prompt-templates', { params: { scope: 'ticker_evaluation' } })])
     aiProviders.value = response.data.data || []; aiPromptTemplates.value = templateResponse.data.data || []
     if (!selectedAIProvider.value && aiProviders.value.length) selectedAIProvider.value = aiProviders.value[0].id
     if (!selectedAIPromptTemplate.value && aiPromptTemplates.value.length) selectedAIPromptTemplate.value = aiPromptTemplates.value[0].id

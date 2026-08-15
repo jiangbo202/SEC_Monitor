@@ -8,6 +8,8 @@ import "time"
 type AIAnalysis struct {
 	ID            uint       `gorm:"primaryKey" json:"id"`
 	Scope         string     `gorm:"size:32;not null;index" json:"scope"`
+	SourceID      string     `gorm:"size:128;index" json:"source_id,omitempty"`
+	SourceURL     string     `gorm:"type:text" json:"source_url,omitempty"`
 	Ticker        string     `gorm:"size:32;not null;index:idx_ai_analysis_ticker_time,priority:1" json:"ticker"`
 	CompanyName   string     `gorm:"size:255" json:"company_name"`
 	TargetType    string     `gorm:"size:16" json:"target_type"`
