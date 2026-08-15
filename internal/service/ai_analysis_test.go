@@ -185,6 +185,20 @@ func TestSECFilingAnalysisFetchesPersistedDocumentAndAllowsOtherFilings(t *testi
 	}
 }
 
+func TestCompactSECFilingDocumentRemovesPresentationMarkup(t *testing.T) {
+	result := compactSECFilingDocument(`<!doctype html><html><head><style>.fakeTextBox { border: 2px solid #999; width: 800px; }</style><script>window.ignore = true</script></head><body><!-- display only --><p>Revenue &amp; margin improved.</p><table><tr><td>Item 2.02</td></tr></table></body></html>`)
+	for _, unwanted := range []string{"fakeTextBox", "border:", "window.ignore", "display only"} {
+		if strings.Contains(result, unwanted) {
+			t.Fatalf("presentation markup %q remained in %q", unwanted, result)
+		}
+	}
+	for _, expected := range []string{"Revenue & margin improved.", "Item 2.02"} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("readable SEC text %q missing from %q", expected, result)
+		}
+	}
+}
+
 func TestAIPromptTemplatesValidateAndFilterScopes(t *testing.T) {
 	_, configs, _ := newAIAnalysisTestServices(t)
 	ctx := context.Background()

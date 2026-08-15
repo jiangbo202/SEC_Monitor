@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +32,12 @@ const (
 	aiAnalysisDefaultTimeout          = 120 * time.Second
 	aiAnalysisMaxArrayItems           = 12
 	aiAnalysisMaxSECDocumentBytes     = 36_000
+)
+
+var (
+	secFilingNonContentElementPattern = regexp.MustCompile(`(?is)<(?:head|script|style|noscript|template|svg)[^>]*>.*?</(?:head|script|style|noscript|template|svg)\s*>`)
+	secFilingCommentPattern           = regexp.MustCompile(`(?is)<!--.*?-->`)
+	secFilingTagPattern               = regexp.MustCompile(`(?is)<[^>]+>`)
 )
 
 const aiAnalysisSystemPrompt = "你必须清楚区分事实、推断和数据缺口。"
@@ -303,19 +311,14 @@ func isAllowedSECFilingURL(value string) bool {
 func compactSECFilingDocument(value string) string {
 	// EDGAR primary documents are usually HTML. A deliberately conservative
 	// text normalisation keeps the factual content readable without executing
-	// or forwarding markup to the third-party model.
+	// or forwarding presentation markup (especially large SEC CSS blocks) to
+	// the third-party model.
+	value = secFilingCommentPattern.ReplaceAllString(value, " ")
+	value = secFilingNonContentElementPattern.ReplaceAllString(value, " ")
+	value = strings.NewReplacer("</p>", " ", "</div>", " ", "</tr>", " ", "<br>", " ", "<br/>", " ", "<br />", " ").Replace(value)
+	value = secFilingTagPattern.ReplaceAllString(value, " ")
+	value = html.UnescapeString(value)
 	value = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ", "&nbsp;", " ").Replace(value)
-	for {
-		start := strings.Index(value, "<")
-		if start < 0 {
-			break
-		}
-		end := strings.Index(value[start:], ">")
-		if end < 0 {
-			break
-		}
-		value = value[:start] + " " + value[start+end+1:]
-	}
 	value = strings.Join(strings.Fields(value), " ")
 	if len(value) > aiAnalysisMaxSECDocumentBytes {
 		value = value[:aiAnalysisMaxSECDocumentBytes] + " [正文已截断]"
