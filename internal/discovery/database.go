@@ -71,10 +71,13 @@ func Migrate(db *gorm.DB) error {
 		legacyProviderHealth := hadProviderHealthTable && (!hadProviderWindow || !hadProviderGoldReady || !hadProviderGoldSHA)
 
 		if err := tx.AutoMigrate(
+			&SmallCapPolicyVersion{},
+			&SmallCapPolicyActivation{},
 			&Security{},
 			&UniverseBatch{},
 			&DiscoverySyncRun{},
 			&DiscoverySyncStep{},
+			&SecurityStageCheckpoint{},
 			&CurrentBatchPointer{},
 			&Listing{},
 			&CompanyProfileSnapshot{},
@@ -104,6 +107,7 @@ func Migrate(db *gorm.DB) error {
 			&CapitalRiskSnapshot{},
 			&SocialHeatSnapshot{},
 			&CandidateScoreSnapshot{},
+			&CandidateReportSnapshot{},
 			&SmallCapEligibilityCheckHistory{},
 			&CandidateBusinessModelOverride{},
 			&CandidateSignalEvent{},
@@ -119,6 +123,29 @@ func Migrate(db *gorm.DB) error {
 			&IdentityVerificationOverride{},
 		); err != nil {
 			return err
+		}
+		// Discovery workflows share the same mutable security/market workspace.
+		// Keep the exclusion rule in SQLite rather than only in a process mutex so
+		// API, scheduler and CLI processes cannot start overlapping runs. Older
+		// versions allowed duplicates; retain the newest one and close the rest
+		// before installing the partial unique index.
+		if err := tx.Exec(`
+			UPDATE discovery_sync_runs
+			SET status = 'failed', phase = 'failed', completed_at = CURRENT_TIMESTAMP,
+				updated_at = CURRENT_TIMESTAMP,
+				error_message = '重复运行已在升级时关闭；请从最新运行继续'
+			WHERE status = 'running'
+			  AND id NOT IN (
+				SELECT id FROM discovery_sync_runs
+				WHERE status = 'running'
+				ORDER BY updated_at DESC, id DESC
+				LIMIT 1
+			  )
+		`).Error; err != nil {
+			return fmt.Errorf("close duplicate discovery sync runs: %w", err)
+		}
+		if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_discovery_sync_single_running ON discovery_sync_runs(status) WHERE status = 'running'`).Error; err != nil {
+			return fmt.Errorf("create discovery sync run lease: %w", err)
 		}
 		if legacyCalendarManifest {
 			if err := backfillLegacyNYSECalendarManifest(tx); err != nil {
@@ -137,6 +164,9 @@ func Migrate(db *gorm.DB) error {
 			if err := tx.Model(&Security{}).Where("1 = 1").Updates(map[string]any{"catalog_status": SecurityCatalogPublished, "published_at": gorm.Expr("COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")}).Error; err != nil {
 				return fmt.Errorf("publish legacy security catalog: %w", err)
 			}
+		}
+		if err := SeedDefaultSmallCapPolicy(tx.Statement.Context, tx); err != nil {
+			return err
 		}
 		return SeedDefaultNYSEMarketCalendar(tx.Statement.Context, tx)
 	})

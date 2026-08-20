@@ -29,6 +29,15 @@ type CandidateInvestability struct {
 }
 
 func buildCandidateInvestability(item CandidateScoreResult) CandidateInvestability {
+	return BuildCandidateInvestabilityWithPolicy(item, DefaultSmallCapPolicy())
+}
+
+func BuildCandidateInvestabilityWithPolicy(item CandidateScoreResult, policy SmallCapPolicy) CandidateInvestability {
+	if normalized, err := NormalizeSmallCapPolicy(policy); err == nil {
+		policy = normalized
+	} else {
+		policy = DefaultSmallCapPolicy()
+	}
 	quality := item.MarketQuality
 	result := CandidateInvestability{
 		Status:                 InvestabilityTradable,
@@ -72,16 +81,16 @@ func buildCandidateInvestability(item CandidateScoreResult) CandidateInvestabili
 	if quality.SampleDays == 0 {
 		block("liquidity_history_unavailable")
 	} else {
-		if quality.SampleDays < minimumInvestabilitySampleDays {
+		if quality.SampleDays < policy.MinimumHistoryDays {
 			constrain("liquidity_history_short")
 		}
-		if quality.AverageDollarVolume < minimumConstrainedADVUSD {
+		if quality.AverageDollarVolume < policy.BlockedADVUSD {
 			block("average_dollar_volume_below_100k")
-		} else if quality.AverageDollarVolume < minimumTradableADVUSD {
+		} else if quality.AverageDollarVolume < policy.TradableADVUSD {
 			constrain("average_dollar_volume_below_500k")
 		}
 	}
-	if item.PriceCloseUSD > 0 && item.PriceCloseUSD < minimumTradablePriceUSD {
+	if item.PriceCloseUSD > 0 && item.PriceCloseUSD < policy.MinimumPriceUSD {
 		constrain("sub_dollar_price")
 	}
 	if quality.VolatilityPct >= 15 {

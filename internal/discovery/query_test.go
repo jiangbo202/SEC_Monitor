@@ -1072,9 +1072,13 @@ func TestBatchAndProviderQueriesPaginateFilterAndOrder(t *testing.T) {
 	if err != nil || page.Total != 2 || len(page.Items) != 1 || page.Items[0].BatchID != "newer" {
 		t.Fatalf("page=%#v err=%v", page, err)
 	}
+	attemptsJSON, err := encodeProviderAttempts([]ProviderAttempt{{Provider: "tiingo", Status: "partial", Expected: 4, Records: 2, Remaining: 2, CoveragePct: 50}, {Provider: "twelvedata", Status: "success", Expected: 2, Records: 1, Remaining: 1, CoveragePct: 50}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	runs := []ProviderRun{
 		{BatchID: "older", Provider: "p", Status: ProviderStatusActive, CreatedAt: now.Add(-time.Hour)},
-		{BatchID: "newer", Provider: "p", Status: ProviderStatusDegraded, SourceVersion: "chain:test", RecordCount: 3, ExpectedCount: 4, CoveragePct: 75, CreatedAt: now},
+		{BatchID: "newer", Provider: "p", Status: ProviderStatusDegraded, SourceVersion: "chain:test", RecordCount: 3, ExpectedCount: 4, CoveragePct: 75, AttemptsJSON: attemptsJSON, FallbackUsed: true, CreatedAt: now},
 		{BatchID: "failed", Provider: "other", Status: ProviderStatusDegraded, CreatedAt: now.Add(time.Hour)},
 	}
 	if err := db.Create(&runs).Error; err != nil {
@@ -1095,11 +1099,11 @@ func TestBatchAndProviderQueriesPaginateFilterAndOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary := page.Items[0].ProviderSummary
-	if summary == nil || summary.ExpectedCount != 4 || summary.RecordCount != 3 || summary.PriceSourceCounts["tiingo"] != 2 || summary.PriceSourceCounts["twelvedata"] != 1 || page.Items[0].CandidateCount != 1 {
+	if summary == nil || summary.ExpectedCount != 4 || summary.RecordCount != 3 || summary.PriceSourceCounts["tiingo"] != 2 || summary.PriceSourceCounts["twelvedata"] != 1 || !summary.FallbackUsed || len(summary.ProviderAttempts) != 2 || page.Items[0].CandidateCount != 1 {
 		t.Fatalf("batch summary=%#v candidate_count=%d", summary, page.Items[0].CandidateCount)
 	}
 	diagnostics, err := ListProviderDiagnostics(context.Background(), db, ProviderRunQuery{Page: 1, PageSize: 1, Provider: "p"})
-	if err != nil || diagnostics.Total != 2 || len(diagnostics.Items) != 1 || diagnostics.Items[0].BatchID != "newer" {
+	if err != nil || diagnostics.Total != 2 || len(diagnostics.Items) != 1 || diagnostics.Items[0].BatchID != "newer" || !diagnostics.Items[0].FallbackUsed || len(diagnostics.Items[0].Attempts) != 2 {
 		t.Fatalf("diagnostics=%#v err=%v", diagnostics, err)
 	}
 }

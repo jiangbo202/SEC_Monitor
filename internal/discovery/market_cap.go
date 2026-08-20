@@ -43,6 +43,14 @@ func ComputeMarketCapUSD(closeMicros, shares int64) (int64, error) {
 // computing and qualifying market cap. It compares the exact micro-dollar
 // product before flooring the returned display value to whole USD.
 func ComputeSmallCapQualification(closeMicros, shares int64) (marketCapUSD int64, qualified bool, err error) {
+	return ComputeSmallCapQualificationWithPolicy(closeMicros, shares, DefaultSmallCapPolicy())
+}
+
+func ComputeSmallCapQualificationWithPolicy(closeMicros, shares int64, policy SmallCapPolicy) (marketCapUSD int64, qualified bool, err error) {
+	policy, err = NormalizeSmallCapPolicy(policy)
+	if err != nil {
+		return 0, false, err
+	}
 	if closeMicros <= 0 || shares <= 0 {
 		return 0, false, errors.New("price and shares must be positive")
 	}
@@ -51,13 +59,21 @@ func ComputeSmallCapQualification(closeMicros, shares int64) (marketCapUSD int64
 	}
 	product := closeMicros * shares
 	marketCapUSD = product / marketCapMicrosPerUSD
-	qualified = product >= MinimumSmallCapUSD*marketCapMicrosPerUSD && product <= MaximumSmallCapUSD*marketCapMicrosPerUSD
+	qualified = product >= policy.MarketCapMinUSD*marketCapMicrosPerUSD && product < policy.MarketCapMaxUSD*marketCapMicrosPerUSD
 	return marketCapUSD, qualified, nil
 }
 
 // ValidateMarketCapPrice returns the number of NYSE trading days strictly
 // after the price date through the New York civil date containing asOf.
 func ValidateMarketCapPrice(ctx context.Context, calendar MarketCalendar, price PriceRecord, asOf time.Time) (int, error) {
+	return ValidateMarketCapPriceWithPolicy(ctx, calendar, price, asOf, DefaultSmallCapPolicy())
+}
+
+func ValidateMarketCapPriceWithPolicy(ctx context.Context, calendar MarketCalendar, price PriceRecord, asOf time.Time, policy SmallCapPolicy) (int, error) {
+	policy, err := NormalizeSmallCapPolicy(policy)
+	if err != nil {
+		return 0, err
+	}
 	if calendar == nil {
 		return 0, errors.New("market calendar is required")
 	}
@@ -114,7 +130,7 @@ func ValidateMarketCapPrice(ctx context.Context, calendar MarketCalendar, price 
 		}
 		if open {
 			age++
-			if age > MaximumPriceAgeDays {
+			if age > policy.MaxPriceAgeTradingDays {
 				return age, ErrPriceStale
 			}
 		}

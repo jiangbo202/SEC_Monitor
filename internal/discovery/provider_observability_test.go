@@ -26,7 +26,11 @@ func TestGetProviderObservabilityUsesRecordedDataWithoutCredentials(t *testing.T
 	if err := db.Create(&batch).Error; err != nil {
 		t.Fatalf("create batch: %v", err)
 	}
-	run := ProviderRun{BatchID: batch.BatchID, Provider: "tiingo,twelvedata", Status: ProviderStatusActive, SourceVersion: "chain-v1", EffectiveDate: date, ExpectedCount: 2, RecordCount: 2, CoveragePct: 100, Timely: true, CreatedAt: date.Add(time.Hour)}
+	attemptsJSON, err := encodeProviderAttempts([]ProviderAttempt{{Provider: "tiingo", Status: "partial", SourceVersion: "tiingo-v1", Expected: 2, Records: 1, Remaining: 1, CoveragePct: 50, ElapsedMS: 120}, {Provider: "twelvedata", Status: "success", SourceVersion: "twelve-v1", Expected: 1, Records: 1, Remaining: 0, CoveragePct: 100, ElapsedMS: 80}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := ProviderRun{BatchID: batch.BatchID, Provider: "tiingo,twelvedata", Status: ProviderStatusActive, SourceVersion: "chain-v1", EffectiveDate: date, ExpectedCount: 2, RecordCount: 2, CoveragePct: 100, Timely: true, AttemptsJSON: attemptsJSON, FallbackUsed: true, CreatedAt: date.Add(time.Hour)}
 	if err := db.Create(&run).Error; err != nil {
 		t.Fatalf("create run: %v", err)
 	}
@@ -55,7 +59,7 @@ func TestGetProviderObservabilityUsesRecordedDataWithoutCredentials(t *testing.T
 	if err != nil {
 		t.Fatalf("GetProviderObservability: %v", err)
 	}
-	if result.LatestRun == nil || result.LatestRun.BatchID != batch.BatchID {
+	if result.LatestRun == nil || result.LatestRun.BatchID != batch.BatchID || !result.LatestRun.FallbackUsed || len(result.LatestRun.Attempts) != 2 {
 		t.Fatalf("latest run = %+v, want market batch", result.LatestRun)
 	}
 	if result.ChainHealth == nil || result.ChainHealth.Provider != "tiingo,twelvedata" {
@@ -71,11 +75,11 @@ func TestGetProviderObservabilityUsesRecordedDataWithoutCredentials(t *testing.T
 		t.Fatalf("providers = %+v", result.Providers)
 	}
 	tiingo := result.Providers[0]
-	if tiingo.Provider != "tiingo" || tiingo.TokenCount != 2 || tiingo.LocalRequestBudget != 90 || tiingo.Health == nil || tiingo.Health.Status != ProviderStatusActive {
+	if tiingo.Provider != "tiingo" || tiingo.TokenCount != 2 || tiingo.LocalRequestBudget != 90 || tiingo.Health == nil || tiingo.Health.Status != ProviderStatusActive || tiingo.LatestAttempt == nil || tiingo.LatestAttempt.Status != "partial" {
 		t.Fatalf("tiingo observability = %+v", tiingo)
 	}
 	twelve := result.Providers[1]
-	if twelve.Provider != "twelvedata" || !twelve.ConfiguredCredential || twelve.LocalRequestBudget != 700 || twelve.LatestSourceRecordCount != 1 {
+	if twelve.Provider != "twelvedata" || !twelve.ConfiguredCredential || twelve.LocalRequestBudget != 700 || twelve.LatestSourceRecordCount != 1 || twelve.LatestAttempt == nil || twelve.LatestAttempt.Status != "success" {
 		t.Fatalf("twelve observability = %+v", twelve)
 	}
 	if !strings.Contains(result.BudgetNotice, "不代表") {

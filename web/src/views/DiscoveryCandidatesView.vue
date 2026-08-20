@@ -87,7 +87,11 @@
           <strong>当前选股口径</strong>
           <span>按当前评分规则筛选；研究用途，不构成投资建议。</span>
         </div>
-        <el-tag type="info" effect="plain">{{ criteria.scoring_version }}</el-tag>
+        <el-space>
+          <el-tag type="info" effect="plain">{{ criteria.scoring_version }}</el-tag>
+          <el-button size="small" plain @click="scoringRubricVisible = true">查看评分卡</el-button>
+          <el-button size="small" type="primary" plain @click="policyDialogVisible = true">调整范围</el-button>
+        </el-space>
       </div>
       <el-space wrap class="criteria-tags">
         <el-tag effect="plain">候选池：市值 {{ formatCriteriaUSD(criteria.market_cap_min_usd) }} – &lt;{{ formatCriteriaUSD(criteria.b_market_cap_max_exclusive_usd) }}</el-tag>
@@ -95,7 +99,7 @@
         <el-tooltip placement="top" :content="`${criteria.a_runway_min_months} 个月以上现金 runway；${criteria.qualified_insider_requirement}；${criteria.active_capital_risk_requirement}`"><el-tag type="success" effect="plain">A级：现金 ≥{{ criteria.a_runway_min_months }}月 · {{ criteria.insider_lookback_days }}日内幕买入 · 无阻断</el-tag></el-tooltip>
         <el-tooltip placement="top" :content="criteria.revenue_growth_selection"><el-tag type="warning" effect="plain">B级：市值 &lt;{{ formatCriteriaUSD(criteria.b_market_cap_max_exclusive_usd) }} · 收入 &gt;{{ criteria.b_revenue_growth_min_exclusive_pct }}% · 赛道 ≥{{ criteria.b_min_sector_score }}/10 · 无B级阻断</el-tag></el-tooltip>
       </el-space>
-      <div class="criteria-note">收入增长：{{ criteria.revenue_growth_selection }}。风险阻断：{{ criteria.active_capital_risk_requirement }}。</div>
+      <div class="criteria-note">收入增长：{{ criteria.revenue_growth_selection }}。风险阻断：{{ criteria.active_capital_risk_requirement }}。{{ criteria.scoring_rubric.disclaimer }}</div>
       <div class="criteria-state-legend">
         <span>状态说明：</span>
         <el-tooltip content="关键财务、市场和证据条件已满足，可进入人工研究或通知流程。"><el-tag type="success" effect="plain">可行动</el-tag></el-tooltip>
@@ -103,6 +107,33 @@
         <el-tooltip content="存在融资、反向拆股、持续经营等规则定义的阻断风险，不进入 A/B 推荐。"><el-tag type="danger" effect="plain">已阻断</el-tag></el-tooltip>
       </div>
     </el-card>
+
+    <SmallCapPolicyDialog
+      v-model:visible="policyDialogVisible"
+      :criteria="criteria"
+      @updated="handlePolicyUpdated"
+    />
+
+    <el-dialog v-model="scoringRubricVisible" title="小盘候选评分卡" width="920px">
+      <template v-if="criteria?.scoring_rubric">
+        <el-alert type="info" :closable="false" show-icon :title="criteria.scoring_rubric.disclaimer" style="margin-bottom: 12px" />
+        <el-descriptions :column="3" border size="small" style="margin-bottom: 12px">
+          <el-descriptions-item label="公式" :span="3">{{ criteria.scoring_rubric.formula }}</el-descriptions-item>
+          <el-descriptions-item label="版本">{{ criteria.scoring_rubric.version }}</el-descriptions-item>
+          <el-descriptions-item label="满分">{{ criteria.scoring_rubric.max_score }}</el-descriptions-item>
+          <el-descriptions-item label="内容指纹">{{ criteria.scoring_rubric.content_sha256.slice(0, 12) }}</el-descriptions-item>
+        </el-descriptions>
+        <el-table :data="criteria.scoring_rubric.dimensions" size="small" border>
+          <el-table-column prop="label" label="维度" width="110" />
+          <el-table-column label="权重/满分" width="110" align="right"><template #default="{ row }">{{ row.weight_pct }}% / {{ row.max_points }}</template></el-table-column>
+          <el-table-column label="分值映射" min-width="300"><template #default="{ row }">{{ scoringRulesText(row.rules) }}</template></el-table-column>
+          <el-table-column prop="evidence" label="证据来源" min-width="230" show-overflow-tooltip />
+          <el-table-column prop="adjustment" label="校准" min-width="200" show-overflow-tooltip />
+        </el-table>
+        <div class="criteria-note">{{ criteria.scoring_rubric.grade_rule_note }}</div>
+      </template>
+      <template #footer><el-button @click="scoringRubricVisible = false">关闭</el-button></template>
+    </el-dialog>
 
     <el-card v-if="reviewQueue?.items.length" shadow="never" class="review-queue-card">
       <div class="review-queue-heading">
@@ -732,6 +763,22 @@
 
     <el-dialog v-model="reportVisible" title="小盘候选日报" width="820px">
       <div v-if="report" class="summary-dialog">
+        <el-alert
+          v-if="report.snapshot_id"
+          type="success"
+          :closable="false"
+          show-icon
+          title="日报已独立归档；通知发送失败不会影响这份研究结果。"
+          style="margin-bottom: 12px"
+        />
+        <el-alert
+          v-else-if="!report.available"
+          type="info"
+          :closable="false"
+          show-icon
+          :title="report.message || '尚无可归档的候选批次'"
+          style="margin-bottom: 12px"
+        />
         <el-descriptions :column="3" border size="small">
           <el-descriptions-item label="日期">{{ report.date }}</el-descriptions-item>
           <el-descriptions-item label="批次">{{ report.batch.batch_id || '-' }}</el-descriptions-item>
@@ -739,6 +786,9 @@
           <el-descriptions-item label="A级">{{ report.summary.total_a }}</el-descriptions-item>
           <el-descriptions-item label="B级">{{ report.summary.total_b }}</el-descriptions-item>
           <el-descriptions-item label="健康">{{ healthStatusLabel(report.health.status) }}</el-descriptions-item>
+          <el-descriptions-item label="归档时间">{{ report.snapshot_id ? formatDateTime(report.generated_at) : '-' }}</el-descriptions-item>
+          <el-descriptions-item label="归档版本">{{ report.schema_version || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="内容指纹">{{ report.content_sha256 ? report.content_sha256.slice(0, 12) : '-' }}</el-descriptions-item>
         </el-descriptions>
         <el-input
           :model-value="report.summary.message"
@@ -893,7 +943,7 @@
         <el-card shadow="never" class="candidate-ai-card">
           <template #header><div class="card-header-actions"><span>AI 研判（手动）</span><el-space><el-select v-model="candidateAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select v-model="candidateAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!candidateAIProvider || !candidateAIPromptTemplate" :loading="candidateAIGenerating" @click="generateCandidateAI">生成研判</el-button></el-space></div></template>
           <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
-          <template v-else-if="candidateAIAnalyses.length"><el-select v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><MarkdownContent :content="activeCandidateAIAnalysis?.content" /></div></template></template>
+          <template v-else-if="candidateAIAnalyses.length"><el-select v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><AIAnalysisResult :result="activeCandidateAIAnalysis?.structured_result" :content="activeCandidateAIAnalysis?.content" /></div></template></template>
           <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
           <el-alert v-show="activeCandidateAIAnalysis?.status === 'queued' || activeCandidateAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
         </el-card>
@@ -1075,14 +1125,21 @@
 
         <el-card shadow="never">
           <template #header>评分拆解</template>
-          <el-descriptions :column="3" border size="small">
-            <el-descriptions-item label="收入增长">{{ candidateDetail.score.revenue_growth_score }}</el-descriptions-item>
-            <el-descriptions-item label="现金储备">{{ candidateDetail.score.cash_runway_score }}</el-descriptions-item>
-            <el-descriptions-item label="内幕增持">{{ candidateDetail.score.insider_score }}</el-descriptions-item>
-            <el-descriptions-item label="毛利率">{{ candidateDetail.score.gross_margin_score }}</el-descriptions-item>
-            <el-descriptions-item label="稀释风险">{{ candidateDetail.score.dilution_risk_score }}</el-descriptions-item>
-            <el-descriptions-item label="赛道空间">{{ candidateDetail.score.sector_score }}</el-descriptions-item>
+          <el-alert type="info" :closable="false" show-icon :title="candidateDetail.scoring_rubric.disclaimer" class="business-model-alert" />
+          <el-descriptions :column="3" border size="small" style="margin-bottom: 12px">
+            <el-descriptions-item label="公式" :span="3">{{ candidateDetail.scoring_rubric.formula }}</el-descriptions-item>
+            <el-descriptions-item label="评分版本">{{ candidateDetail.scoring_rubric.version }}</el-descriptions-item>
+            <el-descriptions-item label="内容指纹">{{ candidateDetail.scoring_rubric.content_sha256?.slice(0, 12) || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="当前总分">{{ candidateDetail.score.total_score }} / {{ candidateDetail.scoring_rubric.max_score }}</el-descriptions-item>
           </el-descriptions>
+          <el-table :data="candidateDetail.scoring_rubric.dimensions" size="small" border>
+            <el-table-column prop="label" label="维度" width="110" />
+            <el-table-column label="本次得分" width="100" align="right"><template #default="{ row }"><strong>{{ scoringDimensionValue(candidateDetail.score, row.key) }} / {{ row.max_points }}</strong></template></el-table-column>
+            <el-table-column label="权重" width="80" align="right"><template #default="{ row }">{{ row.weight_pct }}%</template></el-table-column>
+            <el-table-column label="分值映射" min-width="260"><template #default="{ row }">{{ scoringRulesText(row.rules) }}</template></el-table-column>
+            <el-table-column prop="evidence" label="证据来源" min-width="210" show-overflow-tooltip />
+          </el-table>
+          <div class="criteria-note">{{ candidateDetail.scoring_rubric.grade_rule_note }}</div>
         </el-card>
 
         <el-card shadow="never">
@@ -1672,8 +1729,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { apiClient } from '@/api/client'
 import AIRequestPrompt from '@/components/AIRequestPrompt.vue'
-import MarkdownContent from '@/components/MarkdownContent.vue'
+import AIAnalysisResult from '@/components/AIAnalysisResult.vue'
+import type { AIAnalysisStructuredResult } from '@/api/types'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
+import SmallCapPolicyDialog from '@/components/SmallCapPolicyDialog.vue'
 import type {
   ApiResponse,
   CandidateDetail,
@@ -1761,7 +1820,7 @@ const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
 type AIProvider = { id: string; name: string; model: string }
 type AIPromptTemplate = { id: string; name: string }
-type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; system_prompt?: string; user_prompt?: string; requested_at: string }
+type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; system_prompt?: string; user_prompt?: string; requested_at: string; structured_result?: AIAnalysisStructuredResult }
 const aiProviders = ref<AIProvider[]>([])
 const aiPromptTemplates = ref<AIPromptTemplate[]>([])
 const candidateAIProvider = ref('')
@@ -1792,6 +1851,8 @@ const discoverySyncNow = ref(Date.now())
 let discoverySyncPoll: ReturnType<typeof window.setInterval> | undefined
 let candidateSupplementalTimer: ReturnType<typeof window.setTimeout> | undefined
 const criteria = ref<CandidateSelectionCriteria | null>(null)
+const policyDialogVisible = ref(false)
+const scoringRubricVisible = ref(false)
 const report = ref<CandidateReport | null>(null)
 const reportVisible = ref(false)
 const eligibilityCheckVisible = ref(false)
@@ -2007,6 +2068,10 @@ async function loadCriteria() {
   } catch {
     criteria.value = null
   }
+}
+
+async function handlePolicyUpdated() {
+  await Promise.allSettled([loadCriteria(), load(), loadHealth(), loadOverview()])
 }
 
 function openEligibilityCheck() {
@@ -3279,6 +3344,22 @@ function formatCriteriaUSD(value: number) {
   if (!Number.isFinite(value)) return '-'
   if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(0)}B`
   return `$${(value / 1_000_000).toFixed(0)}M`
+}
+
+function scoringRulesText(rules?: Array<{ condition: string; points: number }>) {
+  return (rules || []).map((rule) => `${rule.condition}：${rule.points} 分`).join('；') || '-'
+}
+
+function scoringDimensionValue(score: CandidateScore, key: string) {
+  const values: Record<string, number> = {
+    revenue_growth: score.revenue_growth_score,
+    cash_runway: score.cash_runway_score,
+    qualified_insider: score.insider_score,
+    gross_margin: score.gross_margin_score,
+    dilution_risk: score.dilution_risk_score,
+    sector: score.sector_score,
+  }
+  return values[key] ?? 0
 }
 
 function formatPrice(value?: number, currency?: string) {

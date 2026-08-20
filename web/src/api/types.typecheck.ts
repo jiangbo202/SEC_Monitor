@@ -35,6 +35,7 @@ const candidate: CandidateScore = {
   active_blocks_b: false,
   reason_code: 'qualified',
   scoring_version: 'v1',
+	scoring_rubric_sha256: 'abc123',
   created_at: '2026-06-29T00:00:00Z',
 }
 
@@ -50,6 +51,16 @@ export const candidateSummaryTypecheck: CandidateSummary = {
 
 export const candidateSelectionCriteriaTypecheck: CandidateSelectionCriteria = {
   scoring_version: 'small-cap-discovery-score-v1',
+	scoring_rubric: {
+	  version: 'small-cap-discovery-score-v1',
+	  name: '小盘候选确定性基本面评分卡',
+	  formula: '总分 = 六项评分之和',
+	  max_score: 100,
+	  dimensions: [{ key: 'revenue_growth', label: '收入增长', max_points: 30, weight_pct: 30, evidence: 'SEC 财务事实', rules: [{ condition: '增长率 ≥ 40%', points: 30 }] }],
+	  grade_rule_note: '等级由独立闸门决定',
+	  disclaimer: '不是涨跌概率或投资建议',
+	  content_sha256: 'abc123',
+	},
   market_cap_min_usd: 30_000_000,
   a_market_cap_max_exclusive_usd: 500_000_000,
   b_market_cap_max_exclusive_usd: 1_000_000_000,
@@ -58,6 +69,12 @@ export const candidateSelectionCriteriaTypecheck: CandidateSelectionCriteria = {
   a_runway_min_months: 12,
   insider_lookback_days: 180,
   b_min_sector_score: 7,
+  allowed_exchanges: ['Nasdaq', 'NYSE', 'NYSE American'],
+  max_price_age_trading_days: 3,
+  minimum_price_usd: 1,
+  blocked_adv_usd: 100_000,
+  tradable_adv_usd: 500_000,
+  minimum_history_days: 15,
   revenue_growth_selection: '优先最新可比季度收入同比；季度不可用时回退年度同比',
   qualified_insider_requirement: '近 180 日 CEO、CFO 或创始人的合格 Form 4 公开市场买入',
   active_capital_risk_requirement: 'A级不允许 A/B 阻断；B级不允许 B 阻断',
@@ -109,6 +126,7 @@ export const candidateDetailTypecheck: CandidateDetail = {
 	analyst_rating: { history: [], message: '尚未同步分析师共识' },
 	market_research: { eps_forecast: { history: [], message: '尚未同步 EPS 预期' }, anomalies: [], institutional_holders: [], fund_holders: [] },
   score: candidate,
+	scoring_rubric: candidateSelectionCriteriaTypecheck.scoring_rubric,
   score_history: [],
   signal_events: [],
   insiders: [],
@@ -168,6 +186,8 @@ export const discoveryWorkflowTypecheck: DiscoveryWorkflowResult = {
 }
 
 export const candidateReportTypecheck: CandidateReport = {
+	status: 'ready',
+	available: true,
   date: '2026-06-30',
   batch: {
     batch_id: 'batch',
@@ -180,5 +200,8 @@ export const candidateReportTypecheck: CandidateReport = {
   },
   summary: candidateSummaryTypecheck,
   health: candidateHealthTypecheck,
+	snapshot_id: 1,
+	schema_version: 'candidate-report-v1',
+	content_sha256: 'abc123',
   generated_at: '2026-06-30T00:00:00Z',
 }

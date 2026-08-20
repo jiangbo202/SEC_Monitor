@@ -1,5 +1,9 @@
 # Deployment
 
+## Deferred Roadmap
+
+- [Supabase/PostgreSQL production deployment](../superpowers/plans/2026-08-19-supabase-production-deployment.md) is recorded as a deferred optimization. The current SQLite/Docker workflow remains authoritative until that plan is explicitly resumed.
+
 ## Docker Image
 
 The project builds a single image that serves:

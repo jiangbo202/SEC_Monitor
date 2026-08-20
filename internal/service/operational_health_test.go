@@ -117,6 +117,29 @@ func TestOperationalHealthTreatsProviderValidationAsWarningAndReportsMissingMacr
 	}
 }
 
+func TestOperationalHealthReportsSuccessfulProviderFallback(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	now := time.Date(2026, time.August, 20, 12, 0, 0, 0, time.UTC)
+	batch := discovery.UniverseBatch{BatchID: "fallback-market", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished, EffectiveDate: "2026-08-19", StartedAt: now}
+	if err := discoveryDB.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.ProviderHealth{Provider: "longbridge,tiingo", Status: discovery.ProviderStatusActive, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.ProviderRun{BatchID: batch.BatchID, Provider: "longbridge,tiingo", Status: discovery.ProviderStatusActive, ExpectedCount: 100, RecordCount: 100, CoveragePct: 100, FallbackUsed: true, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	report, err := NewOperationalHealthService(db, discoveryDB, nil, nil).ReportAt(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ProviderWarnings != 1 || !hasOperationalIssue(report.Issues, "provider_fallback:longbridge,tiingo") {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
 func TestClassifyOperationalExternalFailure(t *testing.T) {
 	for _, test := range []struct{ message, want string }{
 		{"HTTP 429 rate limited", "限流"},

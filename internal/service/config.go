@@ -402,8 +402,12 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 // untouched, including templates that intentionally differ from the default.
 func (s *ConfigService) upgradeAIAnalysisDefaultPromptTemplate(ctx context.Context) error {
 	value, found, err := s.GetValue(ctx, aiAnalysisPromptTemplateConfigKey)
-	if err != nil || !found || normalizePromptTemplate(value) != normalizePromptTemplate(aiAnalysisPreviousDefaultUserPromptTemplate) {
+	if err != nil || !found {
 		return err
+	}
+	normalized := normalizePromptTemplate(value)
+	if normalized != normalizePromptTemplate(aiAnalysisPreviousDefaultUserPromptTemplate) && normalized != normalizePromptTemplate(aiAnalysisMarkdownDefaultUserPromptTemplate) {
+		return nil
 	}
 	return s.UpsertMany(ctx, []ConfigInput{{
 		Key:       aiAnalysisPromptTemplateConfigKey,
@@ -430,10 +434,12 @@ func defaultSECFilingAIPromptTemplate() AIPromptTemplate {
 	}
 }
 
-const defaultSECFilingAIPromptTemplateContent = "你是一位审慎的 SEC 公告研究助理。仅基于下方已入库的 SEC 公告信息完成解读；公告原文链接为 {{filing_url}}。不要使用或推测标的基本面、估值、技术面或本系统评分，也不构成投资建议。\n\n请严格按以下结构输出：\n\n## 1. 公告核心事项\n用 2–4 句话说明这份 {{filing_type}} 公告披露了什么，以及其潜在重要性；若正文证据不足，请明确说明。\n\n## 2. 关键事实与影响\n挑选最多 5 项关键事实。每项先写“事实”，再写“可能影响/推断”；不要编造正文未出现的金额、日期、交易或管理层意图。\n\n## 3. 风险、反证与待核验\n说明稀释、流动性、经营、合规、治理或事件执行层面的风险；区分已披露事实和需要人工阅读原文确认的事项。\n\n## 4. 后续观察点\n仅依据本文件提出需要持续跟踪的公告、财报、融资、审批或其他触发条件。\n\n写作要求：\n- 明确标注“事实”“推断”“待核验”。\n- 文件链接用于人工追溯，不能声称已访问链接以外的信息。\n- 若文件正文为空或被截断，必须把结论限定为证据不足。\n\nSEC 公告内容（仅公告元数据与原文正文）：\n{{sec_filing_content}}"
+const previousDefaultSECFilingAIPromptTemplateContent = "你是一位审慎的 SEC 公告研究助理。仅基于下方已入库的 SEC 公告信息完成解读；公告原文链接为 {{filing_url}}。不要使用或推测标的基本面、估值、技术面或本系统评分，也不构成投资建议。\n\n请严格按以下结构输出：\n\n## 1. 公告核心事项\n用 2–4 句话说明这份 {{filing_type}} 公告披露了什么，以及其潜在重要性；若正文证据不足，请明确说明。\n\n## 2. 关键事实与影响\n挑选最多 5 项关键事实。每项先写“事实”，再写“可能影响/推断”；不要编造正文未出现的金额、日期、交易或管理层意图。\n\n## 3. 风险、反证与待核验\n说明稀释、流动性、经营、合规、治理或事件执行层面的风险；区分已披露事实和需要人工阅读原文确认的事项。\n\n## 4. 后续观察点\n仅依据本文件提出需要持续跟踪的公告、财报、融资、审批或其他触发条件。\n\n写作要求：\n- 明确标注“事实”“推断”“待核验”。\n- 文件链接用于人工追溯，不能声称已访问链接以外的信息。\n- 若文件正文为空或被截断，必须把结论限定为证据不足。\n\nSEC 公告内容（仅公告元数据与原文正文）：\n{{sec_filing_content}}"
+
+const defaultSECFilingAIPromptTemplateContent = "你是一位审慎的 SEC 公告研究助理。仅基于下方已入库的 {{filing_type}} 公告正文完成判断；原文链接为 {{filing_url}}。请按系统消息定义的 ai-research-v1 JSON 返回，所有证据必须带可回溯的 source_paths。不得使用或推测文件之外的基本面、估值、技术面或系统评分；正文为空或被截断时使用 insufficient_evidence。\n\nSEC 公告内容：\n{{sec_filing_content}}"
 
 func legacyDefaultSECFilingAIPromptTemplateContent() string {
-	value := strings.Replace(defaultSECFilingAIPromptTemplateContent,
+	value := strings.Replace(previousDefaultSECFilingAIPromptTemplateContent,
 		"仅基于下方已入库的 SEC 公告信息完成解读；公告原文链接为 {{filing_url}}。不要使用或推测标的基本面、估值、技术面或本系统评分，也不构成投资建议。",
 		"仅基于下方已入库的 SEC 文件事实包完成解读；公告原文链接为 {{filing_url}}。不要把元数据逐项复述，也不构成投资建议。", 1)
 	return strings.Replace(value, "SEC 公告内容（仅公告元数据与原文正文）：\n{{sec_filing_content}}", "SEC 文件事实包：\n{{research_facts_json}}", 1)
@@ -449,19 +455,31 @@ func (s *ConfigService) ensureAIPromptTemplates(ctx context.Context) error {
 		if err := json.Unmarshal([]byte(value), &templates); err != nil {
 			return fmt.Errorf("parse AI prompt template configuration: %w", err)
 		}
+		changed := false
+		hasSECTemplate := false
 		for index, template := range templates {
+			if template.ID == defaultAIPromptTemplate().ID && (template.Content == aiAnalysisMarkdownDefaultUserPromptTemplate || template.Content == aiAnalysisPreviousDefaultUserPromptTemplate) {
+				templates[index] = defaultAIPromptTemplate()
+				changed = true
+			}
 			if template.ID == defaultSECFilingAIPromptTemplate().ID {
+				hasSECTemplate = true
 				// Upgrade only the previous project default. User-authored SEC
 				// templates remain untouched.
-				if template.Content == legacyDefaultSECFilingAIPromptTemplateContent() {
+				if template.Content == legacyDefaultSECFilingAIPromptTemplateContent() || template.Content == previousDefaultSECFilingAIPromptTemplateContent {
 					templates[index] = defaultSECFilingAIPromptTemplate()
-					return s.SaveAIPromptTemplates(ctx, templates, "system")
+					changed = true
 				}
-				return nil
 			}
 		}
-		templates = append(templates, defaultSECFilingAIPromptTemplate())
-		return s.SaveAIPromptTemplates(ctx, templates, "system")
+		if !hasSECTemplate {
+			templates = append(templates, defaultSECFilingAIPromptTemplate())
+			changed = true
+		}
+		if changed {
+			return s.SaveAIPromptTemplates(ctx, templates, "system")
+		}
+		return nil
 	}
 	template := defaultAIPromptTemplate()
 	if legacy, found, err := s.GetValue(ctx, aiAnalysisPromptTemplateConfigKey); err != nil {

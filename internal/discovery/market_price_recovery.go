@@ -214,7 +214,11 @@ func RepriceCurrentCandidateFromLocalHistory(ctx context.Context, db *gorm.DB, t
 	if err := db.WithContext(ctx).First(&share, *target.ShareSnapshotID).Error; err != nil {
 		return result, err
 	}
-	marketCap, qualified, err := ComputeSmallCapQualification(price.CloseMicros, share.Shares)
+	binding, err := SmallCapPolicyBindingForBatch(base)
+	if err != nil {
+		return result, err
+	}
+	marketCap, qualified, err := ComputeSmallCapQualificationWithPolicy(price.CloseMicros, share.Shares, binding.Policy)
 	if err != nil {
 		return result, err
 	}
@@ -229,7 +233,7 @@ func RepriceCurrentCandidateFromLocalHistory(ctx context.Context, db *gorm.DB, t
 		return result, err
 	}
 	content := sha256.Sum256([]byte(base.ContentSHA256 + "\x00" + result.Ticker + "\x00" + fmt.Sprint(price.ID) + "\x00" + fmt.Sprint(marketCap)))
-	coordinator := &Coordinator{DB: db, Clock: func() time.Time { return now }}
+	coordinator := &Coordinator{DB: db, Clock: func() time.Time { return now }, PolicyBinding: binding}
 	batch, existed, err := coordinator.createDraft(ctx, BatchKindPrescreen, base.EffectiveDate, versions, hex.EncodeToString(content[:]), now)
 	if err != nil {
 		return result, err
@@ -271,7 +275,7 @@ func RepriceCurrentCandidateFromLocalHistory(ctx context.Context, db *gorm.DB, t
 			universeRows[index].Included, universeRows[index].Status, universeRows[index].ReasonCode = false, EffectiveStatusExcluded, ReasonOutsideMarketCap
 		}
 	}
-	replacement, err := scoreCandidateForMarketCap(ctx, db, base.UniverseSourceVersion, batch.BatchID, target, marketCap, now)
+	replacement, err := scoreCandidateForMarketCap(ctx, db, base.UniverseSourceVersion, batch.BatchID, target, marketCap, now, binding.Policy)
 	if err != nil {
 		return result, err
 	}
@@ -302,7 +306,7 @@ func RepriceCurrentCandidateFromLocalHistory(ctx context.Context, db *gorm.DB, t
 	return result, nil
 }
 
-func scoreCandidateForMarketCap(ctx context.Context, db *gorm.DB, securityBatchID, marketBatchID string, row UniverseSnapshot, marketCap int64, now time.Time) (CandidateScoreSnapshot, error) {
+func scoreCandidateForMarketCap(ctx context.Context, db *gorm.DB, securityBatchID, marketBatchID string, row UniverseSnapshot, marketCap int64, now time.Time, policy SmallCapPolicy) (CandidateScoreSnapshot, error) {
 	var metric FinancialMetricSnapshot
 	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id = ?", securityBatchID, row.SecurityID).First(&metric).Error; err != nil {
 		return CandidateScoreSnapshot{}, err
@@ -328,10 +332,10 @@ func scoreCandidateForMarketCap(ctx context.Context, db *gorm.DB, securityBatchI
 	if value, ok := businessModels[row.SecurityID]; ok {
 		override = &value
 	}
-	score := ScoreDiscoveryCandidate(DiscoveryScoreInput{
+	score := ScoreDiscoveryCandidateWithPolicy(DiscoveryScoreInput{
 		SecurityID: row.SecurityID, Ticker: row.Ticker, MarketCapUSD: marketCap, Financial: metric,
 		Insiders: insiders, Risks: risks, GrossMarginPct: metric.GrossMarginPct, SectorScore: sector.Score,
 		BusinessModel: candidateBusinessModelEvidence(override, sector.Category == "生物医药"), AsOf: now,
-	})
+	}, policy)
 	return CandidateScoreToSnapshot(marketBatchID, score, now), nil
 }

@@ -34,14 +34,15 @@ type CalendarCoverage struct {
 }
 
 type ProviderObservabilityItem struct {
-	Provider                string          `json:"provider"`
-	Configured              bool            `json:"configured"`
-	ConfiguredCredential    bool            `json:"configured_credential"`
-	TokenCount              int             `json:"token_count"`
-	LocalRequestBudget      int             `json:"local_request_budget"`
-	BudgetScope             string          `json:"budget_scope"`
-	LatestSourceRecordCount int64           `json:"latest_source_record_count"`
-	Health                  *ProviderHealth `json:"health,omitempty"`
+	Provider                string           `json:"provider"`
+	Configured              bool             `json:"configured"`
+	ConfiguredCredential    bool             `json:"configured_credential"`
+	TokenCount              int              `json:"token_count"`
+	LocalRequestBudget      int              `json:"local_request_budget"`
+	BudgetScope             string           `json:"budget_scope"`
+	LatestSourceRecordCount int64            `json:"latest_source_record_count"`
+	Health                  *ProviderHealth  `json:"health,omitempty"`
+	LatestAttempt           *ProviderAttempt `json:"latest_attempt,omitempty"`
 }
 
 const providerBudgetNotice = "本地请求预算是本系统单次运行的保护阈值，不代表供应商账户剩余额度；请以供应商后台为准。"
@@ -87,6 +88,9 @@ func GetProviderObservability(ctx context.Context, db *gorm.DB, cfg config.Disco
 		return result, err
 	}
 	if err == nil {
+		if hydrateErr := hydrateProviderRunAttempts(&latest); hydrateErr != nil {
+			return result, hydrateErr
+		}
 		result.LatestRun = &latest
 		if byVersion, countErr := priceSourceCountsByVersion(ctx, db, []string{latest.SourceVersion}); countErr != nil {
 			return result, countErr
@@ -103,6 +107,10 @@ func GetProviderObservability(ctx context.Context, db *gorm.DB, cfg config.Disco
 	for _, health := range healthRows {
 		healthByProvider[strings.ToLower(strings.TrimSpace(health.Provider))] = health
 	}
+	attemptByProvider := make(map[string]ProviderAttempt, len(latest.Attempts))
+	for _, attempt := range latest.Attempts {
+		attemptByProvider[strings.ToLower(strings.TrimSpace(attempt.Provider))] = attempt
+	}
 	if health, ok := healthByProvider[result.PriceProviderChain]; ok {
 		healthCopy := health
 		result.ChainHealth = &healthCopy
@@ -116,6 +124,10 @@ func GetProviderObservability(ctx context.Context, db *gorm.DB, cfg config.Disco
 		if health, ok := healthByProvider[provider]; ok {
 			healthCopy := health
 			item.Health = &healthCopy
+		}
+		if attempt, ok := attemptByProvider[provider]; ok {
+			attemptCopy := attempt
+			item.LatestAttempt = &attemptCopy
 		}
 		result.Providers = append(result.Providers, item)
 	}

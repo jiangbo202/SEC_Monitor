@@ -19,6 +19,7 @@ type CandidateDetail struct {
 	OptionResearch     OptionResearchView             `json:"option_research"`
 	Universe           *UniverseSnapshot              `json:"universe,omitempty"`
 	Score              CandidateScoreSnapshot         `json:"score"`
+	ScoringRubric      CandidateScoringRubric         `json:"scoring_rubric"`
 	ScoreHistory       []CandidateScoreHistoryPoint   `json:"score_history"`
 	SignalEvents       []CandidateSignalEvent         `json:"signal_events"`
 	Financial          *FinancialMetricSnapshot       `json:"financial,omitempty"`
@@ -109,6 +110,7 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	if err := db.WithContext(ctx).First(&result.Score, "batch_id = ? AND ticker = ?", batch.BatchID, symbol).Error; err != nil {
 		return result, err
 	}
+	result.ScoringRubric = CandidateScoringRubricForSnapshot(result.Score)
 	if err := db.WithContext(ctx).First(&result.Security, result.Score.SecurityID).Error; err != nil {
 		return result, err
 	}
@@ -270,13 +272,17 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 	for _, risk := range result.CapitalRisks {
 		technicalItems[0].CapitalRiskSummaries = append(technicalItems[0].CapitalRiskSummaries, CapitalRiskSummary{Kind: risk.Kind, Severity: risk.Severity, BlocksA: risk.BlocksA, BlocksB: risk.BlocksB, Reason: risk.Reason, EffectiveAt: risk.EffectiveAt})
 	}
-	if err = hydrateCandidateMarketQuality(ctx, db, technicalItems); err != nil {
+	policy, policyErr := SmallCapPolicyForBatch(batch)
+	if policyErr != nil {
+		return result, policyErr
+	}
+	if err = hydrateCandidateMarketQualityWithPolicy(ctx, db, technicalItems, policy); err != nil {
 		return result, err
 	}
 	if err = hydrateCandidateDilutionTrends(ctx, db, batch, technicalItems); err != nil {
 		return result, err
 	}
-	result.Investability = buildCandidateInvestability(technicalItems[0])
+	result.Investability = BuildCandidateInvestabilityWithPolicy(technicalItems[0], policy)
 	result.DilutionTrend = technicalItems[0].DilutionTrend
 	technicalItems[0].BusinessModel = result.BusinessModel
 	technicalItems[0].Investability = result.Investability

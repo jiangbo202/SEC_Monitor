@@ -61,6 +61,22 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 		result.Issues = append(result.Issues, "no_current_published_prescreen_batch")
 		return result, nil
 	}
+	return BuildCandidateHealthForBatch(ctx, db, batch)
+}
+
+// BuildCandidateHealthForBatch calculates health for the exact batch archived
+// in a report, avoiding accidental mixing with a newer current batch.
+func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch UniverseBatch) (CandidateHealth, error) {
+	result := CandidateHealth{Status: CandidateHealthMissing, Issues: []string{}}
+	if db == nil {
+		return result, errors.New("database is required")
+	}
+	if ctx == nil {
+		return result, errors.New("context is required")
+	}
+	if strings.TrimSpace(batch.BatchID) == "" {
+		return result, errors.New("batch id is required")
+	}
 	result.BatchID = batch.BatchID
 	result.PriceEffectiveDate = batch.EffectiveDate
 	insiderDataAvailable, err := candidateInsiderDataAvailable(ctx, db, batch)
@@ -178,7 +194,7 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 		}
 	}
 	result.ActiveRiskEvents = int(activeRiskEvents)
-	readinessPage, err := ListCandidateScores(ctx, db, CandidateScoreQuery{Page: 1, PageSize: maxDiscoveryPageSize})
+	readinessPage, err := ListCandidateScores(ctx, db, CandidateScoreQuery{BatchID: batch.BatchID, Page: 1, PageSize: maxDiscoveryPageSize})
 	if err != nil {
 		return result, err
 	}

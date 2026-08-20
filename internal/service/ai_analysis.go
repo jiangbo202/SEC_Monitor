@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -40,7 +38,7 @@ var (
 	secFilingTagPattern               = regexp.MustCompile(`(?is)<[^>]+>`)
 )
 
-const aiAnalysisSystemPrompt = "你必须清楚区分事实、推断和数据缺口。"
+var aiAnalysisSystemPrompt = aiAnalysisStructuredSystemPrompt
 
 // aiAnalysisDefaultUserPromptTemplate is deliberately a facts-only template.
 // The project fills the research package at request time, rather than sending
@@ -49,7 +47,9 @@ const aiAnalysisSystemPrompt = "你必须清楚区分事实、推断和数据缺
 // remains mandatory so every manual analysis still has its local evidence.
 const aiAnalysisPreviousDefaultUserPromptTemplate = "你是审慎的美股研究助理。仅基于下方本地事实研究包，用中文输出：\n1. 核心结论（不构成投资建议）；\n2. 基本面、趋势/动量、量价的支持与风险；\n3. 数据缺口与需要人工验证的事项；\n4. 不要编造任何未在研究包中出现的事实、价格、日期或持仓。\n5. 研究包已主动移除本系统的评分、候选等级、入场/离场规则结论；请独立分析，勿将缺失字段视为负面事实。\n\n本地事实研究包：\n{{research_facts_json}}"
 
-const aiAnalysisDefaultUserPromptTemplate = "你是一位审慎的美股研究助理。仅基于下方本地事实研究包完成一次真正的研究判断，不要逐字段复述研究包，也不构成投资建议。\n\n输出请严格采用以下结构：\n\n## 1. 研究结论\n用 2–4 句话给出“关注 / 观望 / 回避”的研究倾向及最重要的原因；若证据不足，明确写“证据不足”，不要勉强下结论。\n\n## 2. 最关键的证据与推断\n挑选最多 4 项最具解释力的事实。每项都要先写事实（带可用的数值、日期或变化），再说明它为何会影响成长、盈利质量、估值预期或市场行为；不要把所有字段重新罗列一遍。\n\n## 3. 反证、风险与失效条件\n说明与结论相矛盾的事实、主要风险，以及哪些后续事实会推翻当前判断。\n\n## 4. 近期催化剂与观察重点\n仅在研究包有依据时，列出未来财报、公告、价格/成交量变化、分析师或持仓变化等值得跟踪的催化剂；没有依据则说明未识别到。\n\n## 5. 数据缺口与下一步验证\n只列出会实质改变判断的缺失数据或待核验事项，并说明应验证什么。\n\n写作要求：\n- 清楚标注“事实”“推断”“待验证”，推断必须能回溯到研究包中的事实。\n- 优先分析变化、趋势、矛盾和相对重要性，而不是同义改写数字。\n- 研究包已主动移除本系统的评分、候选等级、入场/离场规则结论；不得猜测或恢复这些内容。\n- 不得编造研究包中不存在的事实、价格、日期、持仓或市场共识；缺失数据不等同于负面事实。\n- 避免泛泛而谈的免责声明和重复表述，正文应尽量具体、紧凑。\n\n本地事实研究包：\n{{research_facts_json}}"
+const aiAnalysisMarkdownDefaultUserPromptTemplate = "你是一位审慎的美股研究助理。仅基于下方本地事实研究包完成一次真正的研究判断，不要逐字段复述研究包，也不构成投资建议。\n\n输出请严格采用以下结构：\n\n## 1. 研究结论\n用 2–4 句话给出“关注 / 观望 / 回避”的研究倾向及最重要的原因；若证据不足，明确写“证据不足”，不要勉强下结论。\n\n## 2. 最关键的证据与推断\n挑选最多 4 项最具解释力的事实。每项都要先写事实（带可用的数值、日期或变化），再说明它为何会影响成长、盈利质量、估值预期或市场行为；不要把所有字段重新罗列一遍。\n\n## 3. 反证、风险与失效条件\n说明与结论相矛盾的事实、主要风险，以及哪些后续事实会推翻当前判断。\n\n## 4. 近期催化剂与观察重点\n仅在研究包有依据时，列出未来财报、公告、价格/成交量变化、分析师或持仓变化等值得跟踪的催化剂；没有依据则说明未识别到。\n\n## 5. 数据缺口与下一步验证\n只列出会实质改变判断的缺失数据或待核验事项，并说明应验证什么。\n\n写作要求：\n- 清楚标注“事实”“推断”“待验证”，推断必须能回溯到研究包中的事实。\n- 优先分析变化、趋势、矛盾和相对重要性，而不是同义改写数字。\n- 研究包已主动移除本系统的评分、候选等级、入场/离场规则结论；不得猜测或恢复这些内容。\n- 不得编造研究包中不存在的事实、价格、日期、持仓或市场共识；缺失数据不等同于负面事实。\n- 避免泛泛而谈的免责声明和重复表述，正文应尽量具体、紧凑。\n\n本地事实研究包：\n{{research_facts_json}}"
+
+const aiAnalysisDefaultUserPromptTemplate = "你是一位审慎的美股研究助理。仅基于下方本地事实研究包做判断，不要逐字段复述，也不构成投资建议。请按系统消息定义的 ai-research-v1 JSON 返回：证据必须写出事实、推断、影响以及可回溯的 source_paths；缺少依据时使用 insufficient_evidence，不得猜测系统评分、候选等级或交易结论。\n\n本地事实研究包：\n{{research_facts_json}}"
 
 type AIAnalysisInput struct {
 	ProviderID  string                           `json:"provider_id"`
@@ -80,6 +80,7 @@ type AIAnalysisService struct {
 	httpClient         *http.Client
 	secFilingFetcher   sec.FilingDocumentFetcher
 	queueMu            sync.Mutex
+	aiRetryWait        func(context.Context, time.Duration) error
 }
 
 func NewAIAnalysisService(db *gorm.DB, configs *ConfigService, audit *AuditService) *AIAnalysisService {
@@ -163,7 +164,8 @@ func (s *AIAnalysisService) QueueTickerAnalysis(ctx context.Context, input AIAna
 		return model.AIAnalysis{}, err
 	}
 	hash := sha256.Sum256(snapshot)
-	record := model.AIAnalysis{Scope: scope, SourceID: strings.TrimSpace(input.SourceID), SourceURL: strings.TrimSpace(input.SourceURL), Ticker: ticker, CompanyName: companyName, TargetType: targetType, ProviderID: provider.ID, ProviderName: provider.Name, Model: provider.Model, TemplateID: template.ID, TemplateName: template.Name, PromptVersion: promptVersion, SystemPrompt: systemPrompt, UserPrompt: userPrompt, InputSHA256: hex.EncodeToString(hash[:]), InputSnapshot: string(snapshot), Status: "queued", RequestedAt: now}
+	record := model.AIAnalysis{Scope: scope, SourceID: strings.TrimSpace(input.SourceID), SourceURL: strings.TrimSpace(input.SourceURL), Ticker: ticker, CompanyName: companyName, TargetType: targetType, ProviderID: provider.ID, ProviderName: provider.Name, Model: provider.Model, TemplateID: template.ID, TemplateName: template.Name, PromptVersion: promptVersion, SystemPrompt: systemPrompt, UserPrompt: userPrompt, InputSHA256: hex.EncodeToString(hash[:]), InputSnapshot: string(snapshot), SchemaVersion: model.AIAnalysisSchemaV1, ResponseMode: "json_object", Status: "queued", RequestedAt: now}
+	record.AnalysisKeySHA256 = aiAnalysisKey(record)
 	s.queueMu.Lock()
 	defer s.queueMu.Unlock()
 	var existing model.AIAnalysis
@@ -228,7 +230,7 @@ func (s *AIAnalysisService) ProcessTickerAnalysis(ctx context.Context, id uint, 
 	}
 	providers, err := s.configs.AIProviders(ctx)
 	if err != nil {
-		return s.finishAIAnalysis(ctx, record, "", err, operator)
+		return s.finishAIAnalysis(ctx, record, aiAnalysisCallResult{}, err, operator)
 	}
 	var provider *AIProviderConfig
 	for index := range providers {
@@ -238,11 +240,11 @@ func (s *AIAnalysisService) ProcessTickerAnalysis(ctx context.Context, id uint, 
 		}
 	}
 	if provider == nil {
-		return s.finishAIAnalysis(ctx, record, "", errors.New("selected AI provider is unavailable or disabled"), operator)
+		return s.finishAIAnalysis(ctx, record, aiAnalysisCallResult{}, errors.New("selected AI provider is unavailable or disabled"), operator)
 	}
 	if record.Scope == "sec_filing" {
 		if record, err = s.enrichSECFilingAnalysis(ctx, record); err != nil {
-			return s.finishAIAnalysis(ctx, record, "", err, operator)
+			return s.finishAIAnalysis(ctx, record, aiAnalysisCallResult{}, err, operator)
 		}
 	}
 	systemPrompt, userPrompt := record.SystemPrompt, record.UserPrompt
@@ -250,8 +252,23 @@ func (s *AIAnalysisService) ProcessTickerAnalysis(ctx context.Context, id uint, 
 		// Records made before request prompts were persisted remain executable.
 		systemPrompt, userPrompt = aiAnalysisPrompts(record.InputSnapshot)
 	}
-	content, callErr := s.callOpenAICompatibleWithPrompts(ctx, *provider, systemPrompt, userPrompt)
-	return s.finishAIAnalysis(ctx, record, content, callErr, operator)
+	record.SystemPrompt, record.UserPrompt, record.SchemaVersion = systemPrompt, userPrompt, model.AIAnalysisSchemaV1
+	record.AnalysisKeySHA256 = aiAnalysisKey(record)
+	if err := s.db.WithContext(ctx).Model(&model.AIAnalysis{}).Where("id = ?", record.ID).Updates(map[string]any{
+		"system_prompt": record.SystemPrompt, "user_prompt": record.UserPrompt, "schema_version": record.SchemaVersion,
+		"analysis_key_sha256": record.AnalysisKeySHA256,
+	}).Error; err != nil {
+		return s.finishAIAnalysis(ctx, record, aiAnalysisCallResult{}, err, operator)
+	}
+	if reusable, ok, reuseErr := s.reusableAIAnalysis(ctx, record); reuseErr != nil {
+		return s.finishAIAnalysis(ctx, record, aiAnalysisCallResult{}, reuseErr, operator)
+	} else if ok {
+		reusedID := reusable.ID
+		result := aiAnalysisCallResult{Structured: *reusable.StructuredResult, ResultJSON: reusable.ResultJSON, Content: reusable.Content, ResponseMode: "cache", ReusedFromID: &reusedID}
+		return s.finishAIAnalysis(ctx, record, result, nil, operator)
+	}
+	callResult, callErr := s.callStructuredAIAnalysis(ctx, *provider, systemPrompt, userPrompt)
+	return s.finishAIAnalysis(ctx, record, callResult, callErr, operator)
 }
 
 func (s *AIAnalysisService) enrichSECFilingAnalysis(ctx context.Context, record model.AIAnalysis) (model.AIAnalysis, error) {
@@ -296,6 +313,10 @@ func (s *AIAnalysisService) enrichSECFilingAnalysis(ctx context.Context, record 
 	}
 	record.InputSnapshot, record.InputSHA256, record.SystemPrompt, record.UserPrompt = string(snapshot), hex.EncodeToString(hash[:]), systemPrompt, userPrompt
 	record.PromptVersion, record.TemplateName = promptVersion, template.Name
+	record.AnalysisKeySHA256 = aiAnalysisKey(record)
+	if err := s.db.WithContext(ctx).Model(&model.AIAnalysis{}).Where("id = ?", record.ID).Update("analysis_key_sha256", record.AnalysisKeySHA256).Error; err != nil {
+		return record, err
+	}
 	return record, nil
 }
 
@@ -326,27 +347,41 @@ func compactSECFilingDocument(value string) string {
 	return strings.TrimSpace(value)
 }
 
-func (s *AIAnalysisService) finishAIAnalysis(ctx context.Context, record model.AIAnalysis, content string, callErr error, operator string) (model.AIAnalysis, error) {
+func (s *AIAnalysisService) finishAIAnalysis(ctx context.Context, record model.AIAnalysis, result aiAnalysisCallResult, callErr error, operator string) (model.AIAnalysis, error) {
 	completed := time.Now().UTC()
 	record.DurationMS = completed.Sub(record.RequestedAt).Milliseconds()
 	if record.DurationMS < 0 {
 		record.DurationMS = 0
 	}
-	updates := map[string]any{"completed_at": &completed, "duration_ms": record.DurationMS}
+	updates := map[string]any{"completed_at": &completed, "duration_ms": record.DurationMS, "request_attempts": result.Attempts, "schema_version": model.AIAnalysisSchemaV1}
+	record.RequestAttempts = result.Attempts
+	record.SchemaVersion = model.AIAnalysisSchemaV1
+	if result.ResponseMode != "" {
+		record.ResponseMode = result.ResponseMode
+		updates["response_mode"] = result.ResponseMode
+	}
 	if callErr != nil {
 		record.Status = "failed"
 		record.ErrorMessage = SanitizeSensitiveError(callErr.Error())
 		updates["status"], updates["error_message"] = record.Status, record.ErrorMessage
 	} else {
-		record.Status, record.Content = "success", content
+		record.Status, record.Content = "success", result.Content
+		record.SchemaVersion, record.ResultJSON, record.ResponseMode, record.ReusedFromID = model.AIAnalysisSchemaV1, result.ResultJSON, result.ResponseMode, result.ReusedFromID
+		structured := result.Structured
+		record.StructuredResult = &structured
 		updates["status"], updates["content"] = record.Status, record.Content
+		updates["schema_version"], updates["result_json"], updates["response_mode"], updates["reused_from_id"] = record.SchemaVersion, record.ResultJSON, record.ResponseMode, record.ReusedFromID
 	}
 	record.CompletedAt = &completed
 	if err := s.db.WithContext(ctx).Model(&model.AIAnalysis{}).Where("id = ?", record.ID).Updates(updates).Error; err != nil {
 		return model.AIAnalysis{}, err
 	}
 	if s.audit != nil {
-		_ = s.audit.Record(ctx, operator, "complete", "ai_analysis", fmt.Sprintf("%d", record.ID), nil, map[string]any{"ticker": record.Ticker, "provider_id": record.ProviderID, "model": record.Model, "status": record.Status, "prompt_version": record.PromptVersion, "duration_ms": record.DurationMS})
+		action := "complete"
+		if record.ReusedFromID != nil {
+			action = "reuse"
+		}
+		_ = s.audit.Record(ctx, operator, action, "ai_analysis", fmt.Sprintf("%d", record.ID), nil, map[string]any{"ticker": record.Ticker, "provider_id": record.ProviderID, "model": record.Model, "status": record.Status, "prompt_version": record.PromptVersion, "schema_version": record.SchemaVersion, "request_attempts": record.RequestAttempts, "reused_from_id": record.ReusedFromID, "duration_ms": record.DurationMS})
 	}
 	if s.inApp != nil {
 		severity, title := "success", fmt.Sprintf("%s | AI 研判已完成", record.Ticker)
@@ -415,6 +450,7 @@ func (s *AIAnalysisService) List(ctx context.Context, filter AIAnalysisListFilte
 		// hashes + prompt version retain the audit reference without network I/O.
 		rows[index].InputSnapshot = ""
 		rows[index].ErrorMessage = SanitizeSensitiveError(rows[index].ErrorMessage)
+		hydrateAIAnalysisStructuredResult(&rows[index])
 	}
 	return newPageResult(rows, total, page, pageSize), err
 }
@@ -631,78 +667,13 @@ func isAIMissingValue(value string) bool {
 
 func (s *AIAnalysisService) callOpenAICompatible(ctx context.Context, provider AIProviderConfig, snapshot string) (string, error) {
 	systemPrompt, userPrompt := aiAnalysisPrompts(snapshot)
-	return s.callOpenAICompatibleWithPrompts(ctx, provider, systemPrompt, userPrompt)
+	result, err := s.callStructuredAIAnalysis(ctx, provider, systemPrompt, userPrompt)
+	return result.Content, err
 }
 
 func (s *AIAnalysisService) callOpenAICompatibleWithPrompts(ctx context.Context, provider AIProviderConfig, systemPrompt, userPrompt string) (string, error) {
-	requestPayload := map[string]any{
-		"model":       provider.Model,
-		"messages":    []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}},
-		"temperature": 0.2,
-		"max_tokens":  aiAnalysisMaxOutputTokens,
-		"stream":      false,
-	}
-	// DeepSeek V4 thinking mode consumes the shared max_tokens budget before a
-	// final answer is produced. This product needs a concise research result,
-	// not a chain-of-thought, so explicitly disable it on the official endpoint.
-	if isDeepSeekProvider(provider) {
-		requestPayload["thinking"] = map[string]string{"type": "disabled"}
-	}
-	body, _ := json.Marshal(requestPayload)
-	endpoint := strings.TrimRight(provider.APIBaseURL, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
-	client := *s.httpClient
-	timeout := aiProviderTimeout(provider)
-	client.Timeout = timeout
-	response, err := client.Do(req)
-	if err != nil {
-		return "", explainAIProviderError(err, timeout)
-	}
-	defer response.Body.Close()
-	limited := io.LimitReader(response.Body, 2<<20)
-	payload, err := io.ReadAll(limited)
-	if err != nil {
-		return "", explainAIProviderError(err, timeout)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("AI provider returned HTTP %d: %s", response.StatusCode, SanitizeSensitiveError(strings.TrimSpace(string(payload))))
-	}
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return "", fmt.Errorf("parse AI response: %w", err)
-	}
-	if len(parsed.Choices) == 0 {
-		return "", errors.New("AI 提供商未返回可用的分析结果")
-	}
-	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
-	if content != "" {
-		return content, nil
-	}
-	// A few OpenAI-compatible reasoning implementations omit final content but
-	// do return reasoning_content. Preserve it as a clearly-labelled fallback
-	// instead of throwing away a completed, billable response.
-	if reasoning := strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent); reasoning != "" {
-		return "模型未输出最终结论；以下为可供人工复核的推理内容：\n\n" + reasoning, nil
-	}
-	finishReason := strings.TrimSpace(parsed.Choices[0].FinishReason)
-	if finishReason == "" {
-		finishReason = "未提供完成原因"
-	}
-	return "", fmt.Errorf("AI 提供商未输出分析正文（完成原因：%s）；请重试，或在系统配置中使用非推理模型", finishReason)
+	result, err := s.callStructuredAIAnalysis(ctx, provider, systemPrompt, userPrompt)
+	return result.Content, err
 }
 
 func isDeepSeekProvider(provider AIProviderConfig) bool {

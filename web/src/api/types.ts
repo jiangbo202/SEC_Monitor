@@ -294,6 +294,7 @@ export interface CandidateScore {
   active_blocks_b: boolean
   reason_code: string
   scoring_version: string
+	scoring_rubric_sha256?: string
   business_model_at_score?: string
   revenue_score_cap_reason?: string
   created_at: string
@@ -331,6 +332,32 @@ export interface CandidateScore {
   business_model?: CandidateBusinessModelEvidence
   valuation?: CandidateValuation
   followed?: boolean
+}
+
+export interface CandidateScoringRule {
+	condition: string
+	points: number
+}
+
+export interface CandidateScoringDimension {
+	key: string
+	label: string
+	max_points: number
+	weight_pct: number
+	evidence: string
+	rules: CandidateScoringRule[]
+	adjustment?: string
+}
+
+export interface CandidateScoringRubric {
+	version: string
+	name: string
+	formula: string
+	max_score: number
+	dimensions: CandidateScoringDimension[]
+	grade_rule_note: string
+	disclaimer: string
+	content_sha256: string
 }
 
 export interface CandidateValuation {
@@ -548,6 +575,7 @@ export interface TickerTechnicalHistory {
 
 export interface CandidateSelectionCriteria {
   scoring_version: string
+	scoring_rubric: CandidateScoringRubric
   market_cap_min_usd: number
   a_market_cap_max_exclusive_usd: number
   b_market_cap_max_exclusive_usd: number
@@ -556,9 +584,85 @@ export interface CandidateSelectionCriteria {
   a_runway_min_months: number
   insider_lookback_days: number
   b_min_sector_score: number
+  allowed_exchanges: string[]
+  max_price_age_trading_days: number
+  minimum_price_usd: number
+  blocked_adv_usd: number
+  tradable_adv_usd: number
+  minimum_history_days: number
   revenue_growth_selection: string
   qualified_insider_requirement: string
   active_capital_risk_requirement: string
+}
+
+export interface SmallCapPolicyEditableCriteria {
+  market_cap_min_usd: number
+  a_market_cap_max_exclusive_usd: number
+  b_market_cap_max_exclusive_usd: number
+}
+
+export interface SmallCapPolicyVersion {
+  id: number
+  version: number
+  status: 'active' | 'superseded' | 'draft' | string
+  content_sha256: string
+  name: string
+  note?: string
+  created_by?: string
+  created_at: string
+  activated_at?: string | null
+  criteria: CandidateSelectionCriteria
+}
+
+export interface SmallCapPolicyState {
+  active?: SmallCapPolicyVersion | null
+  history: SmallCapPolicyVersion[]
+}
+
+export interface SmallCapPolicyPreviewCounts {
+  priced_universe: number
+  in_market_cap_scope: number
+  grade_a: number
+  grade_b: number
+  excluded: number
+}
+
+export interface SmallCapPolicyPreviewChange {
+  ticker: string
+  market_cap_usd: number
+  before_grade: string
+  after_grade: string
+  change_type: string
+}
+
+export interface SmallCapPolicyPreviewResult {
+  base_batch_id?: string
+  data_as_of?: string
+  active_policy?: SmallCapPolicyVersion | null
+  proposed_criteria: CandidateSelectionCriteria
+  before: SmallCapPolicyPreviewCounts
+  after: SmallCapPolicyPreviewCounts
+  delta?: Partial<SmallCapPolicyPreviewCounts>
+  changed_count: number
+  changes: SmallCapPolicyPreviewChange[]
+  changes_truncated?: boolean
+  can_activate: boolean
+  warnings: string[]
+}
+
+export interface SmallCapPolicyRescoreResult {
+  source_batch_id?: string
+  published_batch_id?: string
+  scored_count: number
+  before?: SmallCapPolicyPreviewCounts
+  after?: SmallCapPolicyPreviewCounts
+  duration_ms?: number
+}
+
+export interface SmallCapPolicyActivationResult {
+  status: 'published' | 'unchanged' | 'needs_bootstrap' | string
+  policy: SmallCapPolicyVersion
+  rescore?: SmallCapPolicyRescoreResult
 }
 
 export type SmallCapEligibilityStatus = 'pass' | 'fail' | 'unavailable'
@@ -1020,6 +1124,7 @@ export interface CandidateDetail {
 	analyst_rating: AnalystRatingView
   market_research: CandidateMarketResearch
   score: CandidateScore
+	scoring_rubric: CandidateScoringRubric
 	 score_history: CandidateScoreHistoryPoint[]
   signal_events: CandidateSignalEvent[]
   financial?: DiscoveryFinancialMetric
@@ -1346,6 +1451,20 @@ export interface BatchProviderSummary {
   source_version: string
   error_message: string
   price_source_counts: Record<string, number>
+  provider_attempts: ProviderAttempt[]
+  fallback_used: boolean
+}
+
+export interface ProviderAttempt {
+  provider: string
+  status: 'success' | 'partial' | 'empty' | 'failed' | string
+  source_version?: string
+  expected: number
+  records: number
+  remaining: number
+  coverage_pct: number
+  elapsed_ms: number
+  error_message?: string
 }
 
 export interface ProviderRun {
@@ -1367,6 +1486,8 @@ export interface ProviderRun {
   gold_rows: number
   gold_error_pct: number
   error_message: string
+  provider_attempts: ProviderAttempt[]
+  fallback_used: boolean
   created_at: string
 }
 
@@ -1400,6 +1521,7 @@ export interface ProviderObservabilityItem {
   budget_scope: string
   latest_source_record_count: number
   health?: ProviderHealth | null
+  latest_attempt?: ProviderAttempt | null
 }
 
 export interface ProviderObservability {
@@ -1415,6 +1537,9 @@ export interface ProviderObservability {
 }
 
 export interface CandidateReport {
+	status: string
+	available: boolean
+	message?: string
   date: string
   batch: {
     batch_id: string
@@ -1428,6 +1553,9 @@ export interface CandidateReport {
   }
   summary: CandidateSummary
   health: CandidateHealth
+	snapshot_id?: number
+	schema_version?: string
+	content_sha256?: string
   generated_at: string
 }
 
@@ -1926,4 +2054,24 @@ export interface USFuturesRefreshResult {
   symbols_updated: number
   bars_saved: number
   warnings: string[]
+}
+
+export interface AIAnalysisEvidence {
+  fact: string
+  inference: string
+  impact: string
+  source_paths: string[]
+}
+
+export interface AIAnalysisStructuredResult {
+  schema_version: string
+  stance: 'focus' | 'watch' | 'avoid' | 'insufficient_evidence' | string
+  conclusion: string
+  evidence: AIAnalysisEvidence[]
+  counter_evidence: AIAnalysisEvidence[]
+  invalidation_conditions: string[]
+  catalysts: string[]
+  data_gaps: string[]
+  risk_notes: string[]
+  evidence_sufficiency: 'high' | 'medium' | 'low' | string
 }

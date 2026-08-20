@@ -40,7 +40,7 @@ func TestComputeSmallCapQualificationUsesUnroundedProduct(t *testing.T) {
 	}{
 		{name: "exact lower bound", closeMicros: 30_000_000_000_000, shares: 1, wantCap: 30_000_000, wantQualified: true},
 		{name: "one micro-dollar below lower", closeMicros: 29_999_999_999_999, shares: 1, wantCap: 29_999_999},
-		{name: "exact upper bound", closeMicros: 1_000_000_000_000_000, shares: 1, wantCap: 1_000_000_000, wantQualified: true},
+		{name: "exact exclusive upper bound", closeMicros: 1_000_000_000_000_000, shares: 1, wantCap: 1_000_000_000},
 		{name: "one micro-dollar above upper", closeMicros: 1_000_000_000_000_001, shares: 1, wantCap: 1_000_000_000},
 		{name: "overflow", closeMicros: math.MaxInt64, shares: 2, wantErr: true},
 	}

@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -25,33 +26,51 @@ const (
 // CandidateSelectionCriteria exposes the active, code-defined research rules
 // so the UI can describe the same criteria that the scoring engine applies.
 type CandidateSelectionCriteria struct {
-	ScoringVersion                string  `json:"scoring_version"`
-	MarketCapMinUSD               int64   `json:"market_cap_min_usd"`
-	AMarketCapMaxExclusiveUSD     int64   `json:"a_market_cap_max_exclusive_usd"`
-	BMarketCapMaxExclusiveUSD     int64   `json:"b_market_cap_max_exclusive_usd"`
-	ARevenueGrowthMinExclusivePct float64 `json:"a_revenue_growth_min_exclusive_pct"`
-	BRevenueGrowthMinExclusivePct float64 `json:"b_revenue_growth_min_exclusive_pct"`
-	ARunwayMinMonths              float64 `json:"a_runway_min_months"`
-	InsiderLookbackDays           int     `json:"insider_lookback_days"`
-	BMinSectorScore               int     `json:"b_min_sector_score"`
-	RevenueGrowthSelection        string  `json:"revenue_growth_selection"`
-	QualifiedInsiderRequirement   string  `json:"qualified_insider_requirement"`
-	ActiveCapitalRiskRequirement  string  `json:"active_capital_risk_requirement"`
+	ScoringVersion                string                 `json:"scoring_version"`
+	ScoringRubric                 CandidateScoringRubric `json:"scoring_rubric"`
+	MarketCapMinUSD               int64                  `json:"market_cap_min_usd"`
+	AMarketCapMaxExclusiveUSD     int64                  `json:"a_market_cap_max_exclusive_usd"`
+	BMarketCapMaxExclusiveUSD     int64                  `json:"b_market_cap_max_exclusive_usd"`
+	ARevenueGrowthMinExclusivePct float64                `json:"a_revenue_growth_min_exclusive_pct"`
+	BRevenueGrowthMinExclusivePct float64                `json:"b_revenue_growth_min_exclusive_pct"`
+	ARunwayMinMonths              float64                `json:"a_runway_min_months"`
+	InsiderLookbackDays           int                    `json:"insider_lookback_days"`
+	BMinSectorScore               int                    `json:"b_min_sector_score"`
+	AllowedExchanges              []string               `json:"allowed_exchanges"`
+	MaxPriceAgeTradingDays        int                    `json:"max_price_age_trading_days"`
+	MinimumPriceUSD               float64                `json:"minimum_price_usd"`
+	BlockedADVUSD                 float64                `json:"blocked_adv_usd"`
+	TradableADVUSD                float64                `json:"tradable_adv_usd"`
+	MinimumHistoryDays            int                    `json:"minimum_history_days"`
+	RevenueGrowthSelection        string                 `json:"revenue_growth_selection"`
+	QualifiedInsiderRequirement   string                 `json:"qualified_insider_requirement"`
+	ActiveCapitalRiskRequirement  string                 `json:"active_capital_risk_requirement"`
 }
 
 func CurrentCandidateSelectionCriteria() CandidateSelectionCriteria {
+	return CandidateSelectionCriteriaForPolicy(DefaultSmallCapPolicy())
+}
+
+func CandidateSelectionCriteriaForPolicy(policy SmallCapPolicy) CandidateSelectionCriteria {
 	return CandidateSelectionCriteria{
 		ScoringVersion:                DiscoveryScoringVersion,
-		MarketCapMinUSD:               MinimumSmallCapUSD,
-		AMarketCapMaxExclusiveUSD:     CandidateAMarketCapMaxExclusiveUSD,
-		BMarketCapMaxExclusiveUSD:     CandidateBMarketCapMaxExclusiveUSD,
-		ARevenueGrowthMinExclusivePct: CandidateARevenueGrowthMinPct,
-		BRevenueGrowthMinExclusivePct: CandidateBRevenueGrowthMinPct,
-		ARunwayMinMonths:              CandidateARunwayMinMonths,
-		InsiderLookbackDays:           CandidateInsiderLookbackDays,
-		BMinSectorScore:               CandidateBMinSectorScore,
+		ScoringRubric:                 CandidateScoringRubricForPolicy(policy),
+		MarketCapMinUSD:               policy.MarketCapMinUSD,
+		AMarketCapMaxExclusiveUSD:     policy.AMarketCapMaxExclusiveUSD,
+		BMarketCapMaxExclusiveUSD:     policy.MarketCapMaxUSD,
+		ARevenueGrowthMinExclusivePct: policy.ARevenueGrowthMinPct,
+		BRevenueGrowthMinExclusivePct: policy.BRevenueGrowthMinPct,
+		ARunwayMinMonths:              policy.ARunwayMinMonths,
+		InsiderLookbackDays:           policy.InsiderLookbackDays,
+		BMinSectorScore:               policy.BMinSectorScore,
+		AllowedExchanges:              append([]string(nil), policy.AllowedExchanges...),
+		MaxPriceAgeTradingDays:        policy.MaxPriceAgeTradingDays,
+		MinimumPriceUSD:               policy.MinimumPriceUSD,
+		BlockedADVUSD:                 policy.BlockedADVUSD,
+		TradableADVUSD:                policy.TradableADVUSD,
+		MinimumHistoryDays:            policy.MinimumHistoryDays,
 		RevenueGrowthSelection:        "优先最新可比季度收入同比；季度不可用时回退年度同比",
-		QualifiedInsiderRequirement:   "近 180 日 CEO、CFO 或创始人的合格 Form 4 公开市场买入",
+		QualifiedInsiderRequirement:   fmt.Sprintf("近 %d 日 CEO、CFO 或创始人的合格 Form 4 公开市场买入", policy.InsiderLookbackDays),
 		ActiveCapitalRiskRequirement:  "A级不允许 A/B 阻断；B级不允许 B 阻断",
 	}
 }
@@ -92,17 +111,28 @@ type DiscoveryScore struct {
 	ActiveBlocksB          bool
 	ReasonCode             string
 	ScoringVersion         string
+	ScoringRubricSHA256    string
+	ScoringRubricJSON      string
 	BusinessModelAtScore   string
 	RevenueScoreCapReason  string
 }
 
 func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
+	return ScoreDiscoveryCandidateWithPolicy(input, DefaultSmallCapPolicy())
+}
+
+func ScoreDiscoveryCandidateWithPolicy(input DiscoveryScoreInput, policy SmallCapPolicy) DiscoveryScore {
+	if normalized, err := NormalizeSmallCapPolicy(policy); err == nil {
+		policy = normalized
+	} else {
+		policy = DefaultSmallCapPolicy()
+	}
 	asOf := input.AsOf
 	if asOf.IsZero() {
 		asOf = time.Now().UTC()
 	}
 	growth, growthAvailable, _ := selectRevenueGrowth(input.Financial)
-	recentInsider := hasRecentQualifiedInsider(input.Insiders, asOf)
+	recentInsider := hasRecentQualifiedInsiderWithLookback(input.Insiders, asOf, policy.InsiderLookbackDays)
 	blocksA, blocksB := activeRiskBlocks(input.Risks)
 
 	score := DiscoveryScore{
@@ -112,6 +142,7 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 		ScoringVersion: DiscoveryScoringVersion, BusinessModelAtScore: input.BusinessModel.Model,
 		RevenueScoreCapReason: input.BusinessModel.RevenueScoreCapReason,
 	}
+	score.ScoringRubricJSON, score.ScoringRubricSHA256 = candidateScoringRubricJSON(policy)
 	if growthAvailable {
 		switch {
 		case growth >= 40:
@@ -154,13 +185,13 @@ func ScoreDiscoveryCandidate(input DiscoveryScoreInput) DiscoveryScore {
 	modelAllowsA := input.BusinessModel.Model != CandidateBusinessModelClinicalPreRevenue &&
 		!(input.BusinessModel.Model == CandidateBusinessModelMixedOrLicensing && !input.BusinessModel.RevenueRepeatableConfirmed) &&
 		input.BusinessModel.Model != CandidateBusinessModelUnknown
-	score.EligibleA = modelAllowsA && input.MarketCapUSD >= MinimumSmallCapUSD && input.MarketCapUSD < CandidateAMarketCapMaxExclusiveUSD &&
-		growthAvailable && growth > CandidateARevenueGrowthMinPct &&
-		input.Financial.RunwayAvailable && input.Financial.CashRunwayMonths >= CandidateARunwayMinMonths &&
+	score.EligibleA = modelAllowsA && input.MarketCapUSD >= policy.MarketCapMinUSD && input.MarketCapUSD < policy.AMarketCapMaxExclusiveUSD &&
+		growthAvailable && growth > policy.ARevenueGrowthMinPct &&
+		input.Financial.RunwayAvailable && input.Financial.CashRunwayMonths >= policy.ARunwayMinMonths &&
 		recentInsider && !blocksA && !blocksB
-	score.EligibleB = input.MarketCapUSD >= MinimumSmallCapUSD && input.MarketCapUSD < CandidateBMarketCapMaxExclusiveUSD &&
-		growthAvailable && growth > CandidateBRevenueGrowthMinPct && !blocksB &&
-		score.SectorScore >= CandidateBMinSectorScore
+	score.EligibleB = input.MarketCapUSD >= policy.MarketCapMinUSD && input.MarketCapUSD < policy.MarketCapMaxUSD &&
+		growthAvailable && growth > policy.BRevenueGrowthMinPct && !blocksB &&
+		score.SectorScore >= policy.BMinSectorScore
 	switch {
 	case score.EligibleA:
 		score.Grade = CandidateGradeA
@@ -198,12 +229,17 @@ func CandidateScoreToSnapshot(batchID string, score DiscoveryScore, now time.Tim
 		RecentQualifiedInsider: score.RecentQualifiedInsider, ActiveBlocksA: score.ActiveBlocksA,
 		ActiveBlocksB: score.ActiveBlocksB, ReasonCode: score.ReasonCode,
 		ScoringVersion: score.ScoringVersion, BusinessModelAtScore: score.BusinessModelAtScore,
+		ScoringRubricSHA256: score.ScoringRubricSHA256, ScoringRubricJSON: score.ScoringRubricJSON,
 		RevenueScoreCapReason: score.RevenueScoreCapReason, CreatedAt: now,
 	}
 }
 
 func hasRecentQualifiedInsider(rows []InsiderTransactionSnapshot, asOf time.Time) bool {
-	cutoff := asOf.AddDate(0, 0, -CandidateInsiderLookbackDays)
+	return hasRecentQualifiedInsiderWithLookback(rows, asOf, CandidateInsiderLookbackDays)
+}
+
+func hasRecentQualifiedInsiderWithLookback(rows []InsiderTransactionSnapshot, asOf time.Time, lookbackDays int) bool {
+	cutoff := asOf.AddDate(0, 0, -lookbackDays)
 	for _, row := range rows {
 		if !row.Qualified || row.TransactionDate.IsZero() || row.TransactionDate.Before(cutoff) || row.TransactionDate.After(asOf) {
 			continue

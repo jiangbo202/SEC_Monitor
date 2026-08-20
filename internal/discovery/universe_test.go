@@ -743,6 +743,12 @@ func TestCoordinatorResearchModePublishesValidationProviderBatch(t *testing.T) {
 	if run.Status != ProviderStatusValidation {
 		t.Fatalf("provider run status = %q", run.Status)
 	}
+	if err := hydrateProviderRunAttempts(&run); err != nil {
+		t.Fatal(err)
+	}
+	if run.FallbackUsed || len(run.Attempts) != 1 || run.Attempts[0].Provider != "tiingo" || run.Attempts[0].Status != "success" {
+		t.Fatalf("provider attempts = %#v fallback=%v", run.Attempts, run.FallbackUsed)
+	}
 }
 
 func TestCoordinatorResearchModeRejectsLowCoverageWithoutPublishing(t *testing.T) {

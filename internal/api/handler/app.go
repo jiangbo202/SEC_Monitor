@@ -617,7 +617,16 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 }
 
 func (h *AppHandler) GetDiscoveryCandidateCriteria(c *gin.Context) {
-	OK(c, discovery.CurrentCandidateSelectionCriteria())
+	if h.DiscoveryDB == nil {
+		OK(c, discovery.CurrentCandidateSelectionCriteria())
+		return
+	}
+	active, err := discovery.GetActiveSmallCapPolicy(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		writeSmallCapPolicyError(c, err)
+		return
+	}
+	OK(c, discovery.CandidateSelectionCriteriaForPolicy(active.Policy))
 }
 
 // CheckDiscoverySmallCapEligibility explains the current, persisted selection

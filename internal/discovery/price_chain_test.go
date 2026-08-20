@@ -77,6 +77,9 @@ func TestPriceProviderChainFillsMissingSymbolsInOrder(t *testing.T) {
 	if len(records) != 3 || result.Provider != "chain" || result.Expected != 3 || result.Records != 3 || result.CoveragePct != 100 {
 		t.Fatalf("records=%#v result=%#v", records, result)
 	}
+	if !result.FallbackUsed || len(result.Attempts) != 2 || result.Attempts[0].Status != "partial" || result.Attempts[0].Remaining != 2 || result.Attempts[1].Status != "success" || result.Attempts[1].Remaining != 0 {
+		t.Fatalf("provider attempts = %#v", result.Attempts)
+	}
 	if got := []string{records[0].Source, records[1].Source, records[2].Source}; !reflect.DeepEqual(got, []string{"tiingo", "yahoo", "yahoo"}) {
 		t.Fatalf("record sources = %#v", got)
 	}
@@ -127,6 +130,9 @@ func TestPriceProviderChainReportsChildError(t *testing.T) {
 	}
 	if diagnostics[3].Error != "twelve data rate limited" || diagnostics[3].Remaining != 1 {
 		t.Fatalf("diagnostic error = %#v", diagnostics[3])
+	}
+	if !result.FallbackUsed || len(result.Attempts) != 2 || result.Attempts[1].Status != "failed" || result.Attempts[1].ErrorMessage != "twelve data rate limited" {
+		t.Fatalf("provider attempts = %#v", result.Attempts)
 	}
 }
 
