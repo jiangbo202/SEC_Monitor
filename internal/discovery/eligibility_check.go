@@ -124,6 +124,9 @@ func CheckSmallCapEligibility(ctx context.Context, db *gorm.DB, input SmallCapEl
 		now = time.Now().UTC()
 	}
 	result.Ticker, result.CheckedAt = ticker, now
+	if active, activeErr := GetActiveSmallCapPolicy(ctx, db); activeErr == nil {
+		result.Criteria = CandidateSelectionCriteriaForPolicy(active.Policy)
+	}
 
 	marketBatch, ok, err := currentPublishedPrescreenBatch(ctx, db)
 	if err != nil {
@@ -135,6 +138,11 @@ func CheckSmallCapEligibility(ctx context.Context, db *gorm.DB, input SmallCapEl
 		return persistSmallCapEligibilityCheck(ctx, db, ticker, result)
 	}
 	result.MarketBatchID, result.MarketAsOf = marketBatch.BatchID, marketBatch.EffectiveDate
+	if policy, policyErr := SmallCapPolicyForBatch(marketBatch); policyErr != nil {
+		return result, policyErr
+	} else if marketBatch.PolicyVersionID != 0 || strings.TrimSpace(marketBatch.PolicySnapshotJSON) != "" {
+		result.Criteria = CandidateSelectionCriteriaForPolicy(policy)
+	}
 	securityBatchID := strings.TrimSpace(marketBatch.UniverseSourceVersion)
 	if securityBatchID == "" {
 		securityBatchID = marketBatch.BatchID

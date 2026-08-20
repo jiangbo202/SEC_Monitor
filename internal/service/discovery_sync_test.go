@@ -103,43 +103,146 @@ func TestDiscoverySyncServiceReportsMarketFailureAfterSecuritySync(t *testing.T)
 	}
 }
 
+func TestDiscoverySyncServiceResumesPublishedSecurityPhaseAfterMarketFailure(t *testing.T) {
+	discoveryDB := testDiscoveryDB(t)
+	location, _ := time.LoadLocation("America/New_York")
+	date := time.Now().In(location).Format(time.DateOnly)
+	binding, err := discovery.ActiveSmallCapPolicyBinding(context.Background(), discoveryDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	security := discovery.UniverseBatch{BatchID: strings.Repeat("a", 64), Kind: discovery.BatchKindSecurity, Status: discovery.BatchStatusPublished, EffectiveDate: date, RecordCount: 12, PolicyVersionID: binding.PolicyVersionID, PolicyVersion: binding.PolicyVersion, PolicyContentSHA256: binding.PolicyContentSHA256, PolicySnapshotJSON: binding.PolicySnapshotJSON}
+	if err := discoveryDB.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	previous := discovery.DiscoverySyncRun{Kind: "full", Status: DiscoverySyncRunStatusFailed, Phase: "failed", StartedAt: time.Now().Add(-time.Minute), SecurityBatchID: security.BatchID, PolicyVersionID: binding.PolicyVersionID, PolicyVersion: binding.PolicyVersion, PolicyContentSHA256: binding.PolicyContentSHA256, PolicySnapshotJSON: binding.PolicySnapshotJSON}
+	if err := discoveryDB.Create(&previous).Error; err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeDiscoveryRunner{marketBatch: discovery.UniverseBatch{BatchID: "resumed-market", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished}}
+	result, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).withRunner(runner).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.securityCalls != 0 || runner.marketCalls != 1 || result.SecurityBatchID != security.BatchID {
+		t.Fatalf("calls security=%d market=%d result=%#v", runner.securityCalls, runner.marketCalls, result)
+	}
+	var run discovery.DiscoverySyncRun
+	if err := discoveryDB.Order("id DESC").First(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	var securityStep discovery.DiscoverySyncStep
+	if err := discoveryDB.First(&securityStep, "run_id = ? AND phase = ?", run.ID, "security_universe").Error; err != nil {
+		t.Fatal(err)
+	}
+	if securityStep.Status != DiscoverySyncRunStatusSkipped || securityStep.RecordCount != security.RecordCount {
+		t.Fatalf("resumed security step=%#v", securityStep)
+	}
+}
+
 func TestDiscoverySyncServiceRecoversOnlyStaleRuns(t *testing.T) {
 	discoveryDB := testDiscoveryDB(t)
 	now := time.Now().UTC()
 	stale := discovery.DiscoverySyncRun{Kind: "full", Status: "running", Phase: "market_prescreen", StartedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour)}
-	fresh := discovery.DiscoverySyncRun{Kind: "full", Status: "running", Phase: "market_prescreen", StartedAt: now, UpdatedAt: now}
-	if err := discoveryDB.Create(&[]discovery.DiscoverySyncRun{stale, fresh}).Error; err != nil {
+	if err := discoveryDB.Create(&stale).Error; err != nil {
 		t.Fatal(err)
 	}
-	var runs []discovery.DiscoverySyncRun
-	if err := discoveryDB.Order("id ASC").Find(&runs).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := discoveryDB.Create(&[]discovery.DiscoverySyncStep{
-		{RunID: runs[0].ID, Sequence: 1, Phase: "market_prescreen", Status: "running", StartedAt: now.Add(-2 * time.Hour)},
-		{RunID: runs[1].ID, Sequence: 1, Phase: "market_prescreen", Status: "running", StartedAt: now},
-	}).Error; err != nil {
+	if err := discoveryDB.Create(&discovery.DiscoverySyncStep{RunID: stale.ID, Sequence: 1, Phase: "market_prescreen", Status: "running", StartedAt: now.Add(-2 * time.Hour)}).Error; err != nil {
 		t.Fatal(err)
 	}
 	recovered, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).RecoverInterruptedRuns(context.Background())
 	if err != nil || recovered != 1 {
 		t.Fatalf("RecoverInterruptedRuns = %d, %v; want 1, nil", recovered, err)
 	}
-	if err := discoveryDB.Order("id ASC").Find(&runs).Error; err != nil {
+	if err := discoveryDB.First(&stale, stale.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if runs[0].Status != DiscoverySyncRunStatusFailed || runs[0].CompletedAt == nil || !strings.Contains(runs[0].ErrorMessage, "中断") {
-		t.Fatalf("stale run = %#v, want recovered failed run", runs[0])
+	if stale.Status != DiscoverySyncRunStatusFailed || stale.CompletedAt == nil || !strings.Contains(stale.ErrorMessage, "中断") {
+		t.Fatalf("stale run = %#v, want recovered failed run", stale)
 	}
-	if runs[1].Status != "running" || runs[1].CompletedAt != nil {
-		t.Fatalf("fresh run = %#v, want still running", runs[1])
+	fresh := discovery.DiscoverySyncRun{Kind: "full", Status: "running", Phase: "market_prescreen", StartedAt: now, UpdatedAt: now}
+	if err := discoveryDB.Create(&fresh).Error; err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err = NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).RecoverInterruptedRuns(context.Background()); err != nil || recovered != 0 {
+		t.Fatalf("fresh RecoverInterruptedRuns = %d, %v; want 0, nil", recovered, err)
 	}
 	var steps []discovery.DiscoverySyncStep
 	if err := discoveryDB.Order("run_id ASC").Find(&steps).Error; err != nil {
 		t.Fatal(err)
 	}
-	if steps[0].Status != "failed" || steps[0].CompletedAt == nil || steps[1].Status != "running" {
-		t.Fatalf("steps = %#v, want stale failed and fresh running", steps)
+	if len(steps) != 1 || steps[0].Status != "failed" || steps[0].CompletedAt == nil {
+		t.Fatalf("steps = %#v, want stale failed", steps)
+	}
+}
+
+type blockingLeaseDiscoveryRunner struct {
+	started chan struct{}
+	unblock chan struct{}
+}
+
+func (r *blockingLeaseDiscoveryRunner) SyncSecurityUniverse(context.Context) (discovery.UniverseBatch, error) {
+	close(r.started)
+	<-r.unblock
+	return discovery.UniverseBatch{BatchID: "security-lease", Kind: discovery.BatchKindSecurity, Status: discovery.BatchStatusPublished}, nil
+}
+
+func (r *blockingLeaseDiscoveryRunner) SyncMarketPrices(context.Context) (discovery.UniverseBatch, error) {
+	return discovery.UniverseBatch{BatchID: "market-lease", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished}, nil
+}
+
+func TestDiscoverySyncServicePersistsOneLeaseAcrossServiceInstances(t *testing.T) {
+	discoveryDB := testDiscoveryDB(t)
+	runner := &blockingLeaseDiscoveryRunner{started: make(chan struct{}), unblock: make(chan struct{})}
+	first := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithRunner(runner)
+	second := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithRunner(&fakeDiscoveryRunner{})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := first.Run(context.Background())
+		firstDone <- err
+	}()
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("first full sync did not start")
+	}
+
+	if _, err := second.RunMarketOnly(context.Background()); !errors.Is(err, ErrTaskAlreadyRunning) {
+		t.Fatalf("overlapping market sync err=%v, want ErrTaskAlreadyRunning", err)
+	}
+	var running int64
+	if err := discoveryDB.Model(&discovery.DiscoverySyncRun{}).Where("status = ?", "running").Count(&running).Error; err != nil || running != 1 {
+		t.Fatalf("running leases=%d err=%v, want 1", running, err)
+	}
+
+	close(runner.unblock)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first full sync: %v", err)
+	}
+}
+
+func TestDiscoverySyncServiceIncrementalNeedsBootstrap(t *testing.T) {
+	discoveryDB := testDiscoveryDB(t)
+	result, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).RunIncremental(context.Background())
+	if err != nil {
+		t.Fatalf("RunIncremental: %v", err)
+	}
+	if result.Status != DiscoverySyncStatusNeedsBootstrap || result.Message == "" {
+		t.Fatalf("result=%#v, want needs_bootstrap", result)
+	}
+	var run discovery.DiscoverySyncRun
+	if err := discoveryDB.Order("id DESC").First(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.Kind != "incremental" || run.Status != DiscoverySyncRunStatusSkipped || run.Phase != DiscoverySyncStatusNeedsBootstrap || run.CompletedAt == nil {
+		t.Fatalf("run=%#v, want skipped needs_bootstrap", run)
+	}
+	var steps []discovery.DiscoverySyncStep
+	if err := discoveryDB.Where("run_id = ?", run.ID).Order("sequence ASC").Find(&steps).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 2 || steps[0].Sequence != 1 || steps[1].Sequence != 2 || steps[1].Status != DiscoverySyncRunStatusSkipped {
+		t.Fatalf("steps=%#v, want ordered prepare/bootstrap steps", steps)
 	}
 }
 

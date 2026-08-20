@@ -307,25 +307,43 @@ type SecurityBatchIdentity struct {
 }
 
 type ProviderRun struct {
-	ID                 uint      `json:"id"`
-	BatchID            string    `json:"batch_id" gorm:"size:64;index:idx_provider_runs_batch"`
-	Provider           string    `json:"provider" gorm:"size:64;index:idx_provider_runs_provider"`
-	Status             string    `json:"status" gorm:"size:16;index:idx_provider_runs_status"`
-	SourceVersion      string    `json:"source_version" gorm:"size:128"`
-	SHA256             string    `json:"sha256" gorm:"size:64"`
-	EffectiveDate      time.Time `json:"effective_date" gorm:"index:idx_provider_runs_effective_date"`
-	RecordCount        int       `json:"record_count"`
-	ExpectedCount      int       `json:"expected_count"`
-	CoveragePct        float64   `json:"coverage_pct"`
-	ValidationErrorPct float64   `json:"validation_error_pct"`
-	Timely             bool      `json:"timely"`
-	GoldProvider       string    `json:"gold_provider" gorm:"size:64"`
-	GoldSourceURL      string    `json:"gold_source_url" gorm:"size:2048"`
-	GoldSHA256         string    `json:"gold_sha256" gorm:"size:64"`
-	GoldRows           int       `json:"gold_rows"`
-	GoldErrorPct       float64   `json:"gold_error_pct"`
-	ErrorMessage       string    `json:"error_message" gorm:"type:text"`
-	CreatedAt          time.Time `json:"created_at"`
+	ID                 uint              `json:"id"`
+	BatchID            string            `json:"batch_id" gorm:"size:64;index:idx_provider_runs_batch"`
+	Provider           string            `json:"provider" gorm:"size:64;index:idx_provider_runs_provider"`
+	Status             string            `json:"status" gorm:"size:16;index:idx_provider_runs_status"`
+	SourceVersion      string            `json:"source_version" gorm:"size:128"`
+	SHA256             string            `json:"sha256" gorm:"size:64"`
+	EffectiveDate      time.Time         `json:"effective_date" gorm:"index:idx_provider_runs_effective_date"`
+	RecordCount        int               `json:"record_count"`
+	ExpectedCount      int               `json:"expected_count"`
+	CoveragePct        float64           `json:"coverage_pct"`
+	ValidationErrorPct float64           `json:"validation_error_pct"`
+	Timely             bool              `json:"timely"`
+	GoldProvider       string            `json:"gold_provider" gorm:"size:64"`
+	GoldSourceURL      string            `json:"gold_source_url" gorm:"size:2048"`
+	GoldSHA256         string            `json:"gold_sha256" gorm:"size:64"`
+	GoldRows           int               `json:"gold_rows"`
+	GoldErrorPct       float64           `json:"gold_error_pct"`
+	ErrorMessage       string            `json:"error_message" gorm:"type:text"`
+	AttemptsJSON       string            `json:"-" gorm:"type:text"`
+	Attempts           []ProviderAttempt `json:"provider_attempts" gorm:"-"`
+	FallbackUsed       bool              `json:"fallback_used"`
+	CreatedAt          time.Time         `json:"created_at"`
+}
+
+// ProviderAttempt is the immutable per-child lineage for a provider-chain
+// run. It lets operators distinguish a healthy primary source from a batch
+// that only completed because a fallback source filled missing records.
+type ProviderAttempt struct {
+	Provider      string  `json:"provider"`
+	Status        string  `json:"status"`
+	SourceVersion string  `json:"source_version,omitempty"`
+	Expected      int     `json:"expected"`
+	Records       int     `json:"records"`
+	Remaining     int     `json:"remaining"`
+	CoveragePct   float64 `json:"coverage_pct"`
+	ElapsedMS     int64   `json:"elapsed_ms"`
+	ErrorMessage  string  `json:"error_message,omitempty"`
 }
 
 type ProviderHealth struct {
@@ -581,6 +599,8 @@ type CandidateScoreSnapshot struct {
 	ActiveBlocksB          bool      `json:"active_blocks_b" gorm:"index"`
 	ReasonCode             string    `json:"reason_code" gorm:"size:64"`
 	ScoringVersion         string    `json:"scoring_version" gorm:"size:64"`
+	ScoringRubricSHA256    string    `json:"scoring_rubric_sha256" gorm:"size:64;index"`
+	ScoringRubricJSON      string    `json:"-" gorm:"type:text"`
 	BusinessModelAtScore   string    `json:"business_model_at_score" gorm:"size:32;index"`
 	RevenueScoreCapReason  string    `json:"revenue_score_cap_reason" gorm:"size:128"`
 	CreatedAt              time.Time `json:"created_at"`
@@ -791,6 +811,10 @@ type UniverseBatch struct {
 	UniverseSourceVersion string                    `json:"universe_source_version" gorm:"size:128"`
 	PriceSourceVersion    string                    `json:"price_source_version" gorm:"size:128"`
 	ShareSourceVersion    string                    `json:"share_source_version" gorm:"size:128"`
+	PolicyVersionID       uint                      `json:"policy_version_id" gorm:"index"`
+	PolicyVersion         int                       `json:"policy_version"`
+	PolicyContentSHA256   string                    `json:"policy_content_sha256" gorm:"size:64;index"`
+	PolicySnapshotJSON    string                    `json:"policy_snapshot_json" gorm:"type:text"`
 	StartedAt             time.Time                 `json:"started_at"`
 	CompletedAt           *time.Time                `json:"completed_at"`
 	ErrorMessage          string                    `json:"error_message" gorm:"type:text"`
@@ -812,17 +836,21 @@ type UniverseBatch struct {
 // workflow. It is independent from published batches so an in-progress or
 // failed security phase remains visible even when it never produces a batch.
 type DiscoverySyncRun struct {
-	ID              uint       `json:"id" gorm:"primaryKey"`
-	Kind            string     `json:"kind" gorm:"size:32;index"`
-	Status          string     `json:"status" gorm:"size:16;index"`
-	Phase           string     `json:"phase" gorm:"size:32;index"`
-	StartedAt       time.Time  `json:"started_at" gorm:"index"`
-	CompletedAt     *time.Time `json:"completed_at"`
-	SecurityBatchID string     `json:"security_batch_id" gorm:"size:64"`
-	MarketBatchID   string     `json:"market_batch_id" gorm:"size:64"`
-	ErrorMessage    string     `json:"error_message" gorm:"type:text"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID                  uint       `json:"id" gorm:"primaryKey"`
+	Kind                string     `json:"kind" gorm:"size:32;index"`
+	Status              string     `json:"status" gorm:"size:16;index"`
+	Phase               string     `json:"phase" gorm:"size:32;index"`
+	StartedAt           time.Time  `json:"started_at" gorm:"index"`
+	CompletedAt         *time.Time `json:"completed_at"`
+	SecurityBatchID     string     `json:"security_batch_id" gorm:"size:64"`
+	MarketBatchID       string     `json:"market_batch_id" gorm:"size:64"`
+	PolicyVersionID     uint       `json:"policy_version_id" gorm:"index"`
+	PolicyVersion       int        `json:"policy_version"`
+	PolicyContentSHA256 string     `json:"policy_content_sha256" gorm:"size:64;index"`
+	PolicySnapshotJSON  string     `json:"policy_snapshot_json" gorm:"type:text"`
+	ErrorMessage        string     `json:"error_message" gorm:"type:text"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 // DiscoverySyncStep is an append-only, user-visible timeline entry for a
@@ -843,16 +871,37 @@ type DiscoverySyncStep struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
+// SecurityStageCheckpoint is an executable checkpoint for one committed
+// security-universe chunk. Unlike DiscoverySyncStep (which is only a user
+// timeline), a completed checkpoint is consulted by a retry of the same
+// deterministic batch so already committed work is not repeated.
+type SecurityStageCheckpoint struct {
+	ID           uint       `json:"id" gorm:"primaryKey"`
+	BatchID      string     `json:"batch_id" gorm:"size:64;uniqueIndex:idx_security_checkpoint_chunk,priority:1;index"`
+	Phase        string     `json:"phase" gorm:"size:48;uniqueIndex:idx_security_checkpoint_chunk,priority:2;index"`
+	Chunk        int        `json:"chunk" gorm:"uniqueIndex:idx_security_checkpoint_chunk,priority:3"`
+	Status       string     `json:"status" gorm:"size:16;index"`
+	AttemptCount int        `json:"attempt_count"`
+	RecordCount  int        `json:"record_count"`
+	ErrorMessage string     `json:"error_message" gorm:"type:text"`
+	StartedAt    time.Time  `json:"started_at"`
+	CompletedAt  *time.Time `json:"completed_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
 type BatchProviderSummary struct {
-	Provider          string           `json:"provider"`
-	Status            string           `json:"status"`
-	ExpectedCount     int              `json:"expected_count"`
-	RecordCount       int              `json:"record_count"`
-	CoveragePct       float64          `json:"coverage_pct"`
-	Timely            bool             `json:"timely"`
-	SourceVersion     string           `json:"source_version"`
-	ErrorMessage      string           `json:"error_message"`
-	PriceSourceCounts map[string]int64 `json:"price_source_counts"`
+	Provider          string            `json:"provider"`
+	Status            string            `json:"status"`
+	ExpectedCount     int               `json:"expected_count"`
+	RecordCount       int               `json:"record_count"`
+	CoveragePct       float64           `json:"coverage_pct"`
+	Timely            bool              `json:"timely"`
+	SourceVersion     string            `json:"source_version"`
+	ErrorMessage      string            `json:"error_message"`
+	PriceSourceCounts map[string]int64  `json:"price_source_counts"`
+	ProviderAttempts  []ProviderAttempt `json:"provider_attempts"`
+	FallbackUsed      bool              `json:"fallback_used"`
 }
 
 // ListingIdentitySnapshot stages every exchange listing, including identities

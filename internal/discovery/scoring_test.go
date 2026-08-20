@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,6 +174,52 @@ func TestScoreDiscoveryCandidateCalibratesBiotechRevenueSignals(t *testing.T) {
 				t.Fatalf("score = %#v", score)
 			}
 		})
+	}
+}
+
+func TestCandidateScoringRubricIsCompleteDeterministicAndPolicyBound(t *testing.T) {
+	rubric := CurrentCandidateScoringRubric()
+	if rubric.Version != DiscoveryScoringVersion || rubric.MaxScore != 100 || len(rubric.Dimensions) != 6 || len(rubric.ContentSHA256) != 64 {
+		t.Fatalf("rubric metadata = %#v", rubric)
+	}
+	total := 0
+	for _, dimension := range rubric.Dimensions {
+		total += dimension.MaxPoints
+		if dimension.Key == "" || dimension.Label == "" || dimension.Evidence == "" || len(dimension.Rules) == 0 {
+			t.Fatalf("incomplete dimension = %#v", dimension)
+		}
+	}
+	if total != rubric.MaxScore {
+		t.Fatalf("dimension max total = %d, want %d", total, rubric.MaxScore)
+	}
+	if repeated := CurrentCandidateScoringRubric(); repeated.ContentSHA256 != rubric.ContentSHA256 {
+		t.Fatalf("rubric hash is not deterministic: %q != %q", repeated.ContentSHA256, rubric.ContentSHA256)
+	}
+	policy := DefaultSmallCapPolicy()
+	policy.InsiderLookbackDays++
+	if changed := CandidateScoringRubricForPolicy(policy); changed.ContentSHA256 == rubric.ContentSHA256 {
+		t.Fatal("policy-dependent insider rule did not change rubric hash")
+	}
+}
+
+func TestCandidateScoreSnapshotFreezesScoringRubric(t *testing.T) {
+	policy := DefaultSmallCapPolicy()
+	policy.InsiderLookbackDays = 365
+	score := ScoreDiscoveryCandidateWithPolicy(DiscoveryScoreInput{AsOf: time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)}, policy)
+	snapshot := CandidateScoreToSnapshot("rubric-batch", score, time.Now().UTC())
+	if snapshot.ScoringRubricJSON == "" || len(snapshot.ScoringRubricSHA256) != 64 {
+		t.Fatalf("snapshot rubric lineage missing: %#v", snapshot)
+	}
+	rubric := CandidateScoringRubricForSnapshot(snapshot)
+	if rubric.ContentSHA256 != snapshot.ScoringRubricSHA256 || !strings.Contains(rubric.Dimensions[2].Rules[0].Condition, "365") {
+		t.Fatalf("frozen rubric = %#v", rubric)
+	}
+}
+
+func TestCandidateScoringRubricDoesNotRewriteUnknownLegacyVersion(t *testing.T) {
+	rubric := CandidateScoringRubricForSnapshot(CandidateScoreSnapshot{ScoringVersion: "legacy-score-v0"})
+	if rubric.Version != "legacy-score-v0" || len(rubric.Dimensions) != 0 || !strings.Contains(rubric.GradeRuleNote, "不能使用当前公式反推") {
+		t.Fatalf("legacy rubric fallback = %#v", rubric)
 	}
 }
 

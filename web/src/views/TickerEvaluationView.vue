@@ -49,7 +49,7 @@
           <el-alert v-else-if="activeAIAnalysis.status === 'failed'" type="error" :closable="false" :title="activeAIAnalysis.error_message || 'AI 调用失败'" class="warnings" />
           <template v-else>
             <AIRequestPrompt :system-prompt="activeAIAnalysis.system_prompt" :user-prompt="activeAIAnalysis.user_prompt" />
-            <div class="ai-analysis-content"><MarkdownContent :content="activeAIAnalysis.content" /></div>
+            <div class="ai-analysis-content"><AIAnalysisResult :result="activeAIAnalysis.structured_result" :content="activeAIAnalysis.content" /></div>
           </template>
         </template>
       </el-card>
@@ -118,7 +118,8 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
 import AIRequestPrompt from '@/components/AIRequestPrompt.vue'
-import MarkdownContent from '@/components/MarkdownContent.vue'
+import AIAnalysisResult from '@/components/AIAnalysisResult.vue'
+import type { AIAnalysisStructuredResult } from '@/api/types'
 
 type Evaluation = any
 const ticker = ref('')
@@ -137,7 +138,7 @@ const historySortBy = ref('evaluated_at')
 const historySortOrder = ref<'asc' | 'desc'>('desc')
 type AIProvider = { id: string; name: string; model: string }
 type AIPromptTemplate = { id: string; name: string }
-type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; system_prompt?: string; user_prompt?: string; requested_at: string }
+type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; system_prompt?: string; user_prompt?: string; requested_at: string; structured_result?: AIAnalysisStructuredResult }
 const aiProviders = ref<AIProvider[]>([])
 const aiPromptTemplates = ref<AIPromptTemplate[]>([])
 const selectedAIProvider = ref('')

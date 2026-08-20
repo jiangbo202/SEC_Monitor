@@ -196,7 +196,12 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 				// Active sources can still have a bad latest coverage result, so
 				// continue only after checking their persisted latest run below.
 				var latest discovery.ProviderRun
-				if err := s.discoveryDB.WithContext(ctx).Where("provider = ?", provider.Provider).Order("created_at DESC, id DESC").First(&latest).Error; err == nil && latest.ExpectedCount > 0 && latest.CoveragePct < 20 {
+				latestErr := s.discoveryDB.WithContext(ctx).Where("provider = ?", provider.Provider).Order("created_at DESC, id DESC").First(&latest).Error
+				if latestErr == nil && latest.FallbackUsed {
+					report.ProviderWarnings++
+					report.addIssue("provider_fallback:"+provider.Provider, "market", "warning", "行情主源未独立完成", fmt.Sprintf("%s 最近一次运行启用了备用行情源；批次已完成，但应检查主源覆盖率、限流或上游错误", provider.Provider), "discovery-logs", now)
+				}
+				if latestErr == nil && latest.ExpectedCount > 0 && latest.CoveragePct < 20 {
 					report.LowCoverageProviders++
 					severity := "warning"
 					if latest.CoveragePct < 5 {

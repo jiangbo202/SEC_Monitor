@@ -86,10 +86,14 @@ func RefreshCurrentCandidateFinancials(ctx context.Context, db *gorm.DB, securit
 	for _, row := range identities {
 		identityBySecurity[row.SecurityID] = row
 	}
+	policy, err := SmallCapPolicyForBatch(marketBatch)
+	if err != nil {
+		return 0, err
+	}
 
 	sort.Slice(universeRows, func(i, j int) bool { return universeRows[i].SecurityID < universeRows[j].SecurityID })
 	updated := 0
-	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, row := range universeRows {
 			metric, err := FinancialMetricFromFacts(securityBatchID, row.SecurityID, factsBySecurity[row.SecurityID], now)
 			if err != nil {
@@ -113,11 +117,11 @@ func RefreshCurrentCandidateFinancials(ctx context.Context, db *gorm.DB, securit
 				updated++
 				continue
 			}
-			score := ScoreDiscoveryCandidate(DiscoveryScoreInput{
+			score := ScoreDiscoveryCandidateWithPolicy(DiscoveryScoreInput{
 				SecurityID: row.SecurityID, Ticker: row.Ticker, MarketCapUSD: row.MarketCapUSD,
 				Financial: metric, Insiders: insidersBySecurity[row.SecurityID], Risks: risksBySecurity[row.SecurityID],
 				GrossMarginPct: metric.GrossMarginPct, SectorScore: SectorRatingForSIC(identityBySecurity[row.SecurityID].SIC).Score, AsOf: now,
-			})
+			}, policy)
 			scoreRow := CandidateScoreToSnapshot(marketBatch.BatchID, score, now)
 			var existingScore CandidateScoreSnapshot
 			err = tx.Where("batch_id = ? AND security_id = ?", marketBatch.BatchID, row.SecurityID).First(&existingScore).Error

@@ -65,6 +65,8 @@ type ProviderResult struct {
 	Records, Expected                       int
 	CoveragePct, ValidationErrorPct         float64
 	Timely                                  bool
+	Attempts                                []ProviderAttempt
+	FallbackUsed                            bool
 }
 
 type PriceProvider interface {

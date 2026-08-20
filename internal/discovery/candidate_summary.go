@@ -42,7 +42,6 @@ func BuildCandidateSummaryWithOptions(ctx context.Context, db *gorm.DB, options 
 	if ctx == nil {
 		return result, errors.New("context is required")
 	}
-	limit := normalizeCandidateSummaryLimit(options.LimitPerGrade)
 	batch, ok, err := currentPublishedPrescreenBatch(ctx, db)
 	if err != nil {
 		return result, err
@@ -51,6 +50,24 @@ func BuildCandidateSummaryWithOptions(ctx context.Context, db *gorm.DB, options 
 		result.Message = "暂无小盘候选批次。"
 		return result, nil
 	}
+	return BuildCandidateSummaryForBatch(ctx, db, batch, options)
+}
+
+// BuildCandidateSummaryForBatch builds a report from one immutable published
+// batch instead of following the mutable current-batch pointer.
+func BuildCandidateSummaryForBatch(ctx context.Context, db *gorm.DB, batch UniverseBatch, options CandidateSummaryOptions) (CandidateSummary, error) {
+	result := CandidateSummary{ItemsA: []CandidateScoreSnapshot{}, ItemsB: []CandidateScoreSnapshot{}, EventNotes: map[string]string{}}
+	if db == nil {
+		return result, errors.New("database is required")
+	}
+	if ctx == nil {
+		return result, errors.New("context is required")
+	}
+	if strings.TrimSpace(batch.BatchID) == "" {
+		return result, errors.New("batch id is required")
+	}
+	limit := normalizeCandidateSummaryLimit(options.LimitPerGrade)
+	var err error
 	result.BatchID = batch.BatchID
 	if options.IncludeA {
 		if result.TotalA, result.ItemsA, err = listCandidateSummaryItems(ctx, db, batch.BatchID, CandidateGradeA, "eligible_a", limit, options); err != nil {
@@ -73,7 +90,7 @@ func hydrateCandidateSummaryEventNotes(ctx context.Context, db *gorm.DB, summary
 	if summary == nil || summary.BatchID == "" || (len(summary.ItemsA) == 0 && len(summary.ItemsB) == 0) {
 		return nil
 	}
-	page, err := ListCandidateScores(ctx, db, CandidateScoreQuery{Page: 1, PageSize: maxDiscoveryPageSize})
+	page, err := ListCandidateScores(ctx, db, CandidateScoreQuery{BatchID: summary.BatchID, Page: 1, PageSize: maxDiscoveryPageSize})
 	if err != nil {
 		return err
 	}
@@ -135,7 +152,7 @@ func listCandidateSummaryItems(ctx context.Context, db *gorm.DB, batchID, grade,
 	// candidates with complete, current evidence may enter a notification
 	// summary; research-only candidates remain visible in the UI and export.
 	page, err := ListCandidateScores(ctx, db, CandidateScoreQuery{
-		Grade: grade, Page: 1, PageSize: maxDiscoveryPageSize, ResearchReadiness: CandidateResearchReadinessReady,
+		BatchID: batchID, Grade: grade, Page: 1, PageSize: maxDiscoveryPageSize, ResearchReadiness: CandidateResearchReadinessReady,
 	})
 	if err != nil {
 		return 0, items, err

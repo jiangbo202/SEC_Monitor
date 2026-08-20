@@ -1551,12 +1551,13 @@ func seedOldFiling(t *testing.T, db *gorm.DB) {
 
 func seedIPOFiling(t *testing.T, db *gorm.DB) {
 	t.Helper()
+	recent := time.Now().UTC().AddDate(0, 0, -1).Truncate(24 * time.Hour)
 	if err := db.Create(&model.IPOFiling{
 		FilingID:    "ipo-1",
 		CIK:         "0000000001",
 		CompanyName: "Acme Space Inc.",
 		FilingType:  "S-1",
-		FilingDate:  time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC),
+		FilingDate:  recent,
 		FilingURL:   "https://sec.gov/acme/s1",
 		Title:       "S-1 - Acme Space Inc.",
 	}).Error; err != nil {

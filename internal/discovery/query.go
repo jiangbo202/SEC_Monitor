@@ -29,7 +29,10 @@ type UniversePage struct {
 }
 
 type CandidateScoreQuery struct {
-	Page, PageSize           int
+	Page, PageSize int
+	// BatchID pins the query to an immutable published prescreen batch. When it
+	// is empty, callers retain the existing current-batch behavior.
+	BatchID                  string
 	Ticker, Grade            string
 	SectorCategory           string
 	QualityTier              string
@@ -265,18 +268,26 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if ctx == nil {
 		return result, errors.New("context is required")
 	}
-	var pointer CurrentBatchPointer
-	err = db.WithContext(ctx).First(&pointer, "kind = ?", BatchKindPrescreen).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return result, nil
-	}
-	if err != nil {
-		return result, err
-	}
 	var batch UniverseBatch
-	if err = db.WithContext(ctx).First(&batch, "batch_id = ? AND kind = ? AND status = ?", pointer.BatchID, BatchKindPrescreen, BatchStatusPublished).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	batchID := strings.TrimSpace(filter.BatchID)
+	if batchID == "" {
+		var pointer CurrentBatchPointer
+		err = db.WithContext(ctx).First(&pointer, "kind = ?", BatchKindPrescreen).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return result, nil
+		}
+		if err != nil {
+			return result, err
+		}
+		batchID = pointer.BatchID
+	}
+	if err = db.WithContext(ctx).First(&batch, "batch_id = ? AND kind = ? AND status = ?", batchID, BatchKindPrescreen, BatchStatusPublished).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return result, nil
 	} else if err != nil {
+		return result, err
+	}
+	policy, err := SmallCapPolicyForBatch(batch)
+	if err != nil {
 		return result, err
 	}
 	query := db.WithContext(ctx).Model(&CandidateScoreSnapshot{}).Where("batch_id = ?", batch.BatchID)
@@ -360,7 +371,7 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if err != nil {
 		return result, err
 	}
-	hydrateCandidateMarketQualityFromPriceHistories(items, technicalPriceHistories)
+	hydrateCandidateMarketQualityFromPriceHistoriesWithPolicy(items, technicalPriceHistories, policy)
 	technicalNeeded := strings.TrimSpace(filter.TechnicalSignal) != ""
 	if technicalNeeded {
 		if err = hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx, db, items, technicalPriceHistories); err != nil {
@@ -379,7 +390,7 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		return result, err
 	}
 	for i := range items {
-		items[i].Investability = buildCandidateInvestability(items[i])
+		items[i].Investability = BuildCandidateInvestabilityWithPolicy(items[i], policy)
 	}
 	if err = hydrateCandidateResearchReadiness(ctx, db, batch, items); err != nil {
 		return result, err
@@ -1763,6 +1774,9 @@ func providerSummariesByBatch(ctx context.Context, db *gorm.DB, batchIDs []strin
 		if _, exists := out[run.BatchID]; exists {
 			continue
 		}
+		if err := hydrateProviderRunAttempts(&run); err != nil {
+			return nil, err
+		}
 		summary := &BatchProviderSummary{
 			Provider:          run.Provider,
 			Status:            run.Status,
@@ -1773,6 +1787,8 @@ func providerSummariesByBatch(ctx context.Context, db *gorm.DB, batchIDs []strin
 			SourceVersion:     run.SourceVersion,
 			ErrorMessage:      run.ErrorMessage,
 			PriceSourceCounts: map[string]int64{},
+			ProviderAttempts:  run.Attempts,
+			FallbackUsed:      run.FallbackUsed,
 		}
 		out[run.BatchID] = summary
 		if strings.TrimSpace(run.SourceVersion) != "" {
@@ -1839,8 +1855,15 @@ func ListProviderDiagnostics(ctx context.Context, db *gorm.DB, filter ProviderRu
 	if err = query.Count(&result.Total).Error; err != nil {
 		return result, err
 	}
-	err = query.Order("created_at DESC").Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&result.Items).Error
-	return result, err
+	if err = query.Order("created_at DESC").Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&result.Items).Error; err != nil {
+		return result, err
+	}
+	for index := range result.Items {
+		if err := hydrateProviderRunAttempts(&result.Items[index]); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
 }
 
 func ListProviderHealth(ctx context.Context, db *gorm.DB) (ProviderHealthPage, error) {

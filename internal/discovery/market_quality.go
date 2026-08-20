@@ -18,25 +18,42 @@ type CandidateMarketQuality struct {
 }
 
 func hydrateCandidateMarketQuality(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {
+	return hydrateCandidateMarketQualityWithPolicy(ctx, db, items, DefaultSmallCapPolicy())
+}
+
+func hydrateCandidateMarketQualityWithPolicy(ctx context.Context, db *gorm.DB, items []CandidateScoreResult, policy SmallCapPolicy) error {
 	priceHistories, err := candidateTechnicalPriceHistories(ctx, db, items, technicalMinimumSamples)
 	if err != nil {
 		return err
 	}
-	hydrateCandidateMarketQualityFromPriceHistories(items, priceHistories)
+	hydrateCandidateMarketQualityFromPriceHistoriesWithPolicy(items, priceHistories, policy)
 	return nil
 }
 
 func hydrateCandidateMarketQualityFromPriceHistories(items []CandidateScoreResult, priceHistories map[uint][]PriceSnapshot) {
+	hydrateCandidateMarketQualityFromPriceHistoriesWithPolicy(items, priceHistories, DefaultSmallCapPolicy())
+}
+
+func hydrateCandidateMarketQualityFromPriceHistoriesWithPolicy(items []CandidateScoreResult, priceHistories map[uint][]PriceSnapshot, policy SmallCapPolicy) {
 	for i := range items {
 		rows := priceHistories[items[i].SecurityID]
 		if len(rows) > technicalMinimumSamples {
 			rows = rows[len(rows)-technicalMinimumSamples:]
 		}
-		items[i].MarketQuality = buildCandidateMarketQuality(rows)
+		items[i].MarketQuality = BuildCandidateMarketQualityWithPolicy(rows, policy)
 	}
 }
 
 func buildCandidateMarketQuality(rows []PriceSnapshot) CandidateMarketQuality {
+	return BuildCandidateMarketQualityWithPolicy(rows, DefaultSmallCapPolicy())
+}
+
+func BuildCandidateMarketQualityWithPolicy(rows []PriceSnapshot, policy SmallCapPolicy) CandidateMarketQuality {
+	if normalized, err := NormalizeSmallCapPolicy(policy); err == nil {
+		policy = normalized
+	} else {
+		policy = DefaultSmallCapPolicy()
+	}
 	if len(rows) == 0 {
 		return CandidateMarketQuality{Status: "missing"}
 	}
@@ -73,7 +90,7 @@ func buildCandidateMarketQuality(rows []PriceSnapshot) CandidateMarketQuality {
 		}
 		quality.VolatilityPct = math.Sqrt(sum / float64(len(returns)-1))
 	}
-	if quality.AverageDollarVolume < 500_000 || quality.VolatilityPct >= 10 || quality.MomentumPct <= -20 {
+	if quality.AverageDollarVolume < policy.TradableADVUSD || quality.VolatilityPct >= 10 || quality.MomentumPct <= -20 {
 		quality.Status = "risk"
 	}
 	return quality

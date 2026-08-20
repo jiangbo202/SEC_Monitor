@@ -23,6 +23,17 @@ type aiRoundTripper func(*http.Request) (*http.Response, error)
 
 func (fn aiRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) { return fn(request) }
 
+func structuredAIHTTPResponse(conclusion string) *http.Response {
+	result := model.AIAnalysisStructuredResult{
+		SchemaVersion: model.AIAnalysisSchemaV1, Stance: "watch", Conclusion: conclusion,
+		Evidence:     []model.AIAnalysisEvidence{{Fact: "本地事实", Inference: "需要继续观察", Impact: "可能影响研究判断", SourcePaths: []string{"$.ticker"}}},
+		Invalidation: []string{"后续事实与当前证据矛盾"}, DataGaps: []string{"缺少更多验证数据"}, EvidenceSufficiency: "medium",
+	}
+	content, _ := json.Marshal(result)
+	payload, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(content)}}}})
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(payload)))}
+}
+
 type fakeSECFilingFetcher struct {
 	url      string
 	document string
@@ -91,11 +102,14 @@ func TestAIAnalysisIsExplicitAndAudited(t *testing.T) {
 		if payload["max_tokens"] != float64(aiAnalysisMaxOutputTokens) || payload["stream"] != false {
 			t.Errorf("response limits payload=%+v", payload)
 		}
+		if format, ok := payload["response_format"].(map[string]any); !ok || format["type"] != "json_object" {
+			t.Errorf("response_format=%#v", payload["response_format"])
+		}
 		messages, ok := payload["messages"].([]any)
 		if !ok || len(messages) != 2 {
 			t.Errorf("messages=%#v", payload["messages"])
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"基于快照的审慎结论"}}]}`))}, nil
+		return structuredAIHTTPResponse("基于快照的审慎结论"), nil
 	})})
 	analyses.WithInAppNotifications(NewInAppNotificationService(db, configs))
 	if err := configs.SaveAIProviders(context.Background(), []AIProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://example.test/v1", APIKey: "secret-value", Model: "deepseek-chat", Enabled: true}}, "tester"); err != nil {
@@ -112,7 +126,7 @@ func TestAIAnalysisIsExplicitAndAudited(t *testing.T) {
 		t.Fatalf("duration=%d", result.DurationMS)
 	}
 	page, err := analyses.List(context.Background(), AIAnalysisListFilter{Ticker: "NVDA", Page: 1, PageSize: 20})
-	if err != nil || page.Total != 1 || page.Items[0].InputSnapshot != "" || page.Items[0].UserPrompt == "" {
+	if err != nil || page.Total != 1 || page.Items[0].InputSnapshot != "" || page.Items[0].UserPrompt == "" || page.Items[0].StructuredResult == nil || page.Items[0].StructuredResult.SchemaVersion != model.AIAnalysisSchemaV1 {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
 	var auditCount int64
@@ -162,7 +176,7 @@ func TestSECFilingAnalysisFetchesPersistedDocumentAndAllowsOtherFilings(t *testi
 		if len(payload.Messages) != 2 || !strings.Contains(payload.Messages[1].Content, "Revenue increased 20%") {
 			t.Errorf("SEC document was not rendered into request: %+v", payload.Messages)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"公告分析完成"}}]}`))}, nil
+		return structuredAIHTTPResponse("公告分析完成"), nil
 	})})
 	firstURL := "https://www.sec.gov/Archives/edgar/data/123/acme-8k.htm"
 	filing := model.Filing{ID: 11, FilingID: "000000-01", Ticker: "ACME", CompanyName: "Acme Corp", FilingType: "8-K", FilingDate: time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC), FilingURL: firstURL}
@@ -380,14 +394,138 @@ func TestAIProviderTimeout(t *testing.T) {
 	}
 }
 
-func TestAIAnalysisUsesReasoningFallbackWhenFinalContentIsEmpty(t *testing.T) {
+func TestAIAnalysisRejectsReasoningWithoutStructuredFinalContent(t *testing.T) {
 	_, _, analyses := newAIAnalysisTestServices(t)
 	analyses.WithHTTPClient(&http.Client{Transport: aiRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"finish_reason":"stop","message":{"content":"","reasoning_content":"这是可复核的分析过程"}}]}`))}, nil
 	})})
 	provider := AIProviderConfig{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://api.deepseek.com/v1", APIKey: "secret", Model: "deepseek-v4-pro", Enabled: true}
 	content, err := analyses.callOpenAICompatible(context.Background(), provider, `{"ticker":"NVDA"}`)
-	if err != nil || !strings.Contains(content, "可复核的分析过程") {
+	if err == nil || content != "" || !strings.Contains(err.Error(), "结构化分析结果") {
 		t.Fatalf("content=%q err=%v", content, err)
+	}
+}
+
+func TestAIAnalysisRetriesTransientProviderFailure(t *testing.T) {
+	_, configs, analyses := newAIAnalysisTestServices(t)
+	ctx := context.Background()
+	if err := configs.SaveAIProviders(ctx, []AIProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://example.test/v1", APIKey: "secret", Model: "deepseek-chat", Enabled: true}}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	analyses.aiRetryWait = func(context.Context, time.Duration) error { return nil }
+	analyses.WithHTTPClient(&http.Client{Transport: aiRoundTripper(func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"rate limited"}`))}, nil
+		}
+		return structuredAIHTTPResponse("重试后完成"), nil
+	})})
+	result, err := analyses.GenerateTickerAnalysis(ctx, AIAnalysisInput{ProviderID: "deepseek", Evaluation: discovery.TickerEvaluationResult{Ticker: "RETRY", Status: "ready"}}, "tester")
+	if err != nil || result.Status != "success" || result.RequestAttempts != 2 || calls != 2 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestAIAnalysisRepairsInvalidStructuredResponseOnce(t *testing.T) {
+	_, configs, analyses := newAIAnalysisTestServices(t)
+	ctx := context.Background()
+	if err := configs.SaveAIProviders(ctx, []AIProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://example.test/v1", APIKey: "secret", Model: "deepseek-chat", Enabled: true}}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	analyses.WithHTTPClient(&http.Client{Transport: aiRoundTripper(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"不是 JSON"}}]}`))}, nil
+		}
+		var payload struct {
+			Messages []aiCompletionMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || len(payload.Messages) != 4 {
+			t.Fatalf("repair payload=%+v err=%v", payload, err)
+		}
+		return structuredAIHTTPResponse("格式修复完成"), nil
+	})})
+	result, err := analyses.GenerateTickerAnalysis(ctx, AIAnalysisInput{ProviderID: "deepseek", Evaluation: discovery.TickerEvaluationResult{Ticker: "REPAIR", Status: "ready"}}, "tester")
+	if err != nil || result.RequestAttempts != 2 || calls != 2 || result.StructuredResult == nil || result.StructuredResult.Conclusion != "格式修复完成" {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestAIAnalysisDoesNotRetryFailedStructureRepair(t *testing.T) {
+	_, configs, analyses := newAIAnalysisTestServices(t)
+	ctx := context.Background()
+	if err := configs.SaveAIProviders(ctx, []AIProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://example.test/v1", APIKey: "secret", Model: "deepseek-chat", Enabled: true}}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	analyses.aiRetryWait = func(context.Context, time.Duration) error { return nil }
+	analyses.WithHTTPClient(&http.Client{Transport: aiRoundTripper(func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"不是 JSON"}}]}`))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"temporarily unavailable"}`))}, nil
+	})})
+	result, err := analyses.GenerateTickerAnalysis(ctx, AIAnalysisInput{ProviderID: "deepseek", Evaluation: discovery.TickerEvaluationResult{Ticker: "REPAIRFAIL", Status: "ready"}}, "tester")
+	if err == nil || result.Status != "failed" || result.RequestAttempts != 2 || calls != 2 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestAIAnalysisFallsBackWhenProviderRejectsResponseFormat(t *testing.T) {
+	_, configs, analyses := newAIAnalysisTestServices(t)
+	ctx := context.Background()
+	if err := configs.SaveAIProviders(ctx, []AIProviderConfig{{ID: "compatible", Name: "Compatible", APIBaseURL: "https://example.test/v1", APIKey: "secret", Model: "model", Enabled: true}}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	analyses.WithHTTPClient(&http.Client{Transport: aiRoundTripper(func(request *http.Request) (*http.Response, error) {
+		calls++
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			if payload["response_format"] == nil {
+				t.Fatal("first request did not ask for JSON mode")
+			}
+			return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"response_format is unsupported"}`))}, nil
+		}
+		if payload["response_format"] != nil {
+			t.Fatal("fallback request retained unsupported response_format")
+		}
+		return structuredAIHTTPResponse("兼容模式完成"), nil
+	})})
+	result, err := analyses.GenerateTickerAnalysis(ctx, AIAnalysisInput{ProviderID: "compatible", Evaluation: discovery.TickerEvaluationResult{Ticker: "FALLBACK", Status: "ready"}}, "tester")
+	if err != nil || result.ResponseMode != "prompt_json" || result.RequestAttempts != 2 || calls != 2 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestAIAnalysisReusesIdenticalSuccessfulResult(t *testing.T) {
+	db, configs, analyses := newAIAnalysisTestServices(t)
+	ctx := context.Background()
+	if err := configs.SaveAIProviders(ctx, []AIProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://example.test/v1", APIKey: "secret", Model: "deepseek-chat", Enabled: true}}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	analyses.WithHTTPClient(&http.Client{Transport: aiRoundTripper(func(*http.Request) (*http.Response, error) {
+		calls++
+		return structuredAIHTTPResponse("可复用结论"), nil
+	})})
+	input := AIAnalysisInput{ProviderID: "deepseek", Evaluation: discovery.TickerEvaluationResult{Ticker: "CACHE", CompanyName: "Cache Co", Status: "ready"}}
+	first, err := analyses.GenerateTickerAnalysis(ctx, input, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := analyses.GenerateTickerAnalysis(ctx, input, "tester")
+	if err != nil || calls != 1 || second.ReusedFromID == nil || *second.ReusedFromID != first.ID || second.ResponseMode != "cache" || second.RequestAttempts != 0 || second.AnalysisKeySHA256 != first.AnalysisKeySHA256 {
+		t.Fatalf("first=%+v second=%+v calls=%d err=%v", first, second, calls, err)
+	}
+	var reuseAudits int64
+	if err := db.Model(&model.OperationLog{}).Where("action = ? AND object_type = ?", "reuse", "ai_analysis").Count(&reuseAudits).Error; err != nil || reuseAudits != 1 {
+		t.Fatalf("reuse audits=%d err=%v", reuseAudits, err)
 	}
 }

@@ -83,6 +83,7 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 		{name: "financial_metric_snapshots", model: &FinancialMetricSnapshot{}},
 		{name: "insider_transaction_snapshots", model: &InsiderTransactionSnapshot{}},
 		{name: "candidate_score_snapshots", model: &CandidateScoreSnapshot{}},
+		{name: "candidate_report_snapshots", model: &CandidateReportSnapshot{}},
 		{name: "small_cap_eligibility_check_histories", model: &SmallCapEligibilityCheckHistory{}},
 		{name: "candidate_recalc_events", model: &CandidateRecalcEvent{}},
 		{name: "candidate_watches", model: &CandidateWatch{}},
@@ -103,6 +104,11 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 	for _, dtoTable := range []string{"evidences", "source_versions"} {
 		if db.Migrator().HasTable(dtoTable) {
 			t.Fatalf("Migrate created DTO table %s", dtoTable)
+		}
+	}
+	for _, column := range []string{"ScoringRubricSHA256", "ScoringRubricJSON"} {
+		if !db.Migrator().HasColumn(&CandidateScoreSnapshot{}, column) {
+			t.Fatalf("Migrate did not create candidate score lineage column %s", column)
 		}
 	}
 }

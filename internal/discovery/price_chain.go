@@ -92,6 +92,7 @@ func (p *PriceProviderChain) load(ctx context.Context, expected []Listing, effec
 	exactDateRequired := strings.TrimSpace(effectiveDate) != ""
 	recordsBySymbol := make(map[string]PriceRecord, len(expected))
 	childVersions := make([]string, 0, len(p.providers))
+	attempts := make([]ProviderAttempt, 0, len(p.providers))
 	var lastErr error
 	var effective time.Time
 	for _, child := range p.providers {
@@ -108,19 +109,22 @@ func (p *PriceProviderChain) load(ctx context.Context, expected []Listing, effec
 		})
 		childRecords, childResult, err := loadPriceProviderChild(ctx, child, remaining, effectiveDate)
 		if err != nil {
+			elapsed := time.Since(started)
 			lastErr = err
 			childVersions = append(childVersions, name+":error:"+err.Error())
+			attempts = append(attempts, ProviderAttempt{Provider: name, Status: "failed", Expected: len(remaining), Remaining: len(remaining), ElapsedMS: elapsed.Milliseconds(), ErrorMessage: providerAttemptError(err)})
 			p.emitDiagnostic(PriceProviderChainDiagnostic{
 				Event:     "error",
 				Provider:  name,
 				Expected:  len(remaining),
 				Remaining: len(remaining),
-				Elapsed:   time.Since(started),
+				Elapsed:   elapsed,
 				Error:     err.Error(),
 			})
 			continue
 		}
 		childVersions = append(childVersions, childResult.Provider+":"+childResult.SourceVersion)
+		attemptExpected := len(remaining)
 		if effective.IsZero() && !childResult.EffectiveDate.IsZero() {
 			effective = childResult.EffectiveDate
 		}
@@ -139,6 +143,14 @@ func (p *PriceProviderChain) load(ctx context.Context, expected []Listing, effec
 			}
 		}
 		remaining = missingListings(expected, covered)
+		elapsed := time.Since(started)
+		attemptStatus := "success"
+		if childResult.Records == 0 {
+			attemptStatus = "empty"
+		} else if len(remaining) > 0 {
+			attemptStatus = "partial"
+		}
+		attempts = append(attempts, ProviderAttempt{Provider: name, Status: attemptStatus, SourceVersion: childResult.SourceVersion, Expected: attemptExpected, Records: childResult.Records, Remaining: len(remaining), CoveragePct: childResult.CoveragePct, ElapsedMS: elapsed.Milliseconds()})
 		p.emitDiagnostic(PriceProviderChainDiagnostic{
 			Event:       "success",
 			Provider:    name,
@@ -146,7 +158,7 @@ func (p *PriceProviderChain) load(ctx context.Context, expected []Listing, effec
 			Records:     childResult.Records,
 			Remaining:   len(remaining),
 			CoveragePct: childResult.CoveragePct,
-			Elapsed:     time.Since(started),
+			Elapsed:     elapsed,
 		})
 	}
 	records := make([]PriceRecord, 0, len(recordsBySymbol))
@@ -182,7 +194,20 @@ func (p *PriceProviderChain) load(ctx context.Context, expected []Listing, effec
 		return nil, ProviderResult{}, err
 	}
 	result.SHA256 = sha
+	result.Attempts = attempts
+	result.FallbackUsed = len(attempts) > 1
 	return records, result, nil
+}
+
+func providerAttemptError(err error) string {
+	if err == nil {
+		return ""
+	}
+	value := strings.TrimSpace(err.Error())
+	if len(value) > 2_000 {
+		value = value[:2_000]
+	}
+	return value
 }
 
 func priceRecordIsNewer(candidate, current PriceRecord) bool {

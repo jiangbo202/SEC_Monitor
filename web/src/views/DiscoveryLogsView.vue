@@ -55,6 +55,11 @@
           </el-descriptions-item>
           <el-descriptions-item label="最新运行有效日">{{ formatDate(providerObservability.latest_run?.effective_date) }}</el-descriptions-item>
           <el-descriptions-item label="最新覆盖率">{{ formatPct(providerObservability.latest_run?.coverage_pct) }}</el-descriptions-item>
+          <el-descriptions-item label="本次切换">
+            <el-tag v-if="!providerObservability.latest_run?.provider_attempts?.length" type="info" effect="plain">历史批次无逐源记录</el-tag>
+            <el-tag v-else-if="providerObservability.latest_run.fallback_used" type="warning" effect="plain">已启用备源</el-tag>
+            <el-tag v-else type="success" effect="plain">主源完成</el-tag>
+          </el-descriptions-item>
           <el-descriptions-item label="交易日历">
             {{ providerObservability.calendar_version }}
             <el-tag v-for="year in providerObservability.calendar_years" :key="year.year" size="small" :type="year.complete ? 'success' : 'warning'" effect="plain" class="calendar-year-tag">
@@ -79,6 +84,18 @@
             <template #default="{ row }">{{ formatLocalBudget(row.local_request_budget, row.budget_scope) }}</template>
           </el-table-column>
           <el-table-column prop="latest_source_record_count" label="最近写入记录" width="130" align="right" />
+          <el-table-column label="最近尝试" width="120">
+            <template #default="{ row }"><el-tag :type="providerAttemptType(row.latest_attempt?.status)" effect="plain">{{ providerAttemptLabel(row.latest_attempt?.status) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="尝试结果" width="130" align="right">
+            <template #default="{ row }">{{ formatAttemptProgress(row.latest_attempt) }}</template>
+          </el-table-column>
+          <el-table-column label="耗时" width="100" align="right">
+            <template #default="{ row }">{{ formatMilliseconds(row.latest_attempt?.elapsed_ms) }}</template>
+          </el-table-column>
+          <el-table-column label="降级原因" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.latest_attempt?.error_message || '-' }}</template>
+          </el-table-column>
           <el-table-column label="健康状态" width="120">
             <template #default="{ row }"><el-tag :type="providerStatusType(row.health?.status)" effect="plain">{{ row.health?.status || '-' }}</el-tag></template>
           </el-table-column>
@@ -288,6 +305,20 @@
         </div>
       </template>
       <el-table :data="runRows" v-loading="runLoading" border empty-text="暂无 Provider Run">
+        <el-table-column type="expand" width="48">
+          <template #default="{ row }">
+            <el-empty v-if="!row.provider_attempts?.length" description="该历史运行没有逐源尝试记录" :image-size="36" />
+            <el-table v-else :data="row.provider_attempts" size="small" border class="attempt-table">
+              <el-table-column prop="provider" label="Provider" width="130" />
+              <el-table-column label="结果" width="110"><template #default="{ row: attempt }"><el-tag :type="providerAttemptType(attempt.status)" effect="plain">{{ providerAttemptLabel(attempt.status) }}</el-tag></template></el-table-column>
+              <el-table-column label="记录 / 预期" width="120" align="right"><template #default="{ row: attempt }">{{ formatAttemptProgress(attempt) }}</template></el-table-column>
+              <el-table-column prop="remaining" label="待补齐" width="90" align="right" />
+              <el-table-column label="耗时" width="100" align="right"><template #default="{ row: attempt }">{{ formatMilliseconds(attempt.elapsed_ms) }}</template></el-table-column>
+              <el-table-column prop="source_version" label="Source Version" min-width="190" show-overflow-tooltip />
+              <el-table-column prop="error_message" label="失败 / 降级原因" min-width="240" show-overflow-tooltip><template #default="{ row: attempt }">{{ attempt.error_message || '-' }}</template></el-table-column>
+            </el-table>
+          </template>
+        </el-table-column>
         <el-table-column prop="provider" label="Provider" width="110" />
         <el-table-column prop="status" label="状态" width="120">
           <template #default="{ row }">
@@ -307,6 +338,7 @@
             <el-tag :type="row.timely ? 'success' : 'warning'" effect="plain">{{ row.timely ? 'yes' : 'no' }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="备源" width="100"><template #default="{ row }"><el-tag v-if="!row.provider_attempts?.length" type="info" effect="plain">历史记录</el-tag><el-tag v-else :type="row.fallback_used ? 'warning' : 'success'" effect="plain">{{ row.fallback_used ? '已使用' : '未使用' }}</el-tag></template></el-table-column>
         <el-table-column prop="created_at" label="创建时间" width="180">
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
@@ -324,7 +356,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, CompanyProfileBulkRetryResult, CompanyProfileRecoveryItem, CompanyProfileRecoveryQueue, DiscoveryBatch, DiscoverySyncRun, DiscoverySyncRunPage, DiscoverySyncStep, MarketPriceRecoveryItem, MarketPriceRecoveryQueue, PageResult, ProviderHealth, ProviderHealthPage, ProviderObservability, ProviderRun } from '@/api/types'
+import type { ApiResponse, CompanyProfileBulkRetryResult, CompanyProfileRecoveryItem, CompanyProfileRecoveryQueue, DiscoveryBatch, DiscoverySyncRun, DiscoverySyncRunPage, DiscoverySyncStep, MarketPriceRecoveryItem, MarketPriceRecoveryQueue, PageResult, ProviderAttempt, ProviderHealth, ProviderHealthPage, ProviderObservability, ProviderRun } from '@/api/types'
 
 const pageSize = 20
 const route = useRoute()
@@ -574,6 +606,29 @@ function formatLocalBudget(budget: number, scope: string) {
   return budget > 0 ? `${budget} 请求` : '未限额'
 }
 
+function providerAttemptType(status?: string) {
+  if (status === 'success') return 'success'
+  if (status === 'partial' || status === 'empty') return 'warning'
+  if (status === 'failed') return 'danger'
+  return 'info'
+}
+
+function providerAttemptLabel(status?: string) {
+  const labels: Record<string, string> = { success: '完成', partial: '部分完成', empty: '无可用数据', failed: '失败' }
+  return labels[status || ''] || status || '未运行'
+}
+
+function formatAttemptProgress(attempt?: ProviderAttempt | null) {
+  if (!attempt) return '-'
+  return `${attempt.records}/${attempt.expected}`
+}
+
+function formatMilliseconds(value?: number | null) {
+  if (value === undefined || value === null) return '-'
+  if (value < 1000) return `${value} ms`
+  return `${(value / 1000).toFixed(1)} s`
+}
+
 function priceFreshnessLabel(status?: string) {
   const labels: Record<string, string> = { missing: '缺失', stale: '过期', future: '日期异常', previous_trading_day: '上一交易日' }
   return labels[status || ''] || status || '-'
@@ -627,7 +682,24 @@ function phaseLabel(phase?: string) {
   const labels: Record<string, string> = {
     prepare: '准备与缓存清理', build_sources: '装载数据源', security_universe: 'SEC 全量宇宙',
     incremental_sec_refresh: 'SEC 增量财务', incremental_listing_discovery: '新增上市标的发现', market_prescreen: '行情与市值预筛',
-    technical_history: '技术指标历史', publish_summary: '候选摘要与健康检查', completed: '已完成', failed: '失败'
+    technical_history: '技术指标历史', publish_summary: '日报归档与健康检查', completed: '已完成', failed: '失败'
+  }
+  const checkpointLabels: Record<string, string> = {
+    'security-listings': '上市标的清单',
+    'security-universe': '公司身份与分类',
+    'security-listing-classification': '上市标的分类结果',
+    'financial-facts': '财务事实',
+    'financial-metrics': '财务指标',
+    'historical-shares': '历史股本',
+    'insider-transactions': 'Form 4 内幕交易',
+    'insider-coverage': 'Form 4 覆盖情况',
+    'sec-filing-index': 'SEC 文件索引',
+    'capital-risks': '融资风险',
+    'security-validation': '发布前校验'
+  }
+  if (phase?.startsWith('checkpoint:')) {
+    const checkpoint = phase.slice('checkpoint:'.length)
+    return `恢复点 · ${checkpointLabels[checkpoint] || checkpoint}`
   }
   return labels[phase || ''] || phase || '-'
 }
@@ -668,6 +740,11 @@ onMounted(loadAll)
 
 .provider-budget-notice {
   margin: 12px 0;
+}
+
+.attempt-table {
+  margin: 8px 12px;
+  width: calc(100% - 24px);
 }
 
 .profile-recovery-notice {

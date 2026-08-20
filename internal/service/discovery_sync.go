@@ -19,9 +19,11 @@ import (
 )
 
 const (
-	DiscoverySyncStatusPublished    = "published"
-	DiscoverySyncStatusMarketFailed = "market_failed"
-	DiscoverySyncRunStatusFailed    = "failed"
+	DiscoverySyncStatusPublished      = "published"
+	DiscoverySyncStatusMarketFailed   = "market_failed"
+	DiscoverySyncStatusNeedsBootstrap = "needs_bootstrap"
+	DiscoverySyncRunStatusFailed      = "failed"
+	DiscoverySyncRunStatusSkipped     = "skipped"
 )
 
 const discoverySyncRecoveryGrace = 15 * time.Minute
@@ -52,6 +54,7 @@ type productionDiscoveryRunner struct {
 
 type DiscoverySyncResult struct {
 	Status                 string                       `json:"status"`
+	Message                string                       `json:"message,omitempty"`
 	BatchID                string                       `json:"batch_id"`
 	SecurityBatchID        string                       `json:"security_batch_id"`
 	MarketBatchID          string                       `json:"market_batch_id"`
@@ -1086,7 +1089,13 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	runner := s.runner
 	if runner == nil {
 		buildStep := s.startDiscoverySyncStep(run.ID, "build_sources", "装载 SEC、行情和技术指标数据源")
-		built, err := s.buildRunner()
+		binding, bindingErr := discovery.SmallCapPolicyBindingForRun(run)
+		if bindingErr != nil {
+			s.finishDiscoverySyncStep(buildStep.ID, "failed", 0, bindingErr)
+			s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", "", "", bindingErr)
+			return DiscoverySyncResult{}, bindingErr
+		}
+		built, err := s.buildRunnerWithPolicyBinding(false, binding)
 		if err != nil {
 			s.finishDiscoverySyncStep(buildStep.ID, "failed", 0, err)
 			s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", "", "", err)
@@ -1095,15 +1104,26 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 		s.finishDiscoverySyncStep(buildStep.ID, "completed", 0, nil)
 		runner = built
 	}
+	resume := s.findFullWorkflowResume(taskCtx, run)
 	securityStep := s.startDiscoverySyncStep(run.ID, "security_universe", "同步 SEC 标的、财务、股本、Form 4 与融资风险")
-	securityBatch, err := runner.SyncSecurityUniverse(taskCtx)
+	securityBatch := resume.SecurityBatch
+	if securityBatch.BatchID != "" {
+		_ = s.db.WithContext(context.Background()).Model(&discovery.DiscoverySyncStep{}).Where("id = ?", securityStep.ID).Update("message", "复用当天已发布的 SEC 批次，跳过重复同步").Error
+		s.finishDiscoverySyncStep(securityStep.ID, DiscoverySyncRunStatusSkipped, securityBatch.RecordCount, nil)
+	} else {
+		securityBatch, err = runner.SyncSecurityUniverse(taskCtx)
+	}
 	result := DiscoverySyncResult{SecurityBatch: securityBatch, SecurityBatchID: securityBatch.BatchID}
 	if err != nil {
 		s.finishDiscoverySyncStep(securityStep.ID, "failed", securityBatch.RecordCount, err)
+		s.appendSecurityCheckpointSteps(run.ID, securityBatch.BatchID)
 		s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", securityBatch.BatchID, "", err)
 		return result, err
 	}
-	s.finishDiscoverySyncStep(securityStep.ID, "completed", securityBatch.RecordCount, nil)
+	if resume.SecurityBatch.BatchID == "" {
+		s.finishDiscoverySyncStep(securityStep.ID, "completed", securityBatch.RecordCount, nil)
+	}
+	s.appendSecurityCheckpointSteps(run.ID, securityBatch.BatchID)
 	s.updateDiscoverySyncRun(run.ID, "market_prescreen", securityBatch.BatchID, "")
 	marketStep := s.startDiscoverySyncStep(run.ID, "market_prescreen", "拉取价格、成交量并完成市值预筛")
 	// SEC bulk processing and the market-provider chain have independent
@@ -1116,7 +1136,13 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 		return result, contextErr
 	}
 	defer marketCancel()
-	marketBatch, err := runner.SyncMarketPrices(marketCtx)
+	marketBatch := resume.MarketBatch
+	if marketBatch.BatchID != "" {
+		_ = s.db.WithContext(context.Background()).Model(&discovery.DiscoverySyncStep{}).Where("id = ?", marketStep.ID).Update("message", "复用当天已发布的行情批次，从后续步骤继续").Error
+		s.finishDiscoverySyncStep(marketStep.ID, DiscoverySyncRunStatusSkipped, marketBatch.RecordCount, nil)
+	} else {
+		marketBatch, err = runner.SyncMarketPrices(marketCtx)
+	}
 	result.MarketBatch = marketBatch
 	result.MarketBatchID = marketBatch.BatchID
 	result.BatchID = marketBatch.BatchID
@@ -1128,7 +1154,9 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 		s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", securityBatch.BatchID, marketBatch.BatchID, err)
 		return result, fmt.Errorf("%w: %v", ErrDiscoveryMarketSync, err)
 	}
-	s.finishDiscoverySyncStep(marketStep.ID, "completed", marketBatch.RecordCount, nil)
+	if resume.MarketBatch.BatchID == "" {
+		s.finishDiscoverySyncStep(marketStep.ID, "completed", marketBatch.RecordCount, nil)
+	}
 	result.Status = DiscoverySyncStatusPublished
 	s.updateDiscoverySyncRun(run.ID, "technical_history", securityBatch.BatchID, marketBatch.BatchID)
 	technicalStep := s.startDiscoverySyncStep(run.ID, "technical_history", "回填候选技术指标历史（非阻断）")
@@ -1156,19 +1184,15 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	} else {
 		s.finishDiscoverySyncStep(analystStep.ID, "completed", analystRatings.Fetched, nil)
 	}
-	summaryStep := s.startDiscoverySyncStep(run.ID, "publish_summary", "生成候选摘要与数据健康检查")
-	result.Summary, err = discovery.BuildCandidateSummary(taskCtx, s.db, 10)
+	summaryStep := s.startDiscoverySyncStep(run.ID, "publish_summary", "生成并归档候选日报与数据健康检查")
+	report, err := discovery.BuildAndPersistCandidateReportForBatch(taskCtx, s.db, marketBatch)
 	if err != nil {
 		s.finishDiscoverySyncStep(summaryStep.ID, "failed", 0, err)
 		s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", securityBatch.BatchID, marketBatch.BatchID, err)
 		return result, err
 	}
-	result.Health, err = discovery.BuildCandidateHealth(taskCtx, s.db)
-	if err != nil {
-		s.finishDiscoverySyncStep(summaryStep.ID, "failed", 0, err)
-		s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", securityBatch.BatchID, marketBatch.BatchID, err)
-		return result, err
-	}
+	result.Summary = report.Summary
+	result.Health = report.Health
 	s.finishDiscoverySyncStep(summaryStep.ID, "completed", result.Summary.TotalA+result.Summary.TotalB, nil)
 	s.finishDiscoverySyncRun(run.ID, DiscoverySyncStatusPublished, "completed", securityBatch.BatchID, marketBatch.BatchID, nil)
 	return result, err
@@ -1353,6 +1377,18 @@ func (s *DiscoverySyncService) runMarketOnly(ctx context.Context, kind string, f
 	s.cleanupExpiredDiscoveryCache(taskCtx)
 	s.finishDiscoverySyncStep(prepareStep.ID, "completed", 0, nil)
 	if kind == "incremental" {
+		available, bootstrapErr := s.hasCurrentPublishedSecurityBatch(taskCtx)
+		if bootstrapErr != nil {
+			s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", "", "", bootstrapErr)
+			return DiscoverySyncResult{}, bootstrapErr
+		}
+		if !available {
+			message := "尚无已发布的证券池批次；请先运行小盘候选全量校准"
+			bootstrapStep := s.startDiscoverySyncStep(run.ID, DiscoverySyncStatusNeedsBootstrap, message)
+			s.finishDiscoverySyncStep(bootstrapStep.ID, DiscoverySyncRunStatusSkipped, 0, nil)
+			s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusSkipped, DiscoverySyncStatusNeedsBootstrap, "", "", nil)
+			return DiscoverySyncResult{Status: DiscoverySyncStatusNeedsBootstrap, Message: message}, nil
+		}
 		s.updateDiscoverySyncRun(run.ID, "incremental_sec_refresh", "", "")
 		financialStep := s.startDiscoverySyncStep(run.ID, "incremental_sec_refresh", "消费新发现的 10-Q/10-K 并仅刷新受影响公司的财务快照")
 		financials, refreshErr := s.RefreshDirtyFinancials(taskCtx)
@@ -1384,7 +1420,13 @@ func (s *DiscoverySyncService) runMarketOnly(ctx context.Context, kind string, f
 	runner := s.runner
 	if runner == nil {
 		buildStep := s.startDiscoverySyncStep(run.ID, "build_sources", "装载行情数据源")
-		built, err := s.buildRunnerWithForceLivePriceFetch(forceLivePriceFetch)
+		binding, bindingErr := discovery.SmallCapPolicyBindingForRun(run)
+		if bindingErr != nil {
+			s.finishDiscoverySyncStep(buildStep.ID, "failed", 0, bindingErr)
+			s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", "", "", bindingErr)
+			return DiscoverySyncResult{}, bindingErr
+		}
+		built, err := s.buildRunnerWithPolicyBinding(forceLivePriceFetch, binding)
 		if err != nil {
 			s.finishDiscoverySyncStep(buildStep.ID, "failed", 0, err)
 			s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", "", "", err)
@@ -1442,22 +1484,28 @@ func (s *DiscoverySyncService) runMarketOnly(ctx context.Context, kind string, f
 	} else {
 		s.finishDiscoverySyncStep(analystStep.ID, "completed", analystRatings.Fetched, nil)
 	}
-	summaryStep := s.startDiscoverySyncStep(run.ID, "publish_summary", "生成候选摘要与数据健康检查")
-	result.Summary, err = discovery.BuildCandidateSummary(taskCtx, s.db, 10)
+	summaryStep := s.startDiscoverySyncStep(run.ID, "publish_summary", "生成并归档候选日报与数据健康检查")
+	report, err := discovery.BuildAndPersistCandidateReportForBatch(taskCtx, s.db, marketBatch)
 	if err != nil {
 		s.finishDiscoverySyncStep(summaryStep.ID, "failed", 0, err)
 		s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", "", marketBatch.BatchID, err)
 		return result, err
 	}
-	result.Health, err = discovery.BuildCandidateHealth(taskCtx, s.db)
-	if err != nil {
-		s.finishDiscoverySyncStep(summaryStep.ID, "failed", 0, err)
-		s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", "", marketBatch.BatchID, err)
-		return result, err
-	}
+	result.Summary = report.Summary
+	result.Health = report.Health
 	s.finishDiscoverySyncStep(summaryStep.ID, "completed", result.Summary.TotalA+result.Summary.TotalB, nil)
 	s.finishDiscoverySyncRun(run.ID, DiscoverySyncStatusPublished, "completed", "", marketBatch.BatchID, nil)
 	return result, err
+}
+
+func (s *DiscoverySyncService) hasCurrentPublishedSecurityBatch(ctx context.Context) (bool, error) {
+	var count int64
+	err := s.db.WithContext(ctx).
+		Table("current_batch_pointers AS pointers").
+		Joins("JOIN universe_batches AS batches ON batches.batch_id = pointers.batch_id").
+		Where("pointers.kind = ? AND batches.kind = ? AND batches.status = ?", discovery.BatchKindSecurity, discovery.BatchKindSecurity, discovery.BatchStatusPublished).
+		Count(&count).Error
+	return count > 0, err
 }
 
 // discoveryTaskContext enforces the configurable end-to-end runtime limit.
@@ -1501,11 +1549,43 @@ func (s *DiscoverySyncService) cleanupExpiredDiscoveryCache(ctx context.Context)
 }
 
 func (s *DiscoverySyncService) startDiscoverySyncRun(kind string) (discovery.DiscoverySyncRun, error) {
-	run := discovery.DiscoverySyncRun{Kind: kind, Status: "running", Phase: "security_universe", StartedAt: time.Now().UTC()}
-	if kind == "market" {
-		run.Phase = "market_prescreen"
+	now := time.Now().UTC()
+	phase := "security_universe"
+	if kind == "market" || kind == "market-force" || kind == "incremental" {
+		phase = "market_prescreen"
 	}
-	if err := s.db.WithContext(context.Background()).Create(&run).Error; err != nil {
+	binding, err := discovery.ActiveSmallCapPolicyBinding(context.Background(), s.db)
+	if err != nil {
+		return discovery.DiscoverySyncRun{}, fmt.Errorf("load active small-cap policy: %w", err)
+	}
+	run := discovery.DiscoverySyncRun{Kind: kind, Status: "running", Phase: phase, StartedAt: now,
+		PolicyVersionID: binding.PolicyVersionID, PolicyVersion: binding.PolicyVersion,
+		PolicyContentSHA256: binding.PolicyContentSHA256, PolicySnapshotJSON: binding.PolicySnapshotJSON}
+	timeout := time.Hour
+	if cfg, err := s.appliedDiscoveryConfig(context.Background()); err == nil && cfg.TaskTimeoutMin > 0 {
+		timeout = time.Duration(cfg.TaskTimeoutMin) * time.Minute
+	}
+	cutoff := now.Add(-(timeout + discoverySyncRecoveryGrace))
+	err = s.db.WithContext(context.Background()).Transaction(func(tx *gorm.DB) error {
+		// A crashed process cannot release an in-memory mutex. Expire its persisted
+		// heartbeat before trying the unique partial index that acts as the lease.
+		if err := tx.Model(&discovery.DiscoverySyncRun{}).
+			Where("status = ? AND updated_at < ?", "running", cutoff).
+			Updates(map[string]any{
+				"status": DiscoverySyncRunStatusFailed, "phase": "failed",
+				"completed_at": now, "updated_at": now,
+				"error_message": "同步进程已中断或超过心跳恢复窗口；请重新运行任务",
+			}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&run).Error
+	})
+	if err != nil {
+		var running discovery.DiscoverySyncRun
+		lookupErr := s.db.WithContext(context.Background()).Where("status = ?", "running").Order("started_at DESC").First(&running).Error
+		if lookupErr == nil {
+			return discovery.DiscoverySyncRun{}, TaskAlreadyRunning("small_cap_discovery_sync")
+		}
 		return discovery.DiscoverySyncRun{}, err
 	}
 	return run, nil
@@ -1549,7 +1629,17 @@ func (s *DiscoverySyncService) startDiscoverySyncStep(runID uint, phase, message
 		RunID: runID, Phase: phase, Status: "running", Message: message,
 		StartedAt: time.Now().UTC(),
 	}
-	if err := s.db.WithContext(context.Background()).Create(&step).Error; err != nil {
+	if err := s.db.WithContext(context.Background()).Transaction(func(tx *gorm.DB) error {
+		var sequence int
+		if err := tx.Model(&discovery.DiscoverySyncStep{}).
+			Select("COALESCE(MAX(sequence), 0)").
+			Where("run_id = ?", runID).
+			Scan(&sequence).Error; err != nil {
+			return err
+		}
+		step.Sequence = sequence + 1
+		return tx.Create(&step).Error
+	}); err != nil {
 		log.Printf("discovery sync step start skipped: run=%d phase=%s error=%v", runID, phase, err)
 	}
 	return step
@@ -1569,6 +1659,73 @@ func (s *DiscoverySyncService) finishDiscoverySyncStep(stepID uint, status strin
 	}
 	if err := s.db.WithContext(context.Background()).Model(&discovery.DiscoverySyncStep{}).Where("id = ?", stepID).Updates(updates).Error; err != nil {
 		log.Printf("discovery sync step finish skipped: step=%d error=%v", stepID, err)
+	}
+}
+
+type fullWorkflowResume struct {
+	SecurityBatch discovery.UniverseBatch
+	MarketBatch   discovery.UniverseBatch
+}
+
+// findFullWorkflowResume reuses published phases from the latest failed full
+// run on the same New York civil day and frozen policy. This handles failures
+// after the SEC or market phase without needlessly rebuilding those phases.
+// Failed security batches are intentionally not returned here: the coordinator
+// resumes their chunk checkpoints when SyncSecurityUniverse is called.
+func (s *DiscoverySyncService) findFullWorkflowResume(ctx context.Context, run discovery.DiscoverySyncRun) fullWorkflowResume {
+	result := fullWorkflowResume{}
+	if s == nil || s.db == nil || run.ID == 0 || run.Kind != "full" {
+		return result
+	}
+	var previous discovery.DiscoverySyncRun
+	err := s.db.WithContext(ctx).
+		Where("id < ? AND kind = ? AND status = ? AND policy_content_sha256 = ?", run.ID, "full", DiscoverySyncRunStatusFailed, run.PolicyContentSHA256).
+		Order("id DESC").First(&previous).Error
+	if err != nil || strings.TrimSpace(previous.SecurityBatchID) == "" {
+		return result
+	}
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return result
+	}
+	today := time.Now().In(location).Format(time.DateOnly)
+	if err := s.db.WithContext(ctx).First(&result.SecurityBatch, "batch_id = ? AND kind = ? AND status = ? AND effective_date = ? AND policy_content_sha256 = ?", previous.SecurityBatchID, discovery.BatchKindSecurity, discovery.BatchStatusPublished, today, run.PolicyContentSHA256).Error; err != nil {
+		return fullWorkflowResume{}
+	}
+	if strings.TrimSpace(previous.MarketBatchID) != "" {
+		_ = s.db.WithContext(ctx).First(&result.MarketBatch, "batch_id = ? AND kind = ? AND status = ? AND universe_source_version = ? AND policy_content_sha256 = ?", previous.MarketBatchID, discovery.BatchKindPrescreen, discovery.BatchStatusPublished, result.SecurityBatch.BatchID, run.PolicyContentSHA256).Error
+	}
+	return result
+}
+
+// appendSecurityCheckpointSteps mirrors compact checkpoint summaries into the
+// existing workflow timeline. Recovery still reads the chunk-level checkpoint
+// table; these rows are only the operator-facing explanation of what will be
+// skipped or retried next time.
+func (s *DiscoverySyncService) appendSecurityCheckpointSteps(runID uint, batchID string) {
+	if s == nil || s.db == nil || runID == 0 || strings.TrimSpace(batchID) == "" {
+		return
+	}
+	summaries, err := discovery.ListSecurityStageCheckpointSummaries(context.Background(), s.db, batchID)
+	if err != nil {
+		log.Printf("list security checkpoints skipped: run=%d batch=%s error=%v", runID, batchID, err)
+		return
+	}
+	for _, summary := range summaries {
+		message := fmt.Sprintf("已提交 %d 个数据块；后续重试会跳过已完成部分", summary.CompletedChunks)
+		status := summary.Status
+		if status == "running" {
+			status = "warning"
+		}
+		if summary.ErrorMessage != "" {
+			message = SanitizeSensitiveError(summary.ErrorMessage)
+		}
+		step := s.startDiscoverySyncStep(runID, "checkpoint:"+summary.Phase, message)
+		var stepErr error
+		if status == "failed" {
+			stepErr = errors.New(message)
+		}
+		s.finishDiscoverySyncStep(step.ID, status, summary.RecordCount, stepErr)
 	}
 }
 
@@ -2164,6 +2321,14 @@ func (s *DiscoverySyncService) buildRunner() (DiscoverySyncRunner, error) {
 }
 
 func (s *DiscoverySyncService) buildRunnerWithForceLivePriceFetch(forceLivePriceFetch bool) (DiscoverySyncRunner, error) {
+	policyBinding, err := discovery.ActiveSmallCapPolicyBinding(context.Background(), s.db)
+	if err != nil {
+		return nil, fmt.Errorf("load active small-cap policy: %w", err)
+	}
+	return s.buildRunnerWithPolicyBinding(forceLivePriceFetch, policyBinding)
+}
+
+func (s *DiscoverySyncService) buildRunnerWithPolicyBinding(forceLivePriceFetch bool, policyBinding discovery.SmallCapPolicyBinding) (DiscoverySyncRunner, error) {
 	cfg := s.cfg
 	if s.configs != nil {
 		applied, err := s.configs.ApplyDiscoveryConfig(context.Background(), cfg)
@@ -2209,11 +2374,12 @@ func (s *DiscoverySyncService) buildRunnerWithForceLivePriceFetch(forceLivePrice
 		Insiders: discovery.SECForm4InsiderSource{
 			Metadata:     secBulk,
 			Downloader:   downloader,
-			LookbackDays: 180,
+			LookbackDays: policyBinding.Policy.InsiderLookbackDays,
 		},
-		Events:   discovery.SECSubmissionsCapitalEventSource{Metadata: secBulk},
-		Calendar: calendar,
-		Clock:    time.Now,
+		Events:        discovery.SECSubmissionsCapitalEventSource{Metadata: secBulk},
+		Calendar:      calendar,
+		Clock:         time.Now,
+		PolicyBinding: policyBinding,
 	}
 	prices, marketErr, err := s.buildPriceProvider(cfg, downloader, calendar)
 	if err != nil {
@@ -2230,7 +2396,7 @@ func (s *DiscoverySyncService) buildRunnerWithForceLivePriceFetch(forceLivePrice
 		Insiders: discovery.SECForm4InsiderSource{
 			Metadata:     secBulk,
 			Downloader:   downloader,
-			LookbackDays: 180,
+			LookbackDays: policyBinding.Policy.InsiderLookbackDays,
 		},
 		Events:                discovery.SECSubmissionsCapitalEventSource{Metadata: secBulk},
 		Prices:                prices,
@@ -2239,6 +2405,7 @@ func (s *DiscoverySyncService) buildRunnerWithForceLivePriceFetch(forceLivePrice
 		ResearchMode:          cfg.ResearchMode,
 		MinPublishCoveragePct: cfg.MinPublishCoveragePct,
 		ForceLivePriceFetch:   forceLivePriceFetch,
+		PolicyBinding:         policyBinding,
 	}
 	return productionDiscoveryRunner{security: security, market: market}, nil
 }
