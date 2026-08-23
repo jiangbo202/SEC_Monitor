@@ -41,7 +41,7 @@ type TickerTechnicalHistory struct {
 	History   []CandidateTechnicalHistoryRow `json:"history"`
 }
 
-// GetTickerTechnicalHistory returns the local daily close/volume history used
+// GetTickerTechnicalHistory returns the local daily OHLCV history used
 // by a watch-target detail. It works for stocks and ETFs, including targets
 // that are outside the current small-cap candidate universe.
 func GetTickerTechnicalHistory(ctx context.Context, db *gorm.DB, ticker string) (TickerTechnicalHistory, error) {
@@ -213,6 +213,12 @@ func candidateTechnicalHistoryListings(ctx context.Context, db *gorm.DB, batch U
 	}
 	datesByTicker := map[string]map[string]struct{}{}
 	for _, price := range prices {
+		// A legacy close-only row is not sufficient for standard KDJ or candle
+		// rendering. Keep requesting the symbol until the required OHLC window
+		// has been populated by a current historical provider.
+		if !priceSnapshotHasOHLC(price) {
+			continue
+		}
 		ticker := strings.ToUpper(strings.TrimSpace(price.Symbol))
 		if datesByTicker[ticker] == nil {
 			datesByTicker[ticker] = map[string]struct{}{}
@@ -261,6 +267,9 @@ func technicalHistorySnapshots(records []PriceRecord, effectiveDate string, sour
 			SourceVersion: record.Source + ":technical-history:" + effectiveDate,
 			Symbol:        record.Symbol,
 			TradeDate:     record.TradeDate,
+			OpenMicros:    record.OpenMicros,
+			HighMicros:    record.HighMicros,
+			LowMicros:     record.LowMicros,
 			CloseMicros:   record.CloseMicros,
 			Volume:        record.Volume,
 			Currency:      stringOrDefault(record.Currency, "USD"),
@@ -302,6 +311,7 @@ func PersistTechnicalPriceHistory(ctx context.Context, db *gorm.DB, records []Pr
 		snapshots = append(snapshots, PriceSnapshot{
 			Source: strings.ToLower(strings.TrimSpace(record.Source)), SourceVersion: sourceVersion,
 			Symbol: strings.ToUpper(strings.TrimSpace(record.Symbol)), TradeDate: record.TradeDate,
+			OpenMicros: record.OpenMicros, HighMicros: record.HighMicros, LowMicros: record.LowMicros,
 			CloseMicros: record.CloseMicros, Volume: record.Volume, Currency: stringOrDefault(record.Currency, "USD"),
 			Adjusted: record.Adjusted, QualityStatus: QualityStatusValid,
 		})

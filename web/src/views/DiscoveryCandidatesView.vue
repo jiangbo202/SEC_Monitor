@@ -1402,6 +1402,14 @@
               <el-descriptions-item label="相对 IWM（60 日）">{{ relativeStrengthSummary(candidateDetail.technical, 60) }}</el-descriptions-item>
               <el-descriptions-item label="研究事件锚定价（日线近似）">{{ anchoredVWAPSummary(candidateDetail.technical) }}</el-descriptions-item>
               <el-descriptions-item label="锚定事件">{{ anchoredVWAPEventSummary(candidateDetail.technical) }}</el-descriptions-item>
+								<el-descriptions-item label="RSI(14)">{{ formatIndicator(candidateDetail.technical.oscillator?.rsi_14) }}</el-descriptions-item>
+								<el-descriptions-item label="KDJ(9,3,3)">{{ formatKDJ(candidateDetail.technical) }}</el-descriptions-item>
+								<el-descriptions-item label="动能判断" :span="2">
+									<el-space wrap :size="6">
+										<el-tag :type="oscillatorTagType(candidateDetail.technical.oscillator?.signal)" effect="plain">{{ candidateDetail.technical.oscillator?.label || '历史不足' }}</el-tag>
+										<span class="history-source">{{ candidateDetail.technical.oscillator?.reasons?.join('；') || '至少需要 15 个有效交易日' }}</span>
+									</el-space>
+								</el-descriptions-item>
 						<el-descriptions-item label="交易计划状态">{{ tradeSetupLabel(candidateDetail.technical.trade_setup.status) }}</el-descriptions-item>
 						<el-descriptions-item label="当前状态开始于">{{ formatDateTime(candidateDetail.technical.trade_setup.status_since) }}</el-descriptions-item>
 						<el-descriptions-item label="入场触发">{{ candidateDetail.technical.trade_setup.entry_trigger || '等待触发条件' }}</el-descriptions-item>
@@ -1423,25 +1431,6 @@
               <el-empty v-else :image-size="44" description="尚未记录状态变化；下次日线同步后会建立当前状态基线。" />
             </div>
           </template>
-          <div class="technical-history-heading">
-            <div class="technical-history-title">
-              本地日线历史（当前显示 {{ technicalHistoryRows.length }} / {{ candidateDetail.technical_history?.length || 0 }} 个交易日；“历史回填”为手动补齐的历史数据）
-            </div>
-            <div class="technical-history-controls">
-              <el-radio-group v-model="technicalHistoryRange" size="small" aria-label="技术历史时间范围">
-                <el-radio-button value="1w">近1周</el-radio-button>
-                <el-radio-button value="1m">近1月</el-radio-button>
-                <el-radio-button value="3m">近3月</el-radio-button>
-                <el-radio-button value="6m">近半年</el-radio-button>
-                <el-radio-button value="1y">近1年</el-radio-button>
-                <el-radio-button value="all">全部</el-radio-button>
-              </el-radio-group>
-              <el-radio-group v-model="technicalHistoryView" size="small" aria-label="技术历史展示方式">
-                <el-radio-button value="chart">图表</el-radio-button>
-                <el-radio-button value="table">列表</el-radio-button>
-              </el-radio-group>
-            </div>
-          </div>
           <el-alert
             v-if="technicalHistoryHasLaterRows"
             type="info"
@@ -1450,70 +1439,7 @@
             class="technical-history-asof-alert"
             :title="`当前发布批次的价格与技术信号均截至 ${formatDate(candidateDetail.technical.trade_date)}；图表中之后的本地日线仅供后续观察，不参与当前批次评分或技术信号。`"
           />
-          <template v-if="technicalHistoryView === 'chart'">
-            <div v-if="technicalHistoryChart.points.length" class="technical-chart" role="img" :aria-label="`${candidateDetail.score.ticker} 本地日线价格和成交量图表`">
-              <div class="technical-chart-legend">
-                <span><i class="technical-chart-line-key" />收盘价</span>
-                <span><i class="technical-chart-ma20-key" />20 日均线</span>
-                <span><i class="technical-chart-ma50-key" />50 日均线</span>
-                <span><i class="technical-chart-ma200-key" />200 日均线</span>
-                <span><i class="technical-chart-bar-key" />每日累计成交量</span>
-                <span>价格范围 {{ formatPrice(technicalHistoryChart.minClose, 'USD') }} – {{ formatPrice(technicalHistoryChart.maxClose, 'USD') }}</span>
-              </div>
-              <svg class="technical-chart-svg" viewBox="0 0 720 270" preserveAspectRatio="none">
-                <line v-for="y in [24, 76, 128, 180]" :key="`grid-${y}`" x1="0" :y1="y" x2="720" :y2="y" class="technical-chart-grid" />
-                <rect
-                  v-for="point in technicalHistoryChart.points"
-                  :key="`volume-${point.tradeDate}`"
-                  :x="point.x - technicalHistoryChart.barWidth / 2"
-                  :y="point.volumeY"
-                  :width="technicalHistoryChart.barWidth"
-                  :height="240 - point.volumeY"
-                  class="technical-chart-volume"
-                >
-                  <title>{{ `${point.tradeDate}｜每日累计成交量 ${formatVolume(point.volume)}` }}</title>
-                </rect>
-                <polyline :points="technicalHistoryChart.pricePolyline" fill="none" class="technical-chart-price" />
-                <polyline v-if="technicalHistoryChart.ma20Polyline" :points="technicalHistoryChart.ma20Polyline" fill="none" class="technical-chart-ma20" />
-                <polyline v-if="technicalHistoryChart.ma50Polyline" :points="technicalHistoryChart.ma50Polyline" fill="none" class="technical-chart-ma50" />
-                <polyline v-if="technicalHistoryChart.ma200Polyline" :points="technicalHistoryChart.ma200Polyline" fill="none" class="technical-chart-ma200" />
-                <circle
-                  v-for="point in technicalHistoryChart.points"
-                  :key="`price-${point.tradeDate}`"
-                  :cx="point.x"
-                  :cy="point.priceY"
-                  r="3"
-                  class="technical-chart-point"
-                >
-                  <title>{{ `${point.tradeDate}｜收盘 ${formatPrice(point.close, 'USD')}｜MA20 ${point.ma20 == null ? '历史不足' : formatPrice(point.ma20, 'USD')}｜MA50 ${point.ma50 == null ? '历史不足' : formatPrice(point.ma50, 'USD')}｜MA200 ${point.ma200 == null ? '历史不足' : formatPrice(point.ma200, 'USD')}｜每日累计成交量 ${formatVolume(point.volume)}｜${point.backfilled ? '历史回填' : '日常同步'} / ${point.source || '-'}` }}</title>
-                </circle>
-                <text x="0" y="264" class="technical-chart-axis-label">{{ technicalHistoryChart.startDate }}</text>
-                <text x="360" y="264" text-anchor="middle" class="technical-chart-axis-label">{{ technicalHistoryChart.middleDate }}</text>
-                <text x="720" y="264" text-anchor="end" class="technical-chart-axis-label">{{ technicalHistoryChart.endDate }}</text>
-              </svg>
-              <div class="technical-chart-note">MA20/MA50/MA200 分别需累计满 20/50/200 个有效交易日后开始绘制；悬浮数据点可查看该日价格、均线、成交量、来源及是否为历史回填。</div>
-            </div>
-            <el-empty v-else :image-size="72" description="暂无可绘制的本地日线数据" />
-          </template>
-          <el-table v-else :data="technicalHistoryRows" size="small" border max-height="360" empty-text="该时间范围暂无本地日线数据">
-            <el-table-column prop="trade_date" label="日期" width="120">
-              <template #default="{ row }">{{ formatDate(row.trade_date) }}</template>
-            </el-table-column>
-            <el-table-column label="收盘价" width="120" align="right">
-              <template #default="{ row }">{{ formatPrice(row.close_usd, 'USD') }}</template>
-            </el-table-column>
-              <el-table-column label="每日累计成交量" width="140" align="right">
-              <template #default="{ row }">{{ formatVolume(row.volume) }}</template>
-            </el-table-column>
-            <el-table-column label="数据来源" min-width="180">
-              <template #default="{ row }">
-                <el-space>
-                  <el-tag :type="row.backfilled ? 'warning' : 'info'" effect="plain">{{ row.backfilled ? '历史回填' : '日常同步' }}</el-tag>
-                  <span class="history-source">{{ row.source || '-' }}</span>
-                </el-space>
-              </template>
-            </el-table-column>
-          </el-table>
+						<TechnicalPriceHistoryChart :ticker="candidateDetail.score.ticker" :rows="candidateDetail.technical_history || []" :technical="candidateDetail.technical" />
         </el-card>
 
         <el-card shadow="never">
@@ -1841,6 +1767,7 @@ import AIRequestPrompt from '@/components/AIRequestPrompt.vue'
 import AIAnalysisResult from '@/components/AIAnalysisResult.vue'
 import type { AIAnalysisStructuredResult } from '@/api/types'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
+import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
 import SmallCapPolicyDialog from '@/components/SmallCapPolicyDialog.vue'
 import type {
   ApiResponse,
@@ -1861,7 +1788,7 @@ import type {
   CandidateScore,
   CandidateSelectionCriteria,
   CandidateSummary,
-  CandidateTechnicalHistoryRow,
+	CandidateTechnicalAnalysis,
   CandidateDilutionTrend,
   CandidateInvestability,
   CandidateWatch,
@@ -1952,8 +1879,6 @@ const candidateTableView = ref<'compact' | 'full'>('compact')
 const route = useRoute()
 const advancedFiltersVisible = ref(false)
 const supplementalLoading = ref(false)
-const technicalHistoryView = ref<'chart' | 'table'>('chart')
-const technicalHistoryRange = ref<TechnicalHistoryRange>('1y')
 const health = ref<CandidateHealth | null>(null)
 const discoverySyncRun = ref<DiscoverySyncRun | null>(null)
 const discoverySyncSteps = ref<DiscoverySyncStep[]>([])
@@ -2047,8 +1972,6 @@ const sectorCategoryOptions = [
   '其他已分类赛道',
   '赛道数据缺失',
 ]
-const technicalHistoryRows = computed(() => filterTechnicalHistoryRange(candidateDetail.value?.technical_history || [], technicalHistoryRange.value))
-const technicalHistoryChart = computed(() => buildTechnicalHistoryChart(candidateDetail.value?.technical_history || [], technicalHistoryRange.value))
 const technicalHistoryHasLaterRows = computed(() => {
   const asOfDate = candidateDetail.value?.technical?.trade_date
   if (!asOfDate) return false
@@ -2463,8 +2386,6 @@ function exportCandidates() {
 
 async function openDetail(row: CandidateScore) {
   detailLoadingTicker.value = row.ticker
-  technicalHistoryView.value = 'chart'
-  technicalHistoryRange.value = '1y'
   try {
     const res = await apiClient.get<ApiResponse<CandidateDetail>>(`/discovery/candidates/${row.ticker}/detail`)
     candidateDetail.value = res.data.data
@@ -4036,127 +3957,22 @@ function discoverySyncDuration(run: DiscoverySyncRun) {
   return `${remainingSeconds}秒`
 }
 
-type TechnicalHistoryChartPoint = {
-  tradeDate: string
-  close: number
-  ma20: number | null
-  ma50: number | null
-  ma200: number | null
-  volume: number
-  source: string
-  backfilled: boolean
-  x: number
-  priceY: number
-  ma20Y: number | null
-  ma50Y: number | null
-  ma200Y: number | null
-  volumeY: number
+function formatIndicator(value?: number | null) {
+	return value == null || !Number.isFinite(value) ? '-' : value.toFixed(1)
 }
 
-type TechnicalHistoryRange = '1w' | '1m' | '3m' | '6m' | '1y' | 'all'
-
-type TechnicalHistoryChart = {
-  points: TechnicalHistoryChartPoint[]
-  pricePolyline: string
-  ma20Polyline: string
-  ma50Polyline: string
-  ma200Polyline: string
-  barWidth: number
-  minClose: number
-  maxClose: number
-  startDate: string
-  middleDate: string
-  endDate: string
+function formatKDJ(technical: CandidateTechnicalAnalysis) {
+	const value = technical.oscillator
+	if (!value || value.k == null || value.d == null || value.j == null) return '历史不足（需至少 9 个交易日）'
+	const method = value.kdj_method === 'ohlc_9_3_3' ? '标准 OHLC' : '收盘价近似'
+	return `${formatIndicator(value.k)} / ${formatIndicator(value.d)} / ${formatIndicator(value.j)}（${method}）`
 }
 
-function buildTechnicalHistoryChart(rows: CandidateTechnicalHistoryRow[], selectedRange: TechnicalHistoryRange): TechnicalHistoryChart {
-  const history = [...rows]
-    .filter((row) => Number.isFinite(row.close_usd) && row.close_usd > 0)
-    .sort((a, b) => a.trade_date.localeCompare(b.trade_date))
-  if (!history.length) {
-    return { points: [], pricePolyline: '', ma20Polyline: '', ma50Polyline: '', ma200Polyline: '', barWidth: 0, minClose: 0, maxClose: 0, startDate: '', middleDate: '', endDate: '' }
-  }
-  const closes = history.map((row) => row.close_usd)
-  const ma20Values = history.map((_, index) => {
-    if (index < 19) return null
-    const window = closes.slice(index - 19, index + 1)
-    return window.reduce((sum, close) => sum + close, 0) / window.length
-  })
-  const ma50Values = history.map((_, index) => {
-    if (index < 49) return null
-    const window = closes.slice(index - 49, index + 1)
-    return window.reduce((sum, close) => sum + close, 0) / window.length
-  })
-  const ma200Values = history.map((_, index) => {
-    if (index < 199) return null
-    const window = closes.slice(index - 199, index + 1)
-    return window.reduce((sum, close) => sum + close, 0) / window.length
-  })
-  const visible = history.map((row, index) => ({ row, index })).filter(({ row }) => filterTechnicalHistoryRange(history, selectedRange).some((displayed) => displayed.trade_date === row.trade_date))
-  if (!visible.length) {
-    return { points: [], pricePolyline: '', ma20Polyline: '', ma50Polyline: '', ma200Polyline: '', barWidth: 0, minClose: 0, maxClose: 0, startDate: '', middleDate: '', endDate: '' }
-  }
-  const chartPrices = visible.flatMap(({ index }) => [closes[index], ma20Values[index], ma50Values[index], ma200Values[index]].filter((value): value is number => value != null))
-  const minClose = Math.min(...chartPrices)
-  const maxClose = Math.max(...chartPrices)
-  const closeRange = Math.max(maxClose - minClose, Math.max(maxClose * 0.02, 0.01))
-  const maxVolume = Math.max(...visible.map(({ row }) => Math.max(row.volume || 0, 0)), 1)
-  const pointCount = visible.length
-  const barWidth = Math.max(2, Math.min(18, 540 / pointCount))
-  const points = visible.map(({ row, index }, displayIndex) => {
-    const x = pointCount === 1 ? 360 : (displayIndex / (pointCount - 1)) * 720
-    const priceY = 174 - ((row.close_usd - minClose) / closeRange) * 142
-    const ma20 = ma20Values[index]
-    const ma20Y = ma20 == null ? null : 174 - ((ma20 - minClose) / closeRange) * 142
-    const ma50 = ma50Values[index]
-    const ma50Y = ma50 == null ? null : 174 - ((ma50 - minClose) / closeRange) * 142
-    const ma200 = ma200Values[index]
-    const ma200Y = ma200 == null ? null : 174 - ((ma200 - minClose) / closeRange) * 142
-    const volumeY = 240 - (Math.max(row.volume || 0, 0) / maxVolume) * 42
-    return {
-      tradeDate: row.trade_date,
-      close: row.close_usd,
-      ma20,
-      ma50,
-      ma200,
-      volume: row.volume,
-      source: row.source,
-      backfilled: row.backfilled,
-      x,
-      priceY,
-      ma20Y,
-      ma50Y,
-      ma200Y,
-      volumeY,
-    }
-  })
-  const middle = visible[Math.floor((visible.length - 1) / 2)].row
-  return {
-    points,
-    pricePolyline: points.map((point) => `${point.x},${point.priceY}`).join(' '),
-    ma20Polyline: points.filter((point) => point.ma20Y != null).map((point) => `${point.x},${point.ma20Y}`).join(' '),
-    ma50Polyline: points.filter((point) => point.ma50Y != null).map((point) => `${point.x},${point.ma50Y}`).join(' '),
-    ma200Polyline: points.filter((point) => point.ma200Y != null).map((point) => `${point.x},${point.ma200Y}`).join(' '),
-    barWidth,
-    minClose,
-    maxClose,
-    startDate: visible[0].row.trade_date,
-    middleDate: middle.trade_date,
-    endDate: visible[visible.length - 1].row.trade_date,
-  }
-}
-
-function filterTechnicalHistoryRange(rows: CandidateTechnicalHistoryRow[], selected: TechnicalHistoryRange) {
-  const normalized = [...rows].sort((a, b) => a.trade_date.localeCompare(b.trade_date))
-  if (selected === 'all' || !normalized.length) return normalized
-  const latest = new Date(`${normalized[normalized.length - 1].trade_date}T12:00:00Z`)
-  if (selected === '1w') latest.setUTCDate(latest.getUTCDate() - 6)
-  if (selected === '1m') latest.setUTCMonth(latest.getUTCMonth() - 1)
-  if (selected === '3m') latest.setUTCMonth(latest.getUTCMonth() - 3)
-  if (selected === '6m') latest.setUTCMonth(latest.getUTCMonth() - 6)
-  if (selected === '1y') latest.setUTCFullYear(latest.getUTCFullYear() - 1)
-  const cutoff = latest.toISOString().slice(0, 10)
-  return normalized.filter((row) => row.trade_date >= cutoff)
+function oscillatorTagType(signal?: string) {
+	if (signal === 'bullish') return 'success'
+	if (signal === 'bearish') return 'danger'
+	if (signal === 'caution' || signal === 'watch') return 'warning'
+	return 'info'
 }
 
 onMounted(() => {
@@ -5058,6 +4874,12 @@ onUnmounted(() => {
 
 .technical-history-asof-alert {
   margin-bottom: 10px;
+}
+
+.oscillator-method-note {
+	margin: 0 0 10px;
+	color: var(--el-text-color-secondary);
+	font-size: 12px;
 }
 
 .history-source {

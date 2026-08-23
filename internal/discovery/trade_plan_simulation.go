@@ -21,7 +21,8 @@ const (
 
 // TradePlanSimulationReport intentionally describes a daily-close paper
 // simulation. It must not be interpreted as intraday execution or brokerage
-// performance because local price snapshots do not preserve OHLC bars.
+// performance because this rule version deliberately evaluates daily closes
+// even when OHLC bars are available; it does not model intraday execution.
 type TradePlanSimulationReport struct {
 	GeneratedAt         time.Time             `json:"generated_at"`
 	RuleVersion         string                `json:"rule_version"`
