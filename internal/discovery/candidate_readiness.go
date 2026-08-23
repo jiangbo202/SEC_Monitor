@@ -15,17 +15,30 @@ const (
 
 	defaultQuarterlyFinancialStalenessDays = 190
 	defaultAnnualFinancialStalenessDays    = 400
+
+	CandidateEvidenceComplete    = "complete"
+	CandidateEvidenceNeedsReview = "needs_review"
+	CandidateEvidenceMissing     = "missing"
 )
 
-// CandidateResearchReadiness deliberately describes evidence availability,
-// rather than company quality. A low-quality but fully evidenced company can
-// be ready; an otherwise strong candidate with unavailable pricing cannot.
+// CandidateResearchReadiness is the composite workflow gate used by default
+// notifications. It combines evidence, liquidity, capital-risk and dilution
+// constraints; CandidateEvidenceCompleteness exposes the evidence-only state
+// separately.
 type CandidateResearchReadiness struct {
 	Status                 string   `json:"status"`
 	Reasons                []string `json:"reasons"`
 	FinancialStalenessDays int      `json:"financial_staleness_days"`
 	FinancialPeriodEnd     string   `json:"financial_period_end"`
 	InsiderEvidenceStatus  string   `json:"insider_evidence_status"`
+}
+
+// CandidateEvidenceCompleteness contains only source completeness and
+// freshness. Liquidity conditions and company risk deliberately remain
+// separate.
+type CandidateEvidenceCompleteness struct {
+	Status  string   `json:"status"`
+	Reasons []string `json:"reasons"`
 }
 
 // CandidateResearchNextStep turns evidence state into one concrete research
@@ -59,9 +72,12 @@ func recommendCandidateResearchNextStep(readiness CandidateResearchReadiness, te
 		case hasReason("market_cap_unavailable"):
 			result.Action = "核对股本与市值数据"
 			result.Rationale = "缺少可靠市值，无法确认是否仍在设定的小盘候选范围内。"
+		case hasReason("capital_risk_blocks_research"):
+			result.Action = "先复核重大资本风险"
+			result.Rationale = "检测到反向拆股或持续经营等重大资本风险；在核验 SEC 原文前不进入默认研究通知。"
 		case hasReason("investability_blocked"):
-			result.Action = "先复核流动性与可交易性限制"
-			result.Rationale = "当前流动性证据触发阻断，不应进入默认研究通知或仓位讨论。"
+			result.Action = "先复核流动性条件"
+			result.Rationale = "当前价格或流动性证据触发阻断，不应进入默认研究通知或仓位讨论。"
 		default:
 			result.Action = "先复核阻断证据"
 			result.Rationale = "存在阻断项；在证据恢复前仅保留历史研究记录。"
@@ -72,7 +88,7 @@ func recommendCandidateResearchNextStep(readiness CandidateResearchReadiness, te
 		switch {
 		case hasReason("biotech_business_model_unconfirmed"), hasReason("biotech_business_model_review_due"):
 			result.Action = "确认业务模型与收入可重复性"
-			result.Rationale = "生物医药收入的可持续性尚未人工确认，收入分与候选可行动性需要复核。"
+			result.Rationale = "生物医药收入的可持续性尚未人工确认，收入分与研究状态需要复核。"
 		case hasReason("financial_metrics_unavailable"), hasReason("financial_period_stale"):
 			result.Action = "核对最新 10-Q / 10-K 财务指标"
 			result.Rationale = "收入增长或现金 runway 证据缺失/过期，先确认最新财务期再更新研究判断。"
@@ -117,6 +133,7 @@ func hydrateCandidateResearchReadiness(ctx context.Context, db *gorm.DB, batch U
 	if strings.TrimSpace(batch.EffectiveDate) == "" || universeEvidenceCount == 0 {
 		for i := range items {
 			items[i].ResearchReadiness = CandidateResearchReadiness{Status: CandidateResearchReadinessReady, Reasons: []string{}, InsiderEvidenceStatus: "legacy_not_evaluated"}
+			items[i].EvidenceCompleteness = CandidateEvidenceCompleteness{Status: CandidateEvidenceComplete, Reasons: []string{}}
 		}
 		return nil
 	}
@@ -183,6 +200,7 @@ func hydrateCandidateResearchReadiness(ctx context.Context, db *gorm.DB, batch U
 		metric, found := metricsBySecurity[items[i].SecurityID]
 		coverage := insiderCoverageBySecurity[items[i].SecurityID]
 		items[i].ResearchReadiness = buildCandidateResearchReadiness(items[i], metric, found, latestPeriodBySecurity[items[i].SecurityID], insiderAvailable, insiderSourceDeclared, insiderCoverageExpected, coverage, asOf)
+		items[i].EvidenceCompleteness = buildCandidateEvidenceCompleteness(items[i], metric, found, latestPeriodBySecurity[items[i].SecurityID], insiderAvailable, insiderSourceDeclared, insiderCoverageExpected, coverage, asOf)
 	}
 	return nil
 }
@@ -286,10 +304,13 @@ func buildCandidateResearchReadiness(item CandidateScoreResult, metric Financial
 	if item.BusinessModel.Model == CandidateBusinessModelUnknown && item.SectorCategory == "生物医药" {
 		researchOnly = true
 		add("biotech_business_model_unconfirmed")
-	}
-	if item.BusinessModel.RequiresReview && item.SectorCategory == "生物医药" {
+	} else if item.BusinessModel.RequiresReview && item.SectorCategory == "生物医药" {
 		researchOnly = true
 		add("biotech_business_model_review_due")
+	}
+	if candidateCapitalRiskBlocksResearch(item) {
+		blocked = true
+		add("capital_risk_blocks_research")
 	}
 	switch item.Investability.Status {
 	case InvestabilityBlocked:
@@ -307,6 +328,90 @@ func buildCandidateResearchReadiness(item CandidateScoreResult, metric Financial
 		result.Status = CandidateResearchReadinessBlocked
 	} else if researchOnly {
 		result.Status = CandidateResearchReadinessResearchOnly
+	}
+	return result
+}
+
+func candidateCapitalRiskBlocksResearch(item CandidateScoreResult) bool {
+	for _, risk := range item.CapitalRiskSummaries {
+		switch risk.Kind {
+		case CapitalEventReverseSplit, CapitalEventGoingConcern:
+			return true
+		}
+	}
+	return false
+}
+
+func buildCandidateEvidenceCompleteness(item CandidateScoreResult, metric FinancialMetricSnapshot, metricFound bool, latestFinancialPeriod time.Time, insiderAvailable, insiderSourceDeclared, insiderCoverageExpected bool, insiderCoverage candidateInsiderCoverage, asOf time.Time) CandidateEvidenceCompleteness {
+	result := CandidateEvidenceCompleteness{Status: CandidateEvidenceComplete, Reasons: []string{}}
+	missing := false
+	needsReview := false
+	seen := map[string]struct{}{}
+	add := func(reason string) {
+		if _, ok := seen[reason]; ok {
+			return
+		}
+		seen[reason] = struct{}{}
+		result.Reasons = append(result.Reasons, reason)
+	}
+	if item.MarketCapUSD <= 0 {
+		missing = true
+		add("market_cap_unavailable")
+	}
+	if item.PriceCloseUSD <= 0 || item.PriceQualityStatus != QualityStatusValid {
+		missing = true
+		add("market_price_unavailable")
+	}
+	if item.PriceFreshnessStatus != PriceFreshnessCurrent && item.PriceFreshnessStatus != PriceFreshnessPreviousTradingDay && item.PriceFreshnessStatus != PriceFreshnessFuture {
+		missing = true
+		if item.PriceFreshnessStatus == "" || item.PriceFreshnessStatus == PriceFreshnessUnknown {
+			add("market_price_freshness_unknown")
+		} else {
+			add("market_price_not_current")
+		}
+	}
+	if !metricFound || (!metric.RevenueGrowthAvailable && !metric.RunwayAvailable) {
+		needsReview = true
+		add("financial_metrics_unavailable")
+	} else if !latestFinancialPeriod.IsZero() {
+		maximumAge := defaultAnnualFinancialStalenessDays
+		if metric.RevenueGrowthAvailable {
+			maximumAge = defaultQuarterlyFinancialStalenessDays
+		}
+		if age := int(asOf.Sub(latestFinancialPeriod).Hours() / 24); age > maximumAge {
+			needsReview = true
+			add("financial_period_stale")
+		}
+	}
+	if insiderSourceDeclared && !insiderAvailable {
+		needsReview = true
+		add("insider_source_unavailable")
+	} else if insiderCoverageExpected {
+		switch insiderCoverage.coverageStatus {
+		case "":
+			needsReview = true
+			add("insider_coverage_missing")
+		case InsiderCoveragePartial:
+			needsReview = true
+			add("insider_coverage_partial")
+		case InsiderCoverageUnavailable:
+			needsReview = true
+			add("insider_coverage_unavailable")
+		}
+	}
+	if item.SectorCategory == "生物医药" {
+		if item.BusinessModel.Model == CandidateBusinessModelUnknown {
+			needsReview = true
+			add("biotech_business_model_unconfirmed")
+		} else if item.BusinessModel.RequiresReview {
+			needsReview = true
+			add("biotech_business_model_review_due")
+		}
+	}
+	if missing {
+		result.Status = CandidateEvidenceMissing
+	} else if needsReview {
+		result.Status = CandidateEvidenceNeedsReview
 	}
 	return result
 }

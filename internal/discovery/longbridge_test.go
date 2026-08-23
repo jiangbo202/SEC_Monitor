@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,6 +132,52 @@ func TestLongbridgePriceProviderBatchesQuotesAndPersistsDailyVolume(t *testing.T
 	}
 	if result.CoveragePct != 100 || result.Records != len(expected) || !client.closed {
 		t.Fatalf("result=%#v closed=%t", result, client.closed)
+	}
+	if result.SourceVersion != "longbridge:2026-07-17:"+result.SHA256 {
+		t.Fatalf("source version = %q, sha = %q", result.SourceVersion, result.SHA256)
+	}
+}
+
+func TestLongbridgePriceProviderVersionsSameDayQuoteRevisionsByContent(t *testing.T) {
+	ny := mustNY(t)
+	target := time.Date(2026, 7, 17, 0, 0, 0, 0, ny)
+	quoteAt := time.Date(2026, 7, 17, 16, 1, 0, 0, ny).Unix()
+	client := &fakeLongbridgeClient{quotes: map[string]longbridgeQuote{
+		"AA.US": {Symbol: "AA.US", Open: "50", High: "52", Low: "49", LastDone: "51.85", Timestamp: quoteAt, Volume: 4_731_459},
+	}}
+	provider, err := NewLongbridgePriceProvider(LongbridgePriceProviderOptions{
+		AppKey: "key", AppSecret: "secret", AccessToken: "token", Calendar: &stubMarketCalendar{},
+		Now:       func() time.Time { return time.Date(2026, 7, 18, 9, 0, 0, 0, ny) },
+		NewClient: func(_, _, _ string) (longbridgeQuoteClient, error) { return client, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []Listing{{Ticker: "AA", ProviderTicker: "AA"}}
+	_, first, err := provider.LoadForDate(context.Background(), expected, target.Format(time.DateOnly))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, repeated, err := provider.LoadForDate(context.Background(), expected, target.Format(time.DateOnly))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.SourceVersion != first.SourceVersion || repeated.SHA256 != first.SHA256 {
+		t.Fatalf("same content changed provenance: first=%#v repeated=%#v", first, repeated)
+	}
+
+	revised := client.quotes["AA.US"]
+	revised.Volume++
+	client.quotes["AA.US"] = revised
+	_, second, err := provider.LoadForDate(context.Background(), expected, target.Format(time.DateOnly))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SourceVersion == first.SourceVersion || second.SHA256 == first.SHA256 {
+		t.Fatalf("same-day revision did not change provenance: first=%#v second=%#v", first, second)
+	}
+	if !strings.HasPrefix(second.SourceVersion, "longbridge:2026-07-17:") || !strings.HasSuffix(second.SourceVersion, second.SHA256) {
+		t.Fatalf("revised source version = %q, sha = %q", second.SourceVersion, second.SHA256)
 	}
 }
 

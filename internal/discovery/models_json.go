@@ -29,6 +29,7 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		PriceCurrency         string                         `json:"price_currency"`
 		PriceQualityStatus    string                         `json:"price_quality_status"`
 		PriceSource           string                         `json:"price_source"`
+		PriceSourceRole       string                         `json:"price_source_role"`
 		QualityTier           string                         `json:"quality_tier"`
 		QualityTags           []string                       `json:"quality_tags"`
 		QualityAdjustedScore  int                            `json:"quality_adjusted_score"`
@@ -51,6 +52,9 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		DilutionTrend         CandidateDilutionTrend         `json:"dilution_trend"`
 		Technical             CandidateTechnicalAnalysis     `json:"technical"`
 		ResearchReadiness     CandidateResearchReadiness     `json:"research_readiness"`
+		EvidenceCompleteness  CandidateEvidenceCompleteness  `json:"evidence_completeness"`
+		GradeExplanation      CandidateGradeExplanation      `json:"grade_explanation"`
+		CashRunwayStatus      string                         `json:"cash_runway_status"`
 		BusinessModel         CandidateBusinessModelEvidence `json:"business_model"`
 		Valuation             CandidateValuation             `json:"valuation"`
 		Followed              bool                           `json:"followed"`
@@ -65,6 +69,7 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		PriceCurrency:         row.PriceCurrency,
 		PriceQualityStatus:    row.PriceQualityStatus,
 		PriceSource:           row.PriceSource,
+		PriceSourceRole:       row.PriceSourceRole,
 		QualityTier:           row.QualityTier,
 		QualityTags:           row.QualityTags,
 		QualityAdjustedScore:  row.QualityAdjustedScore,
@@ -87,6 +92,9 @@ func (row CandidateScoreResult) MarshalJSON() ([]byte, error) {
 		DilutionTrend:         row.DilutionTrend,
 		Technical:             row.Technical,
 		ResearchReadiness:     row.ResearchReadiness,
+		EvidenceCompleteness:  row.EvidenceCompleteness,
+		GradeExplanation:      row.GradeExplanation,
+		CashRunwayStatus:      row.CashRunwayStatus,
 		BusinessModel:         row.BusinessModel,
 		Valuation:             row.Valuation,
 		Followed:              row.Followed,

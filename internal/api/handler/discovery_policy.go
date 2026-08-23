@@ -176,6 +176,19 @@ func (h *AppHandler) ActivateDiscoverySmallCapPolicy(c *gin.Context) {
 	OK(c, smallCapPolicyApplyResponse{Status: result.Status, Policy: smallCapPolicyVersionDTO(result.Policy, result.Policy.ID, activatedAt[result.Policy.ID]), Rescore: result.Rescore})
 }
 
+func (h *AppHandler) RescoreDiscoveryCandidates(c *gin.Context) {
+	before, _ := discovery.GetActiveSmallCapPolicy(c.Request.Context(), h.DiscoveryDB)
+	result, err := discovery.RescoreActiveSmallCapPolicy(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		writeSmallCapPolicyError(c, err)
+		return
+	}
+	if h.Audit != nil && result.PublishedBatchID != result.SourceBatchID {
+		_ = h.Audit.Record(c.Request.Context(), operator(c), "rescore", "small_cap_candidates", result.PublishedBatchID, before, result)
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) ListDiscoverySmallCapPolicyVersions(c *gin.Context) {
 	active, rows, activatedAt, err := h.smallCapPolicyRows(c)
 	if err != nil {

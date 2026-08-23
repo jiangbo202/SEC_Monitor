@@ -87,7 +87,7 @@ func (f *fakePriceProvider) LoadForDate(_ context.Context, expected []Listing, e
 	return f.records, f.result, f.err
 }
 
-func TestPreviousCandidateInsiderAllowlistUsesPriorABCandidates(t *testing.T) {
+func TestCandidateInsiderAllowlistUsesPriorABCandidates(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	now := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
 	batch := UniverseBatch{BatchID: strings.Repeat("f", 64), Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: now.Format(time.DateOnly), SourceVersionsJSON: "[]", ContentSHA256: strings.Repeat("e", 64), StartedAt: now, CompletedAt: &now}
@@ -106,7 +106,7 @@ func TestPreviousCandidateInsiderAllowlistUsesPriorABCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowed := map[string]struct{}{"0000000001": {}, "0000000002": {}, "0000000003": {}, "0000000004": {}}
-	got, err := (&Coordinator{DB: db}).previousCandidateInsiderAllowlist(context.Background(), allowed)
+	got, err := (&Coordinator{DB: db}).candidateInsiderAllowlist(context.Background(), allowed, nil, DefaultSmallCapPolicy(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +117,28 @@ func TestPreviousCandidateInsiderAllowlistUsesPriorABCandidates(t *testing.T) {
 		if _, ok := got[cik]; !ok {
 			t.Fatalf("missing selected CIK %s in %#v", cik, got)
 		}
+	}
+}
+
+func TestCandidateInsiderAllowlistUsesFinancialGrowthOnBootstrap(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	allowed := map[string]struct{}{"0000000001": {}, "0000000002": {}, "0000000003": {}}
+	facts := []FinancialFact{
+		{CIK: "0000000001", Metric: FinancialMetricRevenue, PeriodStart: time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC), PeriodEnd: time.Date(2025, 6, 30, 0, 0, 0, 0, time.UTC), FiledAt: time.Date(2025, 8, 1, 0, 0, 0, 0, time.UTC), AmountMicros: 100_000_000_000_000},
+		{CIK: "0000000001", Metric: FinancialMetricRevenue, PeriodStart: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), PeriodEnd: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC), FiledAt: now.AddDate(0, 0, -1), AmountMicros: 130_000_000_000_000},
+		{CIK: "0000000002", Metric: FinancialMetricRevenue, PeriodStart: time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC), PeriodEnd: time.Date(2025, 6, 30, 0, 0, 0, 0, time.UTC), FiledAt: time.Date(2025, 8, 1, 0, 0, 0, 0, time.UTC), AmountMicros: 100_000_000_000_000},
+		{CIK: "0000000002", Metric: FinancialMetricRevenue, PeriodStart: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), PeriodEnd: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC), FiledAt: now.AddDate(0, 0, -1), AmountMicros: 110_000_000_000_000},
+	}
+	got, err := (&Coordinator{DB: db}).candidateInsiderAllowlist(context.Background(), allowed, facts, DefaultSmallCapPolicy(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("allowlist = %#v", got)
+	}
+	if _, ok := got["0000000001"]; !ok {
+		t.Fatalf("growth-qualified issuer missing from %#v", got)
 	}
 }
 
@@ -1489,6 +1511,28 @@ func TestNormalizeInsiderTransactionsKeepsSequentialSameDayLots(t *testing.T) {
 	}
 	if len(rows) != 2 {
 		t.Fatalf("rows=%#v, want two distinct sequential lots", rows)
+	}
+}
+
+func TestNormalizeInsiderTransactionsMergesDuplicateSECArchiveAliases(t *testing.T) {
+	row := InsiderTransaction{
+		CIK: "0001070423", Accession: "0001581990-26-000045", OwnerName: "PLAINS GP HOLDINGS LP",
+		TransactionDate: time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC), TransactionCode: "A",
+		AcquiredDisposedCode: "A", Shares: 59_200, SharesOwnedAfter: 1_234_567, SharesOwnedBefore: 1_175_367,
+		SourceURL: "https://www.sec.gov/Archives/edgar/data/1070423/000158199026000045/form4.xml",
+	}
+	alias := row
+	alias.SourceURL = "https://www.sec.gov/Archives/edgar/data/1581990/000158199026000045/form4.xml"
+
+	rows, err := normalizeInsiderTransactions([]InsiderTransaction{row, alias})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows=%#v, want one merged transaction", rows)
+	}
+	if rows[0].SourceURL != alias.SourceURL {
+		t.Fatalf("source URL = %q, want canonical %q", rows[0].SourceURL, alias.SourceURL)
 	}
 }
 

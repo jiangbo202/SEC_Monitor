@@ -50,11 +50,28 @@ func (s SECSubmissionsCapitalEventSource) Load(ctx context.Context, allowed map[
 	if err != nil {
 		return nil, SourceVersion{}, fmt.Errorf("load SEC submissions capital events: %w", err)
 	}
+	return CapitalEventsFromMetadata(ctx, records, upstream, allowed, asOf)
+}
+
+func (SECSubmissionsCapitalEventSource) LoadWithMetadata(ctx context.Context, records []SecuritySourceRecord, upstream SourceVersion, allowed map[string]struct{}, asOf time.Time) ([]CapitalEvent, SourceVersion, error) {
+	return CapitalEventsFromMetadata(ctx, records, upstream, allowed, asOf)
+}
+
+// CapitalEventsFromMetadata derives capital-risk events from metadata that was
+// already loaded by the security-universe workflow. Full discovery used to
+// call the SEC submissions source again here, reparsing the same multi-GB ZIP
+// near the end of the workflow and frequently exhausting the global deadline.
+func CapitalEventsFromMetadata(ctx context.Context, records []SecuritySourceRecord, upstream SourceVersion, allowed map[string]struct{}, asOf time.Time) ([]CapitalEvent, SourceVersion, error) {
 	events := make([]CapitalEvent, 0)
+	processedCIKs := make(map[string]struct{}, len(allowed))
 	for _, record := range records {
 		if _, ok := allowed[record.CIK]; !ok {
 			continue
 		}
+		if _, duplicate := processedCIKs[record.CIK]; duplicate {
+			continue
+		}
+		processedCIKs[record.CIK] = struct{}{}
 		for _, filing := range record.FilingMetadata {
 			if err := ctx.Err(); err != nil {
 				return nil, SourceVersion{}, err

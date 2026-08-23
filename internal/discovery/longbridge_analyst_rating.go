@@ -88,6 +88,7 @@ type LongbridgeAnalystRatingOptions struct {
 	AppSecret       string
 	AccessToken     string
 	TargetChangePct float64
+	RequestInterval time.Duration
 	Now             func() time.Time
 	NewClient       func(string, string, string) (longbridgeAnalystRatingClient, error)
 }
@@ -96,6 +97,7 @@ func NewLongbridgeAnalystRatingOptions(cfg config.DiscoveryConfig) LongbridgeAna
 	return LongbridgeAnalystRatingOptions{
 		AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken,
 		TargetChangePct: cfg.LongbridgeAnalystRatingTargetChangePct,
+		RequestInterval: time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS) * time.Millisecond,
 	}
 }
 
@@ -158,7 +160,9 @@ func refreshLongbridgeAnalystRating(ctx context.Context, db *gorm.DB, ticker, ci
 	}
 	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 25*time.Second)
 	defer cancel()
-	rating, err := client.InstitutionRating(requestCtx, result.Ticker+".US")
+	rating, err := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.InstitutionRating, error) {
+		return client.InstitutionRating(callCtx, result.Ticker+".US")
+	})
 	if err != nil {
 		return result, fmt.Errorf("load Longbridge institution rating: %w", err)
 	}

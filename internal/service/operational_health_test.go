@@ -165,6 +165,12 @@ func TestOperationalHealthReportsSlowSECAndDiscoverySteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	completedAt := now.Add(-time.Minute)
+	if err := discoveryDB.Create(&[]discovery.DiscoverySyncRun{
+		{ID: 1, Kind: "full", Status: DiscoverySyncRunStatusFailed, Phase: "failed", StartedAt: now.Add(-2 * time.Hour), CompletedAt: &completedAt},
+		{ID: 2, Kind: "full", Status: "running", Phase: "technical_history", StartedAt: now.Add(-31 * time.Minute)},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := discoveryDB.Create(&[]discovery.DiscoverySyncStep{
 		{RunID: 1, Sequence: 1, Phase: "market_prescreen", Status: "completed", StartedAt: completedAt.Add(-100 * time.Minute), CompletedAt: &completedAt},
 		{RunID: 2, Sequence: 1, Phase: "technical_history", Status: "running", StartedAt: now.Add(-31 * time.Minute)},
@@ -175,11 +181,40 @@ func TestOperationalHealthReportsSlowSECAndDiscoverySteps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.SlowSECTargets != 1 || report.SlowDiscoverySteps != 2 || report.Status != "critical" {
+	if report.SlowSECTargets != 1 || report.SlowDiscoverySteps != 1 || report.Status != "critical" {
 		t.Fatalf("report = %+v", report)
 	}
 	if !hasOperationalIssue(report.Issues, "sec_slow_targets") || !hasOperationalIssue(report.Issues, "discovery_slow_steps") {
 		t.Fatalf("issues = %+v", report.Issues)
+	}
+}
+
+func TestOperationalHealthReconcilesNewerPublishedDirectFullRun(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	scheduledAt := now.Add(-2 * time.Hour)
+	if err := db.Create(&model.TaskConfig{
+		TaskName: "small_cap_discovery_full_sync", CronExpr: "30 9 * * 6", Enabled: true,
+		LastStatus: "interrupted", LastRunAt: &scheduledAt, ConsecutiveFailures: 2, LastErrorMessage: "service restarted",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	completedAt := now.Add(-time.Minute)
+	if err := discoveryDB.Create(&discovery.DiscoverySyncRun{
+		Kind: "full", Status: DiscoverySyncStatusPublished, Phase: "completed", StartedAt: now.Add(-20 * time.Minute), CompletedAt: &completedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	report, err := NewOperationalHealthService(db, discoveryDB, nil, nil).ReportAt(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Tasks) != 1 || report.Tasks[0].LastStatus != "success" || report.Tasks[0].ConsecutiveFailures != 0 || report.Tasks[0].LastRunAt == nil || !report.Tasks[0].LastRunAt.Equal(completedAt) {
+		t.Fatalf("tasks = %+v", report.Tasks)
+	}
+	if hasOperationalIssue(report.Issues, "task_failed:small_cap_discovery_full_sync") {
+		t.Fatalf("stale scheduler failure should be superseded: %+v", report.Issues)
 	}
 }
 

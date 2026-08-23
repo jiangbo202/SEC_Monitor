@@ -52,6 +52,7 @@ type DiscoveryConfig struct {
 	LongbridgeAppKey                            string
 	LongbridgeAppSecret                         string
 	LongbridgeAccessToken                       string
+	LongbridgeFundamentalRequestIntervalMS      int
 	LongbridgeCompanyProfileEnabled             bool
 	LongbridgeCompanyProfileRequestBudget       int
 	LongbridgeCompanyProfileTTLDays             int
@@ -135,6 +136,7 @@ func Load() Config {
 			LongbridgeAppKey:                            strings.TrimSpace(os.Getenv("SMALL_CAP_LONGBRIDGE_APP_KEY")),
 			LongbridgeAppSecret:                         strings.TrimSpace(os.Getenv("SMALL_CAP_LONGBRIDGE_APP_SECRET")),
 			LongbridgeAccessToken:                       strings.TrimSpace(os.Getenv("SMALL_CAP_LONGBRIDGE_ACCESS_TOKEN")),
+			LongbridgeFundamentalRequestIntervalMS:      positiveIntOrDefault("SMALL_CAP_LONGBRIDGE_FUNDAMENTAL_REQUEST_INTERVAL_MS", 1100),
 			LongbridgeCompanyProfileEnabled:             boolOrDefault("SMALL_CAP_LONGBRIDGE_COMPANY_PROFILE_ENABLED", true),
 			LongbridgeCompanyProfileRequestBudget:       positiveIntOrDefault("SMALL_CAP_LONGBRIDGE_COMPANY_PROFILE_REQUEST_BUDGET", 20),
 			LongbridgeCompanyProfileTTLDays:             positiveIntOrDefault("SMALL_CAP_LONGBRIDGE_COMPANY_PROFILE_TTL_DAYS", 30),

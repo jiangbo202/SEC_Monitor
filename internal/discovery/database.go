@@ -78,6 +78,7 @@ func Migrate(db *gorm.DB) error {
 			&DiscoverySyncRun{},
 			&DiscoverySyncStep{},
 			&SecurityStageCheckpoint{},
+			&SecuritySourceCheckpoint{},
 			&CurrentBatchPointer{},
 			&Listing{},
 			&CompanyProfileSnapshot{},
@@ -122,6 +123,9 @@ func Migrate(db *gorm.DB) error {
 			&ManualSecurityOverride{},
 			&IdentityVerificationOverride{},
 		); err != nil {
+			return err
+		}
+		if err := migrateInsiderTransactionIdentity(tx); err != nil {
 			return err
 		}
 		// Discovery workflows share the same mutable security/market workspace.
@@ -170,4 +174,41 @@ func Migrate(db *gorm.DB) error {
 		}
 		return SeedDefaultNYSEMarketCalendar(tx.Statement.Context, tx)
 	})
+}
+
+// BeforeCreate also covers tests, imports and maintenance code that construct
+// snapshot rows directly instead of using InsiderTransactionToSnapshot.
+func (row *InsiderTransactionSnapshot) BeforeCreate(_ *gorm.DB) error {
+	if strings.TrimSpace(row.IdentitySHA256) == "" {
+		row.IdentitySHA256 = insiderTransactionSnapshotIdentity(*row)
+	}
+	return nil
+}
+
+func migrateInsiderTransactionIdentity(tx *gorm.DB) error {
+	for {
+		var rows []InsiderTransactionSnapshot
+		if err := tx.Where("identity_sha256 IS NULL OR identity_sha256 = ''").Limit(500).Find(&rows).Error; err != nil {
+			return fmt.Errorf("load legacy insider transaction identities: %w", err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, row := range rows {
+			identity := insiderTransactionSnapshotIdentity(row)
+			if err := tx.Model(&InsiderTransactionSnapshot{}).Where("id = ?", row.ID).UpdateColumn("identity_sha256", identity).Error; err != nil {
+				return fmt.Errorf("backfill insider transaction identity %d: %w", row.ID, err)
+			}
+		}
+	}
+	// The legacy key collapsed legitimate sequential lots that shared an
+	// accession, date and transaction code. The content identity preserves them
+	// while still making retries idempotent.
+	if err := tx.Exec(`DROP INDEX IF EXISTS idx_insider_tx_identity`).Error; err != nil {
+		return fmt.Errorf("drop legacy insider transaction identity index: %w", err)
+	}
+	if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_insider_tx_identity_v2 ON insider_transaction_snapshots(security_id, identity_sha256)`).Error; err != nil {
+		return fmt.Errorf("create insider transaction identity index: %w", err)
+	}
+	return nil
 }

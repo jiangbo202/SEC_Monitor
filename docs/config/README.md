@@ -23,6 +23,7 @@ The local control script reads environment variables before starting services.
 | `SMALL_CAP_LONGBRIDGE_ANALYST_RATING_ENABLED` | `true` | Whether to synchronise Longbridge analyst consensus snapshots after a small-cap workflow. |
 | `SMALL_CAP_LONGBRIDGE_ANALYST_RATING_REQUEST_BUDGET` | `20` | Total Longbridge analyst-consensus requests per workflow, shared by current candidates and enabled stock watch targets. |
 | `SMALL_CAP_LONGBRIDGE_ANALYST_RATING_TARGET_CHANGE_PCT` | `5` | Minimum percentage change in the consensus average target price that is considered a notification-worthy update. |
+| `SMALL_CAP_LONGBRIDGE_FUNDAMENTAL_REQUEST_INTERVAL_MS` | `1100` | Shared minimum interval for Longbridge company-profile and analyst-rating requests; rate-limited calls are retried once after the next slot. |
 | `TIINGO_API_TOKEN` | empty | Tiingo API token for the real small-cap price source. Keep it in your shell/profile or local process environment; do not commit it. |
 | `TIINGO_API_TOKENS` | empty | Comma-separated Tiingo tokens. Request budget is applied per token. |
 | `SMALL_CAP_TIINGO_BASE_URL` | `https://api.tiingo.com` | Tiingo API base URL. |

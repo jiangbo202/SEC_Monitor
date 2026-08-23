@@ -73,6 +73,134 @@ type SmallCapPolicyApplyResult struct {
 	Rescore SmallCapPolicyRescoreResult `json:"rescore"`
 }
 
+// RescoreActiveSmallCapPolicy publishes a new immutable prescreen batch when
+// the scoring engine version changed but the active policy values did not.
+// It reuses only frozen local evidence and never invokes an external provider.
+func RescoreActiveSmallCapPolicy(ctx context.Context, db *gorm.DB) (SmallCapPolicyRescoreResult, error) {
+	started := time.Now()
+	if db == nil || ctx == nil {
+		return SmallCapPolicyRescoreResult{}, errors.New("database and context are required")
+	}
+	active, err := GetActiveSmallCapPolicy(ctx, db)
+	if err != nil {
+		return SmallCapPolicyRescoreResult{}, err
+	}
+	data, err := loadSmallCapProjectionData(ctx, db)
+	if err != nil {
+		return SmallCapPolicyRescoreResult{}, err
+	}
+	result := SmallCapPolicyRescoreResult{SourceBatchID: data.base.BatchID, PublishedBatchID: data.base.BatchID}
+	var staleScores, totalScores int64
+	if err := db.WithContext(ctx).Model(&CandidateScoreSnapshot{}).Where("batch_id = ?", data.base.BatchID).Count(&totalScores).Error; err != nil {
+		return result, err
+	}
+	if err := db.WithContext(ctx).Model(&CandidateScoreSnapshot{}).
+		Where("batch_id = ? AND (scoring_version = '' OR scoring_version <> ?)", data.base.BatchID, DiscoveryScoringVersion).
+		Count(&staleScores).Error; err != nil {
+		return result, err
+	}
+	if totalScores == 0 {
+		staleScores++
+	}
+	result.Before, err = storedSmallCapPolicyCounts(ctx, db, data, active.Policy)
+	if err != nil {
+		return result, err
+	}
+	if staleScores == 0 {
+		result.After = result.Before
+		result.DurationMS = time.Since(started).Milliseconds()
+		return result, nil
+	}
+	projected, afterCounts := projectSmallCapPolicy(data, active.Policy)
+	result.After = afterCounts
+	now := time.Now().UTC()
+	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var running int64
+		if txErr := tx.Model(&DiscoverySyncRun{}).Where("status = ?", "running").Count(&running).Error; txErr != nil {
+			return txErr
+		}
+		if running > 0 {
+			return fmt.Errorf("%w: discovery sync is running", ErrSmallCapPolicyConflict)
+		}
+		currentPolicy, txErr := getActiveSmallCapPolicyTx(tx)
+		if txErr != nil {
+			return txErr
+		}
+		if currentPolicy.ID != active.ID {
+			return ErrSmallCapPolicyConflict
+		}
+		var pointer CurrentBatchPointer
+		if txErr := tx.First(&pointer, "kind = ?", BatchKindPrescreen).Error; txErr != nil {
+			return txErr
+		}
+		if pointer.BatchID != data.base.BatchID {
+			return ErrSmallCapPolicyConflict
+		}
+		batch, universeRows, scoreRows, providerRuns, txErr := buildDerivedSmallCapPolicyBatch(data, projected, active, now)
+		if txErr != nil {
+			return txErr
+		}
+		if txErr = tx.Create(&batch).Error; txErr != nil {
+			return txErr
+		}
+		if len(universeRows) > 0 {
+			if txErr = tx.CreateInBatches(universeRows, universeChunkSize).Error; txErr != nil {
+				return txErr
+			}
+		}
+		if len(scoreRows) > 0 {
+			if txErr = tx.CreateInBatches(scoreRows, universeChunkSize).Error; txErr != nil {
+				return txErr
+			}
+		}
+		if len(providerRuns) > 0 {
+			if txErr = tx.CreateInBatches(providerRuns, universeChunkSize).Error; txErr != nil {
+				return txErr
+			}
+		}
+		if txErr = persistCandidateSignalEvents(ctx, tx, batch, now); txErr != nil {
+			return fmt.Errorf("persist score-version candidate signal events: %w", txErr)
+		}
+		pointer = CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: batch.BatchID, UpdatedAt: now}
+		if txErr = tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "kind"}}, DoUpdates: clause.AssignmentColumns([]string{"batch_id", "updated_at"})}).Create(&pointer).Error; txErr != nil {
+			return txErr
+		}
+		result.PublishedBatchID = batch.BatchID
+		result.ScoredCount = len(scoreRows)
+		return nil
+	})
+	result.DurationMS = time.Since(started).Milliseconds()
+	return result, err
+}
+
+func storedSmallCapPolicyCounts(ctx context.Context, db *gorm.DB, data smallCapProjectionData, policy SmallCapPolicy) (SmallCapPolicyCounts, error) {
+	counts := SmallCapPolicyCounts{}
+	for _, row := range data.universe {
+		if row.SecurityID == 0 || row.QualityStatus != QualityStatusValid || row.MarketCapUSD <= 0 {
+			continue
+		}
+		counts.PricedUniverse++
+		if row.MarketCapUSD >= policy.MarketCapMinUSD && row.MarketCapUSD < policy.MarketCapMaxUSD {
+			counts.InMarketCapScope++
+		}
+	}
+	var rows []CandidateScoreSnapshot
+	if err := db.WithContext(ctx).Where("batch_id = ?", data.base.BatchID).Find(&rows).Error; err != nil {
+		return counts, err
+	}
+	for _, row := range rows {
+		switch row.Grade {
+		case CandidateGradeA:
+			counts.GradeA++
+		case CandidateGradeB:
+			counts.GradeB++
+		default:
+			counts.Excluded++
+		}
+	}
+	return counts, nil
+}
+
 type smallCapProjectionRow struct {
 	universe UniverseSnapshot
 	score    CandidateScoreSnapshot
@@ -490,7 +618,7 @@ func buildDerivedSmallCapPolicyBatch(data smallCapProjectionData, projected []sm
 	}
 	filtered := versions[:0]
 	for _, version := range versions {
-		if version.Source != "policy:small-cap" {
+		if version.Source != "policy:small-cap" && version.Source != "scoring:small-cap" {
 			filtered = append(filtered, version)
 		}
 	}
@@ -498,13 +626,16 @@ func buildDerivedSmallCapPolicyBatch(data smallCapProjectionData, projected []sm
 	if err != nil {
 		return UniverseBatch{}, nil, nil, nil, err
 	}
-	versions, err = normalizeSourceVersions(data.base.EffectiveDate, append(filtered, SourceVersion{
-		Source: "policy:small-cap", Version: fmt.Sprintf("v%d", policy.Version), SHA256: policy.ContentSHA256, EffectiveAt: effectiveAt,
-	})...)
+	rubricJSON, rubricSHA := candidateScoringRubricJSON(policy.Policy)
+	_ = rubricJSON
+	versions, err = normalizeSourceVersions(data.base.EffectiveDate, append(filtered,
+		SourceVersion{Source: "policy:small-cap", Version: fmt.Sprintf("v%d", policy.Version), SHA256: policy.ContentSHA256, EffectiveAt: effectiveAt},
+		SourceVersion{Source: "scoring:small-cap", Version: DiscoveryScoringVersion, SHA256: rubricSHA, EffectiveAt: effectiveAt},
+	)...)
 	if err != nil {
 		return UniverseBatch{}, nil, nil, nil, err
 	}
-	content := sha256.Sum256([]byte(data.base.ContentSHA256 + "\x00" + policy.ContentSHA256))
+	content := sha256.Sum256([]byte(data.base.ContentSHA256 + "\x00" + policy.ContentSHA256 + "\x00" + DiscoveryScoringVersion + "\x00" + rubricSHA))
 	contentSHA := hex.EncodeToString(content[:])
 	batchID, sourceJSON, err := batchIdentityWithPolicy(BatchKindPrescreen, data.base.EffectiveDate, versions, contentSHA, policy.ContentSHA256)
 	if err != nil {

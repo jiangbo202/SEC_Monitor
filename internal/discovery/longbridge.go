@@ -227,9 +227,10 @@ func (p *LongbridgePriceProvider) load(ctx context.Context, expected []Listing, 
 	}
 	sortPriceRecordsByExpected(records, expected)
 	priceDate := latestPriceRecordDate(records)
+	contentSHA := hashLongbridgePriceRecords(records)
 	result, err := validatePriceBatch(ctx, records, PriceValidationOptions{
 		Provider:                      p.options.Provider,
-		SourceVersion:                 p.options.Provider + ":" + priceDate.Format(time.DateOnly),
+		SourceVersion:                 longbridgePriceSourceVersion(p.options.Provider, priceDate, contentSHA),
 		EffectiveDate:                 target,
 		Now:                           p.options.Now(),
 		Calendar:                      p.options.Calendar,
@@ -239,7 +240,7 @@ func (p *LongbridgePriceProvider) load(ctx context.Context, expected []Listing, 
 	if err != nil {
 		return nil, ProviderResult{}, err
 	}
-	result.SHA256 = hashLongbridgePriceRecords(records)
+	result.SHA256 = contentSHA
 	return records, result, nil
 }
 
@@ -379,6 +380,10 @@ func hashLongbridgePriceRecords(records []PriceRecord) string {
 		_, _ = hash.Write([]byte(fmt.Sprintf("%s|%s|%d|%d|%d|%d|%d|%t\n", row.Symbol, row.TradeDate.Format(time.DateOnly), row.OpenMicros, row.HighMicros, row.LowMicros, row.CloseMicros, row.Volume, row.Adjusted)))
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func longbridgePriceSourceVersion(provider string, tradeDate time.Time, contentSHA string) string {
+	return strings.ToLower(strings.TrimSpace(provider)) + ":" + tradeDate.Format(time.DateOnly) + ":" + contentSHA
 }
 
 type longbridgeSDKClient struct{ quote *lbquote.QuoteContext }

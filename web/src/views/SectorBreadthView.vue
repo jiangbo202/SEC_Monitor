@@ -25,5 +25,5 @@ function changeClass(value?: number | null) { return Number(value) > 0 ? 'is-up'
 onMounted(load)
 </script>
 <style scoped>
-.page-header { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px }.page-header h2{margin:0}.page-header p,.summary-row p{color:var(--el-text-color-secondary);margin:7px 0 0}.summary-row{margin:18px 0}.summary-row small{display:block;color:var(--el-text-color-secondary)}.summary-row strong{display:block;margin-top:8px;font-size:24px}.is-up{color:var(--el-color-success)}.is-down{color:var(--el-color-danger)}
+.page-header { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:12px }.page-header h2{margin:0}.page-header p,.summary-row p{color:var(--el-text-color-secondary);margin:4px 0 0;font-size:12px}.summary-row{margin:12px 0}.summary-row small{display:block;color:var(--el-text-color-secondary)}.summary-row strong{display:block;margin-top:4px;font-size:22px}.is-up{color:var(--el-color-success)}.is-down{color:var(--el-color-danger)}
 </style>

@@ -5,12 +5,12 @@
         <h1>小盘股候选</h1>
         <p>基于公开 SEC 文件、财务指标、内幕交易和融资风险生成的研究候选列表。</p>
       </div>
-      <el-space wrap class="candidate-page-actions">
-        <el-button @click="openEligibilityCheck">检查小盘资格</el-button>
-        <el-button :loading="workflowLoading" type="primary" plain @click="runWorkflow">刷新候选工作流</el-button>
-        <el-button :loading="loading" @click="load">刷新列表</el-button>
+      <el-space wrap size="small" class="candidate-page-actions">
+        <el-button size="small" @click="openEligibilityCheck">检查资格</el-button>
+        <el-button size="small" :loading="workflowLoading" type="primary" plain @click="runWorkflow">刷新候选</el-button>
+        <el-button size="small" :loading="loading" @click="load">刷新列表</el-button>
         <el-dropdown trigger="click" @command="handleCandidateToolCommand">
-          <el-button>更多研究工具</el-button>
+          <el-button size="small">更多工具</el-button>
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="market">强制补齐收盘价</el-dropdown-item>
@@ -28,84 +28,154 @@
       </el-space>
     </div>
 
-    <el-card v-if="discoverySyncRun" shadow="never" class="discovery-sync-status-card">
-      <div class="discovery-sync-status-main">
-        <div class="discovery-sync-status-title">
-          <strong>最近候选同步</strong>
-          <el-tag :type="discoverySyncStatusTagType(discoverySyncRun.status)" effect="plain">
-            {{ discoverySyncStatusLabel(discoverySyncRun.status) }}
-          </el-tag>
-          <span>{{ discoverySyncPhaseLabel(discoverySyncRun.phase) }}</span>
-        </div>
-        <div class="discovery-sync-status-meta">
-          <span>开始：{{ formatDateTime(discoverySyncRun.started_at) }}</span>
-          <span v-if="discoverySyncRun.completed_at">结束：{{ formatDateTime(discoverySyncRun.completed_at) }}</span>
-          <span>耗时：{{ discoverySyncDuration(discoverySyncRun) }}</span>
-          <span v-if="discoverySyncRun.status === 'running'">最近心跳：{{ formatDateTime(discoverySyncRun.updated_at) }}</span>
-          <el-button link type="primary" @click="loadDiscoverySyncStatus">刷新状态</el-button>
-        </div>
+    <el-card v-if="discoverySyncRun || discoveryStorage || health" shadow="never" class="operations-card">
+      <div class="operations-summary-grid">
+        <section v-if="discoverySyncRun" class="operations-summary-item is-sync">
+          <div class="operations-summary-heading">
+            <span>候选同步</span>
+            <el-button link type="primary" size="small" @click="loadDiscoverySyncStatus">刷新</el-button>
+          </div>
+          <div class="operations-summary-value">
+            <span class="status-dot" :class="`is-${discoverySyncRun.status}`"></span>
+            <strong>{{ discoverySyncStatusLabel(discoverySyncRun.status) }}</strong>
+            <span>{{ discoverySyncPhaseLabel(discoverySyncRun.phase) }}</span>
+          </div>
+          <div class="operations-summary-meta">
+            <span>{{ discoverySyncRun.status === 'running' ? '已运行' : '耗时' }} {{ discoverySyncDuration(discoverySyncRun) }}</span>
+            <span v-if="discoverySyncRun.completed_at">完成于 {{ formatDateTime(discoverySyncRun.completed_at) }}</span>
+            <span v-else>开始于 {{ formatDateTime(discoverySyncRun.started_at) }}</span>
+          </div>
+        </section>
+
+        <section v-if="discoveryStorage" class="operations-summary-item is-storage">
+          <div class="operations-summary-heading">
+            <span>本地存储</span>
+            <el-button link type="primary" size="small" :loading="cacheCleanupLoading" @click="cleanupDiscoveryCache">清理缓存</el-button>
+          </div>
+          <div class="operations-summary-value">
+            <span class="status-dot" :class="discoveryStorage.status === 'ok' ? 'is-success' : discoveryStorage.status === 'error' ? 'is-failed' : 'is-warning'"></span>
+            <strong>研究库 {{ formatBytes(discoveryStorage.database_bytes) }}</strong>
+            <span>SEC 缓存 {{ formatBytes(discoveryStorage.cache_bytes) }}</span>
+          </div>
+          <div class="operations-summary-meta">
+            <span>{{ discoveryStorage.cache_files.toLocaleString() }} 个缓存文件</span>
+            <span>{{ discoveryStorage.issues.length ? `${discoveryStorage.issues.length} 项待处理` : '运行状态正常' }}</span>
+          </div>
+        </section>
+
+        <section v-if="health" class="operations-summary-item is-health">
+          <div class="operations-summary-heading">
+            <span>数据健康</span>
+            <el-button link type="primary" size="small" @click="operationalDetailsExpanded = !operationalDetailsExpanded">
+              {{ operationalDetailsExpanded ? '收起详情' : '查看详情' }}
+            </el-button>
+          </div>
+          <div class="operations-summary-value">
+            <span class="status-dot" :class="health.status === 'ok' ? 'is-success' : 'is-warning'"></span>
+            <strong>{{ healthStatusLabel(health.status) }}</strong>
+            <span>候选 {{ health.total_candidates }}</span>
+          </div>
+          <div class="operations-summary-meta">
+            <span>优先 {{ health.ready_candidates ?? 0 }}</span>
+            <span>观察 {{ health.research_only_candidates ?? 0 }}</span>
+            <span>暂缓 {{ health.blocked_candidates ?? 0 }}</span>
+            <span v-if="health.issues.length">{{ health.issues.length }} 项提示</span>
+          </div>
+        </section>
       </div>
-      <el-alert
-        v-if="discoverySyncRun.error_message"
-        type="error"
-        :closable="false"
-        show-icon
-        :title="`同步失败：${discoverySyncRun.error_message}`"
-        class="discovery-sync-error"
-      />
+
+      <div v-if="discoverySyncRun?.status === 'running' && discoverySyncActiveStep" class="discovery-sync-progress">
+        <div class="discovery-sync-progress-heading">
+          <span>{{ discoverySyncStepLabel(discoverySyncActiveStep.phase) }}：{{ discoverySyncActiveStep.message }}</span>
+          <strong v-if="discoverySyncActiveStep.total_count > 0">
+            {{ discoverySyncActiveStep.record_count.toLocaleString() }} / {{ discoverySyncActiveStep.total_count.toLocaleString() }}
+          </strong>
+        </div>
+        <el-progress
+          v-if="discoverySyncActiveStep.total_count > 0"
+          :percentage="discoverySyncProgressPercentage"
+          :stroke-width="12"
+          :status="discoverySyncActiveStep.status === 'completed' ? 'success' : undefined"
+        />
+        <el-progress v-else :percentage="100" :show-text="false" :indeterminate="true" :duration="3" :stroke-width="8" />
+        <small>最近进度：{{ formatDateTime(discoverySyncActiveStep.updated_at) }}</small>
+      </div>
+      <div v-if="discoverySyncRun?.error_message" class="operations-inline-error">
+        <strong>同步失败</strong>
+        <span>{{ discoverySyncRun.error_message }}</span>
+      </div>
+
+      <el-collapse-transition>
+        <div v-show="operationalDetailsExpanded" class="operations-details">
+          <div v-if="discoveryStorage" class="operations-detail-group">
+            <strong>存储与缓存</strong>
+            <span>{{ discoveryStorage.issues.length ? discoveryStorage.issues.join('；') : 'SQLite 已启用 WAL 与写锁等待；清理缓存不会删除候选、评分、公告或研究记录。' }}</span>
+          </div>
+          <div v-if="health" class="operations-detail-group">
+            <strong>证据覆盖</strong>
+            <span>财务缺失 {{ health.missing_financials }} · 内幕源 {{ healthInsiderDataLabel(health.insider_data_status) }} · 内幕覆盖 {{ health.candidates_with_insider_coverage ?? 0 }}/{{ health.total_candidates }} · 内幕记录 {{ health.candidates_with_insider_records }}/{{ health.total_candidates }} · SEC 公告 {{ health.candidates_with_recent_filings }}/{{ health.total_candidates }} · 合格买入 {{ health.qualified_insider_candidates }}</span>
+          </div>
+          <div v-if="health" class="operations-detail-group">
+            <strong>行情与风险</strong>
+            <span>当日价格 {{ health.current_price_candidates }} · 前一交易日 {{ health.fallback_price_candidates }} · 缺失/过期 {{ health.missing_price_candidates + health.stale_price_candidates }} · 缺市值 {{ health.missing_market_cap }} · 活跃风险 {{ health.active_risk_events }}</span>
+          </div>
+          <div v-if="health?.issues.length" class="operations-detail-group is-warning">
+            <strong>健康提示</strong>
+            <span>{{ health.issues.map(formatHealthIssue).join('；') }}</span>
+          </div>
+        </div>
+      </el-collapse-transition>
     </el-card>
-
-    <el-alert
-      v-if="discoveryStorage"
-      :type="discoveryStorage.status === 'ok' ? 'info' : discoveryStorage.status === 'error' ? 'error' : 'warning'"
-      :closable="false"
-      show-icon
-      class="discovery-storage-alert"
-    >
-      <template #title>
-        <span>本地存储：研究库 {{ formatBytes(discoveryStorage.database_bytes) }} · SEC 缓存 {{ formatBytes(discoveryStorage.cache_bytes) }}（{{ discoveryStorage.cache_files.toLocaleString() }} 个文件）</span>
-        <el-button link type="primary" :loading="cacheCleanupLoading" @click="cleanupDiscoveryCache">清理过期缓存</el-button>
-      </template>
-      <template #default>
-        {{ discoveryStorage.issues.length ? discoveryStorage.issues.join('；') : 'SQLite 已启用 WAL 与写锁等待；过期缓存清理不会删除候选、评分、公告或研究记录。' }}
-      </template>
-    </el-alert>
-
-    <el-alert
-      v-if="health"
-      :type="health.status === 'ok' ? 'success' : health.status === 'missing' ? 'warning' : 'error'"
-      :closable="false"
-      show-icon
-      class="health-alert"
-      :title="`数据健康：${healthStatusLabel(health.status)}｜候选 ${health.total_candidates}｜可行动 ${health.ready_candidates ?? 0}｜待核验 ${health.research_only_candidates ?? 0}｜已阻断 ${health.blocked_candidates ?? 0}｜财务指标不可用 ${health.missing_financials}｜内幕源 ${healthInsiderDataLabel(health.insider_data_status)}｜内幕覆盖 ${health.candidates_with_insider_coverage ?? 0}/${health.total_candidates}｜内幕记录 ${health.candidates_with_insider_records}/${health.total_candidates}｜SEC 公告 ${health.candidates_with_recent_filings}/${health.total_candidates}｜合格买入 ${health.qualified_insider_candidates}｜批次价格当日 ${health.current_price_candidates}｜前一交易日 ${health.fallback_price_candidates}｜缺/过期 ${health.missing_price_candidates + health.stale_price_candidates}｜缺市值 ${health.missing_market_cap}｜活跃风险 ${health.active_risk_events}`"
-      :description="health.issues.length ? health.issues.map(formatHealthIssue).join('；') : '当前候选证据链完整度正常。'"
-    />
 
     <el-card v-if="criteria" shadow="never" class="criteria-card">
       <div class="criteria-heading">
-        <div>
+        <div class="criteria-title">
           <strong>当前选股口径</strong>
-          <span>按当前评分规则筛选；研究用途，不构成投资建议。</span>
+          <span>用于候选范围与研究优先级，不代表投资建议</span>
         </div>
-        <el-space>
-          <el-tag type="info" effect="plain">{{ criteria.scoring_version }}</el-tag>
+        <el-space wrap class="criteria-actions">
+          <span class="criteria-version">{{ criteria.scoring_version }}</span>
           <el-button size="small" plain @click="scoringRubricVisible = true">查看评分卡</el-button>
+          <el-button size="small" plain :loading="rescoreLoading" @click="rescoreCurrentCandidates">按当前规则重评分</el-button>
           <el-button size="small" type="primary" plain @click="policyDialogVisible = true">调整范围</el-button>
         </el-space>
       </div>
-      <el-space wrap class="criteria-tags">
-        <el-tag effect="plain">候选池：市值 {{ formatCriteriaUSD(criteria.market_cap_min_usd) }} – &lt;{{ formatCriteriaUSD(criteria.b_market_cap_max_exclusive_usd) }}</el-tag>
-        <el-tooltip placement="top" :content="criteria.revenue_growth_selection"><el-tag type="success" effect="plain">A级：市值 &lt;{{ formatCriteriaUSD(criteria.a_market_cap_max_exclusive_usd) }} · 收入 &gt;{{ criteria.a_revenue_growth_min_exclusive_pct }}%</el-tag></el-tooltip>
-        <el-tooltip placement="top" :content="`${criteria.a_runway_min_months} 个月以上现金 runway；${criteria.qualified_insider_requirement}；${criteria.active_capital_risk_requirement}`"><el-tag type="success" effect="plain">A级：现金 ≥{{ criteria.a_runway_min_months }}月 · {{ criteria.insider_lookback_days }}日内幕买入 · 无阻断</el-tag></el-tooltip>
-        <el-tooltip placement="top" :content="criteria.revenue_growth_selection"><el-tag type="warning" effect="plain">B级：市值 &lt;{{ formatCriteriaUSD(criteria.b_market_cap_max_exclusive_usd) }} · 收入 &gt;{{ criteria.b_revenue_growth_min_exclusive_pct }}% · 赛道 ≥{{ criteria.b_min_sector_score }}/10 · 无B级阻断</el-tag></el-tooltip>
-      </el-space>
-      <div class="criteria-note">收入增长：{{ criteria.revenue_growth_selection }}。风险阻断：{{ criteria.active_capital_risk_requirement }}。{{ criteria.scoring_rubric.disclaimer }}</div>
-      <div class="criteria-state-legend">
-        <span>状态说明：</span>
-        <el-tooltip content="关键财务、市场和证据条件已满足，可进入人工研究或通知流程。"><el-tag type="success" effect="plain">可行动</el-tag></el-tooltip>
-        <el-tooltip content="评分可供研究，但财务时效、内幕覆盖或身份等证据仍需人工确认；不会默认通知。"><el-tag type="warning" effect="plain">待核验</el-tag></el-tooltip>
-        <el-tooltip content="存在融资、反向拆股、持续经营等规则定义的阻断风险，不进入 A/B 推荐。"><el-tag type="danger" effect="plain">已阻断</el-tag></el-tooltip>
+      <div class="criteria-summary-grid">
+        <div class="criteria-summary-item is-pool">
+          <span>候选范围</span>
+          <strong>{{ formatCriteriaUSD(criteria.market_cap_min_usd) }} – &lt;{{ formatCriteriaUSD(criteria.b_market_cap_max_exclusive_usd) }}</strong>
+        </div>
+        <el-tooltip placement="top" :content="criteria.revenue_growth_selection">
+          <div class="criteria-summary-item is-ready">
+            <span>优先研究门槛</span>
+            <strong>&lt;{{ formatCriteriaUSD(criteria.a_market_cap_max_exclusive_usd) }} · 收入 ≥{{ criteria.a_revenue_growth_min_pct }}% · 现金 ≥{{ criteria.a_runway_min_months }}月 · 无阻断</strong>
+          </div>
+        </el-tooltip>
+        <el-tooltip placement="top" :content="criteria.revenue_growth_selection">
+          <div class="criteria-summary-item is-watch">
+            <span>继续观察门槛</span>
+            <strong>&lt;{{ formatCriteriaUSD(criteria.b_market_cap_max_exclusive_usd) }} · 收入 ≥{{ criteria.b_revenue_growth_min_pct }}% · 无 B 型阻断</strong>
+          </div>
+        </el-tooltip>
       </div>
+      <div class="criteria-footer">
+        <div class="criteria-state-legend">
+          <span>证据状态</span>
+          <el-tooltip content="行情、财务、内幕覆盖和业务模型证据已完整。"><span class="criteria-state is-success">证据完整</span></el-tooltip>
+          <el-tooltip content="证据存在过期、部分覆盖或待确认项。"><span class="criteria-state is-warning">待核验</span></el-tooltip>
+          <el-tooltip content="证据、资本风险和流动性条件在候选表中独立展示。"><span class="criteria-state is-info">与资本风险独立</span></el-tooltip>
+        </div>
+        <el-button link type="primary" size="small" @click="criteriaDetailsExpanded = !criteriaDetailsExpanded">
+          {{ criteriaDetailsExpanded ? '收起规则说明' : '展开规则说明' }}
+        </el-button>
+      </div>
+      <el-collapse-transition>
+        <div v-show="criteriaDetailsExpanded" class="criteria-details">
+          <p>收入增长：{{ criteria.revenue_growth_selection }}。</p>
+          <p>风险阻断：{{ criteria.active_capital_risk_requirement }}。</p>
+          <p>内幕买入与赛道评分只影响排序，不是硬门槛。{{ criteria.scoring_rubric.disclaimer }}</p>
+        </div>
+      </el-collapse-transition>
     </el-card>
 
     <SmallCapPolicyDialog
@@ -178,120 +248,110 @@
       </el-table>
     </el-card>
 
-    <div v-if="overview" class="overview-grid">
-      <el-card shadow="never" class="overview-card">
-        <span class="overview-label">当前候选</span>
+    <el-card v-if="overview" shadow="never" class="overview-strip">
+      <div class="overview-metric is-primary">
+        <span>当前候选</span>
         <strong>{{ overview.total }}</strong>
-        <small>A {{ overview.grade_counts?.A || 0 }} / B {{ overview.grade_counts?.B || 0 }}</small>
-      </el-card>
-      <el-card shadow="never" class="overview-card">
-        <span class="overview-label">可行动</span>
+        <small>强信号 {{ overview.grade_counts?.A || 0 }} · 成长观察 {{ overview.grade_counts?.B || 0 }}</small>
+      </div>
+      <div class="overview-metric is-success">
+        <span>优先研究</span>
         <strong>{{ health?.ready_candidates ?? 0 }}</strong>
-        <small>关键证据完整，可进入默认通知</small>
-      </el-card>
-      <el-card shadow="never" class="overview-card">
-        <span class="overview-label">待核验</span>
+        <small>关键证据完整</small>
+      </div>
+      <div class="overview-metric is-warning">
+        <span>继续观察</span>
         <strong>{{ health?.research_only_candidates ?? 0 }}</strong>
-        <small>基本面可研究，关键证据仍待补齐</small>
-      </el-card>
-      <el-card shadow="never" class="overview-card">
-        <span class="overview-label">行情待补偿</span>
+        <small>仍有证据待补齐</small>
+      </div>
+      <div class="overview-metric" :class="{ 'is-attention': (health?.stale_price_candidates || 0) + (health?.missing_price_candidates || 0) > 0 }">
+        <span>行情待补偿</span>
         <strong>{{ (health?.stale_price_candidates || 0) + (health?.missing_price_candidates || 0) }}</strong>
-        <small>过期 {{ health?.stale_price_candidates || 0 }} / 缺失 {{ health?.missing_price_candidates || 0 }}</small>
-      </el-card>
-      <el-card shadow="never" class="overview-card">
-        <span class="overview-label">变化</span>
+        <small>过期 {{ health?.stale_price_candidates || 0 }} · 缺失 {{ health?.missing_price_candidates || 0 }}</small>
+      </div>
+      <div class="overview-metric">
+        <span>本批变化</span>
         <strong>{{ overview.change_counts?.new || 0 }}</strong>
-        <small>改善 {{ overview.change_counts?.improved || 0 }} / 退出 {{ overview.change_counts?.exited || 0 }}</small>
-      </el-card>
-      <el-card shadow="never" class="overview-card overview-wide">
-        <span class="overview-label">主要赛道</span>
+        <small>改善 {{ overview.change_counts?.improved || 0 }} · 退出 {{ overview.change_counts?.exited || 0 }}</small>
+      </div>
+      <div class="overview-metric is-sector">
+        <span>主要赛道</span>
         <strong>{{ topSectorLabel }}</strong>
         <small>{{ topSectorCount }} 只</small>
-      </el-card>
-    </div>
+      </div>
+    </el-card>
 
     <el-card shadow="never" class="filter-card">
-      <div class="quick-filter-row">
-        <span class="quick-filter-label">快捷筛选</span>
-        <el-tooltip content="默认显示可行动与待核验候选；已阻断标的需手动查看。" placement="top">
-          <el-button :type="quickFilterActive('default_candidates') ? 'primary' : 'default'" plain @click="showDefaultCandidates">
-            默认候选
+      <div class="filter-toolbar">
+        <div class="quick-filter-row">
+          <span class="quick-filter-label">快捷筛选</span>
+          <el-tooltip content="默认显示优先研究与继续观察候选；暂缓标的需手动查看。" placement="top">
+            <el-button size="small" :type="quickFilterActive('default_candidates') ? 'primary' : 'default'" plain @click="showDefaultCandidates">默认候选</el-button>
+          </el-tooltip>
+          <el-button size="small" :type="quickFilterActive('actionable') ? 'primary' : 'default'" plain @click="setReadinessFilter('ready')">优先研究</el-button>
+          <el-button size="small" :type="quickFilterActive('verification') ? 'primary' : 'default'" plain @click="setReadinessFilter('research_only')">继续观察</el-button>
+          <el-button size="small" :type="quickFilterActive('blocked') ? 'primary' : 'default'" plain @click="setReadinessFilter('blocked')">暂缓</el-button>
+          <el-button size="small" :type="quickFilterActive('improved') ? 'primary' : 'default'" plain @click="toggleQuickFilter('improved')">改善</el-button>
+          <el-button size="small" :type="quickFilterActive('upcoming_earnings') ? 'primary' : 'default'" plain @click="toggleQuickFilter('upcoming_earnings')">
+            即将财报 <el-badge :value="upcomingEarningsCount" :hidden="upcomingEarningsCount === 0" class="quick-filter-badge" />
           </el-button>
-        </el-tooltip>
-        <el-button :type="quickFilterActive('actionable') ? 'primary' : 'default'" plain @click="setReadinessFilter('ready')">
-          可行动
-        </el-button>
-        <el-button :type="quickFilterActive('verification') ? 'primary' : 'default'" plain @click="setReadinessFilter('research_only')">
-          待核验
-        </el-button>
-        <el-button :type="quickFilterActive('blocked') ? 'primary' : 'default'" plain @click="setReadinessFilter('blocked')">
-          已阻断
-        </el-button>
-        <el-button :type="quickFilterActive('improved') ? 'primary' : 'default'" plain @click="toggleQuickFilter('improved')">
-          改善
-        </el-button>
-        <el-button :type="quickFilterActive('upcoming_earnings') ? 'primary' : 'default'" plain @click="toggleQuickFilter('upcoming_earnings')">
-          即将财报 <el-badge :value="upcomingEarningsCount" :hidden="upcomingEarningsCount === 0" class="quick-filter-badge" />
-        </el-button>
-        <el-button :type="quickFilterActive('followed') ? 'primary' : 'default'" plain @click="toggleQuickFilter('followed')">
-          已关注
-        </el-button>
-        <el-button :type="quickFilterActive('exclude_low_liquidity') ? 'primary' : 'default'" plain @click="toggleQuickFilter('exclude_low_liquidity')">
-          排除低流动性
-        </el-button>
-        <el-tooltip content="只显示价格过期、缺失、日期异常或尚未能校验的候选；前一交易日回退价仍视为可用。" placement="top">
-          <el-button :type="quickFilterActive('price_attention') ? 'primary' : 'default'" plain @click="toggleQuickFilter('price_attention')">
-            行情待补偿
-          </el-button>
-        </el-tooltip>
-        <span class="table-view-label">列表字段</span>
-        <el-radio-group v-model="candidateTableView" size="small" aria-label="候选列表字段显示方式" @change="load">
-          <el-radio-button value="compact">紧凑</el-radio-button>
-          <el-radio-button value="full">完整</el-radio-button>
-        </el-radio-group>
-        <span class="current-list-count">当前显示 {{ total }} / {{ overview?.total || total }} 只（{{ candidateScopeLabel }}）</span>
-        <span v-if="supplementalLoading" class="candidate-supplemental-loading">正在更新健康与运行状态…</span>
+          <el-button size="small" :type="quickFilterActive('followed') ? 'primary' : 'default'" plain @click="toggleQuickFilter('followed')">已关注</el-button>
+          <el-button size="small" :type="quickFilterActive('exclude_low_liquidity') ? 'primary' : 'default'" plain @click="toggleQuickFilter('exclude_low_liquidity')">排除低流动性</el-button>
+          <el-tooltip content="只显示价格过期、缺失、日期异常或尚未能校验的候选；前一交易日回退价仍视为可用。" placement="top">
+            <el-button size="small" :type="quickFilterActive('price_attention') ? 'primary' : 'default'" plain @click="toggleQuickFilter('price_attention')">行情待补偿</el-button>
+          </el-tooltip>
+        </div>
+        <div class="filter-toolbar-meta">
+          <span class="current-list-count">显示 <strong>{{ total }}</strong> / {{ overview?.total || total }} · {{ candidateScopeLabel }}</span>
+          <span v-if="supplementalLoading" class="candidate-supplemental-loading">更新中…</span>
+        </div>
       </div>
-      <el-form :inline="true" :model="filters">
-        <el-form-item label="等级">
-          <el-select v-model="filters.grade" clearable style="width: 120px">
-            <el-option label="A级" value="A" />
-            <el-option label="B级" value="B" />
-            <el-option label="排除池" value="excluded" />
-          </el-select>
-        </el-form-item>
+      <el-form :inline="true" :model="filters" size="small" class="candidate-filter-form">
         <el-form-item label="Ticker">
           <el-input v-model="filters.ticker" clearable placeholder="ACME" style="width: 140px" @keyup.enter="search" />
         </el-form-item>
         <el-form-item label="赛道分类">
-          <el-select v-model="filters.sector_category" clearable filterable style="width: 180px">
+          <el-select
+            v-model="filters.sector_category"
+            clearable
+            filterable
+            fit-input-width
+            popper-class="candidate-sector-select-popper"
+            style="width: 180px"
+          >
             <el-option v-for="category in sectorCategoryOptions" :key="category" :label="category" :value="category" />
           </el-select>
         </el-form-item>
-        <el-form-item label="证据状态">
-          <el-select v-model="filters.research_readiness" clearable style="width: 140px">
-            <el-option label="可行动" value="ready" />
-            <el-option label="待核验" value="research_only" />
-            <el-option label="已阻断" value="blocked" />
+        <el-form-item label="研究结论">
+          <el-select fit-input-width v-model="filters.research_readiness" clearable style="width: 140px">
+            <el-option label="优先研究" value="ready" />
+            <el-option label="继续观察" value="research_only" />
+            <el-option label="暂缓" value="blocked" />
           </el-select>
         </el-form-item>
         <el-form-item label="技术信号">
-          <el-select v-model="filters.technical_signal" clearable style="width: 170px">
+          <el-select fit-input-width v-model="filters.technical_signal" clearable style="width: 170px">
             <el-option label="上穿 20 日均线" value="cross_above_ma20" />
             <el-option label="突破 20 日最高收盘价" value="breakout_20d_high" />
             <el-option label="放量突破" value="volume_backed_breakout" />
           </el-select>
         </el-form-item>
         <template v-if="advancedFiltersVisible">
-          <el-form-item label="A级合格">
-            <el-select v-model="filters.eligible_a" clearable style="width: 120px">
+          <el-form-item label="入选画像">
+            <el-select fit-input-width v-model="filters.grade" clearable style="width: 150px">
+              <el-option label="强信号画像（A）" value="A" />
+              <el-option label="成长观察画像（B）" value="B" />
+              <el-option label="排除池" value="excluded" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="A型合格">
+            <el-select fit-input-width v-model="filters.eligible_a" clearable style="width: 120px">
               <el-option label="是" value="true" />
               <el-option label="否" value="false" />
             </el-select>
           </el-form-item>
-          <el-form-item label="B级合格">
-            <el-select v-model="filters.eligible_b" clearable style="width: 120px">
+          <el-form-item label="B型合格">
+            <el-select fit-input-width v-model="filters.eligible_b" clearable style="width: 120px">
               <el-option label="是" value="true" />
               <el-option label="否" value="false" />
             </el-select>
@@ -304,7 +364,7 @@
             <span class="filter-suffix">%</span>
           </el-form-item>
           <el-form-item label="价格新鲜度">
-            <el-select v-model="filters.price_freshness" clearable style="width: 170px">
+            <el-select fit-input-width v-model="filters.price_freshness" clearable style="width: 170px">
               <el-option label="最近已收盘交易日" value="current" />
               <el-option label="前一交易日回退" value="previous_trading_day" />
               <el-option label="需要补偿" value="attention" />
@@ -319,33 +379,16 @@
       </el-form>
     </el-card>
 
-    <el-table :data="rows" v-loading="loading" border empty-text="暂无候选" :default-sort="{ prop: 'total_score', order: 'descending' }" :size="candidateTableView === 'compact' ? 'small' : 'default'" :class="{ 'candidate-table-compact': candidateTableView === 'compact' }" @sort-change="onSortChange">
-      <el-table-column prop="grade" label="等级" width="90" align="center">
+    <el-table :data="rows" v-loading="loading" border empty-text="暂无候选" :default-sort="{ prop: 'total_score', order: 'descending' }" :size="candidateTableView === 'compact' ? 'small' : 'default'" class="candidate-table" :class="{ 'candidate-table-compact': candidateTableView === 'compact' }" @sort-change="onSortChange">
+      <el-table-column prop="ticker" label="Ticker" :width="candidateTableView === 'compact' ? 92 : 128" sortable="custom">
         <template #default="{ row }">
-          <el-tag :type="gradeTagType(row.grade)" effect="dark">{{ gradeLabel(row.grade) }}</el-tag>
+          <div class="candidate-ticker-cell">
+            <strong>{{ row.ticker }}</strong>
+            <el-icon v-if="row.followed" class="candidate-followed-dot" aria-label="已关注"><StarFilled /></el-icon>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column label="证据状态" width="96" align="center">
-        <template #default="{ row }">
-          <el-tooltip placement="top" effect="dark">
-            <template #content>
-              <div class="metric-tooltip">
-                <div v-for="reason in readinessTooltipLines(row)" :key="reason">{{ reason }}</div>
-              </div>
-            </template>
-            <el-tag :type="readinessTagType(row.research_readiness?.status)" effect="plain">{{ readinessLabel(row.research_readiness?.status) }}</el-tag>
-          </el-tooltip>
-        </template>
-      </el-table-column>
-      <el-table-column prop="ticker" label="Ticker" width="128" sortable="custom">
-        <template #default="{ row }">
-          <el-space :size="4">
-            <span>{{ row.ticker }}</span>
-            <el-tag v-if="row.followed" size="small" type="warning" effect="plain">关注</el-tag>
-          </el-space>
-        </template>
-      </el-table-column>
-      <el-table-column prop="total_score" label="总分" width="90" align="right" sortable="custom">
+      <el-table-column prop="total_score" label="总分" :width="candidateTableView === 'compact' ? 66 : 90" align="right" sortable="custom">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -358,15 +401,61 @@
                 <div class="score-reason"><span>股本稀释（满分 10）</span><strong>{{ row.dilution_risk_score }}</strong></div>
                 <div class="score-reason"><span>赛道空间（满分 10）</span><strong>{{ row.sector_score }}</strong></div>
                 <div class="score-tooltip-total"><span>合计</span><strong>{{ row.total_score }} / 100</strong></div>
-                <div class="score-tooltip-note">等级：{{ gradeLabel(row.grade) }}；评分有效日：{{ formatDate(row.score_effective_date) }}</div>
+                <div class="score-tooltip-note">入选画像：{{ gradeLabel(row.grade) }}；评分有效日：{{ formatDate(row.score_effective_date) }}</div>
                 <div v-if="row.business_model?.revenue_score_cap_reason" class="score-tooltip-note">业务模型校准：{{ row.business_model.revenue_score_cap_reason }}</div>
               </div>
             </template>
-            <span class="metric-help">{{ row.total_score }}</span>
+            <span class="metric-help candidate-score">{{ row.total_score }}</span>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="review_priority_score" label="短线复核" width="110" align="right" sortable="custom">
+      <el-table-column label="研究结论" :width="candidateTableView === 'full' ? 210 : undefined" :min-width="candidateTableView === 'compact' ? 248 : undefined" align="left">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <div v-for="line in researchDecisionTooltipLines(row)" :key="line">{{ line }}</div>
+              </div>
+            </template>
+            <div class="research-decision-cell">
+              <template v-if="candidateTableView === 'compact'">
+                <span class="research-decision-label" :class="`is-${row.research_readiness?.status || 'unknown'}`">
+                  <el-icon aria-hidden="true"><SuccessFilled /></el-icon>{{ readinessLabel(row.research_readiness?.status) }}
+                </span>
+              </template>
+              <el-tag v-else :type="readinessTagType(row.research_readiness?.status)" effect="dark">{{ readinessLabel(row.research_readiness?.status) }}</el-tag>
+              <span>{{ researchDecisionSummary(row) }}</span>
+            </div>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column label="证据" :width="candidateTableView === 'compact' ? 88 : 116" align="center">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <div v-for="reason in evidenceTooltipLines(row)" :key="reason">{{ reason }}</div>
+              </div>
+            </template>
+            <span v-if="candidateTableView === 'compact'" class="candidate-state-text" :class="`is-${evidenceTagType(row.evidence_completeness?.status)}`">{{ evidenceLabel(row.evidence_completeness?.status) }}</span>
+            <el-tag v-else :type="evidenceTagType(row.evidence_completeness?.status)" effect="plain">{{ evidenceLabel(row.evidence_completeness?.status) }}</el-tag>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column label="资本风险" :width="candidateTableView === 'compact' ? 100 : 110" align="center">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip candidate-risk-tooltip">
+                <div v-for="(line, index) in candidateRiskTooltipLines(row)" :key="`${index}-${line}`">{{ line }}</div>
+              </div>
+            </template>
+            <span v-if="candidateTableView === 'compact'" class="candidate-state-text" :class="`is-${candidateRiskTagType(row)}`">{{ candidateRiskLabel(row) }}</span>
+            <el-tag v-else :type="candidateRiskTagType(row)" effect="plain">{{ candidateRiskLabel(row) }}</el-tag>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column prop="review_priority_score" label="短线复核" :width="candidateTableView === 'compact' ? 92 : 110" align="right" sortable="custom">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -387,6 +476,24 @@
               </div>
             </template>
             <span class="metric-help">{{ row.review_priority_score ?? '-' }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column v-if="candidateTableView === 'compact'" label="技术信号" width="128">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div class="metric-tooltip">
+                <template v-if="row.technical?.status === 'ready'">
+                  <div>收盘价：{{ formatPrice(row.technical.close_usd, 'USD') }}</div>
+                  <div>MA20：{{ formatPrice(row.technical.ma20_usd, 'USD') }}（{{ formatPerformance(row.technical.distance_to_ma20_pct) }}）</div>
+                  <div>前 20 日最高收盘价：{{ formatPrice(row.technical.prior_20d_high_usd, 'USD') }}（{{ formatPerformance(row.technical.distance_to_20d_high_pct) }}）</div>
+                  <div>量比：{{ formatRatio(row.technical.volume_ratio_20) }}</div>
+                </template>
+                <div v-else>{{ technicalStatusDescription(row.technical) }}</div>
+              </div>
+            </template>
+            <span class="compact-technical-signal" :class="compactTechnicalSignalType(row)">{{ compactTechnicalSignal(row) }}</span>
           </el-tooltip>
         </template>
       </el-table-column>
@@ -417,21 +524,21 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="market_cap_usd" label="市值" width="130" align="right" sortable="custom">
+      <el-table-column prop="market_cap_usd" label="市值" :width="candidateTableView === 'compact' ? 106 : 130" align="right" sortable="custom">
         <template #default="{ row }">
           <el-tooltip :content="`用于评分的市值快照；评分有效日：${formatDate(row.score_effective_date)}`" placement="top">
             <span class="metric-help">{{ formatUSD(row.market_cap_usd) }}</span>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="price_close_usd" label="价格" width="100" align="right" sortable="custom">
+      <el-table-column prop="price_close_usd" label="价格" :width="candidateTableView === 'compact' ? 86 : 100" align="right" sortable="custom">
         <template #default="{ row }">
           <el-tooltip :content="priceEvidenceTooltip(row)" placement="top">
             <span class="metric-help">{{ formatPrice(row.price_close_usd, row.price_currency) }}</span>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="price_volume" label="成交量" width="120" align="right" sortable="custom">
+      <el-table-column prop="price_volume" label="成交量" :width="candidateTableView === 'compact' ? 82 : 120" align="right" sortable="custom">
         <template #default="{ row }">{{ formatVolume(row.price_volume) }}</template>
       </el-table-column>
       <el-table-column v-if="candidateTableView === 'full'" label="市场质量" width="120" align="right">
@@ -449,7 +556,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column v-if="candidateTableView === 'full'" label="可交易性" width="120">
+      <el-table-column v-if="candidateTableView === 'full'" label="流动性条件" width="120">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content><div class="metric-tooltip"><div v-for="reason in investabilityTooltipLines(row.investability)" :key="reason">{{ reason }}</div></div></template>
@@ -465,7 +572,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="技术信号" min-width="170">
+      <el-table-column v-if="candidateTableView === 'full'" label="技术信号" min-width="170">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -491,7 +598,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="交易计划" min-width="130">
+      <el-table-column v-if="candidateTableView === 'full'" label="交易计划" min-width="130">
         <template #default="{ row }">
           <el-tooltip :content="tradeSetupSummary(row.technical)" placement="top">
             <el-tag :type="tradeSetupTagType(row.technical?.trade_setup?.status)" effect="plain">
@@ -500,14 +607,14 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="price_trade_date" label="价格日期" width="110" sortable="custom">
+      <el-table-column v-if="candidateTableView === 'full'" prop="price_trade_date" label="价格日期" width="110" sortable="custom">
         <template #default="{ row }">
           <el-tooltip :content="priceFreshnessTooltip(row)" placement="top">
             <el-tag :type="priceFreshnessTagType(row.price_freshness_status)" effect="plain">{{ formatDate(row.price_trade_date) }}</el-tag>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="sector_category" label="赛道分类" min-width="150">
+      <el-table-column v-if="candidateTableView === 'full'" prop="sector_category" label="赛道分类" min-width="150">
         <template #default="{ row }">
           <el-space wrap>
             <span>{{ row.sector_category || '-' }}</span>
@@ -551,7 +658,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="quarterly_revenue_yoy_pct" label="季度同比" width="110" align="right" sortable="custom">
+      <el-table-column v-if="candidateTableView === 'full'" prop="quarterly_revenue_yoy_pct" label="季度同比" width="110" align="right" sortable="custom">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -599,7 +706,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="cash_runway_months" label="现金 runway" width="120" align="right" sortable="custom">
+      <el-table-column v-if="candidateTableView === 'full'" prop="cash_runway_months" label="现金 runway" width="120" align="right" sortable="custom">
         <template #default="{ row }"><el-tooltip :content="cashRunwayTooltip(row.cash_runway_months)" placement="top"><span class="metric-help">{{ formatMonths(row.cash_runway_months) }}</span></el-tooltip></template>
       </el-table-column>
       <el-table-column v-if="candidateTableView === 'full'" label="表现" width="140" align="right">
@@ -650,13 +757,13 @@
         </template>
       </el-table-column>
       <el-table-column v-if="candidateTableView === 'full'" prop="reason_code" label="原因" min-width="140" />
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column label="操作" :width="candidateTableView === 'compact' ? 104 : 180" fixed="right">
         <template #default="{ row }">
-          <el-space>
+          <div class="candidate-actions">
             <el-button link type="primary" :loading="detailLoadingTicker === row.ticker" @click="openDetail(row)">详情</el-button>
-            <el-tag v-if="row.followed" size="small" type="warning" effect="plain">已关注</el-tag>
+            <span v-if="row.followed" class="candidate-followed-text">已关注</span>
             <el-button v-else link type="primary" :loading="watchingTicker === row.ticker" @click="addToCandidateWatches(row)">关注</el-button>
-          </el-space>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -683,9 +790,9 @@
       <div v-if="summary" class="summary-dialog">
         <el-descriptions :column="3" border size="small">
           <el-descriptions-item label="批次">{{ summary.batch_id || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="A级候选">{{ summary.total_a }}</el-descriptions-item>
-          <el-descriptions-item label="B级候选">{{ summary.total_b }}</el-descriptions-item>
-          <el-descriptions-item v-if="notificationPreview" label="通知等级">
+          <el-descriptions-item label="强信号画像（A）">{{ summary.total_a }}</el-descriptions-item>
+          <el-descriptions-item label="成长观察画像（B）">{{ summary.total_b }}</el-descriptions-item>
+          <el-descriptions-item v-if="notificationPreview" label="通知范围">
             A: {{ notificationPreview.settings.notify_a ? '开' : '关' }} / B: {{ notificationPreview.settings.notify_b ? '开' : '关' }}
           </el-descriptions-item>
           <el-descriptions-item v-if="notificationPreview" label="发送时间">{{ notificationPreview.settings.send_time }}</el-descriptions-item>
@@ -701,8 +808,8 @@
           class="summary-message"
         />
         <el-tabs>
-          <el-tab-pane :label="`A级候选 (${summary.items_a.length})`">
-            <el-table :data="summary.items_a" border size="small" empty-text="暂无A级候选">
+          <el-tab-pane :label="`强信号画像（A，${summary.items_a.length}）`">
+            <el-table :data="summary.items_a" border size="small" empty-text="暂无强信号画像候选">
               <el-table-column prop="ticker" label="Ticker" width="100" />
               <el-table-column prop="total_score" label="总分" width="80" align="right" />
               <el-table-column prop="market_cap_usd" label="市值" width="120" align="right">
@@ -722,8 +829,8 @@
               </el-table-column>
             </el-table>
           </el-tab-pane>
-          <el-tab-pane :label="`B级候选 (${summary.items_b.length})`">
-            <el-table :data="summary.items_b" border size="small" empty-text="暂无B级候选">
+          <el-tab-pane :label="`成长观察画像（B，${summary.items_b.length}）`">
+            <el-table :data="summary.items_b" border size="small" empty-text="暂无成长观察画像候选">
               <el-table-column prop="ticker" label="Ticker" width="100" />
               <el-table-column prop="total_score" label="总分" width="80" align="right" />
               <el-table-column prop="market_cap_usd" label="市值" width="120" align="right">
@@ -783,8 +890,8 @@
           <el-descriptions-item label="日期">{{ report.date }}</el-descriptions-item>
           <el-descriptions-item label="批次">{{ report.batch.batch_id || '-' }}</el-descriptions-item>
           <el-descriptions-item label="状态">{{ report.batch.status || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="A级">{{ report.summary.total_a }}</el-descriptions-item>
-          <el-descriptions-item label="B级">{{ report.summary.total_b }}</el-descriptions-item>
+          <el-descriptions-item label="强信号画像（A）">{{ report.summary.total_a }}</el-descriptions-item>
+          <el-descriptions-item label="成长观察画像（B）">{{ report.summary.total_b }}</el-descriptions-item>
           <el-descriptions-item label="健康">{{ healthStatusLabel(report.health.status) }}</el-descriptions-item>
           <el-descriptions-item label="归档时间">{{ report.snapshot_id ? formatDateTime(report.generated_at) : '-' }}</el-descriptions-item>
           <el-descriptions-item label="归档版本">{{ report.schema_version || '-' }}</el-descriptions-item>
@@ -934,16 +1041,17 @@
         <el-descriptions :column="2" border>
           <el-descriptions-item label="Ticker">{{ candidateDetail.score.ticker }}</el-descriptions-item>
           <el-descriptions-item label="公司">{{ candidateDetail.security.company_name }}</el-descriptions-item>
-          <el-descriptions-item label="等级">{{ gradeLabel(candidateDetail.score.grade) }}</el-descriptions-item>
+          <el-descriptions-item label="研究结论">{{ readinessLabel(candidateDetail.research_readiness?.status) }}</el-descriptions-item>
           <el-descriptions-item label="总分">{{ candidateDetail.score.total_score }}</el-descriptions-item>
+          <el-descriptions-item label="入选画像">{{ gradeLabel(candidateDetail.score.grade) }}</el-descriptions-item>
           <el-descriptions-item label="市值">{{ formatUSD(candidateDetail.score.market_cap_usd) }}</el-descriptions-item>
-          <el-descriptions-item label="SIC">{{ candidateDetail.security.sic || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="SIC" :span="2">{{ candidateDetail.security.sic || '-' }}</el-descriptions-item>
         </el-descriptions>
 
         <el-card shadow="never" class="candidate-ai-card">
-          <template #header><div class="card-header-actions"><span>AI 研判（手动）</span><el-space><el-select v-model="candidateAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select v-model="candidateAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!candidateAIProvider || !candidateAIPromptTemplate" :loading="candidateAIGenerating" @click="generateCandidateAI">生成研判</el-button></el-space></div></template>
+          <template #header><div class="card-header-actions"><span>AI 研判（手动）</span><el-space><el-select fit-input-width v-model="candidateAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="candidateAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!candidateAIProvider || !candidateAIPromptTemplate" :loading="candidateAIGenerating" @click="generateCandidateAI">生成研判</el-button></el-space></div></template>
           <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
-          <template v-else-if="candidateAIAnalyses.length"><el-select v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><AIAnalysisResult :result="activeCandidateAIAnalysis?.structured_result" :content="activeCandidateAIAnalysis?.content" /></div></template></template>
+          <template v-else-if="candidateAIAnalyses.length"><el-select fit-input-width v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><AIAnalysisResult :result="activeCandidateAIAnalysis?.structured_result" :content="activeCandidateAIAnalysis?.content" /></div></template></template>
           <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
           <el-alert v-show="activeCandidateAIAnalysis?.status === 'queued' || activeCandidateAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
         </el-card>
@@ -1114,7 +1222,7 @@
         </el-card>
 
         <el-card shadow="never">
-          <template #header>可交易性闸门（研究用）</template>
+          <template #header>流动性条件（研究用）</template>
           <el-alert :type="investabilityAlertType(candidateDetail.investability?.status)" :closable="false" show-icon :title="investabilityDetailTitle(candidateDetail.investability)" :description="investabilityDetailDescription(candidateDetail.investability)" />
         </el-card>
 
@@ -1147,7 +1255,7 @@
           <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="仅比较已发布候选批次；分数变化不等于基本面变化，请结合下方的变化原因与证据溯源复核。" />
           <el-table :data="candidateDetail.score_history || []" size="small" border class="score-history-table" empty-text="仅有当前评分批次，暂无可比历史">
             <el-table-column prop="effective_date" label="有效日" width="115" />
-            <el-table-column prop="grade" label="等级" width="75"><template #default="{ row }"><el-tag :type="gradeTagType(row.grade)" effect="plain">{{ gradeLabel(row.grade) }}</el-tag></template></el-table-column>
+            <el-table-column prop="grade" label="入选画像" width="150"><template #default="{ row }"><el-tag :type="gradeTagType(row.grade)" effect="plain">{{ gradeLabel(row.grade) }}</el-tag></template></el-table-column>
             <el-table-column prop="total_score" label="总分" width="75" align="right" />
             <el-table-column label="较前批" width="90" align="right"><template #default="{ row }">{{ scoreHistoryDelta(row.score_delta) }}</template></el-table-column>
             <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="changeStatusTagType(row.change_status)" effect="plain">{{ changeStatusLabel(row.change_status) }}</el-tag></template></el-table-column>
@@ -1188,7 +1296,7 @@
             type="warning"
             :closable="false"
             show-icon
-            title="业务模型尚需人工确认；该标的不进入“可行动”候选。"
+            title="业务模型尚需人工确认；该标的研究结论为“继续观察”。"
             class="business-model-alert"
           />
           <el-descriptions :column="2" border size="small">
@@ -1508,7 +1616,7 @@
       <el-form label-width="130px" class="business-model-form">
         <el-form-item label="Ticker"><el-input :model-value="businessModelEditor.ticker" disabled /></el-form-item>
         <el-form-item label="业务模型">
-          <el-select v-model="businessModelEditor.business_model" style="width: 100%">
+          <el-select fit-input-width v-model="businessModelEditor.business_model" style="width: 100%">
             <el-option label="已商业化" value="commercial" />
             <el-option label="临床前/临床期" value="clinical_pre_revenue" />
             <el-option label="授权/里程碑混合" value="mixed_or_licensing" />
@@ -1638,7 +1746,7 @@
     <el-dialog v-model="watchEditorVisible" :title="`${watchEditor.ticker || '候选'} 研究记录`" width="680px">
       <el-form label-position="top">
         <el-form-item label="跟踪状态">
-          <el-select v-model="watchEditor.research_status" style="width: 180px">
+          <el-select fit-input-width v-model="watchEditor.research_status" style="width: 180px">
             <el-option label="待研究" value="inbox" />
             <el-option label="研究中" value="researching" />
             <el-option label="重点关注" value="conviction" />
@@ -1726,6 +1834,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { StarFilled, SuccessFilled } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
 import { apiClient } from '@/api/client'
 import AIRequestPrompt from '@/components/AIRequestPrompt.vue'
@@ -1759,10 +1868,12 @@ import type {
   DiscoveryInsiderCoverage,
   DiscoveryStorageHealth,
   DiscoverySyncRun,
+  DiscoverySyncStep,
   DiscoveryWorkflowResult,
   PageResult,
   SmallCapEligibilityCheckHistoryItem,
   SmallCapEligibilityCheckResult,
+  SmallCapPolicyRescoreResult,
   TechnicalHistoryBackfillResult,
 } from '@/api/types'
 
@@ -1845,14 +1956,18 @@ const technicalHistoryView = ref<'chart' | 'table'>('chart')
 const technicalHistoryRange = ref<TechnicalHistoryRange>('1y')
 const health = ref<CandidateHealth | null>(null)
 const discoverySyncRun = ref<DiscoverySyncRun | null>(null)
+const discoverySyncSteps = ref<DiscoverySyncStep[]>([])
 const discoveryStorage = ref<DiscoveryStorageHealth | null>(null)
 const cacheCleanupLoading = ref(false)
+const operationalDetailsExpanded = ref(false)
 const discoverySyncNow = ref(Date.now())
 let discoverySyncPoll: ReturnType<typeof window.setInterval> | undefined
 let candidateSupplementalTimer: ReturnType<typeof window.setTimeout> | undefined
 const criteria = ref<CandidateSelectionCriteria | null>(null)
+const criteriaDetailsExpanded = ref(false)
 const policyDialogVisible = ref(false)
 const scoringRubricVisible = ref(false)
+const rescoreLoading = ref(false)
 const report = ref<CandidateReport | null>(null)
 const reportVisible = ref(false)
 const eligibilityCheckVisible = ref(false)
@@ -1903,10 +2018,10 @@ const topSectorCount = computed(() => {
   return entries[0]?.[1] || 0
 })
 const candidateScopeLabel = computed(() => {
-  if (filters.research_readiness === 'ready') return '可行动'
-  if (filters.research_readiness === 'research_only') return '待核验'
-  if (filters.research_readiness === 'blocked') return '已阻断'
-  if (filters.exclude_research_readiness.includes('blocked')) return '可行动 + 待核验'
+  if (filters.research_readiness === 'ready') return '优先研究'
+  if (filters.research_readiness === 'research_only') return '继续观察'
+  if (filters.research_readiness === 'blocked') return '暂缓'
+  if (filters.exclude_research_readiness.includes('blocked')) return '优先研究 + 继续观察'
   return '全部状态'
 })
 const sectorRows = computed(() => Object.entries(overview.value?.sector_counts || {})
@@ -2018,6 +2133,12 @@ async function loadDiscoverySyncStatus() {
     const res = await apiClient.get<ApiResponse<DiscoverySyncRun>>('/discovery/sync-status')
     const run = res.data.data
     discoverySyncRun.value = run?.id ? run : null
+    if (run?.id) {
+      const steps = await apiClient.get<ApiResponse<DiscoverySyncStep[]>>(`/discovery/sync-runs/${run.id}/steps`)
+      discoverySyncSteps.value = steps.data.data || []
+    } else {
+      discoverySyncSteps.value = []
+    }
     discoverySyncNow.value = Date.now()
   } catch {
     // Lifecycle status is supplemental. A transient status read failure must
@@ -2072,6 +2193,25 @@ async function loadCriteria() {
 
 async function handlePolicyUpdated() {
   await Promise.allSettled([loadCriteria(), load(), loadHealth(), loadOverview()])
+}
+
+async function rescoreCurrentCandidates() {
+  try {
+    await ElMessageBox.confirm('使用当前已保存的行情、SEC 财务、Form 4 和风险证据生成新的不可变评分批次？不会重新请求外部数据源。', '按当前规则重评分', { type: 'warning' })
+    rescoreLoading.value = true
+    const response = await apiClient.post<ApiResponse<SmallCapPolicyRescoreResult>>('/discovery/candidates/rescore')
+    const result = response.data.data
+    if (result.published_batch_id === result.source_batch_id) {
+      ElMessage.info('当前批次已使用最新评分版本，无需重评分。')
+    } else {
+      ElMessage.success(`重评分完成：A 型 ${result.before?.grade_a ?? 0} → ${result.after?.grade_a ?? 0}，B 型 ${result.before?.grade_b ?? 0} → ${result.after?.grade_b ?? 0}`)
+    }
+    await Promise.allSettled([loadCriteria(), load(), loadHealth(), loadOverview()])
+  } catch (error: any) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error?.response?.data?.message || '重评分失败')
+  } finally {
+    rescoreLoading.value = false
+  }
 }
 
 function openEligibilityCheck() {
@@ -2140,14 +2280,14 @@ function eligibilityGradeTagType(grade: string) {
 }
 
 function eligibilityGradeLabel(result: SmallCapEligibilityCheckResult) {
-  if (result.grade === 'A') return '✅ A级候选'
-  if (result.grade === 'B') return '✅ B级候选'
+  if (result.grade === 'A') return '✅ 强信号画像（A）'
+  if (result.grade === 'B') return '✅ 成长观察画像（B）'
   return result.in_small_cap_pool ? '候选池内，未入选' : '不在候选池'
 }
 
 function eligibilityHistoryGradeLabel(item: SmallCapEligibilityCheckHistoryItem) {
-  if (item.grade === 'A') return '✅ A级'
-  if (item.grade === 'B') return '✅ B级'
+  if (item.grade === 'A') return '✅ 强信号画像（A）'
+  if (item.grade === 'B') return '✅ 成长观察画像（B）'
   return item.in_small_cap_pool ? '池内未入选' : '未入池'
 }
 
@@ -2261,7 +2401,7 @@ async function forceRefreshMarketPrices() {
 async function backfillTechnicalHistory() {
   try {
     await ElMessageBox.confirm(
-      '将仅对当前 A/B 小盘候选补齐近 320 个自然日的日线历史（通常约 220 个交易日），用于展示 MA20/MA50/MA200，并计算相对 IWM 的强弱。任务会遵守已配置的行情源请求预算，可能需要数分钟；不会修改基本面评分或发送通知。',
+      '将仅对当前小盘候选池补齐近 320 个自然日的日线历史（通常约 220 个交易日），用于展示 MA20/MA50/MA200，并计算相对 IWM 的强弱。任务会遵守已配置的行情源请求预算，可能需要数分钟；不会修改基本面评分或发送通知。',
       '确认回填技术历史',
       { type: 'warning', confirmButtonText: '开始回填', cancelButtonText: '取消' },
     )
@@ -2900,8 +3040,8 @@ function onSortChange({ prop, order }: { prop?: string; order?: 'ascending' | 'd
 }
 
 function gradeLabel(grade: string) {
-  if (grade === 'A') return 'A级'
-  if (grade === 'B') return 'B级'
+  if (grade === 'A') return '强信号画像（A）'
+  if (grade === 'B') return '成长观察画像（B）'
   return '排除'
 }
 
@@ -2912,10 +3052,10 @@ function gradeTagType(grade: string) {
 }
 
 function qualityTierLabel(tier?: string) {
-  if (tier === 'a') return 'A级'
-  if (tier === 'strong_b') return '强B'
-  if (tier === 'standard_b') return '普通B'
-  if (tier === 'watch_b') return '观察B'
+  if (tier === 'a') return '高质量'
+  if (tier === 'strong_b') return '较强'
+  if (tier === 'standard_b') return '标准'
+  if (tier === 'watch_b') return '观察'
   if (tier === 'excluded') return '已排除'
   return '-'
 }
@@ -3013,8 +3153,10 @@ function reviewQueueStateTagType(state?: string) {
 }
 
 function effectivenessCohortLabel(grade: string) {
-  if (grade === 'all') return '全部 A/B'
-  return `${grade}级`
+  if (grade === 'all') return '全部候选画像'
+  if (grade === 'A') return '强信号画像'
+  if (grade === 'B') return '成长观察画像'
+  return grade || '-'
 }
 
 function effectivenessWindow(cohort: CandidateEffectivenessCohort, horizon: number) {
@@ -3059,7 +3201,8 @@ function priceFreshnessTooltip(row: CandidateScore) {
 
 function priceEvidenceTooltip(row: CandidateScore) {
   const source = priceSourceLabel(row.price_source)
-  return `列表/技术分析使用最新本地行情：${source}，交易日 ${formatDate(row.price_trade_date)}。${priceFreshnessTooltip(row)}`
+  const role = row.price_source_role === 'primary' ? '主行情源' : row.price_source_role === 'fallback' ? '备用/补充行情源' : '行情源角色未知'
+  return `列表/技术分析使用最新本地行情：${source}（${role}），交易日 ${formatDate(row.price_trade_date)}。${priceFreshnessTooltip(row)}`
 }
 
 function priceSourceLabel(source?: string) {
@@ -3082,10 +3225,110 @@ function healthStatusLabel(status: string) {
 }
 
 function readinessLabel(status?: string) {
-  if (status === 'ready') return '可行动'
-  if (status === 'research_only') return '待核验'
-  if (status === 'blocked') return '已阻断'
-  return '未知'
+  if (status === 'ready') return '优先研究'
+  if (status === 'research_only') return '继续观察'
+  if (status === 'blocked') return '暂缓'
+  return '未评估'
+}
+
+function researchDecisionSummary(row: CandidateScore) {
+  const readiness = row.research_readiness
+  if (!readiness) return '尚无研究结论'
+  const reasons = readiness?.reasons || []
+  if (readiness?.status === 'blocked' || readiness?.status === 'research_only') {
+    if (reasons.length === 1) return readinessReasonLabel(reasons[0])
+    if (reasons.length > 1) return `待处理 ${reasons.length} 项`
+    return readiness?.status === 'blocked' ? '存在阻断项' : '存在待核验项'
+  }
+  const unmetCount = row.grade_explanation?.unmet_a_conditions?.length || 0
+  if (unmetCount > 0) return `距强信号画像 ${unmetCount} 项`
+  return '关键证据完整'
+}
+
+function researchDecisionTooltipLines(row: CandidateScore) {
+  const lines = readinessTooltipLines(row)
+  lines.push(`入选画像：${gradeLabel(row.grade)}`)
+  if (row.grade_explanation?.summary) lines.push(row.grade_explanation.summary)
+  return lines
+}
+
+function evidenceLabel(status?: string) {
+  if (status === 'complete') return '证据完整'
+  if (status === 'needs_review') return '证据待核验'
+  if (status === 'missing') return '证据缺失'
+  return '未评估'
+}
+
+function evidenceTagType(status?: string) {
+  if (status === 'complete') return 'success'
+  if (status === 'needs_review') return 'warning'
+  if (status === 'missing') return 'danger'
+  return 'info'
+}
+
+function evidenceTooltipLines(row: CandidateScore) {
+  const evidence = row.evidence_completeness
+  if (!evidence) return ['尚未计算证据完整度']
+  const lines = [`${evidenceLabel(evidence.status)}：只表示行情、财务、内幕覆盖和业务模型证据，不代表资本风险较低或流动性充足`]
+  for (const reason of evidence.reasons || []) lines.push(readinessReasonLabel(reason))
+  return lines
+}
+
+function candidateRiskLabel(row: CandidateScore) {
+  if (row.active_blocks_b || row.capital_risk_summaries?.some((risk) => risk.blocks_b)) return '阻断 A/B'
+  if (row.active_blocks_a || row.capital_risk_summaries?.some((risk) => risk.blocks_a)) return '阻断 A'
+  if (row.capital_risk_summaries?.length || row.dilution_trend?.status === 'high_dilution' || row.dilution_trend?.status === 'elevated_dilution') return '需核验'
+  return '无资本阻断'
+}
+
+function candidateRiskTagType(row: CandidateScore) {
+  if (row.active_blocks_b || row.capital_risk_summaries?.some((risk) => risk.blocks_b)) return 'danger'
+  if (row.active_blocks_a || row.capital_risk_summaries?.some((risk) => risk.blocks_a)) return 'warning'
+  if (candidateRiskLabel(row) === '需核验') return 'warning'
+  return 'success'
+}
+
+function candidateRiskTooltipLines(row: CandidateScore) {
+  const risks = row.capital_risk_summaries || []
+  if (!risks.length && row.dilution_trend?.status !== 'high_dilution' && row.dilution_trend?.status !== 'elevated_dilution') {
+    return ['未发现当前 A/B 型资本风险阻断。', '说明：这里只展示资本事件与股本稀释风险，不代表公司不存在其他风险。']
+  }
+
+  const lines: string[] = []
+  if (row.active_blocks_b || risks.some((risk) => risk.blocks_b)) lines.push('风险结论：阻断 A 型和 B 型')
+  else if (row.active_blocks_a || risks.some((risk) => risk.blocks_a)) lines.push('风险结论：阻断 A 型，不阻断 B 型')
+  else lines.push('风险结论：存在关注项，但不构成 A/B 型硬阻断')
+
+  if (row.dilution_trend?.status === 'high_dilution') lines.push('股本趋势：高稀释')
+  else if (row.dilution_trend?.status === 'elevated_dilution') lines.push('股本趋势：稀释偏高')
+
+  const grouped = new Map<string, { kind: string; severity: string; blocksA: boolean; blocksB: boolean; count: number; latest: string }>()
+  for (const risk of risks) {
+    const key = `${risk.kind}|${risk.severity}|${risk.blocks_a}|${risk.blocks_b}`
+    const current = grouped.get(key)
+    if (!current) {
+      grouped.set(key, {
+        kind: risk.kind,
+        severity: risk.severity,
+        blocksA: risk.blocks_a,
+        blocksB: risk.blocks_b,
+        count: 1,
+        latest: risk.effective_at,
+      })
+      continue
+    }
+    current.count += 1
+    if (risk.effective_at > current.latest) current.latest = risk.effective_at
+  }
+
+  for (const group of grouped.values()) {
+    const count = group.count > 1 ? ` ×${group.count}` : ''
+    const impact = group.blocksB ? '阻断 A/B' : group.blocksA ? '阻断 A' : '仅提示'
+    lines.push(`${capitalRiskKindLabel(group.kind)}${count}｜${capitalRiskSeverityLabel(group.severity)}｜${impact}｜最近 ${formatDate(group.latest)}`)
+  }
+  if (risks.length > grouped.size) lines.push(`已将 ${risks.length} 条记录合并为 ${grouped.size} 类，避免重复展示。`)
+  if (risks.length) lines.push('说明：风险信号来自 SEC 公告规则识别，需结合原文核验。')
+  return lines
 }
 
 function researchNextStepTagType(priority?: string) {
@@ -3114,10 +3357,10 @@ function readinessTagType(status?: string) {
 }
 
 function investabilityLabel(status?: string) {
-  if (status === 'tradable') return '可交易'
+  if (status === 'tradable') return '充足'
   if (status === 'constrained') return '受限'
-  if (status === 'blocked') return '阻断'
-  return '未知'
+  if (status === 'blocked') return '不足'
+  return '证据不足'
 }
 
 function investabilityTagType(status?: string) {
@@ -3134,8 +3377,8 @@ function investabilityAlertType(status?: string) {
 }
 
 function investabilityTooltipLines(value?: CandidateInvestability) {
-  if (!value) return ['尚未计算可交易性闸门']
-  const lines = [`${investabilityLabel(value.status)}：基于日线价格与成交额，不构成交易建议`]
+  if (!value) return ['尚未计算流动性条件']
+  const lines = [`流动性${investabilityLabel(value.status)}：仅基于日线价格、成交额、样本和波动率，不包含资本事件判断`]
   lines.push(`平均日成交额：${formatUSD(value.average_dollar_volume_usd)}，样本 ${value.sample_days} 日`)
   if (value.suggested_max_daily_notional_usd > 0) lines.push(`研究上限参考：日成交额的 ${value.max_adv_participation_pct}% ≈ ${formatUSD(value.suggested_max_daily_notional_usd)}`)
   lines.push(`点差：${value.spread_evidence_status === 'not_available_eod' ? '免费日线源未覆盖，需自行核验' : value.spread_evidence_status}`)
@@ -3144,7 +3387,7 @@ function investabilityTooltipLines(value?: CandidateInvestability) {
 }
 
 function investabilityDetailTitle(value?: CandidateInvestability) {
-  return `状态：${investabilityLabel(value?.status)}。仅代表现有日线证据下的研究流动性，不是买卖建议。`
+  return `流动性条件：${investabilityLabel(value?.status)}。仅代表现有日线证据，不包含资本风险，也不是买卖建议。`
 }
 
 function investabilityDetailDescription(value?: CandidateInvestability) {
@@ -3198,7 +3441,7 @@ function dilutionTooltipLines(value?: CandidateDilutionTrend) {
 }
 
 function dilutionDetailTitle(value?: CandidateDilutionTrend) {
-  const suffix = value?.status === 'high_dilution' ? '高稀释会将该标的降为“待核验”。' : '该指标不改写 A/B 基础评分。'
+  const suffix = value?.status === 'high_dilution' ? '高稀释会将该标的研究结论调整为“继续观察”。' : '该指标不改写总分或入选画像。'
   return `状态：${dilutionLabel(value?.status)}。${suffix}`
 }
 
@@ -3229,8 +3472,13 @@ function insiderCoverageDescription(coverage: DiscoveryInsiderCoverage) {
 
 function readinessTooltipLines(row: CandidateScore) {
   const readiness = row.research_readiness
-  if (!readiness) return ['尚未计算数据充分性状态']
-  const lines = [`证据状态：${readinessLabel(readiness.status)}；${readiness.status === 'ready' ? '关键研究证据完整，可进入默认通知' : '不进入默认通知，仍可作为研究对象查看'}`]
+  if (!readiness) return ['尚未计算研究结论']
+  const workflowDescription = readiness.status === 'ready'
+    ? '关键研究证据完整，可进入默认通知'
+    : readiness.status === 'research_only'
+      ? '仍可研究，但需先处理待核验项'
+      : '存在阻断项，暂不进入默认研究通知'
+  const lines = [`研究结论：${readinessLabel(readiness.status)}；${workflowDescription}`]
   if (readiness.financial_period_end) lines.push(`财务期末：${readiness.financial_period_end}（${readiness.financial_staleness_days} 天前）`)
   const duplicateReasonByInsiderStatus: Record<string, string> = {
     source_unavailable: 'insider_source_unavailable',
@@ -3270,6 +3518,10 @@ function readinessReasonLabel(reason: string) {
     insider_coverage_unavailable: '内幕交易覆盖不可用',
     biotech_business_model_unconfirmed: '生物医药业务模型尚未确认',
     biotech_business_model_review_due: '生物医药业务模型需要复查',
+    capital_risk_blocks_research: '重大资本风险阻断研究流程，需核验 SEC 原文',
+    investability_blocked: '价格或流动性条件不足',
+    investability_constrained: '流动性条件受限',
+    share_dilution_high: '股本稀释趋势较高',
   }
   return labels[reason] || reason
 }
@@ -3291,8 +3543,8 @@ function formatHealthIssue(issue: string) {
   if (code === 'price_previous_trading_day') return `使用前一交易日价格：${count || 0}`
   if (code === 'stale_prices') return `价格已过期：${count || 0}`
   if (code === 'missing_prices') return `价格缺失：${count || 0}`
-  if (code === 'research_only_candidates') return `待核验候选：${count || 0}`
-  if (code === 'blocked_candidates') return `已阻断候选：${count || 0}`
+  if (code === 'research_only_candidates') return `继续观察候选：${count || 0}`
+  if (code === 'blocked_candidates') return `暂缓候选：${count || 0}`
   if (code === 'candidate_insider_records') return `候选内幕记录覆盖：${count || 0}`
   if (code === 'insider_coverage_partial') return `内幕交易部分覆盖：${count || 0}`
   if (code === 'insider_coverage_unavailable') return `内幕交易覆盖不可用：${count || 0}`
@@ -3473,6 +3725,26 @@ function technicalStatusLabel(technical?: CandidateScore['technical']) {
   return '暂无技术数据'
 }
 
+function compactTechnicalSignal(row: CandidateScore) {
+  const technical = row.technical
+  if (technical?.status !== 'ready') return technicalStatusLabel(technical)
+  const signals = technical.signals || []
+  const hasBreakout = signals.some((signal) => signal.kind === 'breakout_20d_high')
+  const hasVolume = signals.some((signal) => signal.kind === 'volume_backed_breakout')
+  if (hasBreakout && hasVolume) return '突破 + 放量'
+  if (hasBreakout) return '突破 20 日新高'
+  if (hasVolume) return '放量突破'
+  if (signals.some((signal) => signal.kind === 'cross_above_ma20')) return '上穿 MA20'
+  if (signals.length) return signals[0].label
+  return '暂无突破'
+}
+
+function compactTechnicalSignalType(row: CandidateScore) {
+  if (row.technical?.status !== 'ready') return 'is-warning'
+  if ((row.technical.signals || []).length) return 'is-success'
+  return 'is-info'
+}
+
 function technicalStatusDescription(technical?: CandidateScore['technical']) {
   if (technical?.status === 'data_insufficient') {
     return `技术分析需要至少 ${technical.required_sample_days || 21} 个有效交易日，当前仅有 ${technical.sample_days || 0} 个；不会据此生成信号。`
@@ -3577,11 +3849,16 @@ function capitalRiskTooltipLines(row: CandidateScore, grade: 'A' | 'B') {
 
 function capitalRiskKindLabel(kind: string) {
   const labels: Record<string, string> = {
+    confirmed_financing: '已确认融资',
     registered_financing: '注册融资',
     atm_program: 'ATM 发行计划',
     reverse_split: '反向拆股',
     going_concern: '持续经营警告',
     warrants: '认股权证/稀释',
+    potential_financing: '潜在融资',
+    potential_registration_effective: '注册文件生效',
+    capital_structure: '股本结构变更',
+    capital_structure_unknown: '股本结构待核验',
     shelf_registration: 'Shelf 注册',
     offering: '发行/融资',
   }
@@ -3597,8 +3874,8 @@ function capitalRiskSeverityLabel(severity: string) {
 
 function candidatePositiveSignals(detail: CandidateDetail) {
   const signals: string[] = []
-  if (detail.score.grade === 'A') signals.push('A级候选')
-  if (detail.score.grade === 'B' && detail.score.total_score >= 70) signals.push('高分B级')
+  if (detail.score.grade === 'A') signals.push('强信号画像')
+  if (detail.score.grade === 'B' && detail.score.total_score >= 70) signals.push('成长观察画像中的高分候选')
   if (detail.score.revenue_growth_pct >= 40) signals.push('收入高增长')
   if (detail.score.cash_runway_months >= 12) signals.push('现金 runway 充足')
   if (detail.score.recent_qualified_insider) signals.push('近期合格内幕买入')
@@ -3712,6 +3989,38 @@ function discoverySyncPhaseLabel(phase?: string) {
     failed: '工作流已中止',
   }
   return labels[phase || ''] || phase || '等待开始'
+}
+
+const discoverySyncActiveStep = computed(() => {
+  const running = [...discoverySyncSteps.value].reverse().find(step => step.status === 'running')
+  return running || discoverySyncSteps.value[discoverySyncSteps.value.length - 1] || null
+})
+
+const discoverySyncProgressPercentage = computed(() => {
+  const step = discoverySyncActiveStep.value
+  if (!step?.total_count) return 0
+  return Math.min(100, Math.max(0, Math.round(step.record_count * 100 / step.total_count)))
+})
+
+function discoverySyncStepLabel(phase?: string) {
+  const labels: Record<string, string> = {
+    prepare: '准备',
+    build_sources: '加载数据源',
+    'security-metadata': '标的元数据',
+    'security-fundamentals': '财务与股本',
+    'security-insiders': '候选 Form 4',
+    'security-capital-events': '融资风险',
+    'security-financial-normalization': '财务事实归一化',
+    'security-evidence-normalization': '证据归一化',
+    'security-content-hash': '内容指纹',
+    'security-financial-persistence': '财务事实分块入库',
+    market_prescreen: '行情与评分',
+    technical_history: '技术历史',
+    company_profiles: '公司资料',
+    analyst_ratings: '分析师共识',
+    publish_summary: '发布摘要',
+  }
+  return labels[phase || ''] || phase || '处理中'
 }
 
 function discoverySyncDuration(run: DiscoverySyncRun) {
@@ -3869,8 +4178,152 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.discovery-sync-status-card {
+.operations-card {
   margin-bottom: 12px;
+}
+
+.operations-card :deep(.el-card__body) {
+  padding: 0;
+}
+
+.operations-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.operations-summary-item {
+  min-width: 0;
+  padding: 11px 14px 10px;
+}
+
+.operations-summary-item + .operations-summary-item {
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+
+.operations-summary-heading,
+.operations-summary-value,
+.operations-summary-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.operations-summary-heading {
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.operations-summary-heading :deep(.el-button) {
+  height: 20px;
+  padding: 0;
+  font-size: 12px;
+}
+
+.operations-summary-value {
+  gap: 7px;
+  margin-top: 2px;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.operations-summary-value strong {
+  overflow: hidden;
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+}
+
+.operations-summary-value > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--el-text-color-placeholder);
+}
+
+.status-dot.is-success,
+.status-dot.is-published,
+.status-dot.is-completed {
+  background: var(--el-color-success);
+}
+
+.status-dot.is-running {
+  background: var(--el-color-primary);
+  box-shadow: 0 0 0 3px var(--el-color-primary-light-9);
+}
+
+.status-dot.is-warning,
+.status-dot.is-missing {
+  background: var(--el-color-warning);
+}
+
+.status-dot.is-failed,
+.status-dot.is-error {
+  background: var(--el-color-danger);
+}
+
+.operations-summary-meta {
+  gap: 5px 12px;
+  margin-top: 1px;
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.operations-inline-error {
+  display: flex;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--el-color-danger-light-8);
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.operations-inline-error span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.operations-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-extra-light);
+}
+
+.operations-detail-group {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.operations-detail-group strong {
+  flex: 0 0 auto;
+  color: var(--el-text-color-regular);
+}
+
+.operations-detail-group.is-warning strong {
+  color: var(--el-color-warning-dark-2);
 }
 
 .eligibility-check-alert {
@@ -3908,58 +4361,59 @@ onUnmounted(() => {
   justify-content: flex-end;
 }
 
-.discovery-sync-status-main {
+.discovery-sync-progress {
+  padding: 9px 14px 10px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.discovery-sync-progress-heading {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: 12px 20px;
-  flex-wrap: wrap;
-}
-
-.discovery-sync-status-title,
-.discovery-sync-status-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.discovery-sync-status-title > span,
-.discovery-sync-status-meta {
-  color: var(--el-text-color-secondary);
+  gap: 12px;
+  margin-bottom: 7px;
+  color: var(--el-text-color-regular);
   font-size: 13px;
 }
 
-.discovery-sync-error {
-  margin-top: 10px;
-}
-
-.discovery-storage-alert {
-  margin-bottom: 12px;
-}
-
-.discovery-storage-alert :deep(.el-alert__title) {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.health-alert {
-  margin-bottom: 12px;
+.discovery-sync-progress > small {
+  display: block;
+  margin-top: 5px;
+  color: var(--el-text-color-secondary);
 }
 
 .candidate-page-header {
-  align-items: flex-start;
+  align-items: center;
+  margin-bottom: 12px;
 }
 
 .candidate-page-title {
-  min-width: 280px;
-  flex: 1 1 300px;
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.candidate-page-title h1 {
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 22px;
+  line-height: 30px;
+}
+
+.candidate-page-title p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .candidate-page-actions {
-  flex: 0 1 940px;
+  flex: 0 0 auto;
   justify-content: flex-end;
 }
 
@@ -3967,32 +4421,96 @@ onUnmounted(() => {
   margin-bottom: 12px;
 }
 
+.criteria-card :deep(.el-card__body) {
+  padding: 14px 16px 12px;
+}
+
 .criteria-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
+  gap: 10px 16px;
+  margin-bottom: 12px;
 }
 
-.criteria-heading > div {
+.criteria-title {
   display: flex;
-  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
+  min-width: 220px;
 }
 
-.criteria-heading span,
-.criteria-note {
+.criteria-title span,
+.criteria-version {
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: 12px;
 }
 
-.criteria-tags {
+.criteria-actions {
+  justify-content: flex-end;
+}
+
+.criteria-version {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.criteria-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.75fr) minmax(360px, 1.5fr) minmax(300px, 1.2fr);
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-extra-light);
+}
+
+.criteria-summary-item {
   display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--el-color-primary-light-5);
 }
 
-.criteria-note {
+.criteria-summary-item + .criteria-summary-item {
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left-width: 1px;
+  border-left-color: var(--el-border-color-lighter);
+}
+
+.criteria-summary-item > span {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.criteria-summary-item > strong {
+  overflow: hidden;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.criteria-summary-item.is-ready {
+  border-left-color: var(--el-color-success-light-5);
+}
+
+.criteria-summary-item.is-watch {
+  border-left-color: var(--el-color-warning-light-5);
+}
+
+.criteria-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-top: 8px;
 }
 
@@ -4000,10 +4518,57 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 5px 10px;
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: 12px;
+}
+
+.criteria-state {
+  position: relative;
+  padding-left: 10px;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.criteria-state::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--el-text-color-placeholder);
+  content: '';
+  transform: translateY(-50%);
+}
+
+.criteria-state.is-success::before {
+  background: var(--el-color-success);
+}
+
+.criteria-state.is-warning::before {
+  background: var(--el-color-warning);
+}
+
+.criteria-state.is-info::before {
+  background: var(--el-color-info);
+}
+
+.criteria-details {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.criteria-details p {
+  margin: 0;
 }
 
 .review-queue-card {
@@ -4031,36 +4596,64 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
-.overview-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr)) minmax(220px, 1.4fr);
-  gap: 12px;
+.overview-strip {
   margin-bottom: 12px;
 }
 
-.overview-card :deep(.el-card__body) {
+.overview-strip :deep(.el-card__body) {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr)) minmax(160px, 1.25fr);
+  padding: 0;
+}
+
+.overview-metric {
   display: flex;
-  min-height: 72px;
+  min-width: 0;
+  min-height: 82px;
   flex-direction: column;
   justify-content: center;
-  gap: 4px;
+  gap: 2px;
+  padding: 12px 16px;
+  border-left: 1px solid var(--el-border-color-lighter);
 }
 
-.overview-card strong {
-  color: var(--el-text-color-primary);
-  font-size: 24px;
-  line-height: 1.1;
+.overview-metric:first-child {
+  border-left: 0;
 }
 
-.overview-card small,
-.overview-label {
-  color: var(--el-text-color-secondary);
-}
-
-.overview-wide strong {
+.overview-metric > span,
+.overview-metric > small {
   overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.overview-metric > strong {
+  overflow: hidden;
+  color: var(--el-text-color-primary);
+  font-size: 22px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-metric.is-primary > strong {
+  color: var(--el-color-primary);
+}
+
+.overview-metric.is-success > strong {
+  color: var(--el-color-success);
+}
+
+.overview-metric.is-warning > strong,
+.overview-metric.is-attention > strong {
+  color: var(--el-color-warning);
+}
+
+.overview-metric.is-sector > strong {
+  font-size: 18px;
 }
 
 .summary-alert {
@@ -4103,28 +4696,80 @@ onUnmounted(() => {
   color: var(--el-text-color-secondary);
 }
 
-.quick-filter-row {
+.filter-toolbar {
+  display: flex;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.quick-filter-row,
+.filter-toolbar-meta {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
+  gap: 6px;
+}
+
+.quick-filter-row {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  grid-template-columns: max-content repeat(9, minmax(84px, 1fr));
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.quick-filter-row :deep(.el-button) {
+  width: 100%;
+  margin: 0;
+}
+
+.filter-toolbar-meta {
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.filter-card :deep(.el-card__body) {
+  padding: 12px 14px 6px;
+}
+
+.filter-card :deep(.el-form-item) {
+  margin-right: 14px;
+  margin-bottom: 6px;
+}
+
+.candidate-filter-form {
+  padding-top: 10px;
+}
+
+.candidate-filter-form :deep(.el-form-item__label) {
+  padding-right: 7px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .quick-filter-label {
+  margin-right: 2px;
   color: var(--el-text-color-secondary);
-  font-size: 13px;
-}
-
-.table-view-label {
-  margin-left: auto;
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .current-list-count {
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.current-list-count strong {
+  color: var(--el-text-color-primary);
+  font-weight: 650;
 }
 
 .candidate-supplemental-loading {
@@ -4132,9 +4777,182 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
-.candidate-table-compact :deep(.el-table__cell) {
-  padding-top: 6px;
-  padding-bottom: 6px;
+.candidate-table {
+  --el-table-border-color: var(--el-border-color-lighter);
+  --el-table-header-bg-color: var(--el-fill-color-light);
+  color: var(--el-text-color-regular);
+}
+
+.candidate-table :deep(.el-table__header-wrapper th.el-table__cell) {
+  color: var(--el-text-color-primary);
+  font-weight: 600;
+}
+
+.candidate-table-compact :deep(.el-table__header-wrapper th.el-table__cell) {
+  height: 44px;
+  padding: 0;
+}
+
+.candidate-table-compact {
+  font-size: 13px;
+}
+
+.candidate-table-compact :deep(.el-table__body td.el-table__cell) {
+  height: 48px;
+  padding: 0;
+}
+
+.candidate-table-compact :deep(.cell) {
+  padding-right: 10px;
+  padding-left: 10px;
+  line-height: 20px;
+}
+
+.candidate-table-compact :deep(.el-table__row:nth-child(even) td.el-table__cell) {
+  background: color-mix(in srgb, var(--el-fill-color-lighter) 58%, transparent);
+}
+
+.candidate-table-compact :deep(.el-table__row:hover td.el-table__cell) {
+  background: var(--el-fill-color-light);
+}
+
+.candidate-ticker-cell,
+.candidate-actions,
+.research-decision-label {
+  display: inline-flex;
+  align-items: center;
+}
+
+.candidate-ticker-cell {
+  gap: 6px;
+}
+
+.candidate-ticker-cell strong,
+.candidate-score {
+  color: var(--el-text-color-primary);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.candidate-followed-dot {
+  width: 8px;
+  color: var(--el-color-warning);
+  font-size: 8px;
+}
+
+.candidate-actions {
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.candidate-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.candidate-followed-text {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.candidate-table-compact .research-decision-cell {
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  white-space: nowrap;
+}
+
+.research-decision-label {
+  flex: 0 0 auto;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.research-decision-label .el-icon {
+  width: 8px;
+  font-size: 8px;
+}
+
+.research-decision-label.is-ready {
+  color: var(--el-color-success);
+}
+
+.research-decision-label.is-research_only {
+  color: var(--el-color-warning);
+}
+
+.research-decision-label.is-blocked {
+  color: var(--el-color-danger);
+}
+
+.research-decision-label.is-unknown {
+  color: var(--el-text-color-secondary);
+}
+
+.candidate-state-text {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.candidate-state-text.is-success {
+  color: var(--el-color-success);
+}
+
+.candidate-state-text.is-warning {
+  color: var(--el-color-warning);
+}
+
+.candidate-state-text.is-danger {
+  color: var(--el-color-danger);
+}
+
+.candidate-state-text.is-info {
+  color: var(--el-text-color-secondary);
+}
+
+.compact-technical-signal {
+  display: block;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-technical-signal.is-success {
+  color: var(--el-color-success);
+}
+
+.compact-technical-signal.is-warning {
+  color: var(--el-color-warning);
+}
+
+.compact-technical-signal.is-info {
+  color: var(--el-text-color-secondary);
+}
+
+.research-decision-cell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.research-decision-cell > span {
+  display: block;
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-table-compact .research-decision-cell > span:last-child {
+  max-width: 154px;
 }
 
 .candidate-detail {
@@ -4389,6 +5207,16 @@ onUnmounted(() => {
   line-height: 1.6;
 }
 
+.candidate-risk-tooltip {
+  width: min(420px, 72vw);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.candidate-risk-tooltip > div + div {
+  margin-top: 4px;
+}
+
 .score-tooltip {
   min-width: 250px;
   line-height: 1.6;
@@ -4435,12 +5263,32 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1200px) {
-  .overview-grid {
-    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  .criteria-summary-grid {
+    grid-template-columns: 1fr;
   }
+
+  .criteria-summary-item + .criteria-summary-item {
+    border-top: 1px solid var(--el-border-color-lighter);
+    border-left-width: 3px;
+  }
+
+  .overview-strip :deep(.el-card__body) {
+    grid-template-columns: repeat(3, minmax(140px, 1fr));
+  }
+
+  .overview-metric:nth-child(4) {
+    border-left: 0;
+    border-top: 1px solid var(--el-border-color-lighter);
+  }
+
+  .overview-metric:nth-child(5),
+  .overview-metric:nth-child(6) {
+    border-top: 1px solid var(--el-border-color-lighter);
+  }
+
 }
 
-@media (max-width: 1400px) {
+@media (max-width: 1080px) {
   .candidate-page-header {
     flex-wrap: wrap;
   }
@@ -4456,17 +5304,46 @@ onUnmounted(() => {
 }
 
 @media (max-width: 720px) {
-  .overview-grid,
-  .detail-summary-grid {
+  .operations-summary-grid,
+  .operations-details,
+  .overview-strip :deep(.el-card__body),
+  .detail-summary-grid,
+  .criteria-details {
     grid-template-columns: 1fr;
+  }
+
+  .operations-summary-item + .operations-summary-item {
+    border-top: 1px solid var(--el-border-color-lighter);
+    border-left: 0;
+  }
+
+  .overview-metric,
+  .overview-metric:nth-child(4) {
+    border-top: 1px solid var(--el-border-color-lighter);
+    border-left: 0;
+  }
+
+  .overview-metric:first-child {
+    border-top: 0;
   }
 
   .candidate-page-title {
     min-width: 0;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0;
   }
 
-  .table-view-label {
-    margin-left: 0;
+  .candidate-page-title p {
+    white-space: normal;
   }
+
+  .criteria-heading,
+  .criteria-title,
+  .criteria-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
 }
 </style>

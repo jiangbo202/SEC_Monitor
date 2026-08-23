@@ -44,12 +44,13 @@ type longbridgeCompanyClient interface {
 }
 
 type LongbridgeCompanyProfileOptions struct {
-	AppKey      string
-	AppSecret   string
-	AccessToken string
-	TTLDays     int
-	Now         func() time.Time
-	NewClient   func(appKey, appSecret, accessToken string) (longbridgeCompanyClient, error)
+	AppKey          string
+	AppSecret       string
+	AccessToken     string
+	TTLDays         int
+	RequestInterval time.Duration
+	Now             func() time.Time
+	NewClient       func(appKey, appSecret, accessToken string) (longbridgeCompanyClient, error)
 }
 
 // FetchLongbridgeCompanyOverview reads one issuer overview without requiring a
@@ -74,7 +75,9 @@ func FetchLongbridgeCompanyOverview(ctx context.Context, cfg config.DiscoveryCon
 	}
 	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 25*time.Second)
 	defer cancel()
-	overview, err := client.Company(requestCtx, ticker+".US")
+	overview, err := longbridgeFundamentalCall(requestCtx, time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS)*time.Millisecond, func(callCtx context.Context) (LongbridgeCompanyOverview, error) {
+		return client.Company(callCtx, ticker+".US")
+	})
 	if err != nil {
 		return LongbridgeCompanyOverview{}, fmt.Errorf("load Longbridge company overview: %w", err)
 	}
@@ -156,7 +159,7 @@ func RefreshLongbridgeCompanyProfile(ctx context.Context, db *gorm.DB, cfg confi
 	}
 	options := LongbridgeCompanyProfileOptions{
 		AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken,
-		TTLDays: cfg.LongbridgeCompanyProfileTTLDays,
+		TTLDays: cfg.LongbridgeCompanyProfileTTLDays, RequestInterval: time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS) * time.Millisecond,
 	}
 	return refreshLongbridgeCompanyProfile(ctx, db, security, listing, options, force)
 }
@@ -226,7 +229,7 @@ func SyncCurrentCandidateLongbridgeCompanyProfiles(ctx context.Context, db *gorm
 		}
 		refreshed, err := refreshLongbridgeCompanyProfile(ctx, db, security, listing, LongbridgeCompanyProfileOptions{
 			AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken,
-			TTLDays: cfg.LongbridgeCompanyProfileTTLDays,
+			TTLDays: cfg.LongbridgeCompanyProfileTTLDays, RequestInterval: time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS) * time.Millisecond,
 		}, false)
 		if refreshed.Cached {
 			result.Cached++
@@ -265,7 +268,7 @@ func RetryCurrentCandidateLongbridgeCompanyProfiles(ctx context.Context, db *gor
 	defer companyProfileBulkRetryMu.Unlock()
 	return retryCurrentCandidateLongbridgeCompanyProfiles(ctx, db, cfg, LongbridgeCompanyProfileOptions{
 		AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken,
-		TTLDays: cfg.LongbridgeCompanyProfileTTLDays,
+		TTLDays: cfg.LongbridgeCompanyProfileTTLDays, RequestInterval: time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS) * time.Millisecond,
 	})
 }
 
@@ -520,7 +523,9 @@ func refreshLongbridgeCompanyProfile(ctx context.Context, db *gorm.DB, security 
 	if err != nil {
 		return result, fmt.Errorf("create Longbridge company client: %w", err)
 	}
-	overview, err := client.Company(ctx, longbridgeSymbol(listing))
+	overview, err := longbridgeFundamentalCall(ctx, options.RequestInterval, func(callCtx context.Context) (LongbridgeCompanyOverview, error) {
+		return client.Company(callCtx, longbridgeSymbol(listing))
+	})
 	if err != nil {
 		_ = saveLongbridgeCompanyProfileAttempt(ctx, db, security.ID, listing.Ticker, now, err)
 		return result, fmt.Errorf("load Longbridge company overview: %w", err)

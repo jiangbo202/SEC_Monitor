@@ -11,7 +11,7 @@
       <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
       <el-form-item :label="t('common.targetGroup')"><el-input v-model="filters.group" clearable style="width: 150px" /></el-form-item>
       <el-form-item :label="t('common.status')">
-        <el-select v-model="filters.status" clearable style="width: 140px">
+        <el-select fit-input-width v-model="filters.status" clearable style="width: 140px">
           <el-option :label="t('common.enabled')" value="enabled" />
           <el-option :label="t('common.disabled')" value="disabled" />
         </el-select>
@@ -140,14 +140,14 @@
         <el-form-item :label="t('common.companyName')"><el-input v-model="form.company_name" /></el-form-item>
         <el-form-item label="CIK"><el-input v-model="form.cik" @input="markManualFundIdentity" /></el-form-item>
         <el-form-item :label="t('common.type')">
-          <el-select v-model="form.target_type" @change="handleTargetTypeChange">
+          <el-select fit-input-width v-model="form.target_type" @change="handleTargetTypeChange">
             <el-option label="Stock" value="stock" />
             <el-option label="ETF" value="etf" />
           </el-select>
         </el-form-item>
         <template v-if="form.target_type === 'etf'">
           <el-form-item v-if="fundCandidates.length" :label="t('pages.targets.fundCandidate')">
-            <el-select v-model="selectedFundCandidateKey" :placeholder="t('pages.targets.fundCandidatePlaceholder')" @change="selectFundCandidate">
+            <el-select fit-input-width v-model="selectedFundCandidateKey" :placeholder="t('pages.targets.fundCandidatePlaceholder')" @change="selectFundCandidate">
               <el-option v-for="candidate in fundCandidates" :key="fundCandidateKey(candidate)" :label="fundCandidateLabel(candidate)" :value="fundCandidateKey(candidate)" />
             </el-select>
           </el-form-item>
@@ -174,7 +174,7 @@
           <el-input v-model="form.group" :placeholder="t('pages.targets.groupPlaceholder')" />
         </el-form-item>
         <el-form-item :label="t('common.status')">
-          <el-select v-model="form.status">
+          <el-select fit-input-width v-model="form.status">
             <el-option :label="t('common.enabled')" value="enabled" />
             <el-option :label="t('common.disabled')" value="disabled" />
           </el-select>
@@ -278,10 +278,10 @@
         <div class="target-detail-section">
           <div class="panel-header target-detail-section-title">
             <span>AI 研判（手动）</span>
-            <el-space><el-select v-model="targetAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select v-model="targetAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!targetAIProvider || !targetAIPromptTemplate" :loading="targetAIGenerating" @click="generateTargetAI">生成研判</el-button></el-space>
+            <el-space><el-select fit-input-width v-model="targetAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="targetAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!targetAIProvider || !targetAIPromptTemplate" :loading="targetAIGenerating" @click="generateTargetAI">生成研判</el-button></el-space>
           </div>
           <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
-          <template v-else-if="targetAIAnalyses.length"><el-select v-model="targetAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in targetAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeTargetAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeTargetAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeTargetAIAnalysis?.system_prompt" :user-prompt="activeTargetAIAnalysis?.user_prompt" /><div style="padding:12px;background:var(--el-fill-color-light);border-radius:4px"><AIAnalysisResult :result="activeTargetAIAnalysis?.structured_result" :content="activeTargetAIAnalysis?.content" /></div></template></template>
+          <template v-else-if="targetAIAnalyses.length"><el-select fit-input-width v-model="targetAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in targetAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeTargetAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeTargetAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeTargetAIAnalysis?.system_prompt" :user-prompt="activeTargetAIAnalysis?.user_prompt" /><div style="padding:12px;background:var(--el-fill-color-light);border-radius:4px"><AIAnalysisResult :result="activeTargetAIAnalysis?.structured_result" :content="activeTargetAIAnalysis?.content" /></div></template></template>
           <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
           <el-alert v-show="activeTargetAIAnalysis?.status === 'queued' || activeTargetAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
         </div>

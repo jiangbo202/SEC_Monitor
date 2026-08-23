@@ -9,7 +9,7 @@
       <el-tab-pane :label="t('pages.notificationLogs.batches')" name="batches">
         <el-form :inline="true" :model="filters" class="toolbar">
           <el-form-item :label="t('pages.notificationLogs.source')">
-            <el-select v-model="filters.source" clearable style="width: 150px">
+            <el-select fit-input-width v-model="filters.source" clearable style="width: 150px">
               <el-option :label="t('pages.notificationLogs.sources.filing')" value="filing" />
               <el-option :label="t('pages.notificationLogs.sources.ipo')" value="ipo" />
               <el-option :label="t('pages.notificationLogs.sources.ipoOffering')" value="ipo_offering" />
@@ -22,7 +22,7 @@
             </el-select>
           </el-form-item>
           <el-form-item :label="t('common.status')">
-            <el-select v-model="filters.status" clearable style="width: 150px">
+            <el-select fit-input-width v-model="filters.status" clearable style="width: 150px">
               <el-option :label="t('pages.notificationLogs.statuses.sent')" value="sent" />
               <el-option :label="t('pages.notificationLogs.statuses.suppressed')" value="suppressed" />
               <el-option :label="t('pages.notificationLogs.statuses.failed')" value="failed" />

@@ -34,7 +34,7 @@
         </template>
         <el-form :model="uiForm" label-width="150px">
           <el-form-item :label="t('pages.configs.defaultLanguage')">
-            <el-select v-model="uiForm.default_locale" style="width: 180px">
+            <el-select fit-input-width v-model="uiForm.default_locale" style="width: 180px">
               <el-option label="中文" value="zh-CN" />
               <el-option label="English" value="en-US" />
             </el-select>
@@ -191,7 +191,7 @@
         </template>
         <el-form :model="schedulerForm" label-width="150px">
           <el-form-item :label="t('pages.configs.schedulerTimezone')">
-            <el-select
+            <el-select fit-input-width
               v-model="schedulerForm.timezone"
               filterable
               allow-create
@@ -223,7 +223,7 @@
         </template>
         <el-form :model="discoveryForm" label-width="280px" class="research-settings-form">
           <el-form-item :label="t('pages.configs.discoveryPriceProvider')">
-            <el-select v-model="discoveryForm.price_provider" style="width: 220px">
+            <el-select fit-input-width v-model="discoveryForm.price_provider" style="width: 220px">
               <el-option :label="t('pages.configs.discoveryProviderAuto')" value="" />
               <el-option label="Longbridge → Tiingo → Twelve Data → Yahoo" value="longbridge,tiingo,twelvedata,yahoo" />
               <el-option label="Longbridge" value="longbridge" />
@@ -1327,9 +1327,9 @@ onMounted(load)
 .config-category-bar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 18px;
-  padding: 14px 16px;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   background: var(--el-fill-color-blank);
@@ -1339,12 +1339,12 @@ onMounted(load)
 .config-section-heading p,
 .collapse-help {
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .config-section {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 .config-section-heading h2 {
@@ -1374,7 +1374,7 @@ onMounted(load)
 }
 
 .collapse-help {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
 }
 
 @media (max-width: 900px) {

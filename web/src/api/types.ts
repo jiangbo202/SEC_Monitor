@@ -307,6 +307,7 @@ export interface CandidateScore {
   price_currency?: string
   price_quality_status?: string
   price_source?: string
+  price_source_role?: 'primary' | 'fallback' | 'unknown' | string
   quality_tier?: string
   quality_tags?: string[]
   quality_adjusted_score?: number
@@ -329,9 +330,24 @@ export interface CandidateScore {
   dilution_trend?: CandidateDilutionTrend
   technical?: CandidateTechnicalAnalysis
   research_readiness?: CandidateResearchReadiness
+  evidence_completeness?: CandidateEvidenceCompleteness
+  grade_explanation?: CandidateGradeExplanation
+  cash_runway_status?: 'measured' | 'positive_cash_flow' | 'unavailable' | string
   business_model?: CandidateBusinessModelEvidence
   valuation?: CandidateValuation
   followed?: boolean
+}
+
+export interface CandidateEvidenceCompleteness {
+  status: 'complete' | 'needs_review' | 'missing' | string
+  reasons: string[]
+}
+
+export interface CandidateGradeExplanation {
+  profile: 'a_strong_signal' | 'b_growth_watch' | 'excluded' | string
+  summary: string
+  unmet_a_conditions: string[]
+  near_a: boolean
 }
 
 export interface CandidateScoringRule {
@@ -579,6 +595,8 @@ export interface CandidateSelectionCriteria {
   market_cap_min_usd: number
   a_market_cap_max_exclusive_usd: number
   b_market_cap_max_exclusive_usd: number
+  a_revenue_growth_min_pct: number
+  b_revenue_growth_min_pct: number
   a_revenue_growth_min_exclusive_pct: number
   b_revenue_growth_min_exclusive_pct: number
   a_runway_min_months: number
@@ -1387,6 +1405,7 @@ export interface DiscoverySyncStep {
   status: 'running' | 'completed' | 'failed' | 'warning' | 'skipped' | string
   message: string
   record_count: number
+  total_count: number
   started_at: string
   completed_at?: string | null
   created_at: string

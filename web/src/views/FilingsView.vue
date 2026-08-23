@@ -4,66 +4,70 @@
       <h1>{{ t('pages.filings.title') }}</h1>
       <el-button type="primary" :loading="refreshing" @click="refresh">{{ t('common.refreshData') }}</el-button>
     </div>
-    <el-form :inline="true" :model="filters" class="toolbar">
-      <el-form-item :label="t('pages.filings.savedViews')">
-        <el-select v-model="activeSavedView" clearable style="width: 170px" @change="applySavedView">
-          <el-option v-for="item in savedViews" :key="item.name" :label="item.name" :value="item.name" />
-        </el-select>
-      </el-form-item>
-      <el-form-item :label="t('pages.filings.quickFilter')">
-        <div class="quick-filter-row">
-          <el-check-tag v-for="item in quickFilters" :key="item.label" :checked="activeQuickFilter === item.label" @change="applyQuickFilter(item)">
-            {{ item.label }}
-          </el-check-tag>
+    <el-form :model="filters" class="toolbar filings-toolbar">
+      <div class="filings-toolbar-top">
+        <el-form-item :label="t('pages.filings.savedViews')" class="saved-view-item">
+          <el-select fit-input-width v-model="activeSavedView" clearable @change="applySavedView">
+            <el-option v-for="item in savedViews" :key="item.name" :label="item.name" :value="item.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="t('pages.filings.quickFilter')" class="quick-filters-item">
+          <div class="quick-filter-row">
+            <el-check-tag v-for="item in quickFilters" :key="item.label" :checked="activeQuickFilter === item.label" @change="applyQuickFilter(item)">
+              {{ item.label }}
+            </el-check-tag>
+          </div>
+        </el-form-item>
+        <div class="filings-view-actions">
+          <el-button @click="saveCurrentView">{{ t('pages.filings.saveView') }}</el-button>
+          <el-button :disabled="!activeSavedView" @click="deleteSavedView">{{ t('pages.filings.deleteView') }}</el-button>
         </div>
-      </el-form-item>
-      <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
-      <el-form-item :label="t('common.company')"><el-input v-model="filters.company_name" clearable /></el-form-item>
-      <el-form-item>
-        <template #label>
-          <span class="filing-type-label">
-            {{ t('common.type') }}
-            <el-tooltip :content="t('pages.filings.typeTooltip')" placement="top">
-              <el-button :icon="QuestionFilled" link class="help-button" @click="typeHelpVisible = true" />
-            </el-tooltip>
-          </span>
-        </template>
-        <el-select
-          v-model="filters.filing_type"
-          clearable
-          filterable
-          :filter-method="filterFilingTypes"
-          :placeholder="t('pages.filings.typePlaceholder')"
-          class="filing-type-select"
-          @visible-change="onFilingTypeDropdownVisible"
-        >
-          <el-option
-            v-for="item in visibleFilingTypes"
-            :key="item.code"
-            :label="`${item.code} - ${item.name}`"
-            :value="item.code"
+      </div>
+      <div class="filings-filter-grid">
+        <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
+        <el-form-item :label="t('common.company')"><el-input v-model="filters.company_name" clearable /></el-form-item>
+        <el-form-item>
+          <template #label>
+            <span class="filing-type-label">
+              {{ t('common.type') }}
+              <el-tooltip :content="t('pages.filings.typeTooltip')" placement="top">
+                <el-button :icon="QuestionFilled" link class="help-button" @click="typeHelpVisible = true" />
+              </el-tooltip>
+            </span>
+          </template>
+          <el-select fit-input-width
+            v-model="filters.filing_type"
+            clearable
+            filterable
+            :filter-method="filterFilingTypes"
+            :placeholder="t('pages.filings.typePlaceholder')"
+            class="filing-type-select"
+            @visible-change="onFilingTypeDropdownVisible"
           >
-            <div class="filing-option">
-              <strong>{{ item.code }}</strong>
-              <span>{{ item.name }}</span>
-            </div>
-          </el-option>
-        </el-select>
-      </el-form-item>
-      <el-form-item :label="t('pages.filings.start')"><el-date-picker v-model="filters.date_from" type="date" value-format="YYYY-MM-DD" /></el-form-item>
-      <el-form-item :label="t('pages.filings.end')"><el-date-picker v-model="filters.date_to" type="date" value-format="YYYY-MM-DD" /></el-form-item>
-      <el-form-item :label="t('pages.filings.notification')">
-        <el-select v-model="filters.notification_status" clearable style="width: 140px">
-          <el-option :label="t('status.success')" value="success" />
-          <el-option :label="t('status.failed')" value="failed" />
-          <el-option :label="t('status.unnotified')" value="unnotified" />
-        </el-select>
-      </el-form-item>
-      <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
-      <el-form-item>
-        <el-button @click="saveCurrentView">{{ t('pages.filings.saveView') }}</el-button>
-        <el-button :disabled="!activeSavedView" @click="deleteSavedView">{{ t('pages.filings.deleteView') }}</el-button>
-      </el-form-item>
+            <el-option
+              v-for="item in visibleFilingTypes"
+              :key="item.code"
+              :label="`${item.code} - ${item.name}`"
+              :value="item.code"
+            >
+              <div class="filing-option">
+                <strong>{{ item.code }}</strong>
+                <span>{{ item.name }}</span>
+              </div>
+            </el-option>
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="t('pages.filings.start')"><el-date-picker v-model="filters.date_from" type="date" value-format="YYYY-MM-DD" /></el-form-item>
+        <el-form-item :label="t('pages.filings.end')"><el-date-picker v-model="filters.date_to" type="date" value-format="YYYY-MM-DD" /></el-form-item>
+        <el-form-item :label="t('pages.filings.notification')">
+          <el-select fit-input-width v-model="filters.notification_status" clearable>
+            <el-option :label="t('status.success')" value="success" />
+            <el-option :label="t('status.failed')" value="failed" />
+            <el-option :label="t('status.unnotified')" value="unnotified" />
+          </el-select>
+        </el-form-item>
+        <el-button class="filings-query-button" :loading="loading" @click="load">{{ t('common.query') }}</el-button>
+      </div>
     </el-form>
     <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.filings.empty')" @sort-change="onSortChange">
       <el-table-column prop="filing_type" :label="t('common.type')" width="140" sortable="custom">
@@ -134,8 +138,8 @@
           <el-descriptions-item label="公告链接" :span="2"><el-link :href="aiFiling.filing_url" target="_blank" type="primary">查看 SEC 原文</el-link></el-descriptions-item>
         </el-descriptions>
         <el-form label-width="92px" style="margin-top:16px">
-          <el-form-item label="模型"><el-select v-model="selectedAIProvider" placeholder="选择模型" style="width:100%"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select></el-form-item>
-          <el-form-item label="提示词模板"><el-select v-model="selectedAIPromptTemplate" placeholder="选择 SEC 公告模板" style="width:100%"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select></el-form-item>
+          <el-form-item label="模型"><el-select fit-input-width v-model="selectedAIProvider" placeholder="选择模型" style="width:100%"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select></el-form-item>
+          <el-form-item label="提示词模板"><el-select fit-input-width v-model="selectedAIPromptTemplate" placeholder="选择 SEC 公告模板" style="width:100%"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select></el-form-item>
         </el-form>
       </template>
       <template #footer><el-button @click="aiDialogVisible = false">取消</el-button><el-button type="primary" :loading="generatingAI" :disabled="!selectedAIProvider || !selectedAIPromptTemplate" @click="generateAIAnalysis">开始分析</el-button></template>
@@ -428,3 +432,119 @@ watch(() => store.locale, () => {
   activeQuickFilter.value = ''
 })
 </script>
+
+<style scoped>
+.filings-toolbar {
+  display: grid;
+  gap: 10px;
+}
+
+.filings-toolbar-top {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.filings-toolbar :deep(.el-form-item) {
+  min-width: 0;
+  margin: 0;
+}
+
+.filings-toolbar-top :deep(.el-form-item) {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.filings-toolbar :deep(.el-form-item__content),
+.filings-toolbar :deep(.el-input),
+.filings-toolbar :deep(.el-select),
+.filings-toolbar :deep(.el-date-editor) {
+  min-width: 0;
+  width: 100% !important;
+}
+
+.quick-filters-item {
+  overflow: hidden;
+}
+
+.quick-filter-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: nowrap;
+  gap: 6px;
+  max-width: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.quick-filter-row::-webkit-scrollbar {
+  display: none;
+}
+
+.quick-filter-row :deep(.el-check-tag) {
+  flex: 1 0 auto;
+  padding: 6px 12px;
+  text-align: center;
+}
+
+.filings-view-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.filings-filter-grid {
+  display: grid;
+  grid-template-columns: .75fr .9fr 1.2fr 1fr 1fr .8fr auto;
+  gap: 8px 10px;
+  align-items: end;
+  padding-top: 10px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.filings-filter-grid :deep(.el-form-item) {
+  display: block;
+}
+
+.filings-filter-grid :deep(.el-form-item__label) {
+  display: flex;
+  height: 20px;
+  justify-content: flex-start;
+  padding: 0;
+  line-height: 18px;
+}
+
+.filings-query-button {
+  align-self: end;
+}
+
+@media (max-width: 1180px) {
+  .filings-toolbar-top {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+
+  .filings-view-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+
+  .filings-filter-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .filings-toolbar-top,
+  .filings-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .filings-toolbar-top :deep(.el-form-item) {
+    display: block;
+  }
+
+  .filings-view-actions {
+    justify-content: flex-start;
+  }
+}
+</style>

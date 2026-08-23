@@ -90,10 +90,10 @@ func New(deps Dependencies) (*gin.Engine, error) {
 	} else if recovered > 0 {
 		log.Printf("closed %d interrupted scheduler execution record(s)", recovered)
 	}
-	if recovered, err := discoverySync.RecoverInterruptedRuns(context.Background()); err != nil {
+	if recovered, err := discoverySync.RecoverOrphanedRunsAtStartup(context.Background()); err != nil {
 		return nil, fmt.Errorf("recover interrupted discovery sync runs: %w", err)
 	} else if recovered > 0 {
-		log.Printf("recovered %d stale discovery sync run(s)", recovered)
+		log.Printf("recovered %d orphaned discovery sync run(s)", recovered)
 	}
 	filings := service.NewFilingService(deps.DB, secClient, notifier, configs).WithDiscoveryDB(deps.DiscoveryDB).WithNotificationCenter(notificationBatches).WithInAppNotifications(inAppNotifications)
 	currentFilingsClient, ok := secClient.(sec.CurrentFilingsClient)
@@ -162,6 +162,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.GET("/discovery/candidates/policy", app.GetDiscoverySmallCapPolicy)
 		api.POST("/discovery/candidates/policy/preview", app.PreviewDiscoverySmallCapPolicy)
 		api.POST("/discovery/candidates/policy/activate", app.ActivateDiscoverySmallCapPolicy)
+		api.POST("/discovery/candidates/rescore", app.RescoreDiscoveryCandidates)
 		api.GET("/discovery/candidates/policy/versions", app.ListDiscoverySmallCapPolicyVersions)
 		api.POST("/discovery/candidates/policy/versions/:id/rollback", app.RollbackDiscoverySmallCapPolicy)
 		api.GET("/discovery/candidates/criteria", app.GetDiscoveryCandidateCriteria)

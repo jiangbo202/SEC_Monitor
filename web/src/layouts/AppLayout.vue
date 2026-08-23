@@ -1,6 +1,6 @@
 <template>
   <el-container class="app-shell">
-    <el-aside width="240px" class="sidebar">
+    <el-aside width="216px" class="sidebar">
       <div class="brand">
         <el-icon><Monitor /></el-icon>
         <span>{{ t('app.title') }}</span>
@@ -44,7 +44,7 @@
       </el-menu>
     </el-aside>
     <el-container>
-      <el-header class="topbar">
+      <el-header height="48px" class="topbar">
         <span>{{ t('app.topbar') }}</span>
         <div class="topbar-actions">
           <el-badge :value="unreadCount" :hidden="unreadCount === 0" :max="99" class="in-app-bell">

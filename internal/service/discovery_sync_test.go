@@ -13,12 +13,13 @@ import (
 )
 
 type fakeDiscoveryRunner struct {
-	securityBatch discovery.UniverseBatch
-	marketBatch   discovery.UniverseBatch
-	securityErr   error
-	marketErr     error
-	securityCalls int
-	marketCalls   int
+	securityBatch             discovery.UniverseBatch
+	marketBatch               discovery.UniverseBatch
+	securityErr               error
+	marketErr                 error
+	securityCalls             int
+	marketCalls               int
+	securityDeadlineRemaining time.Duration
 }
 
 type stubServiceCalendar struct{}
@@ -48,6 +49,9 @@ func (f *fakeWatchTargetPriceProvider) LoadForDate(_ context.Context, expected [
 
 func (f *fakeDiscoveryRunner) SyncSecurityUniverse(ctx context.Context) (discovery.UniverseBatch, error) {
 	f.securityCalls++
+	if deadline, ok := ctx.Deadline(); ok {
+		f.securityDeadlineRemaining = time.Until(deadline)
+	}
 	return f.securityBatch, f.securityErr
 }
 
@@ -78,6 +82,43 @@ func TestDiscoverySyncServiceRunsSecurityAndMarket(t *testing.T) {
 	}
 	if run.Status != DiscoverySyncStatusPublished || run.Phase != "completed" || run.SecurityBatchID != "security" || run.MarketBatchID != "market" || run.CompletedAt == nil {
 		t.Fatalf("sync lifecycle = %#v", run)
+	}
+}
+
+func TestDiscoverySyncServiceUsesIndependentSecurityWorkflowBudget(t *testing.T) {
+	discoveryDB := testDiscoveryDB(t)
+	runner := &fakeDiscoveryRunner{
+		securityBatch: discovery.UniverseBatch{BatchID: "security-budget", Kind: discovery.BatchKindSecurity, Status: discovery.BatchStatusPublished},
+		marketBatch:   discovery.UniverseBatch{BatchID: "market-budget", Kind: discovery.BatchKindPrescreen, Status: discovery.BatchStatusPublished},
+	}
+	_, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{TaskTimeoutMin: 1}).withRunner(runner).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.securityDeadlineRemaining < 3*time.Minute+50*time.Second || runner.securityDeadlineRemaining > 4*time.Minute+time.Second {
+		t.Fatalf("security workflow budget=%s want about 4m", runner.securityDeadlineRemaining)
+	}
+}
+
+func TestSecuritySourceStageObserverPersistsVisibleSubsteps(t *testing.T) {
+	discoveryDB := testDiscoveryDB(t)
+	run := discovery.DiscoverySyncRun{Kind: "full", Status: "running", Phase: "security_universe", StartedAt: time.Now().UTC()}
+	if err := discoveryDB.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{})
+	observer := service.securitySourceStageObserver(run.ID)
+	observer(discovery.SecuritySourceStageProgress{Phase: "security-fundamentals", Status: "running", Message: "开始采集"})
+	observer(discovery.SecuritySourceStageProgress{Phase: "security-fundamentals", Status: "completed", RecordCount: 42, Message: "采集完成"})
+	observer(discovery.SecuritySourceStageProgress{Phase: "security-insiders", Status: "resumed", RecordCount: 7, Message: "复用已完成的数据采集检查点"})
+	observer(discovery.SecuritySourceStageProgress{Phase: "security-capital-events", Status: "running", RecordCount: 25, TotalCount: 100, Message: "已处理 25 个发行人"})
+	observer(discovery.SecuritySourceStageProgress{Phase: "security-capital-events", Status: "failed", Message: "context deadline exceeded"})
+	var steps []discovery.DiscoverySyncStep
+	if err := discoveryDB.Where("run_id = ?", run.ID).Order("sequence ASC").Find(&steps).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 3 || steps[0].Status != "completed" || steps[0].RecordCount != 42 || steps[1].Status != DiscoverySyncRunStatusSkipped || steps[1].RecordCount != 7 || steps[2].Status != "failed" || steps[2].RecordCount != 25 || steps[2].TotalCount != 100 {
+		t.Fatalf("source steps=%#v", steps)
 	}
 }
 
@@ -173,6 +214,32 @@ func TestDiscoverySyncServiceRecoversOnlyStaleRuns(t *testing.T) {
 	}
 	if len(steps) != 1 || steps[0].Status != "failed" || steps[0].CompletedAt == nil {
 		t.Fatalf("steps = %#v, want stale failed", steps)
+	}
+}
+
+func TestDiscoverySyncServiceRecoversFreshOrphanAtStartup(t *testing.T) {
+	discoveryDB := testDiscoveryDB(t)
+	now := time.Now().UTC()
+	run := discovery.DiscoverySyncRun{Kind: "full", Status: "running", Phase: "security_universe", StartedAt: now, UpdatedAt: now}
+	if err := discoveryDB.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	step := discovery.DiscoverySyncStep{RunID: run.ID, Sequence: 1, Phase: "security-insiders", Status: "running", RecordCount: 12, TotalCount: 50, StartedAt: now}
+	if err := discoveryDB.Create(&step).Error; err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).RecoverOrphanedRunsAtStartup(context.Background())
+	if err != nil || recovered != 1 {
+		t.Fatalf("RecoverOrphanedRunsAtStartup = %d, %v; want 1, nil", recovered, err)
+	}
+	if err := discoveryDB.First(&run, run.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.First(&step, step.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != DiscoverySyncRunStatusFailed || step.Status != "failed" || step.RecordCount != 12 || step.TotalCount != 50 {
+		t.Fatalf("run=%#v step=%#v", run, step)
 	}
 }
 

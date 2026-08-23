@@ -59,17 +59,17 @@
 
     <el-tabs v-model="activeTab" class="content-tabs" @tab-change="handleTabChange">
       <el-tab-pane :label="t('pages.ipoRadar.tabs.companies')" name="companies">
-        <el-form :inline="true" :model="companyFilters" class="toolbar">
+        <el-form :inline="true" :model="companyFilters" class="toolbar ipo-toolbar company-toolbar">
           <el-form-item :label="t('common.company')"><el-input v-model="companyFilters.company_name" clearable /></el-form-item>
           <el-form-item :label="t('pages.ipoRadar.ticker')"><el-input v-model="companyFilters.ticker" clearable placeholder="BLSM" /></el-form-item>
           <el-form-item label="CIK"><el-input v-model="companyFilters.cik" clearable /></el-form-item>
           <el-form-item :label="t('common.status')">
-            <el-select v-model="companyFilters.status" clearable style="width: 160px">
+            <el-select fit-input-width v-model="companyFilters.status" clearable style="width: 160px">
               <el-option v-for="item in ipoStatuses" :key="item.value" :label="item.label" :value="item.value" />
             </el-select>
           </el-form-item>
           <el-form-item :label="t('pages.ipoRadar.attention.label')">
-            <el-select v-model="companyFilters.attention" clearable style="width: 170px">
+            <el-select fit-input-width v-model="companyFilters.attention" clearable style="width: 170px">
               <el-option :label="t('pages.ipoRadar.attention.listingPendingOption')" value="listing_pending" />
               <el-option :label="t('pages.ipoRadar.attention.parseFailedOption')" value="parse_failed" />
               <el-option :label="t('pages.ipoRadar.attention.lifecycleStaleOption')" value="lifecycle_stale" />
@@ -155,12 +155,12 @@
       </el-tab-pane>
 
       <el-tab-pane :label="t('pages.ipoRadar.tabs.filings')" name="filings">
-        <el-form :inline="true" :model="filingFilters" class="toolbar">
+        <el-form :inline="true" :model="filingFilters" class="toolbar ipo-toolbar filing-toolbar">
           <el-form-item :label="t('common.company')"><el-input v-model="filingFilters.company_name" clearable /></el-form-item>
           <el-form-item label="CIK"><el-input v-model="filingFilters.cik" clearable /></el-form-item>
           <el-form-item :label="t('common.type')"><el-input v-model="filingFilters.filing_type" clearable placeholder="S-1, EFFECT, 424B4" /></el-form-item>
           <el-form-item :label="t('pages.filings.notification')">
-            <el-select v-model="filingFilters.notified" clearable style="width: 150px">
+            <el-select fit-input-width v-model="filingFilters.notified" clearable style="width: 150px">
               <el-option :label="t('status.success')" value="yes" />
               <el-option :label="t('status.unnotified')" value="no" />
             </el-select>
@@ -198,7 +198,7 @@
 
       <el-tab-pane :label="t('pages.ipoRadar.tabs.calendar')" name="calendar">
         <el-alert :title="t('pages.ipoRadar.calendar.intro')" type="info" :closable="false" show-icon class="calendar-notice" />
-        <el-form :inline="true" :model="calendarFilters" class="toolbar">
+        <el-form :inline="true" :model="calendarFilters" class="toolbar ipo-toolbar calendar-toolbar">
           <el-form-item :label="t('common.company')"><el-input v-model="calendarFilters.company_name" clearable /></el-form-item>
           <el-form-item :label="t('pages.ipoRadar.ticker')"><el-input v-model="calendarFilters.ticker" clearable placeholder="BLSM" /></el-form-item>
           <el-form-item><el-button :loading="calendarLoading" @click="loadCalendar">{{ t('common.query') }}</el-button></el-form-item>
@@ -275,7 +275,7 @@
         <el-divider>{{ t('pages.ipoRadar.manualOverride') }}</el-divider>
         <el-form :model="overrideForm" label-width="120px">
           <el-form-item :label="t('common.status')">
-            <el-select v-model="overrideForm.status_override" clearable>
+            <el-select fit-input-width v-model="overrideForm.status_override" clearable>
               <el-option v-for="item in ipoStatuses" :key="item.value" :label="item.label" :value="item.value" />
             </el-select>
           </el-form-item>
@@ -645,8 +645,8 @@ onMounted(async () => {
 .ipo-health-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 6px;
+  margin-bottom: 10px;
 }
 
 .health-tag-action {
@@ -654,29 +654,136 @@ onMounted(async () => {
 }
 
 .ipo-action-panel {
-  margin-bottom: 16px;
+  margin-bottom: 10px;
+}
+
+.ipo-action-panel :deep(.el-alert__content),
+.ipo-action-panel :deep(.el-alert__description) {
+  width: 100%;
+}
+
+.ipo-action-panel :deep(.el-alert__description) {
+  margin: 4px 0 0;
 }
 
 .ipo-action-list {
   display: grid;
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  margin-top: 4px;
+}
+
+.ipo-action-list + .ipo-action-list {
   margin-top: 8px;
 }
 
 .ipo-action-section-title {
+  grid-column: 1 / -1;
   color: var(--el-text-color-primary);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .ipo-action-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(230, 162, 60, 0.18);
+  border-radius: 6px;
+}
+
+.ipo-action-item > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
 }
 
 .ipo-action-description {
+  overflow: hidden;
   margin-left: 8px;
   color: var(--el-text-color-regular);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ipo-toolbar {
+  display: grid;
+  gap: 8px 12px;
+  align-items: end;
+}
+
+.ipo-toolbar :deep(.el-form-item) {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  min-width: 0;
+  margin: 0 !important;
+}
+
+.ipo-toolbar :deep(.el-form-item__content),
+.ipo-toolbar :deep(.el-input),
+.ipo-toolbar :deep(.el-select) {
+  min-width: 0;
+  width: 100% !important;
+}
+
+.company-toolbar {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.filing-toolbar {
+  grid-template-columns: 1.1fr .8fr 1.35fr .9fr auto;
+}
+
+.calendar-toolbar {
+  grid-template-columns: 1.2fr .9fr auto;
+}
+
+.company-toolbar :deep(.el-form-item:nth-child(n + 6)) {
+  display: flex;
+}
+
+@media (min-width: 1600px) {
+  .company-toolbar {
+    grid-template-columns: 1.15fr .8fr .85fr .9fr 1.15fr auto auto auto;
+  }
+}
+
+@media (max-width: 900px) {
+  .company-toolbar,
+  .filing-toolbar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .ipo-action-list,
+  .company-toolbar,
+  .filing-toolbar,
+  .calendar-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .ipo-action-item {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .ipo-action-item > div {
+    display: grid;
+    gap: 4px;
+  }
+
+  .ipo-action-description {
+    margin-left: 0;
+    white-space: normal;
+  }
+
+  .ipo-action-item > .el-button {
+    justify-self: start;
+  }
 }
 </style>

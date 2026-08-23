@@ -23,7 +23,7 @@
       <el-table-column label="Cron" min-width="200">
         <template #default="{ row }">
           <div class="cron-editor">
-            <el-select :placeholder="t('pages.scheduler.commonFrequency')" style="width: 150px" @change="(value: string) => applyCron(row, value)">
+            <el-select fit-input-width :placeholder="t('pages.scheduler.commonFrequency')" style="width: 150px" @change="(value: string) => applyCron(row, value)">
               <el-option v-for="item in cronPresets" :key="item.value" :label="item.label" :value="item.value" />
             </el-select>
             <el-input v-model="row.cron_expr" />
@@ -272,7 +272,7 @@ onMounted(load)
 
 <style scoped>
 .scheduler-timezone {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .task-description {

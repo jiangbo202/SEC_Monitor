@@ -20,11 +20,11 @@ func TestBuildCandidateInvestabilitySeparatesLiquidityFromCompanyScore(t *testin
 		{name: "liquid daily evidence is tradable", item: base, wantStatus: InvestabilityTradable},
 		{name: "modest liquidity is constrained", item: func() CandidateScoreResult { row := base; row.MarketQuality.AverageDollarVolume = 300_000; return row }(), wantStatus: InvestabilityConstrained, wantReason: "average_dollar_volume_below_500k"},
 		{name: "thin liquidity is blocked", item: func() CandidateScoreResult { row := base; row.MarketQuality.AverageDollarVolume = 99_000; return row }(), wantStatus: InvestabilityBlocked, wantReason: "average_dollar_volume_below_100k"},
-		{name: "reverse split risk is blocked", item: func() CandidateScoreResult {
+		{name: "capital risk is evaluated separately from liquidity", item: func() CandidateScoreResult {
 			row := base
-			row.CapitalRiskSummaries = []CapitalRiskSummary{{Kind: CapitalEventReverseSplit}}
+			row.CapitalRiskSummaries = []CapitalRiskSummary{{Kind: CapitalEventReverseSplit}, {Kind: CapitalEventGoingConcern}}
 			return row
-		}(), wantStatus: InvestabilityBlocked, wantReason: "reverse_split_risk"},
+		}(), wantStatus: InvestabilityTradable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

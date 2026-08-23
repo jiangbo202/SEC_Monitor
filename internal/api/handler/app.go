@@ -1100,7 +1100,8 @@ func (h *AppHandler) RefreshDiscoveryCandidates(c *gin.Context) {
 	// A full SEC discovery run can take much longer than an HTTP request.  The
 	// browser may cancel its request while the user keeps the page open (or
 	// navigates away), but that must not abort the persisted workflow midway.
-	// Run still applies its configured end-to-end task timeout internally.
+	// Run still applies configured per-phase timeouts and an outer SEC workflow
+	// safety limit internally.
 	result, err := h.discoverySyncService().Run(context.WithoutCancel(c.Request.Context()))
 	if err != nil {
 		Error(c, err)
