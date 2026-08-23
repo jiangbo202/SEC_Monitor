@@ -221,25 +221,25 @@ func CheckSmallCapEligibility(ctx context.Context, db *gorm.DB, input SmallCapEl
 	growthStatus := EligibilityStatusUnavailable
 	if growthAvailable {
 		growthStatus = EligibilityStatusPass
-		if growth <= result.Criteria.BRevenueGrowthMinExclusivePct {
+		if growth < result.Criteria.BRevenueGrowthMinPct {
 			growthStatus = EligibilityStatusFail
 		}
 	}
 	if !financialFound {
 		growthDetail = "当前批次未找到财务指标快照。"
 	}
-	result.Conditions = append(result.Conditions, eligibilityCondition("revenue_growth_b", "收入增长", "B级", fmt.Sprintf("%s > %.0f%%", result.Criteria.RevenueGrowthSelection, result.Criteria.BRevenueGrowthMinExclusivePct), growthActual, growthStatus, growthDetail))
+	result.Conditions = append(result.Conditions, eligibilityCondition("revenue_growth_b", "收入增长", "B型", fmt.Sprintf("%s ≥ %.0f%%", result.Criteria.RevenueGrowthSelection, result.Criteria.BRevenueGrowthMinPct), growthActual, growthStatus, growthDetail))
 	growthAStatus := EligibilityStatusUnavailable
 	if growthAvailable {
 		growthAStatus = EligibilityStatusPass
-		if growth <= result.Criteria.ARevenueGrowthMinExclusivePct {
+		if growth < result.Criteria.ARevenueGrowthMinPct {
 			growthAStatus = EligibilityStatusFail
 		}
 	}
-	result.Conditions = append(result.Conditions, eligibilityCondition("revenue_growth_a", "收入增长", "A级", fmt.Sprintf("%s > %.0f%%", result.Criteria.RevenueGrowthSelection, result.Criteria.ARevenueGrowthMinExclusivePct), growthActual, growthAStatus, growthDetail))
+	result.Conditions = append(result.Conditions, eligibilityCondition("revenue_growth_a", "收入增长", "A型", fmt.Sprintf("%s ≥ %.0f%%", result.Criteria.RevenueGrowthSelection, result.Criteria.ARevenueGrowthMinPct), growthActual, growthAStatus, growthDetail))
 
 	runwayStatus, runwayActual, runwayDetail := eligibilityRunway(financial, financialFound, result.Criteria)
-	result.Conditions = append(result.Conditions, eligibilityCondition("cash_runway", "现金 runway", "A级", fmt.Sprintf("现金 runway ≥ %.0f 个月", result.Criteria.ARunwayMinMonths), runwayActual, runwayStatus, runwayDetail))
+	result.Conditions = append(result.Conditions, eligibilityCondition("cash_runway", "现金 runway", "A型", fmt.Sprintf("现金 runway ≥ %.0f 个月", result.Criteria.ARunwayMinMonths), runwayActual, runwayStatus, runwayDetail))
 
 	var insiders []InsiderTransactionSnapshot
 	if err := db.WithContext(ctx).Where("security_id = ?", universe.SecurityID).Find(&insiders).Error; err != nil {
@@ -252,7 +252,7 @@ func CheckSmallCapEligibility(ctx context.Context, db *gorm.DB, input SmallCapEl
 		evidence.InsiderCoverage = &coverage
 	}
 	insiderStatus, insiderActual, insiderDetail := eligibilityInsider(insiders, coverage, coverageFound, now, result.Criteria)
-	result.Conditions = append(result.Conditions, eligibilityCondition("qualified_insider_buy", "合格内幕买入", "A级", result.Criteria.QualifiedInsiderRequirement, insiderActual, insiderStatus, insiderDetail))
+	result.Conditions = append(result.Conditions, eligibilityCondition("qualified_insider_buy", "合格内幕买入", "加分项", result.Criteria.QualifiedInsiderRequirement, insiderActual, insiderStatus, insiderDetail))
 
 	var risks []CapitalRiskSnapshot
 	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id = ? AND active = ?", securityBatchID, universe.SecurityID, true).Find(&risks).Error; err != nil {
@@ -273,20 +273,16 @@ func CheckSmallCapEligibility(ctx context.Context, db *gorm.DB, input SmallCapEl
 	if blocksB {
 		riskBStatus = EligibilityStatusFail
 	}
-	result.Conditions = append(result.Conditions, eligibilityCondition("capital_risk_b", "融资/稀释风险", "B级", "无 B 级阻断", riskActual, riskBStatus, riskDetail))
+	result.Conditions = append(result.Conditions, eligibilityCondition("capital_risk_b", "融资/稀释风险", "B型", "无 B 型阻断", riskActual, riskBStatus, riskDetail))
 	riskAStatus := EligibilityStatusPass
 	if blocksA || blocksB {
 		riskAStatus = EligibilityStatusFail
 	}
-	result.Conditions = append(result.Conditions, eligibilityCondition("capital_risk_a", "融资/稀释风险", "A级", "无 A/B 级阻断", riskActual, riskAStatus, riskDetail))
+	result.Conditions = append(result.Conditions, eligibilityCondition("capital_risk_a", "融资/稀释风险", "A型", "无 A/B 型阻断", riskActual, riskAStatus, riskDetail))
 
 	sector := SectorRatingForSIC(identity.SIC)
-	sectorStatus := EligibilityStatusPass
-	if sector.Score < result.Criteria.BMinSectorScore {
-		sectorStatus = EligibilityStatusFail
-	}
 	sectorDetail := fmt.Sprintf("基于 SIC %d 归类为 %s，当前赛道分为 %d/10。", identity.SIC, sector.Category, sector.Score)
-	result.Conditions = append(result.Conditions, eligibilityCondition("sector_rating", "赛道评分", "B级", fmt.Sprintf("赛道评分 ≥ %d/10", result.Criteria.BMinSectorScore), fmt.Sprintf("%s · %d/10", sector.Category, sector.Score), sectorStatus, sectorDetail))
+	result.Conditions = append(result.Conditions, eligibilityCondition("sector_rating", "赛道评分", "加分项", "赛道分 0–10 直接计入总分，不作为 B 型硬门槛", fmt.Sprintf("%s · %d/10", sector.Category, sector.Score), EligibilityStatusPass, sectorDetail))
 
 	overrides, err := activeCandidateBusinessModels(ctx, db, []uint{universe.SecurityID})
 	if err != nil {
@@ -307,7 +303,7 @@ func CheckSmallCapEligibility(ctx context.Context, db *gorm.DB, input SmallCapEl
 	if modelActual == CandidateBusinessModelNotApplicable {
 		modelActual = "不适用（非生物医药）"
 	}
-	result.Conditions = append(result.Conditions, eligibilityCondition("business_model", "业务模型校准", "A级", "非临床前、非未确认的里程碑/授权收入", modelActual, modelStatus, businessModel.RevenueScoreCapReason))
+	result.Conditions = append(result.Conditions, eligibilityCondition("business_model", "业务模型校准", "A型", "非临床前、非未确认的里程碑/授权收入", modelActual, modelStatus, businessModel.RevenueScoreCapReason))
 
 	marketAStatus := EligibilityStatusUnavailable
 	if universe.QualityStatus == QualityStatusValid && universe.MarketCapUSD > 0 {
@@ -316,15 +312,15 @@ func CheckSmallCapEligibility(ctx context.Context, db *gorm.DB, input SmallCapEl
 			marketAStatus = EligibilityStatusFail
 		}
 	}
-	result.Conditions = append(result.Conditions, eligibilityCondition("market_cap_a", "市值", "A级", fmt.Sprintf("%s ≤ 市值 < %s", formatEligibilityUSD(result.Criteria.MarketCapMinUSD), formatEligibilityUSD(result.Criteria.AMarketCapMaxExclusiveUSD)), marketActual, marketAStatus, marketDetail))
+	result.Conditions = append(result.Conditions, eligibilityCondition("market_cap_a", "市值", "A型", fmt.Sprintf("%s ≤ 市值 < %s", formatEligibilityUSD(result.Criteria.MarketCapMinUSD), formatEligibilityUSD(result.Criteria.AMarketCapMaxExclusiveUSD)), marketActual, marketAStatus, marketDetail))
 
-	result.EligibleB = result.InSmallCapPool && growthStatus == EligibilityStatusPass && riskBStatus == EligibilityStatusPass && sectorStatus == EligibilityStatusPass
-	result.EligibleA = marketAStatus == EligibilityStatusPass && growthAStatus == EligibilityStatusPass && runwayStatus == EligibilityStatusPass && insiderStatus == EligibilityStatusPass && riskAStatus == EligibilityStatusPass && modelStatus == EligibilityStatusPass
+	result.EligibleB = result.InSmallCapPool && growthStatus == EligibilityStatusPass && riskBStatus == EligibilityStatusPass
+	result.EligibleA = marketAStatus == EligibilityStatusPass && growthAStatus == EligibilityStatusPass && runwayStatus == EligibilityStatusPass && riskAStatus == EligibilityStatusPass && modelStatus == EligibilityStatusPass
 	switch {
 	case result.EligibleA:
-		result.Grade, result.Summary = CandidateGradeA, "满足当前 A 级候选规则。"
+		result.Grade, result.Summary = CandidateGradeA, "满足当前 A 型强信号规则。"
 	case result.EligibleB:
-		result.Grade, result.Summary = CandidateGradeB, "满足当前 B 级候选规则。"
+		result.Grade, result.Summary = CandidateGradeB, "满足当前 B 型成长观察规则。"
 	case result.InSmallCapPool:
 		result.Grade, result.Summary = CandidateGradeExcluded, "属于小盘候选池，但尚未满足 A/B 级全部条件。"
 	default:

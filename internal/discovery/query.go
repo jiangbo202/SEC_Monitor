@@ -86,6 +86,7 @@ type CandidateScoreResult struct {
 	PriceCurrency         string                         `json:"price_currency"`
 	PriceQualityStatus    string                         `json:"price_quality_status"`
 	PriceSource           string                         `json:"price_source"`
+	PriceSourceRole       string                         `json:"price_source_role"`
 	QualityTier           string                         `json:"quality_tier"`
 	QualityTags           []string                       `json:"quality_tags"`
 	QualityAdjustedScore  int                            `json:"quality_adjusted_score"`
@@ -108,6 +109,9 @@ type CandidateScoreResult struct {
 	DilutionTrend         CandidateDilutionTrend         `json:"dilution_trend"`
 	Technical             CandidateTechnicalAnalysis     `json:"technical"`
 	ResearchReadiness     CandidateResearchReadiness     `json:"research_readiness"`
+	EvidenceCompleteness  CandidateEvidenceCompleteness  `json:"evidence_completeness"`
+	GradeExplanation      CandidateGradeExplanation      `json:"grade_explanation"`
+	CashRunwayStatus      string                         `json:"cash_runway_status"`
 	BusinessModel         CandidateBusinessModelEvidence `json:"business_model"`
 	Valuation             CandidateValuation             `json:"valuation"`
 	Followed              bool                           `json:"followed"`
@@ -395,6 +399,7 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	if err = hydrateCandidateResearchReadiness(ctx, db, batch, items); err != nil {
 		return result, err
 	}
+	annotateCandidateGradeExplanations(items, policy)
 	changesNeeded := strings.TrimSpace(filter.ChangeStatus) != ""
 	if changesNeeded {
 		items, err = annotateCandidateChanges(ctx, db, batch, items)
@@ -406,7 +411,7 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		if err = hydrateCandidateRecentAnomalies(ctx, db, items); err != nil {
 			return result, err
 		}
-		annotateCandidateQuality(items)
+		annotateCandidateQualityWithPolicy(items, policy)
 	}
 	items = filterCandidateScoreResults(items, filter)
 	sortCandidateScoreResults(items, filter.SortBy, filter.SortOrder)
@@ -451,7 +456,7 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		if err = hydrateCandidateRecentAnomalies(ctx, db, result.Items); err != nil {
 			return result, err
 		}
-		annotateCandidateQuality(result.Items)
+		annotateCandidateQualityWithPolicy(result.Items, policy)
 	}
 	if err = annotateCandidateFollowed(ctx, db, result.Items); err != nil {
 		return result, err
@@ -951,8 +956,17 @@ func candidateGradeRank(grade string) int {
 }
 
 func annotateCandidateQuality(items []CandidateScoreResult) {
+	annotateCandidateQualityWithPolicy(items, DefaultSmallCapPolicy())
+}
+
+func annotateCandidateQualityWithPolicy(items []CandidateScoreResult, policy SmallCapPolicy) {
+	if normalized, err := NormalizeSmallCapPolicy(policy); err == nil {
+		policy = normalized
+	} else {
+		policy = DefaultSmallCapPolicy()
+	}
 	for i := range items {
-		items[i].QualityTags = candidateQualityTags(items[i])
+		items[i].QualityTags = candidateQualityTagsWithPolicy(items[i], policy)
 		items[i].QualityTier = candidateQualityTier(items[i])
 		items[i].QualityAdjustedScore = candidateQualityAdjustedScore(items[i])
 		items[i].ReviewPriorityReasons = candidateReviewPriorityReasons(items[i])
@@ -1103,6 +1117,10 @@ func normalizeCandidateGradeFilter(value string) string {
 }
 
 func candidateQualityTags(item CandidateScoreResult) []string {
+	return candidateQualityTagsWithPolicy(item, DefaultSmallCapPolicy())
+}
+
+func candidateQualityTagsWithPolicy(item CandidateScoreResult, policy SmallCapPolicy) []string {
 	seen := map[string]struct{}{}
 	tags := []string{}
 	add := func(tag string) {
@@ -1128,17 +1146,17 @@ func candidateQualityTags(item CandidateScoreResult) []string {
 	if item.ActiveBlocksA || item.ActiveBlocksB || len(item.CapitalRiskSummaries) > 0 {
 		add("active_capital_risk")
 	}
-	if item.PriceVolume > 0 && item.PriceVolume < 100_000 {
+	if item.MarketQuality.AverageDollarVolume > 0 && item.MarketQuality.AverageDollarVolume < policy.TradableADVUSD {
 		add("low_liquidity")
 	}
-	if item.PriceSource != "" && item.PriceSource != "tiingo" {
+	if item.PriceSourceRole == "fallback" {
 		add("secondary_price_source")
 	}
 	if item.PriceQualityStatus != "" && item.PriceQualityStatus != QualityStatusValid {
 		add("price_quality_" + item.PriceQualityStatus)
 	}
 	if item.MarketQuality.Status == "risk" {
-		if item.MarketQuality.AverageDollarVolume < 500_000 {
+		if item.MarketQuality.AverageDollarVolume < policy.TradableADVUSD {
 			add("low_dollar_volume")
 		}
 		if item.MarketQuality.VolatilityPct >= 10 {
@@ -1202,13 +1220,13 @@ func candidateReviewPriorityReasons(item CandidateScoreResult) []ReviewPriorityR
 	add("质量调整分", item.QualityAdjustedScore*60/100)
 	switch item.QualityTier {
 	case "a":
-		add("质量：A级", 20)
+		add("质量：高质量", 20)
 	case "strong_b":
-		add("质量：强B", 12)
+		add("质量：较强", 12)
 	case "standard_b":
-		add("质量：普通B", 5)
+		add("质量：标准", 5)
 	case "watch_b":
-		add("质量：观察B", -10)
+		add("质量：观察", -10)
 	}
 	if item.ChangeStatus == "new" {
 		add("变化：新增", 5)
@@ -1375,6 +1393,7 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batch Unive
 	if len(items) == 0 {
 		return items, nil
 	}
+	primaryPriceSource := candidatePrimaryPriceSourceForBatch(ctx, db, batch.BatchID)
 	securityIDs := make([]uint, 0, len(items))
 	for _, item := range items {
 		securityIDs = append(securityIDs, item.SecurityID)
@@ -1439,6 +1458,7 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batch Unive
 		}
 	}
 	if len(tickers) == 0 {
+		annotateCandidatePriceSourceRoles(items, primaryPriceSource)
 		return items, nil
 	}
 	// Only a recent local quote can supersede the immutable price selected for
@@ -1473,7 +1493,40 @@ func hydrateCandidatePriceEvidence(ctx context.Context, db *gorm.DB, batch Unive
 		}
 		applyCandidatePriceEvidence(&items[i], batch, price)
 	}
+	annotateCandidatePriceSourceRoles(items, primaryPriceSource)
 	return items, nil
+}
+
+func candidatePrimaryPriceSourceForBatch(ctx context.Context, db *gorm.DB, batchID string) string {
+	var run ProviderRun
+	if err := db.WithContext(ctx).Where("batch_id = ?", batchID).Order("created_at DESC, id DESC").First(&run).Error; err != nil {
+		return ""
+	}
+	if hydrateProviderRunAttempts(&run) == nil && len(run.Attempts) > 0 {
+		if provider := strings.TrimSpace(run.Attempts[0].Provider); provider != "" {
+			return provider
+		}
+	}
+	provider := strings.TrimSpace(run.Provider)
+	if index := strings.Index(provider, ","); index >= 0 {
+		provider = strings.TrimSpace(provider[:index])
+	}
+	return provider
+}
+
+func annotateCandidatePriceSourceRoles(items []CandidateScoreResult, primarySource string) {
+	primarySource = strings.TrimSpace(primarySource)
+	for i := range items {
+		source := strings.TrimSpace(items[i].PriceSource)
+		switch {
+		case source == "" || primarySource == "":
+			items[i].PriceSourceRole = "unknown"
+		case strings.EqualFold(source, primarySource):
+			items[i].PriceSourceRole = "primary"
+		default:
+			items[i].PriceSourceRole = "fallback"
+		}
+	}
 }
 
 func applyCandidatePriceEvidence(item *CandidateScoreResult, batch UniverseBatch, price PriceSnapshot) {

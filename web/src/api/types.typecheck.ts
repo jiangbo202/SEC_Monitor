@@ -64,6 +64,8 @@ export const candidateSelectionCriteriaTypecheck: CandidateSelectionCriteria = {
   market_cap_min_usd: 30_000_000,
   a_market_cap_max_exclusive_usd: 500_000_000,
   b_market_cap_max_exclusive_usd: 1_000_000_000,
+  a_revenue_growth_min_pct: 40,
+  b_revenue_growth_min_pct: 20,
   a_revenue_growth_min_exclusive_pct: 40,
   b_revenue_growth_min_exclusive_pct: 20,
   a_runway_min_months: 12,

@@ -28,7 +28,7 @@
           <el-button :type="filters.status === 'published' ? 'primary' : 'default'" @click="showLatest">最新数据</el-button>
           <el-button :type="filters.status === 'scheduled' ? 'primary' : 'default'" @click="showPending">待公布 {{ pendingCount }}</el-button>
         </el-button-group>
-        <el-select v-model="filters.category" clearable placeholder="全部数据类别" style="width: 170px">
+        <el-select fit-input-width v-model="filters.category" clearable placeholder="全部数据类别" style="width: 170px">
           <el-option label="个人收入与支出 / PCE" value="personal_income_outlays" />
           <el-option label="GDP / 实际消费" value="gdp" />
           <el-option label="就业报告 / 非农" value="employment" />
@@ -48,14 +48,14 @@
           <el-option label="FOMC 会议" value="fomc" />
 		  <el-option label="Longbridge 高重要性市场日历" value="market_calendar" />
         </el-select>
-        <el-select v-model="filters.frequency" clearable placeholder="全部频率" style="width: 130px">
+        <el-select fit-input-width v-model="filters.frequency" clearable placeholder="全部频率" style="width: 130px">
 		  <el-option label="每日" value="daily" />
           <el-option label="每周" value="weekly" />
           <el-option label="月度" value="monthly" />
           <el-option label="季度" value="quarterly" />
           <el-option label="政策会议" value="meeting" />
         </el-select>
-        <el-select v-model="filters.sort" style="width: 160px">
+        <el-select fit-input-width v-model="filters.sort" style="width: 160px">
           <el-option label="时间：最近优先" value="desc" />
           <el-option label="时间：最早优先" value="asc" />
         </el-select>
@@ -444,11 +444,11 @@ onMounted(load)
 </script>
 
 <style scoped>
-.macro-source-alert { margin-bottom: 16px; }
+.macro-source-alert { margin-bottom: 12px; }
 .macro-category-tag, .macro-cell-overflow { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .macro-category-tag { width: fit-content; }
 .macro-sync-note { margin-top: 6px; font-size: 12px; color: var(--el-text-color-secondary); }
-.macro-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.macro-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .macro-count { margin-left: auto; color: var(--el-text-color-secondary); font-size: 13px; }
 .macro-latest-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 0 0 16px; }
 .macro-latest-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 14px 16px; background: var(--el-fill-color-lighter); cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
@@ -471,7 +471,7 @@ onMounted(load)
 .macro-trend-dot { fill: var(--el-color-primary); stroke: white; stroke-width: 2.5; vector-effect: non-scaling-stroke; cursor: pointer; transition: r .15s ease, filter .15s ease; }
 .macro-trend-dot:hover { r: 7; filter: drop-shadow(0 2px 3px rgb(64 158 255 / 35%)); }
 .macro-trend-axis { display: flex; justify-content: space-between; padding-left: 64px; color: var(--el-text-color-secondary); font-size: 12px; }
-.macro-trend-single-value { font-size: 24px; font-weight: 700; }
+.macro-trend-single-value { font-size: 22px; font-weight: 700; }
 .macro-trend-single-period { margin-top: 8px; color: var(--el-text-color-secondary); font-size: 12px; }
 .macro-trend-tooltip { position: absolute; z-index: 3; min-width: 200px; max-width: 280px; padding: 10px 12px; border: 1px solid rgb(255 255 255 / 18%); border-radius: 8px; color: #f8fafc; background: rgb(31 41 55 / 96%); box-shadow: 0 8px 24px rgb(15 23 42 / 24%); pointer-events: none; }
 .macro-trend-tooltip-title { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 1.35; color: #dbeafe; }
@@ -479,7 +479,7 @@ onMounted(load)
 .macro-trend-tooltip-value { margin-top: 4px; font-size: 20px; font-weight: 700; line-height: 1.2; }
 .macro-trend-tooltip-meta { margin-top: 4px; font-size: 12px; line-height: 1.35; color: #cbd5e1; }
 .macro-latest-label { color: var(--el-text-color-secondary); font-size: 13px; }
-.macro-latest-value { margin-top: 6px; color: var(--el-color-primary); font-size: 26px; font-weight: 700; }
+.macro-latest-value { margin-top: 4px; color: var(--el-color-primary); font-size: 22px; font-weight: 700; }
 .macro-latest-value.is-up { color: var(--el-color-success); }
 .macro-latest-value.is-down { color: var(--el-color-danger); }
 .macro-latest-metric { margin-top: 4px; color: var(--el-text-color-primary); font-size: 13px; }
@@ -495,6 +495,6 @@ onMounted(load)
 .macro-source-association-note { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.55; }
 .macro-source-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .macro-disclaimer { margin-top: 10px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; }
-.pagination-row { display: flex; justify-content: flex-end; margin-top: 16px; }
+.pagination-row { display: flex; justify-content: flex-end; margin-top: 12px; }
 @media (max-width: 900px) { .macro-count { width: 100%; margin-left: 0; } .macro-observation-detail { padding-left: 8px; } }
 </style>

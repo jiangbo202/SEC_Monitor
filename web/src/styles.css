@@ -5,35 +5,59 @@ body,
   margin: 0;
 }
 
+:root {
+  --app-content-gap: 12px;
+  --app-panel-padding-x: 14px;
+  --app-panel-padding-y: 12px;
+  --el-font-size-base: 13px;
+  --el-component-size: 32px;
+  --el-component-size-small: 28px;
+  --el-border-radius-base: 6px;
+}
+
 body {
   color: #1f2937;
   background: #f3f6f8;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-shell > .el-container {
+  min-width: 0;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
+  display: flex;
+  height: 100vh;
+  flex-direction: column;
+  overflow: hidden;
   background: #fbfcfd;
   border-right: 1px solid #dfe5ec;
 }
 
 .brand {
-  height: 56px;
+  height: 48px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 20px;
+  padding: 0 16px;
+  font-size: 14px;
   font-weight: 700;
   color: #111827;
   border-bottom: 1px solid #dfe5ec;
 }
 
 .brand .el-icon {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   color: #0f766e;
   background: #e6fffb;
   border-radius: 8px;
@@ -46,6 +70,8 @@ body {
   gap: 16px;
   background: rgba(255, 255, 255, 0.9);
   border-bottom: 1px solid #dfe5ec;
+  padding: 0 16px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -138,15 +164,26 @@ body {
 }
 
 .sidebar .el-menu {
+  min-height: 0;
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: transparent;
   border-right: 0;
+  scrollbar-width: thin;
 }
 
 .sidebar .el-menu-item {
-  height: 40px;
-  margin: 2px 10px;
-  border-radius: 8px;
+  height: 34px;
+  margin: 1px 8px;
+  border-radius: 6px;
   color: #4b5563;
+  font-size: 13px;
+  line-height: 34px;
+}
+
+.sidebar .el-menu-item .el-icon {
+  font-size: 16px;
 }
 
 .sidebar .el-menu-item.is-active {
@@ -155,7 +192,7 @@ body {
 }
 
 .nav-section-label {
-  padding: 16px 20px 6px;
+  padding: 12px 16px 4px;
   color: #8a95a3;
   font-size: 11px;
   font-weight: 700;
@@ -163,40 +200,75 @@ body {
 }
 
 h1 {
-  margin: 0 0 20px;
-  font-size: 24px;
-  line-height: 32px;
+  margin: 0 0 12px;
+  font-size: 22px;
+  line-height: 30px;
 }
 
-.page {
-  max-width: 1440px;
+.page,
+.page-container {
+  width: 100%;
+  max-width: 1600px;
   margin: 0 auto;
 }
 
-.page-header {
+.el-main {
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+  scrollbar-width: thin;
+}
+
+#app .page-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
+  gap: 10px 16px;
+  margin-bottom: 12px;
 }
 
-.page-header h1 {
+#app .page-header h1,
+#app .page-header h2 {
   margin: 0;
+  font-size: 22px;
+  line-height: 30px;
+}
+
+#app .page-header > div:first-child:has(> h1, > h2) {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+}
+
+#app .page-header > div:first-child:has(> h1, > h2) > p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .page-subtitle {
-  margin: 6px 0 0;
+  margin: 0;
   color: #6b7280;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .toolbar {
-  padding: 16px;
-  margin-bottom: 16px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
   background: #ffffff;
   border: 1px solid #dfe5ec;
   border-radius: 8px;
+}
+
+.toolbar.el-form .el-form-item,
+.toolbar .el-form-item {
+  margin-bottom: 0;
 }
 
 .el-card {
@@ -204,8 +276,25 @@ h1 {
   border-radius: 8px;
 }
 
+.el-card > .el-card__header {
+  padding: 10px 14px;
+}
+
+.el-card > .el-card__body {
+  padding: 12px 14px;
+}
+
 .el-table {
   border-radius: 8px;
+  font-size: 12px;
+}
+
+.el-table .el-table__cell {
+  padding: 7px 0;
+}
+
+.el-table .cell {
+  line-height: 20px;
 }
 
 /*
@@ -239,6 +328,86 @@ h1 {
   font-weight: 600;
 }
 
+.el-form-item__label,
+.el-checkbox__label,
+.el-radio__label,
+.el-pagination,
+.el-descriptions {
+  font-size: 12px;
+}
+
+/*
+ * Compact form controls across the application. Keep this scoped to text-like
+ * fields so buttons and other controls retain their existing visual weight.
+ */
+#app .el-input:not(.el-input--large) .el-input__wrapper,
+#app .el-select:not(.el-select--large) .el-select__wrapper,
+#app .el-date-editor:not(.el-range-editor--large).el-input__wrapper,
+#app .el-date-editor:not(.el-range-editor--large).el-range-editor {
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  padding-right: 8px;
+  padding-left: 8px;
+  font-size: 12px;
+}
+
+#app .el-input:not(.el-input--large) .el-input__inner,
+#app .el-select:not(.el-select--large) .el-select__placeholder,
+#app .el-select:not(.el-select--large) .el-select__selected-item,
+#app .el-date-editor:not(.el-range-editor--large) .el-range-input {
+  font-size: 12px;
+}
+
+#app .el-input-number:not(.el-input-number--large),
+#app .el-input-number:not(.el-input-number--large) .el-input__wrapper {
+  height: 28px;
+  min-height: 28px;
+}
+
+#app .el-textarea__inner {
+  padding: 5px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Select poppers are teleported outside #app, so their compact rules are global. */
+.el-select__popper .el-select-dropdown__wrap {
+  max-height: 232px;
+}
+
+.el-select__popper .el-select-dropdown__list {
+  padding: 4px 0;
+}
+
+.el-select__popper .el-select-dropdown__item {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 28px;
+}
+
+.el-descriptions__cell {
+  padding: 7px 10px !important;
+}
+
+.el-alert {
+  padding: 8px 12px;
+}
+
+.el-alert__title {
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.el-tabs__header {
+  margin-bottom: 12px;
+}
+
+.el-pagination {
+  --el-pagination-button-height: 28px;
+}
+
 .el-table .el-button + .el-dropdown {
   margin-left: 8px;
 }
@@ -266,6 +435,28 @@ h1 {
   flex-wrap: wrap;
   gap: 8px;
   max-width: 520px;
+}
+
+@media (max-width: 900px) {
+  .el-main {
+    padding: 12px;
+  }
+
+  #app .page-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  #app .page-header > div:first-child:has(> h1, > h2) {
+    flex-basis: 100%;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  #app .page-header > div:first-child:has(> h1, > h2) > p {
+    white-space: normal;
+  }
 }
 
 .filing-type-cell {
@@ -332,7 +523,7 @@ h1 {
 .pagination {
   display: flex;
   justify-content: flex-end;
-  margin-top: 16px;
+  margin-top: 12px;
 }
 
 .form-card {
@@ -342,7 +533,7 @@ h1 {
 .config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: 16px;
+  gap: 12px;
   align-items: start;
 }
 
@@ -353,7 +544,7 @@ h1 {
 }
 
 .cleanup-preview {
-  margin-top: 16px;
+  margin-top: 12px;
 }
 
 .config-risk-list {
@@ -398,18 +589,18 @@ h1 {
 .metric {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .metric span {
   color: #6b7280;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .metric strong {
   color: #111827;
-  font-size: 28px;
-  line-height: 36px;
+  font-size: 24px;
+  line-height: 30px;
 }
 
 .metric small {
@@ -420,20 +611,20 @@ h1 {
 .dashboard-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .page-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .health-alert-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .health-alert-grid .el-alert {
@@ -455,42 +646,42 @@ h1 {
 .operational-summary {
   white-space: pre-line;
   color: #5f6978;
-  line-height: 1.65;
-  margin: 8px 0 14px;
+  line-height: 1.55;
+  margin: 7px 0 10px;
 }
 
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .section-label {
-  margin: 2px 0 10px;
+  margin: 2px 0 8px;
   color: #5f6978;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
 }
 
 .ipo-kpi-grid {
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .kpi-card .el-card__body {
-  padding: 18px;
+  padding: 12px 14px;
 }
 
 .kpi-card-inner {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
 }
 
 .kpi-icon {
-  width: 36px;
-  height: 36px;
-  padding: 9px;
+  width: 32px;
+  height: 32px;
+  padding: 7px;
   color: #2563eb;
   background: #eff6ff;
   border-radius: 8px;
@@ -499,7 +690,7 @@ h1 {
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 12px;
 }
 
 .quality-strip {
@@ -507,7 +698,17 @@ h1 {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 900px) {
+  .quality-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .quality-strip .export-actions {
+    justify-content: flex-start;
+  }
 }
 
 .detail-drawer-body {
@@ -535,18 +736,18 @@ h1 {
 .panel-header-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .status-block {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .status-block strong {
   color: #111827;
-  font-size: 20px;
+  font-size: 18px;
 }
 
 .status-block span {
@@ -558,12 +759,12 @@ h1 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .ipo-summary-row div {
   min-width: 0;
-  padding: 12px;
+  padding: 10px;
   background: #f8fafc;
   border: 1px solid #eef2f7;
   border-radius: 8px;
@@ -589,14 +790,14 @@ h1 {
 .target-health {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 
 .health-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-bottom: 12px;
+  padding-bottom: 8px;
   border-bottom: 1px solid #eef2f7;
 }
 
@@ -611,7 +812,7 @@ h1 {
 
 .health-row strong {
   color: #111827;
-  font-size: 20px;
+  font-size: 18px;
 }
 
 .health-row.danger strong {
@@ -666,7 +867,7 @@ h1 {
 .target-detail {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
 }
 
 .target-detail-summary {
@@ -678,7 +879,7 @@ h1 {
 .target-detail-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
 }
 
 .target-detail-section-title {
@@ -690,13 +891,13 @@ h1 {
 }
 
 .onboarding-steps {
-  margin-top: 18px;
+  margin-top: 12px;
 }
 
 .export-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 @media (max-width: 1100px) {

@@ -32,6 +32,16 @@ func TestBuildCandidateResearchReadiness(t *testing.T) {
 		{name: "missing price blocks ranking", item: CandidateScoreResult{CandidateScoreSnapshot: CandidateScoreSnapshot{MarketCapUSD: 100_000_000}, PriceFreshnessStatus: PriceFreshnessMissing}, metricFound: true, period: recentPeriod, insiderAvailable: true, insiderSourceDeclared: true, wantStatus: CandidateResearchReadinessBlocked, wantReason: "market_price_unavailable"},
 		{name: "missing financial metrics are research only", item: base, metricFound: false, period: recentPeriod, insiderAvailable: true, insiderSourceDeclared: true, wantStatus: CandidateResearchReadinessResearchOnly, wantReason: "financial_metrics_unavailable"},
 		{name: "partial insider coverage is research only", item: base, metricFound: true, period: recentPeriod, insiderAvailable: true, insiderSourceDeclared: true, wantStatus: CandidateResearchReadinessResearchOnly, wantReason: "insider_coverage_partial"},
+		{name: "reverse split risk blocks research independently", item: func() CandidateScoreResult {
+			row := base
+			row.CapitalRiskSummaries = []CapitalRiskSummary{{Kind: CapitalEventReverseSplit}}
+			return row
+		}(), metricFound: true, period: recentPeriod, insiderAvailable: true, insiderSourceDeclared: true, wantStatus: CandidateResearchReadinessBlocked, wantReason: "capital_risk_blocks_research"},
+		{name: "going concern risk blocks research independently", item: func() CandidateScoreResult {
+			row := base
+			row.CapitalRiskSummaries = []CapitalRiskSummary{{Kind: CapitalEventGoingConcern}}
+			return row
+		}(), metricFound: true, period: recentPeriod, insiderAvailable: true, insiderSourceDeclared: true, wantStatus: CandidateResearchReadinessBlocked, wantReason: "capital_risk_blocks_research"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -70,6 +80,12 @@ func TestRecommendCandidateResearchNextStep(t *testing.T) {
 			readiness: CandidateResearchReadiness{Status: CandidateResearchReadinessResearchOnly, Reasons: []string{"financial_period_stale"}},
 			priority:  "review",
 			action:    "核对最新 10-Q / 10-K 财务指标",
+		},
+		{
+			name:      "capital risk blocks research",
+			readiness: CandidateResearchReadiness{Status: CandidateResearchReadinessBlocked, Reasons: []string{"capital_risk_blocks_research"}},
+			priority:  "blocked",
+			action:    "先复核重大资本风险",
 		},
 		{
 			name:      "ready technical catalyst review",

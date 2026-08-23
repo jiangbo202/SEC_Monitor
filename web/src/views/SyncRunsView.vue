@@ -10,7 +10,7 @@
 
     <el-form :inline="true" class="toolbar">
       <el-form-item label="任务">
-        <el-select v-model="filters.task_name" clearable filterable placeholder="全部任务" style="width: 260px">
+        <el-select fit-input-width v-model="filters.task_name" clearable filterable placeholder="全部任务" style="width: 260px">
           <el-option v-for="task in loggableTasks" :key="task.task_name" :label="taskLabel(task.task_name)" :value="task.task_name">
             <span>{{ taskLabel(task.task_name) }}</span>
             <span class="option-code">{{ task.task_name }}</span>
@@ -18,7 +18,7 @@
         </el-select>
       </el-form-item>
       <el-form-item label="状态">
-        <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 135px">
+        <el-select fit-input-width v-model="filters.status" clearable placeholder="全部状态" style="width: 135px">
           <el-option label="成功" value="success" />
           <el-option label="部分完成" value="partial" />
           <el-option label="已跳过" value="skipped" />
@@ -28,7 +28,7 @@
         </el-select>
       </el-form-item>
       <el-form-item label="触发方式">
-        <el-select v-model="filters.trigger" clearable placeholder="全部方式" style="width: 135px">
+        <el-select fit-input-width v-model="filters.trigger" clearable placeholder="全部方式" style="width: 135px">
           <el-option label="定时调度" value="scheduled" />
           <el-option label="手动执行" value="manual" />
         </el-select>
@@ -79,7 +79,7 @@
       </template>
       <el-form :inline="true" class="toolbar compact-toolbar">
         <el-form-item label="状态">
-          <el-select v-model="legacyFilters.status" clearable placeholder="全部状态" style="width: 150px">
+          <el-select fit-input-width v-model="legacyFilters.status" clearable placeholder="全部状态" style="width: 150px">
             <el-option label="成功" value="success" /><el-option label="部分完成" value="partial" />
             <el-option label="失败" value="failed" /><el-option label="暂缓" value="deferred" /><el-option label="运行中" value="running" />
           </el-select>
@@ -270,7 +270,7 @@ onMounted(async () => {
 <style scoped>
 .task-code, .option-code { color: var(--el-text-color-secondary); font-size: 12px; }
 .option-code { margin-left: 10px; }
-.legacy-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.legacy-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .legacy-header span { margin-left: 12px; color: var(--el-text-color-secondary); font-size: 13px; }
 .compact-toolbar { margin-bottom: 12px; }
 </style>

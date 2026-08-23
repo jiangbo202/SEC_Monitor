@@ -10,7 +10,7 @@
     <el-form :inline="true" :model="filters" class="toolbar">
       <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
       <el-form-item :label="t('pages.eventRadar.filterMajor')">
-        <el-select v-model="filters.filing_type" clearable style="width: 160px">
+        <el-select fit-input-width v-model="filters.filing_type" clearable style="width: 160px">
           <el-option v-for="item in majorTypes" :key="item" :label="item" :value="item" />
         </el-select>
       </el-form-item>

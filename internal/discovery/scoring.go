@@ -11,7 +11,7 @@ const (
 	CandidateGradeExcluded = "excluded"
 )
 
-const DiscoveryScoringVersion = "small-cap-discovery-score-v2-biotech-calibrated"
+const DiscoveryScoringVersion = "small-cap-discovery-score-v3-flexible-gates"
 
 const (
 	CandidateAMarketCapMaxExclusiveUSD = int64(500_000_000)
@@ -26,25 +26,29 @@ const (
 // CandidateSelectionCriteria exposes the active, code-defined research rules
 // so the UI can describe the same criteria that the scoring engine applies.
 type CandidateSelectionCriteria struct {
-	ScoringVersion                string                 `json:"scoring_version"`
-	ScoringRubric                 CandidateScoringRubric `json:"scoring_rubric"`
-	MarketCapMinUSD               int64                  `json:"market_cap_min_usd"`
-	AMarketCapMaxExclusiveUSD     int64                  `json:"a_market_cap_max_exclusive_usd"`
-	BMarketCapMaxExclusiveUSD     int64                  `json:"b_market_cap_max_exclusive_usd"`
-	ARevenueGrowthMinExclusivePct float64                `json:"a_revenue_growth_min_exclusive_pct"`
-	BRevenueGrowthMinExclusivePct float64                `json:"b_revenue_growth_min_exclusive_pct"`
-	ARunwayMinMonths              float64                `json:"a_runway_min_months"`
-	InsiderLookbackDays           int                    `json:"insider_lookback_days"`
-	BMinSectorScore               int                    `json:"b_min_sector_score"`
-	AllowedExchanges              []string               `json:"allowed_exchanges"`
-	MaxPriceAgeTradingDays        int                    `json:"max_price_age_trading_days"`
-	MinimumPriceUSD               float64                `json:"minimum_price_usd"`
-	BlockedADVUSD                 float64                `json:"blocked_adv_usd"`
-	TradableADVUSD                float64                `json:"tradable_adv_usd"`
-	MinimumHistoryDays            int                    `json:"minimum_history_days"`
-	RevenueGrowthSelection        string                 `json:"revenue_growth_selection"`
-	QualifiedInsiderRequirement   string                 `json:"qualified_insider_requirement"`
-	ActiveCapitalRiskRequirement  string                 `json:"active_capital_risk_requirement"`
+	ScoringVersion            string                 `json:"scoring_version"`
+	ScoringRubric             CandidateScoringRubric `json:"scoring_rubric"`
+	MarketCapMinUSD           int64                  `json:"market_cap_min_usd"`
+	AMarketCapMaxExclusiveUSD int64                  `json:"a_market_cap_max_exclusive_usd"`
+	BMarketCapMaxExclusiveUSD int64                  `json:"b_market_cap_max_exclusive_usd"`
+	ARevenueGrowthMinPct      float64                `json:"a_revenue_growth_min_pct"`
+	BRevenueGrowthMinPct      float64                `json:"b_revenue_growth_min_pct"`
+	// Legacy aliases are retained for older clients. Growth thresholds are
+	// inclusive despite the historical field name.
+	ARevenueGrowthMinExclusivePct float64  `json:"a_revenue_growth_min_exclusive_pct"`
+	BRevenueGrowthMinExclusivePct float64  `json:"b_revenue_growth_min_exclusive_pct"`
+	ARunwayMinMonths              float64  `json:"a_runway_min_months"`
+	InsiderLookbackDays           int      `json:"insider_lookback_days"`
+	BMinSectorScore               int      `json:"b_min_sector_score"`
+	AllowedExchanges              []string `json:"allowed_exchanges"`
+	MaxPriceAgeTradingDays        int      `json:"max_price_age_trading_days"`
+	MinimumPriceUSD               float64  `json:"minimum_price_usd"`
+	BlockedADVUSD                 float64  `json:"blocked_adv_usd"`
+	TradableADVUSD                float64  `json:"tradable_adv_usd"`
+	MinimumHistoryDays            int      `json:"minimum_history_days"`
+	RevenueGrowthSelection        string   `json:"revenue_growth_selection"`
+	QualifiedInsiderRequirement   string   `json:"qualified_insider_requirement"`
+	ActiveCapitalRiskRequirement  string   `json:"active_capital_risk_requirement"`
 }
 
 func CurrentCandidateSelectionCriteria() CandidateSelectionCriteria {
@@ -58,6 +62,8 @@ func CandidateSelectionCriteriaForPolicy(policy SmallCapPolicy) CandidateSelecti
 		MarketCapMinUSD:               policy.MarketCapMinUSD,
 		AMarketCapMaxExclusiveUSD:     policy.AMarketCapMaxExclusiveUSD,
 		BMarketCapMaxExclusiveUSD:     policy.MarketCapMaxUSD,
+		ARevenueGrowthMinPct:          policy.ARevenueGrowthMinPct,
+		BRevenueGrowthMinPct:          policy.BRevenueGrowthMinPct,
 		ARevenueGrowthMinExclusivePct: policy.ARevenueGrowthMinPct,
 		BRevenueGrowthMinExclusivePct: policy.BRevenueGrowthMinPct,
 		ARunwayMinMonths:              policy.ARunwayMinMonths,
@@ -70,8 +76,8 @@ func CandidateSelectionCriteriaForPolicy(policy SmallCapPolicy) CandidateSelecti
 		TradableADVUSD:                policy.TradableADVUSD,
 		MinimumHistoryDays:            policy.MinimumHistoryDays,
 		RevenueGrowthSelection:        "优先最新可比季度收入同比；季度不可用时回退年度同比",
-		QualifiedInsiderRequirement:   fmt.Sprintf("近 %d 日 CEO、CFO 或创始人的合格 Form 4 公开市场买入", policy.InsiderLookbackDays),
-		ActiveCapitalRiskRequirement:  "A级不允许 A/B 阻断；B级不允许 B 阻断",
+		QualifiedInsiderRequirement:   fmt.Sprintf("近 %d 日 CEO、CFO 或创始人的合格 Form 4 公开市场买入可获得 20 分加分，不作为 A 型硬门槛", policy.InsiderLookbackDays),
+		ActiveCapitalRiskRequirement:  "A 型不允许 A/B 阻断；B 型不允许 B 阻断",
 	}
 }
 
@@ -145,9 +151,9 @@ func ScoreDiscoveryCandidateWithPolicy(input DiscoveryScoreInput, policy SmallCa
 	score.ScoringRubricJSON, score.ScoringRubricSHA256 = candidateScoringRubricJSON(policy)
 	if growthAvailable {
 		switch {
-		case growth >= 40:
+		case growth >= policy.ARevenueGrowthMinPct:
 			score.RevenueGrowthScore = 30
-		case growth >= 20:
+		case growth >= policy.BRevenueGrowthMinPct:
 			score.RevenueGrowthScore = 20
 		case growth > 0:
 			score.RevenueGrowthScore = 10
@@ -158,7 +164,7 @@ func ScoreDiscoveryCandidateWithPolicy(input DiscoveryScoreInput, policy SmallCa
 	}
 	if input.Financial.RunwayAvailable {
 		switch {
-		case input.Financial.CashRunwayMonths >= 12:
+		case input.Financial.CashRunwayMonths >= policy.ARunwayMinMonths:
 			score.CashRunwayScore = 20
 		case input.Financial.CashRunwayMonths >= 6:
 			score.CashRunwayScore = 10
@@ -186,12 +192,11 @@ func ScoreDiscoveryCandidateWithPolicy(input DiscoveryScoreInput, policy SmallCa
 		!(input.BusinessModel.Model == CandidateBusinessModelMixedOrLicensing && !input.BusinessModel.RevenueRepeatableConfirmed) &&
 		input.BusinessModel.Model != CandidateBusinessModelUnknown
 	score.EligibleA = modelAllowsA && input.MarketCapUSD >= policy.MarketCapMinUSD && input.MarketCapUSD < policy.AMarketCapMaxExclusiveUSD &&
-		growthAvailable && growth > policy.ARevenueGrowthMinPct &&
+		growthAvailable && growth >= policy.ARevenueGrowthMinPct &&
 		input.Financial.RunwayAvailable && input.Financial.CashRunwayMonths >= policy.ARunwayMinMonths &&
-		recentInsider && !blocksA && !blocksB
+		!blocksA && !blocksB
 	score.EligibleB = input.MarketCapUSD >= policy.MarketCapMinUSD && input.MarketCapUSD < policy.MarketCapMaxUSD &&
-		growthAvailable && growth > policy.BRevenueGrowthMinPct && !blocksB &&
-		score.SectorScore >= policy.BMinSectorScore
+		growthAvailable && growth >= policy.BRevenueGrowthMinPct && !blocksB
 	switch {
 	case score.EligibleA:
 		score.Grade = CandidateGradeA

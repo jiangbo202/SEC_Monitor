@@ -62,7 +62,7 @@ func TestScoreDiscoveryCandidateDowngradesForAOnlyRiskAndMissingInsider(t *testi
 	}
 }
 
-func TestScoreDiscoveryCandidateRequiresStrongSectorForBGrade(t *testing.T) {
+func TestScoreDiscoveryCandidateTreatsSectorAsBonusRatherThanBGradeGate(t *testing.T) {
 	asOf := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	input := DiscoveryScoreInput{
 		SecurityID:   10,
@@ -77,7 +77,7 @@ func TestScoreDiscoveryCandidateRequiresStrongSectorForBGrade(t *testing.T) {
 	}
 
 	score := ScoreDiscoveryCandidate(input)
-	if score.Grade != CandidateGradeExcluded || score.EligibleB {
+	if score.Grade != CandidateGradeB || !score.EligibleB || score.SectorScore != 6 {
 		t.Fatalf("low-sector score = %#v", score)
 	}
 
@@ -85,6 +85,34 @@ func TestScoreDiscoveryCandidateRequiresStrongSectorForBGrade(t *testing.T) {
 	score = ScoreDiscoveryCandidate(input)
 	if score.Grade != CandidateGradeB || !score.EligibleB || score.SectorScore != 7 {
 		t.Fatalf("strong-sector score = %#v", score)
+	}
+}
+
+func TestScoreDiscoveryCandidateTreatsInsiderAsBonusAndUsesInclusivePolicyThresholds(t *testing.T) {
+	policy := DefaultSmallCapPolicy()
+	policy.ARevenueGrowthMinPct = 45
+	policy.BRevenueGrowthMinPct = 25
+	policy.ARunwayMinMonths = 15
+	input := DiscoveryScoreInput{
+		MarketCapUSD: 200_000_000,
+		Financial: FinancialMetricSnapshot{
+			RevenueGrowthAvailable: true,
+			RunwayAvailable:        true,
+			QuarterlyRevenueYoYPct: policy.ARevenueGrowthMinPct,
+			CashRunwayMonths:       policy.ARunwayMinMonths,
+		},
+		BusinessModel: CandidateBusinessModelEvidence{Model: CandidateBusinessModelCommercial},
+	}
+	score := ScoreDiscoveryCandidateWithPolicy(input, policy)
+	if score.Grade != CandidateGradeA || !score.EligibleA || score.InsiderScore != 0 || score.RevenueGrowthScore != 30 || score.CashRunwayScore != 20 {
+		t.Fatalf("inclusive A threshold without insider = %#v", score)
+	}
+	input.MarketCapUSD = 700_000_000
+	input.Financial.RunwayAvailable = false
+	input.Financial.QuarterlyRevenueYoYPct = policy.BRevenueGrowthMinPct
+	score = ScoreDiscoveryCandidateWithPolicy(input, policy)
+	if score.Grade != CandidateGradeB || !score.EligibleB || score.RevenueGrowthScore != 20 {
+		t.Fatalf("inclusive B threshold = %#v", score)
 	}
 }
 

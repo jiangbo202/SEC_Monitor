@@ -55,14 +55,14 @@ func CandidateScoringRubricForPolicy(policy SmallCapPolicy) CandidateScoringRubr
 		Formula:  "总分 = 收入增长 + 现金储备 + 内幕增持 + 毛利率 + 稀释风险 + 赛道空间",
 		MaxScore: 100,
 		Dimensions: []CandidateScoringDimension{
-			{Key: "revenue_growth", Label: "收入增长", MaxPoints: 30, WeightPct: 30, Evidence: "SEC 财务事实；优先季度同比，缺失时回退年度同比", Rules: []CandidateScoringRule{{Condition: "增长率 ≥ 40%", Points: 30}, {Condition: "20% ≤ 增长率 < 40%", Points: 20}, {Condition: "0% < 增长率 < 20%", Points: 10}, {Condition: "增长率 ≤ 0% 或证据缺失", Points: 0}}, Adjustment: "临床前收入、一次性授权收入或未确认业务模型可触发收入分上限"},
-			{Key: "cash_runway", Label: "现金储备", MaxPoints: 20, WeightPct: 20, Evidence: "SEC 现金与经营现金流快照", Rules: []CandidateScoringRule{{Condition: "现金 runway ≥ 12 个月", Points: 20}, {Condition: "6 ≤ 现金 runway < 12 个月", Points: 10}, {Condition: "现金 runway < 6 个月或证据缺失", Points: 0}}},
+			{Key: "revenue_growth", Label: "收入增长", MaxPoints: 30, WeightPct: 30, Evidence: "SEC 财务事实；优先季度同比，缺失时回退年度同比", Rules: []CandidateScoringRule{{Condition: fmt.Sprintf("增长率 ≥ %.0f%%", policy.ARevenueGrowthMinPct), Points: 30}, {Condition: fmt.Sprintf("%.0f%% ≤ 增长率 < %.0f%%", policy.BRevenueGrowthMinPct, policy.ARevenueGrowthMinPct), Points: 20}, {Condition: fmt.Sprintf("0%% < 增长率 < %.0f%%", policy.BRevenueGrowthMinPct), Points: 10}, {Condition: "增长率 ≤ 0% 或证据缺失", Points: 0}}, Adjustment: "临床前收入、一次性授权收入或未确认业务模型可触发收入分上限"},
+			{Key: "cash_runway", Label: "现金储备", MaxPoints: 20, WeightPct: 20, Evidence: "SEC 现金与经营现金流快照", Rules: []CandidateScoringRule{{Condition: fmt.Sprintf("现金 runway ≥ %.0f 个月", policy.ARunwayMinMonths), Points: 20}, {Condition: fmt.Sprintf("6 ≤ 现金 runway < %.0f 个月", policy.ARunwayMinMonths), Points: 10}, {Condition: "现金 runway < 6 个月或证据缺失", Points: 0}}},
 			{Key: "qualified_insider", Label: "内幕增持", MaxPoints: 20, WeightPct: 20, Evidence: "SEC Form 4 公开市场买入", Rules: []CandidateScoringRule{{Condition: fmt.Sprintf("近 %d 日 CEO、CFO 或创始人存在合格买入", policy.InsiderLookbackDays), Points: 20}, {Condition: "不满足或覆盖证据不足", Points: 0}}},
 			{Key: "gross_margin", Label: "毛利率", MaxPoints: 10, WeightPct: 10, Evidence: "SEC 财务事实计算的毛利率", Rules: []CandidateScoringRule{{Condition: "毛利率 ≥ 50%", Points: 10}, {Condition: "30% ≤ 毛利率 < 50%", Points: 5}, {Condition: "毛利率 < 30% 或证据缺失", Points: 0}}},
 			{Key: "dilution_risk", Label: "稀释风险", MaxPoints: 10, WeightPct: 10, Evidence: "SEC 融资、稀释与持续经营风险事件", Rules: []CandidateScoringRule{{Condition: "不存在生效中的 A/B 级阻断", Points: 10}, {Condition: "存在任一生效阻断", Points: 0}}},
 			{Key: "sector", Label: "赛道空间", MaxPoints: 10, WeightPct: 10, Evidence: "SIC 分类与人工确认的赛道规则", Rules: []CandidateScoringRule{{Condition: "使用 0–10 的赛道原始分，超过 10 按 10 计", Points: 10}, {Condition: "无正向赛道分", Points: 0}}},
 		},
-		GradeRuleNote: "A/B 等级由市值、增长、现金、内幕、赛道及风险闸门单独决定；总分相同不保证等级相同。",
+		GradeRuleNote: "A 型由市值、增长、现金、业务模型和资本风险闸门决定；B 型由小盘市值、增长和 B 级风险闸门决定。内幕买入与赛道分只参与加分，总分相同不保证等级相同。",
 		Disclaimer:    CandidateScoringDisclaimer,
 	}
 	payload, _ := json.Marshal(rubric)

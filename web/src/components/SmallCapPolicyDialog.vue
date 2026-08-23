@@ -31,11 +31,11 @@
           <el-input-number v-model="form.marketCapMinMillion" :min="1" :max="100000" :step="5" controls-position="right" />
           <span class="form-help">{{ formatUSD(form.marketCapMinMillion * million) }}</span>
         </el-form-item>
-        <el-form-item label="A级市值上限（百万美元，不含）" :error="validationErrors.aMaximum">
+        <el-form-item label="A 型强信号市值上限（百万美元，不含）" :error="validationErrors.aMaximum">
           <el-input-number v-model="form.aMarketCapMaxMillion" :min="1" :max="100000" :step="25" controls-position="right" />
           <span class="form-help">{{ formatUSD(form.aMarketCapMaxMillion * million) }}</span>
         </el-form-item>
-        <el-form-item label="候选池 / B级上限（百万美元，不含）" :error="validationErrors.bMaximum">
+        <el-form-item label="候选池 / B 型成长观察上限（百万美元，不含）" :error="validationErrors.bMaximum">
           <el-input-number v-model="form.bMarketCapMaxMillion" :min="1" :max="100000" :step="50" controls-position="right" />
           <span class="form-help">{{ formatUSD(form.bMarketCapMaxMillion * million) }}</span>
         </el-form-item>
@@ -166,8 +166,8 @@ const previewCurrent = computed(() => Boolean(preview.value && previewKey.value 
 const validationErrors = computed(() => {
   const result = { minimum: '', aMaximum: '', bMaximum: '' }
   if (!Number.isFinite(form.marketCapMinMillion) || form.marketCapMinMillion <= 0) result.minimum = '最低市值必须大于 0'
-  if (form.aMarketCapMaxMillion <= form.marketCapMinMillion) result.aMaximum = 'A级上限必须大于最低市值'
-  if (form.bMarketCapMaxMillion <= form.aMarketCapMaxMillion) result.bMaximum = '候选池上限必须大于 A级上限'
+  if (form.aMarketCapMaxMillion <= form.marketCapMinMillion) result.aMaximum = 'A 型上限必须大于最低市值'
+  if (form.bMarketCapMaxMillion <= form.aMarketCapMaxMillion) result.bMaximum = '候选池上限必须大于 A 型上限'
   if (form.bMarketCapMaxMillion > 100000) result.bMaximum = '候选池上限不能超过 1000 亿美元'
   return result
 })
@@ -179,8 +179,8 @@ const previewCountRows = computed(() => {
   if (!before || !after) return []
   return [
     { label: '市值范围内', before: before.in_market_cap_scope, after: after.in_market_cap_scope },
-    { label: 'A级候选', before: before.grade_a, after: after.grade_a },
-    { label: 'B级候选', before: before.grade_b, after: after.grade_b },
+    { label: 'A 型强信号', before: before.grade_a, after: after.grade_a },
+    { label: 'B 型成长观察', before: before.grade_b, after: after.grade_b },
     { label: '排除池', before: before.excluded, after: after.excluded },
   ]
 })
@@ -327,8 +327,8 @@ function warningLabel(value: string) {
 }
 
 function gradeLabel(value?: string) {
-  if (value === 'A') return 'A级'
-  if (value === 'B') return 'B级'
+  if (value === 'A') return 'A 型强信号'
+  if (value === 'B') return 'B 型成长观察'
   if (!value || value === 'excluded') return '排除池'
   return value
 }

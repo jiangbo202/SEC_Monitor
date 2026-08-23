@@ -30,6 +30,7 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 		"SMALL_CAP_YAHOO_BASE_URL",
 		"SMALL_CAP_YAHOO_REQUEST_BUDGET",
 		"SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS",
+		"SMALL_CAP_LONGBRIDGE_FUNDAMENTAL_REQUEST_INTERVAL_MS",
 		"SMALL_CAP_RESEARCH_MODE",
 		"SMALL_CAP_AUTO_TECHNICAL_HISTORY_WARMUP",
 		"SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT",
@@ -84,6 +85,9 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 	if cfg.Discovery.YahooBaseURL != "https://query1.finance.yahoo.com" || cfg.Discovery.YahooRequestBudget != 45 {
 		t.Fatalf("yahoo config = base:%q budget:%d", cfg.Discovery.YahooBaseURL, cfg.Discovery.YahooRequestBudget)
 	}
+	if cfg.Discovery.LongbridgeFundamentalRequestIntervalMS != 1100 {
+		t.Fatalf("longbridge fundamental request interval = %d", cfg.Discovery.LongbridgeFundamentalRequestIntervalMS)
+	}
 	if cfg.Discovery.TwelveDataAPIKey != "" || cfg.Discovery.TwelveDataBaseURL != "https://api.twelvedata.com" || cfg.Discovery.TwelveDataRequestBudget != 700 || cfg.Discovery.TwelveDataRequestIntervalMS != 8000 {
 		t.Fatalf("twelve data config = key:%q base:%q budget:%d interval:%d", cfg.Discovery.TwelveDataAPIKey, cfg.Discovery.TwelveDataBaseURL, cfg.Discovery.TwelveDataRequestBudget, cfg.Discovery.TwelveDataRequestIntervalMS)
 	}
@@ -137,6 +141,7 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	t.Setenv("SMALL_CAP_YAHOO_BASE_URL", "https://yahoo.example.test")
 	t.Setenv("SMALL_CAP_YAHOO_REQUEST_BUDGET", "30")
 	t.Setenv("SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS", "500")
+	t.Setenv("SMALL_CAP_LONGBRIDGE_FUNDAMENTAL_REQUEST_INTERVAL_MS", "1250")
 	t.Setenv("SMALL_CAP_RESEARCH_MODE", "false")
 	t.Setenv("SMALL_CAP_AUTO_TECHNICAL_HISTORY_WARMUP", "false")
 	t.Setenv("SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT", "35.5")
@@ -179,6 +184,9 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	}
 	if cfg.YahooBaseURL != "https://yahoo.example.test" || cfg.YahooRequestBudget != 30 || cfg.YahooRequestIntervalMS != 500 {
 		t.Fatalf("yahoo config = %#v", cfg)
+	}
+	if cfg.LongbridgeFundamentalRequestIntervalMS != 1250 {
+		t.Fatalf("longbridge fundamental request interval = %d", cfg.LongbridgeFundamentalRequestIntervalMS)
 	}
 	if cfg.ResearchMode {
 		t.Fatalf("research mode should be disabled by override")

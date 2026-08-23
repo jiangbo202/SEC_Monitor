@@ -291,7 +291,7 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	if page.Items[0].ReviewPriorityScore <= page.Items[1].ReviewPriorityScore || page.Items[0].ReviewPriorityScore > 100 {
 		t.Fatalf("default priority order not applied: %#v", page.Items)
 	}
-	if !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "质量：强B", 12) || !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "变化：改善", 8) {
+	if !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "质量：较强", 12) || !containsPriorityReason(page.Items[0].ReviewPriorityReasons, "变化：改善", 8) {
 		t.Fatalf("strong candidate priority reasons = %#v", page.Items[0].ReviewPriorityReasons)
 	}
 	if !containsString(page.Items[1].QualityTags, "low_revenue_base") || !containsString(page.Items[1].QualityTags, "low_liquidity") || page.Items[1].QualityTier != "watch_b" || page.Items[1].ChangeStatus != "new" {
@@ -958,7 +958,7 @@ func TestBuildCandidateSummaryUsesCurrentPublishedBatchAndLimitsByGrade(t *testi
 	if len(summary.ItemsB) != 1 || summary.ItemsB[0].Ticker != "GAMM" {
 		t.Fatalf("items B = %#v", summary.ItemsB)
 	}
-	if !strings.Contains(summary.Message, "研究候选") || !strings.Contains(summary.Message, "A级候选 2 只") || !strings.Contains(summary.Message, "ALPH") || !strings.Contains(summary.Message, "GAMM") || strings.Contains(summary.Message, "OLD") {
+	if !strings.Contains(summary.Message, "研究候选") || !strings.Contains(summary.Message, "A 型强信号 2 只") || !strings.Contains(summary.Message, "ALPH") || !strings.Contains(summary.Message, "GAMM") || strings.Contains(summary.Message, "OLD") {
 		t.Fatalf("message = %s", summary.Message)
 	}
 }

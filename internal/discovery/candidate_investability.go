@@ -15,9 +15,11 @@ const (
 	defaultMaxADVParticipationPct  = 5.0
 )
 
-// CandidateInvestability is an EOD research liquidity gate, not execution
-// advice. Bid/ask spread, borrow and intraday halt information are not
-// available from the free end-of-day providers and are explicitly left out.
+// CandidateInvestability describes EOD price and liquidity conditions for
+// research triage, not execution advice. Company and capital-event risks are
+// intentionally evaluated by separate gates. Bid/ask spread, borrow and
+// intraday halt information are not available from the free end-of-day
+// providers and are explicitly left out.
 type CandidateInvestability struct {
 	Status                       string   `json:"status"`
 	Reasons                      []string `json:"reasons"`
@@ -95,14 +97,6 @@ func BuildCandidateInvestabilityWithPolicy(item CandidateScoreResult, policy Sma
 	}
 	if quality.VolatilityPct >= 15 {
 		constrain("extreme_daily_volatility")
-	}
-	for _, risk := range item.CapitalRiskSummaries {
-		switch risk.Kind {
-		case CapitalEventReverseSplit:
-			block("reverse_split_risk")
-		case CapitalEventGoingConcern:
-			block("going_concern_risk")
-		}
 	}
 	if result.Status == InvestabilityTradable && strings.TrimSpace(item.PriceSource) == "" {
 		constrain("price_source_unknown")

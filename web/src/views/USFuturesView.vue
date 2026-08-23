@@ -3,7 +3,7 @@
     <div class="page-header">
       <div><h2>美股期货</h2><p>主要美股指数、能源、贵金属和美国国债连续合约的日线走势。</p></div>
       <el-space>
-        <el-select v-model="historyDays" style="width:130px" @change="load"><el-option label="近 3 个月" :value="60" /><el-option label="近 6 个月" :value="120" /><el-option label="近 1 年" :value="250" /></el-select>
+        <el-select fit-input-width v-model="historyDays" style="width:130px" @change="load"><el-option label="近 3 个月" :value="60" /><el-option label="近 6 个月" :value="120" /><el-option label="近 1 年" :value="250" /></el-select>
         <el-button :loading="loading" @click="load">刷新视图</el-button>
         <el-button type="primary" :loading="refreshing" @click="refresh">刷新期货日线</el-button>
       </el-space>
@@ -45,5 +45,5 @@ onMounted(load)
 </script>
 
 <style scoped>
-.page-header { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px; }.page-header h2 { margin:0; }.page-header p { margin:7px 0 0; color:var(--el-text-color-secondary); }.futures-source-alert { margin-bottom:18px; }.futures-contract { display:grid; gap:3px; }.futures-contract small { color:var(--el-text-color-secondary); font-size:12px; }.futures-sparkline { display:block; width:100%; height:36px; }.futures-line { fill:none; stroke:var(--el-color-info); stroke-width:2.2; vector-effect:non-scaling-stroke; stroke-linecap:round; stroke-linejoin:round; }.is-up { color:var(--el-color-success); stroke:var(--el-color-success); }.is-down { color:var(--el-color-danger); stroke:var(--el-color-danger); }.is-flat { color:var(--el-text-color-secondary); stroke:var(--el-text-color-secondary); } @media (max-width:760px) { .page-header { display:grid; }.page-header :deep(.el-space) { flex-wrap:wrap; } }
+.page-header { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:12px; }.page-header h2 { margin:0; }.page-header p { margin:4px 0 0; color:var(--el-text-color-secondary); font-size:12px; }.futures-source-alert { margin-bottom:12px; }.futures-contract { display:grid; gap:2px; }.futures-contract small { color:var(--el-text-color-secondary); font-size:11px; }.futures-sparkline { display:block; width:100%; height:32px; }.futures-line { fill:none; stroke:var(--el-color-info); stroke-width:2.2; vector-effect:non-scaling-stroke; stroke-linecap:round; stroke-linejoin:round; }.is-up { color:var(--el-color-success); stroke:var(--el-color-success); }.is-down { color:var(--el-color-danger); stroke:var(--el-color-danger); }.is-flat { color:var(--el-text-color-secondary); stroke:var(--el-text-color-secondary); } @media (max-width:760px) { .page-header { display:grid; }.page-header :deep(.el-space) { flex-wrap:wrap; } }
 </style>

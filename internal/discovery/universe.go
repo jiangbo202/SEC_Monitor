@@ -82,6 +82,22 @@ type Coordinator struct {
 	// bypasses the normal pre-close local-cache reuse so a missed prior close
 	// can be repaired without waiting for the next US market close.
 	ForceLivePriceFetch bool
+	// SecurityStageTimeout bounds one external acquisition stage rather than
+	// the whole security workflow. A completed stage can therefore be resumed
+	// without inheriting an already-exhausted global deadline.
+	SecurityStageTimeout time.Duration
+	// SecurityInsiderStageTimeout independently bounds candidate-scoped Form 4
+	// enrichment so one provider stage cannot consume the whole workflow budget.
+	SecurityInsiderStageTimeout time.Duration
+	// SecurityArtifactDir stores compressed, parsed source artifacts used by
+	// retries. It normally points at the existing discovery download cache.
+	SecurityArtifactDir string
+	// SecurityArtifactTTL follows the upstream SEC bulk-cache freshness window.
+	// A retry can resume immediately without hiding a genuinely newer archive.
+	SecurityArtifactTTL time.Duration
+	// OnSecuritySourceStage exposes source acquisition progress to the workflow
+	// timeline without coupling discovery to the HTTP/service layer.
+	OnSecuritySourceStage func(SecuritySourceStageProgress)
 	// AfterStageChunk is a test/operations fault-injection hook. It runs only
 	// after a chunk transaction commits and before the next chunk begins.
 	AfterStageChunk      func(kind string, chunk int) error
@@ -91,6 +107,139 @@ type Coordinator struct {
 type metadataGroup struct {
 	Primary  SecuritySourceRecord
 	Listings []SecuritySourceRecord
+}
+
+type SecuritySourceStageProgress struct {
+	Phase       string
+	Status      string
+	RecordCount int
+	TotalCount  int
+	Message     string
+}
+
+type securityFundamentalsLoader interface {
+	LoadSecurityFundamentals(context.Context, map[string]struct{}, []SecuritySourceRecord, SourceVersion) (SecurityFundamentals, error)
+}
+
+type prefetchedInsiderLoader interface {
+	LoadInsiderTransactionsWithMetadata(context.Context, []SecuritySourceRecord, SourceVersion, map[string]struct{}, time.Time) ([]InsiderTransaction, []InsiderCoverage, SourceVersion, error)
+}
+
+type form4ProgressSource interface {
+	SetProgressCallback(func(Form4IngestionProgress))
+}
+
+type prefetchedCapitalEventLoader interface {
+	LoadWithMetadata(context.Context, []SecuritySourceRecord, SourceVersion, map[string]struct{}, time.Time) ([]CapitalEvent, SourceVersion, error)
+}
+
+type securitySharesArtifact struct {
+	Facts   []ShareFact
+	Version SourceVersion
+}
+
+type securityFinancialArtifact struct {
+	Facts   []FinancialFact
+	Version SourceVersion
+}
+
+type securityFundamentalsArtifact struct {
+	Fundamentals SecurityFundamentals
+}
+
+type securityInsiderArtifact struct {
+	Transactions []InsiderTransaction
+	Coverage     []InsiderCoverage
+	Version      SourceVersion
+}
+
+type securityCapitalEventArtifact struct {
+	Events  []CapitalEvent
+	Version SourceVersion
+}
+
+func (c *Coordinator) emitSecuritySourceStage(phase, status string, count int, message string) {
+	c.emitSecurityStageProgress(phase, status, count, 0, message)
+}
+
+func (c *Coordinator) emitSecurityStageProgress(phase, status string, count, total int, message string) {
+	if c != nil && c.OnSecuritySourceStage != nil {
+		c.OnSecuritySourceStage(SecuritySourceStageProgress{Phase: phase, Status: status, RecordCount: count, TotalCount: total, Message: message})
+	}
+}
+
+func (c *Coordinator) securitySourceStageContext(ctx context.Context, phase string) (context.Context, context.CancelFunc) {
+	timeout := time.Duration(0)
+	if c != nil {
+		timeout = c.SecurityStageTimeout
+		if phase == "security-insiders" && c.SecurityInsiderStageTimeout > 0 {
+			timeout = c.SecurityInsiderStageTimeout
+		}
+	}
+	if timeout > 0 {
+		return context.WithTimeout(ctx, timeout)
+	}
+	return context.WithCancel(ctx)
+}
+
+func sortedAllowedCIKs(allowed map[string]struct{}) []string {
+	result := make([]string, 0, len(allowed))
+	for cik := range allowed {
+		result = append(result, cik)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func runSecuritySourceStage[T any](ctx context.Context, c *Coordinator, effectiveDate, phase, scopeSHA, policySHA string, load func(context.Context) (T, int, error)) (T, error) {
+	var zero T
+	if ctx == nil || c == nil || load == nil {
+		return zero, errors.New("security source stage is invalid")
+	}
+	artifactKey, err := securitySourceArtifactKey(effectiveDate, phase, scopeSHA, policySHA)
+	if err != nil {
+		return zero, err
+	}
+	if strings.TrimSpace(c.SecurityArtifactDir) != "" {
+		var cached T
+		checkpoint, ok, loadErr := loadSecuritySourceArtifact(ctx, c.DB, c.SecurityArtifactDir, artifactKey, c.SecurityArtifactTTL, &cached)
+		if loadErr != nil {
+			return zero, loadErr
+		}
+		if ok {
+			c.emitSecuritySourceStage(phase, "resumed", checkpoint.RecordCount, "复用已完成的数据采集检查点")
+			return cached, nil
+		}
+	}
+	checkpoint := SecuritySourceCheckpoint{ArtifactKey: artifactKey, Phase: phase, EffectiveDate: effectiveDate, ScopeSHA256: scopeSHA, PolicyContentSHA256: policySHA}
+	if err := beginSecuritySourceCheckpoint(ctx, c.DB, checkpoint); err != nil {
+		return zero, err
+	}
+	c.emitSecuritySourceStage(phase, securityCheckpointRunning, 0, "开始采集")
+	stageCtx, cancel := c.securitySourceStageContext(ctx, phase)
+	payload, count, err := load(stageCtx)
+	cancel()
+	if err != nil {
+		failSecuritySourceCheckpoint(ctx, c.DB, artifactKey, err)
+		c.emitSecuritySourceStage(phase, securityCheckpointFailed, count, err.Error())
+		return zero, err
+	}
+	if strings.TrimSpace(c.SecurityArtifactDir) != "" {
+		if err := saveSecuritySourceArtifact(ctx, c.DB, c.SecurityArtifactDir, checkpoint, payload, count); err != nil {
+			failSecuritySourceCheckpoint(ctx, c.DB, artifactKey, err)
+			c.emitSecuritySourceStage(phase, securityCheckpointFailed, count, err.Error())
+			return zero, err
+		}
+	} else {
+		now := time.Now().UTC()
+		if err := c.DB.WithContext(context.WithoutCancel(ctx)).Model(&SecuritySourceCheckpoint{}).Where("artifact_key = ?", artifactKey).Updates(map[string]any{
+			"status": securityCheckpointCompleted, "record_count": count, "completed_at": now,
+		}).Error; err != nil {
+			return zero, err
+		}
+	}
+	c.emitSecuritySourceStage(phase, securityCheckpointCompleted, count, "采集完成")
+	return payload, nil
 }
 
 func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, error) {
@@ -115,10 +264,19 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	if err != nil {
 		return UniverseBatch{}, err
 	}
-	records, metadataVersion, err := c.Metadata.Load(ctx)
+	binding, err := c.effectivePolicyBinding(ctx)
 	if err != nil {
+		return UniverseBatch{}, err
+	}
+	c.emitSecuritySourceStage("security-metadata", securityCheckpointRunning, 0, "加载 Nasdaq 与 SEC 标的元数据")
+	metadataCtx, metadataCancel := c.securitySourceStageContext(ctx, "security-metadata")
+	records, metadataVersion, err := c.Metadata.Load(metadataCtx)
+	metadataCancel()
+	if err != nil {
+		c.emitSecuritySourceStage("security-metadata", securityCheckpointFailed, 0, err.Error())
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "metadata", fmt.Errorf("load security metadata: %w", err))
 	}
+	c.emitSecuritySourceStage("security-metadata", securityCheckpointCompleted, len(records), "标的元数据加载完成")
 	if err := ctx.Err(); err != nil {
 		return UniverseBatch{}, err
 	}
@@ -135,61 +293,182 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 			allowed[record.CIK] = struct{}{}
 		}
 	}
-	// Form 4 ownership documents are issuer-level files and are substantially
-	// more numerous than financial facts. Daily evidence refreshes only need to
-	// cover the existing A/B research pool; rescanning every exchange-listed
-	// issuer can mean hundreds of thousands of immutable documents. On a first
-	// run, when no prior candidate batch exists, fall back to the full universe
-	// so the pipeline remains self-contained.
-	insiderAllowed, err := c.previousCandidateInsiderAllowlist(ctx, allowed)
-	if err != nil {
-		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insider-allowlist", err)
-	}
-	facts, shareVersion, err := c.Shares.LoadLatestShares(ctx, allowed)
-	if err != nil {
-		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "shares", fmt.Errorf("load share facts: %w", err))
-	}
+	allowedCIKs := sortedAllowedCIKs(allowed)
+	var facts []ShareFact
+	var shareVersion SourceVersion
 	var financialFacts []FinancialFact
 	var financialVersion SourceVersion
-	if c.Financials != nil {
-		financialFacts, financialVersion, err = c.Financials.LoadFinancialFacts(ctx, allowed)
-		if err != nil {
-			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "financials", fmt.Errorf("load financial facts: %w", err))
+	if loader, ok := c.Shares.(securityFundamentalsLoader); ok && c.Financials != nil {
+		scopeSHA, hashErr := securitySourceScopeSHA(struct {
+			MetadataSHA string
+			Allowed     []string
+			Parser      string
+		}{metadataVersion.SHA256, allowedCIKs, FinancialParserVersion})
+		if hashErr != nil {
+			return UniverseBatch{}, hashErr
 		}
+		artifact, loadErr := runSecuritySourceStage(ctx, c, date, "security-fundamentals", scopeSHA, binding.PolicyContentSHA256, func(stageCtx context.Context) (securityFundamentalsArtifact, int, error) {
+			loaded, stageErr := loader.LoadSecurityFundamentals(stageCtx, allowed, records, metadataVersion)
+			return securityFundamentalsArtifact{Fundamentals: loaded}, len(loaded.Shares) + len(loaded.FinancialFacts), stageErr
+		})
+		if loadErr != nil {
+			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "fundamentals", fmt.Errorf("load security fundamentals: %w", loadErr))
+		}
+		facts = artifact.Fundamentals.Shares
+		shareVersion = artifact.Fundamentals.ShareVersion
+		financialFacts = artifact.Fundamentals.FinancialFacts
+		financialVersion = artifact.Fundamentals.FinancialVersion
+	} else {
+		shareScope, hashErr := securitySourceScopeSHA(struct {
+			MetadataSHA string
+			Allowed     []string
+		}{metadataVersion.SHA256, allowedCIKs})
+		if hashErr != nil {
+			return UniverseBatch{}, hashErr
+		}
+		shareArtifact, loadErr := runSecuritySourceStage(ctx, c, date, "security-shares", shareScope, binding.PolicyContentSHA256, func(stageCtx context.Context) (securitySharesArtifact, int, error) {
+			loadedFacts, loadedVersion, stageErr := c.Shares.LoadLatestShares(stageCtx, allowed)
+			return securitySharesArtifact{Facts: loadedFacts, Version: loadedVersion}, len(loadedFacts), stageErr
+		})
+		if loadErr != nil {
+			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "shares", fmt.Errorf("load share facts: %w", loadErr))
+		}
+		facts, shareVersion = shareArtifact.Facts, shareArtifact.Version
+		if c.Financials != nil {
+			financialScope, hashErr := securitySourceScopeSHA(struct {
+				MetadataSHA string
+				Allowed     []string
+				Parser      string
+			}{metadataVersion.SHA256, allowedCIKs, FinancialParserVersion})
+			if hashErr != nil {
+				return UniverseBatch{}, hashErr
+			}
+			financialArtifact, loadErr := runSecuritySourceStage(ctx, c, date, "security-financials", financialScope, binding.PolicyContentSHA256, func(stageCtx context.Context) (securityFinancialArtifact, int, error) {
+				loadedFacts, loadedVersion, stageErr := c.Financials.LoadFinancialFacts(stageCtx, allowed)
+				return securityFinancialArtifact{Facts: loadedFacts, Version: loadedVersion}, len(loadedFacts), stageErr
+			})
+			if loadErr != nil {
+				return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "financials", fmt.Errorf("load financial facts: %w", loadErr))
+			}
+			financialFacts, financialVersion = financialArtifact.Facts, financialArtifact.Version
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return UniverseBatch{}, err
+	}
+	if c.Financials != nil && financialVersion.Source == "" {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "financials", errors.New("financial source version is missing"))
+	}
+	if shareVersion.Source == "" {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "shares", errors.New("share source version is missing"))
+	}
+	financialFactTotal := len(financialFacts)
+	c.emitSecurityStageProgress("security-financial-normalization", securityCheckpointRunning, 0, financialFactTotal, "开始校验并归一化财务事实")
+	financialFacts, err = normalizeFinancialFactsWithProgress(financialFacts, func(processed, total int, message string) {
+		c.emitSecurityStageProgress("security-financial-normalization", securityCheckpointRunning, processed, total, message)
+	})
+	if err != nil {
+		c.emitSecurityStageProgress("security-financial-normalization", securityCheckpointFailed, 0, financialFactTotal, err.Error())
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "financial-normalization", err)
+	}
+	c.emitSecurityStageProgress("security-financial-normalization", securityCheckpointCompleted, len(financialFacts), len(financialFacts), fmt.Sprintf("已归一化 %d 条财务事实", len(financialFacts)))
+	// Form 4 is an enrichment source, not a universe-discovery source. Restrict
+	// it to issuers whose financial growth can reach the B candidate threshold,
+	// plus the previous A/B pool whose evidence must remain fresh. In particular,
+	// a first calibration must never fall back to every exchange-listed issuer.
+	insiderAllowed, err := c.candidateInsiderAllowlist(ctx, allowed, financialFacts, binding.Policy, now)
+	if err != nil {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insider-allowlist", err)
 	}
 	var insiderTransactions []InsiderTransaction
 	var insiderCoverage []InsiderCoverage
 	var insiderVersion SourceVersion
 	if c.Insiders != nil {
-		if source, ok := c.Insiders.(InsiderTransactionCoverageSource); ok {
-			insiderTransactions, insiderCoverage, insiderVersion, err = source.LoadInsiderTransactionsWithCoverage(ctx, insiderAllowed, now)
+		if source, ok := c.Insiders.(form4ProgressSource); ok {
+			source.SetProgressCallback(func(progress Form4IngestionProgress) {
+				message := fmt.Sprintf("已处理 %d/%d 个发行人的 Form 4", progress.ProcessedIssuers, progress.TotalIssuers)
+				if c.OnSecuritySourceStage != nil {
+					c.OnSecuritySourceStage(SecuritySourceStageProgress{
+						Phase: "security-insiders", Status: securityCheckpointRunning,
+						RecordCount: progress.ProcessedIssuers, TotalCount: progress.TotalIssuers, Message: message,
+					})
+				}
+			})
+		}
+		insiderScope, hashErr := securitySourceScopeSHA(struct {
+			MetadataSHA string
+			Allowed     []string
+			Effective   string
+			Parser      string
+			Coverage    string
+		}{metadataVersion.SHA256, sortedAllowedCIKs(insiderAllowed), date, InsiderParserVersion, InsiderCoverageVersion})
+		if hashErr != nil {
+			return UniverseBatch{}, hashErr
+		}
+		artifact, loadErr := runSecuritySourceStage(ctx, c, date, "security-insiders", insiderScope, binding.PolicyContentSHA256, func(stageCtx context.Context) (securityInsiderArtifact, int, error) {
+			var transactions []InsiderTransaction
+			var coverage []InsiderCoverage
+			var version SourceVersion
+			var stageErr error
+			if source, ok := c.Insiders.(prefetchedInsiderLoader); ok {
+				transactions, coverage, version, stageErr = source.LoadInsiderTransactionsWithMetadata(stageCtx, records, metadataVersion, insiderAllowed, now)
+			} else if source, ok := c.Insiders.(InsiderTransactionCoverageSource); ok {
+				transactions, coverage, version, stageErr = source.LoadInsiderTransactionsWithCoverage(stageCtx, insiderAllowed, now)
+			} else {
+				transactions, version, stageErr = c.Insiders.LoadInsiderTransactions(stageCtx, insiderAllowed, now)
+			}
+			return securityInsiderArtifact{Transactions: transactions, Coverage: coverage, Version: version}, len(coverage), stageErr
+		})
+		if loadErr != nil {
+			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insiders", fmt.Errorf("load insider transactions: %w", loadErr))
+		}
+		insiderTransactions, insiderCoverage, insiderVersion = artifact.Transactions, artifact.Coverage, artifact.Version
+	}
+	eventScope, hashErr := securitySourceScopeSHA(struct {
+		MetadataSHA string
+		Allowed     []string
+		Policy      string
+	}{metadataVersion.SHA256, allowedCIKs, CapitalRiskPolicyVersion})
+	if hashErr != nil {
+		return UniverseBatch{}, hashErr
+	}
+	eventArtifact, loadErr := runSecuritySourceStage(ctx, c, date, "security-capital-events", eventScope, binding.PolicyContentSHA256, func(stageCtx context.Context) (securityCapitalEventArtifact, int, error) {
+		var loaded []CapitalEvent
+		var version SourceVersion
+		var stageErr error
+		if source, ok := c.Events.(prefetchedCapitalEventLoader); ok {
+			loaded, version, stageErr = source.LoadWithMetadata(stageCtx, records, metadataVersion, allowed, now)
 		} else {
-			insiderTransactions, insiderVersion, err = c.Insiders.LoadInsiderTransactions(ctx, insiderAllowed, now)
+			loaded, version, stageErr = c.Events.Load(stageCtx, allowed, now)
 		}
-		if err != nil {
-			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insiders", fmt.Errorf("load insider transactions: %w", err))
-		}
+		return securityCapitalEventArtifact{Events: loaded, Version: version}, len(loaded), stageErr
+	})
+	if loadErr != nil {
+		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "capital-events", fmt.Errorf("load capital events: %w", loadErr))
 	}
-	events, eventVersion, err := c.Events.Load(ctx, allowed, now)
-	if err != nil {
-		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "capital-events", fmt.Errorf("load capital events: %w", err))
-	}
+	events, eventVersion := eventArtifact.Events, eventArtifact.Version
+	evidenceTotal := len(facts) + len(insiderTransactions) + len(events)
+	c.emitSecurityStageProgress("security-evidence-normalization", securityCheckpointRunning, 0, evidenceTotal, "开始归一化股份、内幕交易和融资风险证据")
 	facts, err = normalizeShareFacts(facts)
 	if err != nil {
+		c.emitSecurityStageProgress("security-evidence-normalization", securityCheckpointFailed, 0, evidenceTotal, err.Error())
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "share-normalization", err)
 	}
-	financialFacts, err = normalizeFinancialFacts(financialFacts)
-	if err != nil {
-		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "financial-normalization", err)
-	}
+	c.emitSecurityStageProgress("security-evidence-normalization", securityCheckpointRunning, len(facts), evidenceTotal, fmt.Sprintf("已归一化 %d 条股份事实，继续处理内幕交易", len(facts)))
 	insiderTransactions, err = normalizeInsiderTransactions(insiderTransactions)
 	if err != nil {
+		c.emitSecurityStageProgress("security-evidence-normalization", securityCheckpointFailed, len(facts), evidenceTotal, err.Error())
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insider-normalization", err)
 	}
+	evidenceProcessed := len(facts) + len(insiderTransactions)
+	c.emitSecurityStageProgress("security-evidence-normalization", securityCheckpointRunning, evidenceProcessed, evidenceTotal, fmt.Sprintf("已归一化股份与内幕证据 %d 条，继续处理融资风险", evidenceProcessed))
 	events, err = normalizeCapitalEvents(events)
 	if err != nil {
+		c.emitSecurityStageProgress("security-evidence-normalization", securityCheckpointFailed, evidenceProcessed, evidenceTotal, err.Error())
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "event-normalization", err)
 	}
+	evidenceProcessed += len(events)
+	c.emitSecurityStageProgress("security-evidence-normalization", securityCheckpointCompleted, evidenceProcessed, evidenceProcessed, fmt.Sprintf("已归一化 %d 条股份、内幕和融资风险证据", evidenceProcessed))
 	sourceVersions := []SourceVersion{metadataVersion, shareVersion, eventVersion}
 	if c.Financials != nil {
 		sourceVersions = append(sourceVersions, financialVersion)
@@ -222,10 +501,14 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
 	}
+	hashTotal := len(records) + len(facts) + len(financialFacts) + len(insiderTransactions) + len(insiderCoverage) + len(events) + len(overrides)
+	c.emitSecurityStageProgress("security-content-hash", securityCheckpointRunning, 0, hashTotal, fmt.Sprintf("正在计算 %d 条归一化输入的内容指纹", hashTotal))
 	contentSHA, err := hashSecurityInputs(records, facts, financialFacts, insiderTransactions, insiderCoverage, events, overrides)
 	if err != nil {
+		c.emitSecurityStageProgress("security-content-hash", securityCheckpointFailed, 0, hashTotal, err.Error())
 		return UniverseBatch{}, err
 	}
+	c.emitSecurityStageProgress("security-content-hash", securityCheckpointCompleted, hashTotal, hashTotal, "内容指纹计算完成")
 	batch, existed, err := c.createDraft(ctx, BatchKindSecurity, date, versions, contentSHA, now)
 	if err != nil || existed {
 		return batch, err
@@ -243,13 +526,30 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	return c.publish(ctx, batch, classifications)
 }
 
-func (c *Coordinator) previousCandidateInsiderAllowlist(ctx context.Context, fallback map[string]struct{}) (map[string]struct{}, error) {
-	if len(fallback) == 0 {
-		return fallback, nil
+func (c *Coordinator) candidateInsiderAllowlist(ctx context.Context, allowed map[string]struct{}, financialFacts []FinancialFact, policy SmallCapPolicy, asOf time.Time) (map[string]struct{}, error) {
+	selected := make(map[string]struct{})
+	if len(allowed) == 0 {
+		return selected, nil
+	}
+	factsByCIK := make(map[string][]FinancialFact)
+	for _, fact := range financialFacts {
+		if _, ok := allowed[fact.CIK]; ok {
+			factsByCIK[fact.CIK] = append(factsByCIK[fact.CIK], fact)
+		}
+	}
+	for cik, facts := range factsByCIK {
+		summary := BuildFinancialSummary(facts, asOf)
+		growth, available := summary.QuarterlyRevenueYoYPct, summary.RevenueGrowthAvailable
+		if !available && summary.LatestAnnualRevenueUSD > 0 && summary.PriorAnnualRevenueUSD > 0 {
+			growth, available = summary.AnnualRevenueYoYPct, true
+		}
+		if available && growth > policy.BRevenueGrowthMinPct {
+			selected[cik] = struct{}{}
+		}
 	}
 	batch, err := currentPublishedBatch(ctx, c.DB, BatchKindPrescreen)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return fallback, nil
+		return selected, nil
 	}
 	if err != nil {
 		return nil, err
@@ -263,20 +563,16 @@ func (c *Coordinator) previousCandidateInsiderAllowlist(ctx context.Context, fal
 		return nil, err
 	}
 	if len(securityIDs) == 0 {
-		return fallback, nil
+		return selected, nil
 	}
 	var ciks []string
 	if err := c.DB.WithContext(ctx).Model(&Security{}).Where("id IN ?", securityIDs).Pluck("cik", &ciks).Error; err != nil {
 		return nil, err
 	}
-	selected := make(map[string]struct{}, len(ciks))
 	for _, cik := range ciks {
-		if _, ok := fallback[cik]; ok {
+		if _, ok := allowed[cik]; ok {
 			selected[cik] = struct{}{}
 		}
-	}
-	if len(selected) == 0 {
-		return fallback, nil
 	}
 	return selected, nil
 }
@@ -1106,8 +1402,15 @@ func normalizeShareFacts(input []ShareFact) ([]ShareFact, error) {
 }
 
 func normalizeFinancialFacts(input []FinancialFact) ([]FinancialFact, error) {
+	return normalizeFinancialFactsWithProgress(input, nil)
+}
+
+func normalizeFinancialFactsWithProgress(input []FinancialFact, progress func(processed, total int, message string)) ([]FinancialFact, error) {
 	seen := map[string]FinancialFact{}
-	for _, row := range input {
+	for index, row := range input {
+		if progress != nil && ((index+1)%50000 == 0 || index+1 == len(input)) {
+			progress(index+1, len(input), fmt.Sprintf("已校验 %d/%d 条财务事实", index+1, len(input)))
+		}
 		key := strings.Join([]string{row.CIK, row.Metric, row.Concept, row.Unit, row.Form, row.Accession, row.PeriodStart.UTC().Format(time.RFC3339Nano), row.PeriodEnd.UTC().Format(time.RFC3339Nano)}, "\x00")
 		if prior, ok := seen[key]; ok {
 			if !reflect.DeepEqual(prior, row) {
@@ -1120,6 +1423,9 @@ func normalizeFinancialFacts(input []FinancialFact) ([]FinancialFact, error) {
 	result := make([]FinancialFact, 0, len(seen))
 	for _, row := range seen {
 		result = append(result, row)
+	}
+	if progress != nil {
+		progress(len(input), len(input), fmt.Sprintf("已去重为 %d 条财务事实，正在稳定排序", len(result)))
 	}
 	sort.Slice(result, func(i, j int) bool { return canonicalLess(result[i], result[j]) })
 	return result, nil
@@ -1134,9 +1440,11 @@ func normalizeInsiderTransactions(input []InsiderTransaction) ([]InsiderTransact
 		// the identity so legitimate rows are not treated as corrupt duplicates.
 		key := strings.Join([]string{row.CIK, row.Accession, row.OwnerName, row.TransactionDate.UTC().Format(time.RFC3339Nano), row.TransactionCode, row.AcquiredDisposedCode, fmt.Sprintf("%f", row.Shares), fmt.Sprintf("%f", row.PricePerShareUSD), fmt.Sprintf("%f", row.SharesOwnedAfter), fmt.Sprintf("%f", row.SharesOwnedBefore), fmt.Sprintf("%t", row.Derivative)}, "\x00")
 		if prior, ok := seen[key]; ok {
-			if !reflect.DeepEqual(prior, row) {
+			if !equivalentInsiderTransactions(prior, row) {
 				return nil, fmt.Errorf("insider transaction identity has conflicting duplicates: %s", row.Accession)
 			}
+			prior.SourceURL = preferredInsiderSourceURL(row.Accession, prior.SourceURL, row.SourceURL)
+			seen[key] = prior
 			continue
 		}
 		seen[key] = row
@@ -1147,6 +1455,31 @@ func normalizeInsiderTransactions(input []InsiderTransaction) ([]InsiderTransact
 	}
 	sort.Slice(result, func(i, j int) bool { return canonicalLess(result[i], result[j]) })
 	return result, nil
+}
+
+func equivalentInsiderTransactions(left, right InsiderTransaction) bool {
+	left.SourceURL = ""
+	right.SourceURL = ""
+	return reflect.DeepEqual(left, right)
+}
+
+func preferredInsiderSourceURL(accession, left, right string) string {
+	archiveCIK, ok := form4AccessionCIK(accession)
+	if ok {
+		archivePath := "/" + strings.TrimLeft(archiveCIK, "0") + "/" + strings.ReplaceAll(accession, "-", "") + "/"
+		leftCanonical := strings.Contains(left, archivePath)
+		rightCanonical := strings.Contains(right, archivePath)
+		if leftCanonical != rightCanonical {
+			if leftCanonical {
+				return left
+			}
+			return right
+		}
+	}
+	if left == "" || (right != "" && right < left) {
+		return right
+	}
+	return left
 }
 
 func normalizeCapitalEvents(input []CapitalEvent) ([]CapitalEvent, error) {
@@ -1566,6 +1899,7 @@ func (c *Coordinator) persistFinancialSnapshots(ctx context.Context, batchID str
 	if factChunks == 0 {
 		factChunks = 1
 	}
+	c.emitSecurityStageProgress("security-financial-persistence", securityCheckpointRunning, 0, len(rows.Facts), fmt.Sprintf("开始分块入库 %d 条财务事实", len(rows.Facts)))
 	for chunkIndex := 0; chunkIndex < factChunks; chunkIndex++ {
 		start := chunkIndex * universeChunkSize
 		end := start + universeChunkSize
@@ -1579,9 +1913,12 @@ func (c *Coordinator) persistFinancialSnapshots(ctx context.Context, batchID str
 			}
 			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
 		}); err != nil {
+			c.emitSecurityStageProgress("security-financial-persistence", securityCheckpointFailed, start, len(rows.Facts), err.Error())
 			return err
 		}
+		c.emitSecurityStageProgress("security-financial-persistence", securityCheckpointRunning, end, len(rows.Facts), fmt.Sprintf("已入库 %d/%d 条财务事实", end, len(rows.Facts)))
 	}
+	c.emitSecurityStageProgress("security-financial-persistence", securityCheckpointCompleted, len(rows.Facts), len(rows.Facts), fmt.Sprintf("已入库 %d 条财务事实", len(rows.Facts)))
 	metricChunks := (len(rows.Metrics) + universeChunkSize - 1) / universeChunkSize
 	if metricChunks == 0 {
 		metricChunks = 1

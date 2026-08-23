@@ -6,7 +6,7 @@
         <p>基于 Longbridge 已缓存的美股日线。用于宏观研究和相对强弱观察，不构成投资建议。</p>
       </div>
       <el-space>
-        <el-select v-model="historyDays" style="width: 130px" @change="load">
+        <el-select fit-input-width v-model="historyDays" style="width: 130px" @change="load">
           <el-option label="近 3 个月" :value="60" />
           <el-option label="近 6 个月" :value="120" />
           <el-option label="近 1 年" :value="250" />
@@ -164,19 +164,19 @@ onMounted(load)
 </script>
 
 <style scoped>
-.page-header, .section-heading { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
-.page-header { margin-bottom: 16px; }
+.page-header, .section-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.page-header { margin-bottom: 12px; }
 .page-header h2, .section-heading h3 { margin: 0; }
 .page-header p, .section-heading p { margin: 7px 0 0; color: var(--el-text-color-secondary); }
-.market-trend-alert { margin-bottom: 22px; }
-.market-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
-.market-card { min-height: 204px; padding: 15px; border: 1px solid var(--el-border-color-lighter); border-radius: 10px; background: linear-gradient(145deg, var(--el-fill-color-lighter), var(--el-bg-color)); }
+.market-trend-alert { margin-bottom: 12px; }
+.market-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.market-card { min-height: 168px; padding: 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; background: linear-gradient(145deg, var(--el-fill-color-lighter), var(--el-bg-color)); }
 .market-card-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 600; }.market-card-heading small, .market-card-meta, .sector-name small { color: var(--el-text-color-secondary); font-size: 12px; }
-.market-card-value { margin-top: 12px; font-size: 25px; font-weight: 700; font-variant-numeric: tabular-nums; }.market-card-meta { margin-top: 3px; }
-.market-sparkline { display: block; width: 100%; height: 58px; margin: 10px 0 6px; overflow: visible; }.sector-sparkline { display: block; width: 100%; height: 38px; }
+.market-card-value { margin-top: 8px; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }.market-card-meta { margin-top: 3px; }
+.market-sparkline { display: block; width: 100%; height: 46px; margin: 7px 0 4px; overflow: visible; }.sector-sparkline { display: block; width: 100%; height: 34px; }
 .market-sparkline-area { fill: rgb(64 158 255 / 9%); }.market-sparkline-line { fill: none; stroke: var(--el-color-info); stroke-width: 2.2; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }.market-sparkline-line.is-up { stroke: var(--el-color-success); }.market-sparkline-line.is-down { stroke: var(--el-color-danger); }
 .market-returns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }.market-returns span { display: grid; gap: 2px; }.market-returns small { color: var(--el-text-color-secondary); font-size: 11px; }.market-returns strong { font-variant-numeric: tabular-nums; }
-.sector-section { margin-top: 28px; }.section-heading { margin-bottom: 12px; }.sector-name { display: grid; gap: 2px; }.is-up { color: var(--el-color-success); }.is-down { color: var(--el-color-danger); }.is-flat { color: var(--el-text-color-secondary); }
-.temperature-section { margin-top: 28px; }.temperature-card { display: grid; grid-template-columns: minmax(190px, .8fr) minmax(240px, 1.4fr) minmax(220px, .9fr); gap: 20px; align-items: center; padding: 18px; border: 1px solid var(--el-border-color-lighter); border-radius: 10px; background: linear-gradient(145deg, rgb(64 158 255 / 8%), var(--el-bg-color)); }.temperature-score small, .temperature-metrics small { display: block; color: var(--el-text-color-secondary); font-size: 12px; }.temperature-score strong { margin-top: 4px; font-size: 38px; line-height: 1; }.temperature-score span { margin-left: 5px; color: var(--el-text-color-secondary); }.temperature-score p { margin: 8px 0 0; color: var(--el-text-color-secondary); font-size: 13px; }.temperature-sparkline { width: 100%; height: 90px; }.temperature-area { fill: rgb(64 158 255 / 12%); }.temperature-line { fill: none; stroke: var(--el-color-primary); stroke-width: 2.4; vector-effect: non-scaling-stroke; }.temperature-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }.temperature-metrics strong { display: block; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.sector-section { margin-top: 16px; }.section-heading { margin-bottom: 10px; }.sector-name { display: grid; gap: 2px; }.is-up { color: var(--el-color-success); }.is-down { color: var(--el-color-danger); }.is-flat { color: var(--el-text-color-secondary); }
+.temperature-section { margin-top: 16px; }.temperature-card { display: grid; grid-template-columns: minmax(190px, .8fr) minmax(240px, 1.4fr) minmax(220px, .9fr); gap: 14px; align-items: center; padding: 13px 14px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; background: linear-gradient(145deg, rgb(64 158 255 / 8%), var(--el-bg-color)); }.temperature-score small, .temperature-metrics small { display: block; color: var(--el-text-color-secondary); font-size: 12px; }.temperature-score strong { margin-top: 3px; font-size: 30px; line-height: 1; }.temperature-score span { margin-left: 5px; color: var(--el-text-color-secondary); }.temperature-score p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 12px; }.temperature-sparkline { width: 100%; height: 68px; }.temperature-area { fill: rgb(64 158 255 / 12%); }.temperature-line { fill: none; stroke: var(--el-color-primary); stroke-width: 2.4; vector-effect: non-scaling-stroke; }.temperature-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }.temperature-metrics strong { display: block; margin-top: 3px; font-variant-numeric: tabular-nums; }
 @media (max-width: 760px) { .page-header, .section-heading { display: grid; }.page-header :deep(.el-space) { flex-wrap: wrap; }.temperature-card { grid-template-columns: 1fr; } }
 </style>

@@ -209,7 +209,24 @@ func persistPriceSnapshotsInBatches(tx *gorm.DB, snapshots []PriceSnapshot) erro
 					return fmt.Errorf("persisted price snapshot is missing for %s %s", expected.Symbol, expected.TradeDate.Format(time.DateOnly))
 				}
 				if actual.CloseMicros != expected.CloseMicros || actual.Volume != expected.Volume || actual.Currency != expected.Currency || actual.Adjusted != expected.Adjusted || actual.QualityStatus != expected.QualityStatus {
-					return fmt.Errorf("%w for %s %s", ErrPriceImportConflict, expected.Symbol, expected.TradeDate.Format(time.DateOnly))
+					return fmt.Errorf(
+						"%w for %s %s (source=%s version=%s; existing close_micros=%d volume=%d currency=%s adjusted=%t quality=%s; incoming close_micros=%d volume=%d currency=%s adjusted=%t quality=%s)",
+						ErrPriceImportConflict,
+						expected.Symbol,
+						expected.TradeDate.Format(time.DateOnly),
+						expected.Source,
+						expected.SourceVersion,
+						actual.CloseMicros,
+						actual.Volume,
+						actual.Currency,
+						actual.Adjusted,
+						actual.QualityStatus,
+						expected.CloseMicros,
+						expected.Volume,
+						expected.Currency,
+						expected.Adjusted,
+						expected.QualityStatus,
+					)
 				}
 			}
 		}

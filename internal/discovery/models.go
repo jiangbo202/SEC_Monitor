@@ -476,14 +476,15 @@ type FinancialMetricSnapshot struct {
 
 type InsiderTransactionSnapshot struct {
 	ID                           uint      `json:"id"`
-	SecurityID                   uint      `json:"security_id" gorm:"uniqueIndex:idx_insider_tx_identity,priority:1;index"`
-	Accession                    string    `json:"accession" gorm:"size:32;uniqueIndex:idx_insider_tx_identity,priority:2;index"`
+	SecurityID                   uint      `json:"security_id" gorm:"index"`
+	IdentitySHA256               string    `json:"identity_sha256" gorm:"size:64;index"`
+	Accession                    string    `json:"accession" gorm:"size:32;index"`
 	OwnerName                    string    `json:"owner_name" gorm:"size:255"`
 	OfficerTitle                 string    `json:"officer_title" gorm:"size:255"`
 	Role                         string    `json:"role" gorm:"size:32;index"`
 	Derivative                   bool      `json:"derivative"`
-	TransactionDate              time.Time `json:"transaction_date" gorm:"uniqueIndex:idx_insider_tx_identity,priority:3;index"`
-	TransactionCode              string    `json:"transaction_code" gorm:"size:8;uniqueIndex:idx_insider_tx_identity,priority:4;index"`
+	TransactionDate              time.Time `json:"transaction_date" gorm:"index"`
+	TransactionCode              string    `json:"transaction_code" gorm:"size:8;index"`
 	AcquiredDisposedCode         string    `json:"acquired_disposed_code" gorm:"size:8"`
 	SharesMicros                 int64     `json:"shares_micros"`
 	PriceMicros                  int64     `json:"price_micros"`
@@ -865,6 +866,7 @@ type DiscoverySyncStep struct {
 	Status      string     `json:"status" gorm:"size:16;index"`
 	Message     string     `json:"message" gorm:"type:text"`
 	RecordCount int        `json:"record_count"`
+	TotalCount  int        `json:"total_count"`
 	StartedAt   time.Time  `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -888,6 +890,29 @@ type SecurityStageCheckpoint struct {
 	CompletedAt  *time.Time `json:"completed_at"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+// SecuritySourceCheckpoint tracks a durable parsed-source artifact before the
+// final content-addressed universe batch exists. SecurityStageCheckpoint only
+// protects database writes after every source has loaded; this checkpoint lets
+// a retry skip completed fundamentals, Form 4, and capital-event acquisition
+// stages as well. Metadata is intentionally freshness-checked on each run.
+type SecuritySourceCheckpoint struct {
+	ArtifactKey         string     `json:"artifact_key" gorm:"size:64;primaryKey;autoIncrement:false"`
+	Phase               string     `json:"phase" gorm:"size:48;index"`
+	EffectiveDate       string     `json:"effective_date" gorm:"size:10;index"`
+	ScopeSHA256         string     `json:"scope_sha256" gorm:"size:64;index"`
+	PolicyContentSHA256 string     `json:"policy_content_sha256" gorm:"size:64;index"`
+	Status              string     `json:"status" gorm:"size:16;index"`
+	AttemptCount        int        `json:"attempt_count"`
+	RecordCount         int        `json:"record_count"`
+	PayloadPath         string     `json:"payload_path" gorm:"type:text"`
+	PayloadSHA256       string     `json:"payload_sha256" gorm:"size:64"`
+	ErrorMessage        string     `json:"error_message" gorm:"type:text"`
+	StartedAt           time.Time  `json:"started_at"`
+	CompletedAt         *time.Time `json:"completed_at"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 type BatchProviderSummary struct {

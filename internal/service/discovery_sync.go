@@ -1009,11 +1009,29 @@ func (s *DiscoverySyncService) RecoverInterruptedRuns(ctx context.Context) (int6
 	}
 	now := time.Now().UTC()
 	cutoff := now.Add(-(timeout + discoverySyncRecoveryGrace))
-	message := "同步进程已中断或超过心跳恢复窗口；请重新运行任务"
+	return s.recoverRunningDiscoveryRuns(ctx, now, &cutoff, "同步进程已中断或超过心跳恢复窗口；请重新运行任务")
+}
+
+// RecoverOrphanedRunsAtStartup closes every persisted running row when this
+// single-process SQLite application boots. No worker from the previous process
+// can still own those rows, even if its last heartbeat was recent.
+func (s *DiscoverySyncService) RecoverOrphanedRunsAtStartup(ctx context.Context) (int64, error) {
+	if s == nil || s.db == nil || !s.db.Migrator().HasTable(&discovery.DiscoverySyncRun{}) {
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	return s.recoverRunningDiscoveryRuns(ctx, now, nil, "同步进程因服务重启而中断；已保留检查点，可重新运行任务")
+}
+
+func (s *DiscoverySyncService) recoverRunningDiscoveryRuns(ctx context.Context, now time.Time, updatedBefore *time.Time, message string) (int64, error) {
 	var recovered int64
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var staleRuns []discovery.DiscoverySyncRun
-		if err := tx.Where("status = ? AND updated_at < ?", "running", cutoff).Find(&staleRuns).Error; err != nil {
+		query := tx.Where("status = ?", "running")
+		if updatedBefore != nil {
+			query = query.Where("updated_at < ?", *updatedBefore)
+		}
+		if err := query.Find(&staleRuns).Error; err != nil {
 			return err
 		}
 		if len(staleRuns) == 0 {
@@ -1083,8 +1101,8 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 		s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", "", "", err)
 		return DiscoverySyncResult{}, err
 	}
-	defer cancel()
 	s.cleanupExpiredDiscoveryCache(taskCtx)
+	cancel()
 	s.finishDiscoverySyncStep(prepareStep.ID, "completed", 0, nil)
 	runner := s.runner
 	if runner == nil {
@@ -1104,14 +1122,25 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 		s.finishDiscoverySyncStep(buildStep.ID, "completed", 0, nil)
 		runner = built
 	}
-	resume := s.findFullWorkflowResume(taskCtx, run)
+	securityCtx, securityCancel, contextErr := s.discoverySecurityWorkflowContext(ctx)
+	if contextErr != nil {
+		s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", "", "", contextErr)
+		return DiscoverySyncResult{}, contextErr
+	}
+	defer securityCancel()
+	resume := s.findFullWorkflowResume(securityCtx, run)
 	securityStep := s.startDiscoverySyncStep(run.ID, "security_universe", "同步 SEC 标的、财务、股本、Form 4 与融资风险")
+	if observable, ok := runner.(interface {
+		SetSecuritySourceStageObserver(func(discovery.SecuritySourceStageProgress))
+	}); ok {
+		observable.SetSecuritySourceStageObserver(s.securitySourceStageObserver(run.ID))
+	}
 	securityBatch := resume.SecurityBatch
 	if securityBatch.BatchID != "" {
 		_ = s.db.WithContext(context.Background()).Model(&discovery.DiscoverySyncStep{}).Where("id = ?", securityStep.ID).Update("message", "复用当天已发布的 SEC 批次，跳过重复同步").Error
 		s.finishDiscoverySyncStep(securityStep.ID, DiscoverySyncRunStatusSkipped, securityBatch.RecordCount, nil)
 	} else {
-		securityBatch, err = runner.SyncSecurityUniverse(taskCtx)
+		securityBatch, err = runner.SyncSecurityUniverse(securityCtx)
 	}
 	result := DiscoverySyncResult{SecurityBatch: securityBatch, SecurityBatchID: securityBatch.BatchID}
 	if err != nil {
@@ -1160,17 +1189,17 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	result.Status = DiscoverySyncStatusPublished
 	s.updateDiscoverySyncRun(run.ID, "technical_history", securityBatch.BatchID, marketBatch.BatchID)
 	technicalStep := s.startDiscoverySyncStep(run.ID, "technical_history", "回填候选技术指标历史（非阻断）")
-	result.TechnicalHistoryWarmup = s.autoWarmTechnicalHistory(taskCtx)
+	result.TechnicalHistoryWarmup = s.autoWarmTechnicalHistory(ctx)
 	if result.TechnicalHistoryWarmup.ErrorMessage != "" {
 		s.finishDiscoverySyncStep(technicalStep.ID, "warning", result.TechnicalHistoryWarmup.Result.PersistedCount, errors.New(result.TechnicalHistoryWarmup.ErrorMessage))
 	} else {
 		s.finishDiscoverySyncStep(technicalStep.ID, result.TechnicalHistoryWarmup.Status, result.TechnicalHistoryWarmup.Result.PersistedCount, nil)
 	}
-	s.recordCurrentCandidateTradeSetupHistory(taskCtx)
-	s.createInAppCandidateEarningsReleases(taskCtx)
+	s.recordCurrentCandidateTradeSetupHistory(ctx)
+	s.createInAppCandidateEarningsReleases(ctx)
 	s.updateDiscoverySyncRun(run.ID, "company_profiles", securityBatch.BatchID, marketBatch.BatchID)
 	profileStep := s.startDiscoverySyncStep(run.ID, "company_profiles", "增量补充 Longbridge 公司资料（非阻断）")
-	profiles := s.autoRefreshLongbridgeCompanyProfiles(taskCtx)
+	profiles := s.autoRefreshLongbridgeCompanyProfiles(ctx)
 	if profiles.Failed > 0 {
 		s.finishDiscoverySyncStep(profileStep.ID, "warning", profiles.Fetched, errors.New(profiles.Message))
 	} else {
@@ -1178,14 +1207,14 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	}
 	s.updateDiscoverySyncRun(run.ID, "analyst_ratings", securityBatch.BatchID, marketBatch.BatchID)
 	analystStep := s.startDiscoverySyncStep(run.ID, "analyst_ratings", "增量同步 Longbridge 分析师共识（非阻断）")
-	analystRatings := s.autoRefreshLongbridgeAnalystRatings(taskCtx)
+	analystRatings := s.autoRefreshLongbridgeAnalystRatings(ctx)
 	if analystRatings.Failed > 0 {
 		s.finishDiscoverySyncStep(analystStep.ID, "warning", analystRatings.Fetched, errors.New(analystRatings.Message))
 	} else {
 		s.finishDiscoverySyncStep(analystStep.ID, "completed", analystRatings.Fetched, nil)
 	}
 	summaryStep := s.startDiscoverySyncStep(run.ID, "publish_summary", "生成并归档候选日报与数据健康检查")
-	report, err := discovery.BuildAndPersistCandidateReportForBatch(taskCtx, s.db, marketBatch)
+	report, err := discovery.BuildAndPersistCandidateReportForBatch(ctx, s.db, marketBatch)
 	if err != nil {
 		s.finishDiscoverySyncStep(summaryStep.ID, "failed", 0, err)
 		s.finishDiscoverySyncRun(run.ID, DiscoverySyncRunStatusFailed, "failed", securityBatch.BatchID, marketBatch.BatchID, err)
@@ -1508,7 +1537,8 @@ func (s *DiscoverySyncService) hasCurrentPublishedSecurityBatch(ctx context.Cont
 	return count > 0, err
 }
 
-// discoveryTaskContext enforces the configurable end-to-end runtime limit.
+// discoveryTaskContext enforces the configurable runtime limit for one bounded
+// phase such as market publication or cache preparation.
 // Downloader timeouts alone only bound an individual HTTP request; without a
 // task context a long sequence of otherwise successful SEC downloads can run
 // indefinitely.
@@ -1528,6 +1558,26 @@ func (s *DiscoverySyncService) discoveryTaskContext(ctx context.Context) (contex
 	return taskCtx, cancel, nil
 }
 
+// discoverySecurityWorkflowContext gives the multi-stage SEC workflow four
+// phase budgets. Each acquisition stage is independently bounded inside the
+// coordinator, so a slow but successful metadata phase no longer consumes the
+// Form 4 or capital-event budget. The outer limit remains a final safety net.
+func (s *DiscoverySyncService) discoverySecurityWorkflowContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	stageTimeout := time.Duration(cfg.TaskTimeoutMin) * time.Minute
+	if stageTimeout <= 0 {
+		stageTimeout = time.Hour
+	}
+	workflowCtx, cancel := context.WithTimeout(ctx, 4*stageTimeout)
+	return workflowCtx, cancel, nil
+}
+
 func (s *DiscoverySyncService) cleanupExpiredDiscoveryCache(ctx context.Context) {
 	cfg, err := s.appliedDiscoveryConfig(ctx)
 	if err != nil {
@@ -1545,6 +1595,10 @@ func (s *DiscoverySyncService) cleanupExpiredDiscoveryCache(ctx context.Context)
 	}
 	if result.FileCount > 0 {
 		log.Printf("discovery cache cleanup completed: files=%d bytes=%d retention_days=%d", result.FileCount, result.Bytes, result.RetentionDays)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	if err := s.db.WithContext(ctx).Where("updated_at < ?", cutoff).Delete(&discovery.SecuritySourceCheckpoint{}).Error; err != nil {
+		log.Printf("discovery source checkpoint cleanup skipped: %v", err)
 	}
 }
 
@@ -1696,6 +1750,49 @@ func (s *DiscoverySyncService) findFullWorkflowResume(ctx context.Context, run d
 		_ = s.db.WithContext(ctx).First(&result.MarketBatch, "batch_id = ? AND kind = ? AND status = ? AND universe_source_version = ? AND policy_content_sha256 = ?", previous.MarketBatchID, discovery.BatchKindPrescreen, discovery.BatchStatusPublished, result.SecurityBatch.BatchID, run.PolicyContentSHA256).Error
 	}
 	return result
+}
+
+func (s *DiscoverySyncService) securitySourceStageObserver(runID uint) func(discovery.SecuritySourceStageProgress) {
+	steps := make(map[string]discovery.DiscoverySyncStep)
+	counts := make(map[string]int)
+	totals := make(map[string]int)
+	return func(progress discovery.SecuritySourceStageProgress) {
+		if runID == 0 || strings.TrimSpace(progress.Phase) == "" {
+			return
+		}
+		step := steps[progress.Phase]
+		if step.ID == 0 {
+			message := progress.Message
+			if message == "" {
+				message = "开始处理 " + progress.Phase
+			}
+			step = s.startDiscoverySyncStep(runID, progress.Phase, message)
+			steps[progress.Phase] = step
+		}
+		if progress.Message != "" {
+			if progress.RecordCount > 0 {
+				counts[progress.Phase] = progress.RecordCount
+			}
+			if progress.TotalCount > 0 {
+				totals[progress.Phase] = progress.TotalCount
+			}
+			_ = s.db.WithContext(context.Background()).Model(&discovery.DiscoverySyncStep{}).Where("id = ?", step.ID).Updates(map[string]any{
+				"message": progress.Message, "record_count": counts[progress.Phase], "total_count": totals[progress.Phase], "updated_at": time.Now().UTC(),
+			}).Error
+		}
+		count := progress.RecordCount
+		if count == 0 {
+			count = counts[progress.Phase]
+		}
+		switch progress.Status {
+		case "resumed":
+			s.finishDiscoverySyncStep(step.ID, DiscoverySyncRunStatusSkipped, count, nil)
+		case "completed":
+			s.finishDiscoverySyncStep(step.ID, "completed", count, nil)
+		case "failed":
+			s.finishDiscoverySyncStep(step.ID, "failed", count, errors.New(progress.Message))
+		}
+	}
 }
 
 // appendSecurityCheckpointSteps mirrors compact checkpoint summaries into the
@@ -2371,15 +2468,19 @@ func (s *DiscoverySyncService) buildRunnerWithPolicyBinding(forceLivePriceFetch 
 		Metadata:   metadata,
 		Shares:     secBulk,
 		Financials: secBulk,
-		Insiders: discovery.SECForm4InsiderSource{
+		Insiders: &discovery.SECForm4InsiderSource{
 			Metadata:     secBulk,
 			Downloader:   downloader,
 			LookbackDays: policyBinding.Policy.InsiderLookbackDays,
 		},
-		Events:        discovery.SECSubmissionsCapitalEventSource{Metadata: secBulk},
-		Calendar:      calendar,
-		Clock:         time.Now,
-		PolicyBinding: policyBinding,
+		Events:                      discovery.SECSubmissionsCapitalEventSource{Metadata: secBulk},
+		Calendar:                    calendar,
+		Clock:                       time.Now,
+		PolicyBinding:               policyBinding,
+		SecurityStageTimeout:        timeout,
+		SecurityInsiderStageTimeout: timeout,
+		SecurityArtifactDir:         downloader.CacheDir,
+		SecurityArtifactTTL:         discoveryCacheTTL(cfg),
 	}
 	prices, marketErr, err := s.buildPriceProvider(cfg, downloader, calendar)
 	if err != nil {
@@ -2579,6 +2680,12 @@ func (r productionDiscoveryRunner) SyncSecurityUniverse(ctx context.Context) (di
 		return discovery.UniverseBatch{}, errors.New("security discovery runner is not configured")
 	}
 	return r.security.SyncSecurityUniverse(ctx)
+}
+
+func (r productionDiscoveryRunner) SetSecuritySourceStageObserver(observer func(discovery.SecuritySourceStageProgress)) {
+	if r.security != nil {
+		r.security.OnSecuritySourceStage = observer
+	}
 }
 
 func (r productionDiscoveryRunner) SyncMarketPrices(ctx context.Context) (discovery.UniverseBatch, error) {

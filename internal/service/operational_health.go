@@ -118,7 +118,15 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	if err := s.db.WithContext(ctx).Order("task_name ASC").Find(&tasks).Error; err != nil {
 		return report, err
 	}
+	var latestDiscoveryRun discovery.DiscoverySyncRun
+	if s.discoveryDB != nil {
+		err := s.discoveryDB.WithContext(ctx).Where("kind = ?", "full").Order("started_at DESC, id DESC").First(&latestDiscoveryRun).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return report, err
+		}
+	}
 	for _, task := range tasks {
+		task = reconcileFullDiscoveryTaskStatus(task, latestDiscoveryRun)
 		expected := taskExpectedWithin(task.TaskName)
 		report.Tasks = append(report.Tasks, OperationalTaskStatus{
 			TaskName: task.TaskName, Enabled: task.Enabled, Running: task.Running, LastStatus: task.LastStatus, LastRunAt: task.LastRunAt, NextRunAt: task.NextRunAt,
@@ -356,9 +364,16 @@ func (s *OperationalHealthService) reportSlowDiscoverySteps(ctx context.Context,
 	if s == nil || s.discoveryDB == nil || report == nil {
 		return nil
 	}
+	latest, err := discovery.LatestDiscoverySyncRun(ctx, s.discoveryDB)
+	if err != nil {
+		return err
+	}
+	if latest.ID == 0 || latest.StartedAt.Before(now.Add(-operationalSlowObservationWindow)) {
+		return nil
+	}
 	var steps []discovery.DiscoverySyncStep
 	if err := s.discoveryDB.WithContext(ctx).
-		Where("started_at >= ?", now.Add(-operationalSlowObservationWindow)).
+		Where("run_id = ?", latest.ID).
 		Order("started_at DESC, id DESC").
 		Limit(500).
 		Find(&steps).Error; err != nil {
@@ -394,8 +409,27 @@ func (s *OperationalHealthService) reportSlowDiscoverySteps(ctx context.Context,
 	if hasRunning {
 		severity, title = "critical", "小盘工作流步骤长时间运行"
 	}
-	report.addIssue("discovery_slow_steps", "discovery", severity, title, fmt.Sprintf("最近 48 小时有 %d 个步骤超过对应阈值；最慢为 %s（%s，耗时 %s）。可在小盘发现日志查看阶段进度和 Provider 回退", len(slow), longest.Phase, longest.Status, formatOperationalDuration(longestDuration)), "discovery-logs", now)
+	report.addIssue("discovery_slow_steps", "discovery", severity, title, fmt.Sprintf("最近一次小盘工作流有 %d 个步骤超过对应阈值；最慢为 %s（%s，耗时 %s）。可在小盘发现日志查看阶段进度和 Provider 回退", len(slow), longest.Phase, longest.Status, formatOperationalDuration(longestDuration)), "discovery-logs", now)
 	return nil
+}
+
+// A full workflow can be launched directly from the candidate page. Its
+// lifecycle lives in the discovery database, while the scheduler's last error
+// lives in the main database. For reporting only, a newer published direct run
+// supersedes that stale scheduler failure without mutating either audit trail.
+func reconcileFullDiscoveryTaskStatus(task model.TaskConfig, latest discovery.DiscoverySyncRun) model.TaskConfig {
+	if task.TaskName != "small_cap_discovery_full_sync" || task.Running || latest.ID == 0 || latest.Kind != "full" || latest.Status != DiscoverySyncStatusPublished || latest.CompletedAt == nil {
+		return task
+	}
+	if task.LastRunAt != nil && !latest.CompletedAt.After(*task.LastRunAt) {
+		return task
+	}
+	completedAt := latest.CompletedAt.UTC()
+	task.LastStatus = "success"
+	task.LastRunAt = &completedAt
+	task.ConsecutiveFailures = 0
+	task.LastErrorMessage = ""
+	return task
 }
 
 func slowDiscoveryStepThreshold(phase string) time.Duration {

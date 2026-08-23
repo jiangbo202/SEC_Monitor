@@ -39,6 +39,16 @@ type SECBulkSource struct {
 	CacheTTL                                   time.Duration
 }
 
+// SecurityFundamentals is the result of one companyfacts.zip parse pass. Share
+// and financial facts come from the same archive and should not independently
+// reopen and scan it during a full-universe run.
+type SecurityFundamentals struct {
+	Shares           []ShareFact
+	FinancialFacts   []FinancialFact
+	ShareVersion     SourceVersion
+	FinancialVersion SourceVersion
+}
+
 // SECTickerMappingSource is the lightweight SEC side of the daily listing
 // discovery pass.  Unlike SECBulkSource.Load, it deliberately downloads only
 // company_tickers_exchange.json and never touches submissions.zip.
@@ -1071,6 +1081,73 @@ func (s SECBulkSource) LoadLatestShares(ctx context.Context, allowed map[string]
 		return nil, SourceVersion{}, err
 	}
 	return facts, bulkVersion("sec-companyfacts-submissions", c, submissions), nil
+}
+
+// LoadSecurityFundamentals loads company facts once and enriches share facts
+// with submissions metadata already present in the universe records. It
+// replaces two companyfacts ZIP scans plus an extra submissions ZIP scan in
+// the weekly full workflow while preserving the standalone source methods.
+func (s SECBulkSource) LoadSecurityFundamentals(ctx context.Context, allowed map[string]struct{}, records []SecuritySourceRecord, metadataVersion SourceVersion) (SecurityFundamentals, error) {
+	if err := s.validateDownloader(); err != nil {
+		return SecurityFundamentals{}, err
+	}
+	if s.CompanyFactsURL == "" {
+		return SecurityFundamentals{}, fmt.Errorf("SEC companyfacts URL is required")
+	}
+	download, err := s.Downloader.DownloadWithCacheTTL(ctx, s.CompanyFactsURL, "companyfacts.zip", nil, s.CacheTTL)
+	if err != nil {
+		return SecurityFundamentals{}, err
+	}
+	archive, err := OpenSafeZIP(download.Path, limitEntries(s.Limits), s.Limits.MaxTotalBytes)
+	if err != nil {
+		return SecurityFundamentals{}, err
+	}
+	defer archive.Close()
+	shares, err := ParseSECCompanyFactsZIP(&archive.Reader, allowed, s.Limits)
+	if err != nil {
+		return SecurityFundamentals{}, err
+	}
+	financials, err := ParseSECFinancialFactsZIP(&archive.Reader, allowed, s.Limits)
+	if err != nil {
+		return SecurityFundamentals{}, err
+	}
+	metadata := make([]FilingMetadata, 0)
+	metadataCIKs := make(map[string]struct{}, len(allowed))
+	for _, record := range records {
+		if _, ok := allowed[record.CIK]; !ok {
+			continue
+		}
+		if _, duplicate := metadataCIKs[record.CIK]; duplicate {
+			continue
+		}
+		metadataCIKs[record.CIK] = struct{}{}
+		metadata = append(metadata, record.FilingMetadata...)
+	}
+	shares, err = EnrichShareFactsWithAcceptance(shares, metadata)
+	if err != nil {
+		return SecurityFundamentals{}, err
+	}
+	shareDigest, err := hashCanonicalContent(struct {
+		CompanyFactsSHA string
+		MetadataSHA     string
+		ParserVersion   string
+	}{download.SHA256, metadataVersion.SHA256, FinancialParserVersion})
+	if err != nil {
+		return SecurityFundamentals{}, err
+	}
+	effectiveAt := metadataVersion.EffectiveAt
+	if effectiveAt.IsZero() {
+		effectiveAt = time.Now().UTC()
+	}
+	shareVersion := SourceVersion{
+		Source:      "sec-companyfacts-metadata",
+		Version:     shareDigest,
+		SHA256:      shareDigest,
+		EffectiveAt: effectiveAt,
+	}
+	financialVersion := bulkVersion("sec-financialfacts", download)
+	financialVersion.Version += "+" + FinancialParserVersion
+	return SecurityFundamentals{Shares: shares, FinancialFacts: financials, ShareVersion: shareVersion, FinancialVersion: financialVersion}, nil
 }
 
 func (s SECBulkSource) LoadFinancialFacts(ctx context.Context, allowed map[string]struct{}) ([]FinancialFact, SourceVersion, error) {

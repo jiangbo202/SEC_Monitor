@@ -31,5 +31,5 @@ function formatDate(value?: string) { return value ? new Date(value).toLocaleStr
 </script>
 
 <style scoped>
-.query-card,.message,.summary,.history{margin-top:16px}.anomalies{display:flex;flex-direction:column;align-items:flex-start;gap:8px}.anomalies p{font-size:12px;color:var(--el-text-color-secondary);margin:0}
+.query-card,.message,.summary,.history{margin-top:12px}.anomalies{display:flex;flex-direction:column;align-items:flex-start;gap:6px}.anomalies p{font-size:12px;color:var(--el-text-color-secondary);margin:0}
 </style>

@@ -85,6 +85,39 @@ func TestApplySmallCapPolicyPublishesDerivedBatchAtomically(t *testing.T) {
 	}
 }
 
+func TestRescoreActiveSmallCapPolicyPublishesOnceForNewScoringVersion(t *testing.T) {
+	db, active, base := seedSmallCapPolicyProjectionTest(t)
+	result, err := RescoreActiveSmallCapPolicy(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SourceBatchID != base.BatchID || result.PublishedBatchID == "" || result.PublishedBatchID == base.BatchID || result.ScoredCount == 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	var pointer CurrentBatchPointer
+	if err := db.First(&pointer, "kind = ?", BatchKindPrescreen).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pointer.BatchID != result.PublishedBatchID {
+		t.Fatalf("pointer = %#v", pointer)
+	}
+	var stale int64
+	if err := db.Model(&CandidateScoreSnapshot{}).Where("batch_id = ? AND scoring_version <> ?", pointer.BatchID, DiscoveryScoringVersion).Count(&stale).Error; err != nil || stale != 0 {
+		t.Fatalf("stale scores=%d err=%v", stale, err)
+	}
+	current, err := GetActiveSmallCapPolicy(context.Background(), db)
+	if err != nil || current.ID != active.ID {
+		t.Fatalf("active policy changed: %#v err=%v", current, err)
+	}
+	second, err := RescoreActiveSmallCapPolicy(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SourceBatchID != pointer.BatchID || second.PublishedBatchID != pointer.BatchID || second.ScoredCount != 0 {
+		t.Fatalf("second rescore should be no-op: %#v", second)
+	}
+}
+
 func TestApplySmallCapPolicyConflictAndBootstrap(t *testing.T) {
 	t.Run("conflict", func(t *testing.T) {
 		db, active, _ := seedSmallCapPolicyProjectionTest(t)

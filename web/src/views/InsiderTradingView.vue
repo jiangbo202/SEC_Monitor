@@ -10,7 +10,7 @@
     <el-form :inline="true" :model="filters" class="toolbar">
       <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
       <el-form-item :label="t('pages.insiderTrading.formType')">
-        <el-select v-model="filters.filing_type" clearable style="width: 140px">
+        <el-select fit-input-width v-model="filters.filing_type" clearable style="width: 140px">
           <el-option label="Form 3" value="3" />
           <el-option label="Form 4" value="4" />
           <el-option label="Form 5" value="5" />

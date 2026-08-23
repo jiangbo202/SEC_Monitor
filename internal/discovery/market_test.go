@@ -219,6 +219,32 @@ func TestImportPriceCSVIsAtomicAndIdempotent(t *testing.T) {
 	conflict := strings.Replace(normalizedPrices, "10.25,2000", "10.5,2000", 1)
 	if _, err := ImportPriceCSV(context.Background(), db, strings.NewReader(conflict), PriceFormatNormalized, opts); !errors.Is(err, ErrPriceImportConflict) {
 		t.Fatalf("conflicting idempotency error = %v", err)
+	} else if !strings.Contains(err.Error(), "existing close_micros=10250000 volume=2000") || !strings.Contains(err.Error(), "incoming close_micros=10500000 volume=2000") {
+		t.Fatalf("conflict diagnostics = %v", err)
+	}
+}
+
+func TestImportPriceCSVAllowsSameDayRevisionWithNewContentVersion(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	baseOptions := marketValidationOptions(t, []Listing{{Ticker: "BRK.B", ProviderTicker: "BRK-B"}, {Ticker: "PER"}})
+	baseOptions.SourceVersion = "provider:2026-06-18:content-a"
+	if _, err := ImportPriceCSV(context.Background(), db, strings.NewReader(normalizedPrices), PriceFormatNormalized, baseOptions); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	revisedInput := strings.Replace(normalizedPrices, "10.25,2000", "10.5,2001", 1)
+	revisedOptions := baseOptions
+	revisedOptions.SourceVersion = "provider:2026-06-18:content-b"
+	if _, err := ImportPriceCSV(context.Background(), db, strings.NewReader(revisedInput), PriceFormatNormalized, revisedOptions); err != nil {
+		t.Fatalf("revised import: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&PriceSnapshot{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 4 {
+		t.Fatalf("price snapshot count = %d, want both two-row versions", count)
 	}
 }
 

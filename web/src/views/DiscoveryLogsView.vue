@@ -12,7 +12,7 @@
       <template #header>
         <div class="card-header">
           <span>最近一次 Market Sync 摘要</span>
-          <el-tag effect="plain">本次跑了多少</el-tag>
+          <el-tag effect="plain">评分记录含非 A/B；A/B 候选见候选页</el-tag>
         </div>
       </template>
       <el-empty v-if="!latestMarketBatch" description="暂无 Market Sync 批次" />
@@ -22,7 +22,8 @@
         </el-descriptions-item>
         <el-descriptions-item label="有效日期">{{ latestMarketBatch.effective_date || '-' }}</el-descriptions-item>
         <el-descriptions-item label="耗时">{{ formatDuration(latestMarketBatch.started_at, latestMarketBatch.completed_at) }}</el-descriptions-item>
-        <el-descriptions-item label="候选数">{{ latestMarketBatch.candidate_count ?? 0 }}</el-descriptions-item>
+        <el-descriptions-item label="评分记录数">{{ latestMarketBatch.candidate_count ?? 0 }}</el-descriptions-item>
+        <el-descriptions-item label="发布记录数">{{ latestMarketBatch.record_count ?? 0 }}</el-descriptions-item>
         <el-descriptions-item label="补价进度">
           {{ formatProviderProgress(latestMarketBatch) }}
         </el-descriptions-item>
@@ -229,13 +230,13 @@
           <span>Discovery Batches</span>
           <el-form :inline="true" :model="batchFilters" class="inline-filters">
             <el-form-item label="Kind">
-              <el-select v-model="batchFilters.kind" clearable style="width: 180px">
+              <el-select fit-input-width v-model="batchFilters.kind" clearable style="width: 180px">
                 <el-option label="security-universe" value="security-universe" />
                 <el-option label="market-prescreen" value="market-prescreen" />
               </el-select>
             </el-form-item>
             <el-form-item label="Status">
-              <el-select v-model="batchFilters.status" clearable style="width: 140px">
+              <el-select fit-input-width v-model="batchFilters.status" clearable style="width: 140px">
                 <el-option label="published" value="published" />
                 <el-option label="failed" value="failed" />
                 <el-option label="draft" value="draft" />
@@ -255,7 +256,7 @@
         <el-table-column prop="kind" label="Kind" width="160" />
         <el-table-column prop="effective_date" label="有效日期" width="110" />
         <el-table-column prop="record_count" label="记录数" width="90" align="right" />
-        <el-table-column prop="candidate_count" label="候选数" width="90" align="right" />
+        <el-table-column prop="candidate_count" label="评分记录数" width="110" align="right" show-overflow-tooltip />
         <el-table-column label="补价" width="130" align="right">
           <template #default="{ row }">{{ formatProviderProgress(row) }}</template>
         </el-table-column>
@@ -290,7 +291,7 @@
               <el-input v-model="runFilters.provider" clearable placeholder="tiingo" style="width: 130px" />
             </el-form-item>
             <el-form-item label="Status">
-              <el-select v-model="runFilters.status" clearable style="width: 140px">
+              <el-select fit-input-width v-model="runFilters.status" clearable style="width: 140px">
                 <el-option label="validation" value="validation" />
                 <el-option label="active" value="active" />
                 <el-option label="degraded" value="degraded" />
@@ -681,6 +682,9 @@ function syncKindLabel(kind?: string) {
 function phaseLabel(phase?: string) {
   const labels: Record<string, string> = {
     prepare: '准备与缓存清理', build_sources: '装载数据源', security_universe: 'SEC 全量宇宙',
+    'security-metadata': '标的与 SEC 元数据', 'security-fundamentals': '股本与财务事实',
+    'security-shares': '股本事实', 'security-financials': '财务事实',
+    'security-insiders': 'Form 4 采集', 'security-capital-events': '融资风险事件',
     incremental_sec_refresh: 'SEC 增量财务', incremental_listing_discovery: '新增上市标的发现', market_prescreen: '行情与市值预筛',
     technical_history: '技术指标历史', publish_summary: '日报归档与健康检查', completed: '已完成', failed: '失败'
   }
@@ -709,7 +713,7 @@ onMounted(loadAll)
 
 <style scoped>
 .section-card {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .card-header {

@@ -113,6 +113,33 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 	}
 }
 
+func TestInsiderTransactionIdentityAllowsSequentialLotsAndRejectsExactRetry(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	mustCreate(t, db, &Security{ID: 1, CIK: "0000000001"})
+	day := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	first := InsiderTransactionSnapshot{
+		SecurityID: 1, Accession: "0001628280-26-023298", OwnerName: "Officer",
+		TransactionDate: day, TransactionCode: "D", AcquiredDisposedCode: "D",
+		SharesMicros: 812_000_000, PriceMicros: 8_340_000,
+		SharesOwnedBeforeMicros: 299_356_000_000, SharesOwnedAfterMicros: 298_544_000_000,
+	}
+	second := first
+	second.SharesOwnedBeforeMicros = 298_544_000_000
+	second.SharesOwnedAfterMicros = 297_732_000_000
+	if err := db.Create(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&second).Error; err != nil {
+		t.Fatalf("second sequential lot was rejected: %v", err)
+	}
+	duplicate := first
+	duplicate.ID = 0
+	duplicate.IdentitySHA256 = ""
+	if err := db.Create(&duplicate).Error; err == nil {
+		t.Fatal("exact retry unexpectedly created a duplicate transaction")
+	}
+}
+
 func TestMigrateInvalidatesLegacyProviderActivation(t *testing.T) {
 	db, err := OpenDatabase(config.DatabaseConfig{Type: "sqlite", DSN: "file:legacy-provider-health?mode=memory&cache=shared"})
 	if err != nil {

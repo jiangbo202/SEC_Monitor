@@ -3,8 +3,10 @@ package discovery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -197,7 +199,7 @@ func TestSECForm4InsiderSourceDownloadsRecentAllowedOwnershipXML(t *testing.T) {
 	}
 }
 
-func TestSECForm4InsiderSourceFallsBackFromXSLWrapperToRawOwnershipXML(t *testing.T) {
+func TestSECForm4InsiderSourcePrefersRawOwnershipXMLOverXSLWrapper(t *testing.T) {
 	asOf := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
 	requested := []string{}
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -217,10 +219,10 @@ func TestSECForm4InsiderSourceFallsBackFromXSLWrapperToRawOwnershipXML(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(transactions) != 0 || len(coverage) != 1 || coverage[0].Status != InsiderCoverageCoveredNoTransactions || coverage[0].DownloadedDocuments != 2 || coverage[0].ParsedDocuments != 1 {
+	if len(transactions) != 0 || len(coverage) != 1 || coverage[0].Status != InsiderCoverageCoveredNoTransactions || coverage[0].DownloadedDocuments != 1 || coverage[0].ParsedDocuments != 1 {
 		t.Fatalf("coverage = %#v transactions = %#v", coverage, transactions)
 	}
-	if len(requested) != 2 || !strings.Contains(requested[0], "/xslF345X05/ownership.xml") || !strings.HasSuffix(requested[1], "/ownership.xml") || strings.Contains(requested[1], "/xslF345X05/") {
+	if len(requested) != 1 || !strings.HasSuffix(requested[0], "/ownership.xml") || strings.Contains(requested[0], "/xslF345X05/") {
 		t.Fatalf("requested = %#v", requested)
 	}
 }
@@ -250,8 +252,8 @@ func TestSECForm4InsiderSourceSkipsMalformedOwnershipDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadInsiderTransactions: %v", err)
 	}
-	// The XSL wrapper now gets one safe retry at the accession-root filename;
-	// this fixture deliberately makes that fallback malformed too.
+	// The raw accession-root file is tried first and the XSL wrapper second;
+	// this fixture deliberately makes both locations malformed.
 	if len(requested) != 3 || len(transactions) != 0 {
 		t.Fatalf("requested=%d transactions=%#v", len(requested), transactions)
 	}
@@ -287,6 +289,35 @@ func TestSECForm4InsiderSourceSkipsSingleTransientDownloadFailure(t *testing.T) 
 	}
 	if len(requested) != 2 || len(transactions) != 0 || version.SHA256 == "" {
 		t.Fatalf("requested=%d transactions=%#v version=%#v", len(requested), transactions, version)
+	}
+}
+
+func TestSECForm4InsiderSourceBoundsOneStalledDocument(t *testing.T) {
+	asOf := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.Contains(r.URL.Path, "stalled.xml") {
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		}
+		body := `<ownershipDocument><documentType>4</documentType><issuer><issuerCik>0000001234</issuerCik><issuerTradingSymbol>ACME</issuerTradingSymbol></issuer></ownershipDocument>`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r}, nil
+	})}
+	source := SECForm4InsiderSource{
+		Metadata: fakeMetadataSource{records: []SecuritySourceRecord{{CIK: "0000001234", FilingMetadata: []FilingMetadata{
+			{CIK: "0000001234", Accession: "0000001234-26-000022", Form: "4", FiledAt: asOf.AddDate(0, 0, -2), PrimaryDocument: "stalled.xml"},
+			{CIK: "0000001234", Accession: "0000001234-26-000023", Form: "4", FiledAt: asOf.AddDate(0, 0, -1), PrimaryDocument: "form4.xml"},
+		}}}, version: testSourceVersion("metadata", "form4-timeout", asOf)},
+		Downloader:      &Downloader{Client: client, CacheDir: t.TempDir(), MaxBytes: 1 << 20},
+		BaseURL:         "https://www.sec.gov/Archives/edgar/data",
+		LookbackDays:    180,
+		DocumentTimeout: 20 * time.Millisecond,
+	}
+	_, coverage, _, err := source.LoadInsiderTransactionsWithCoverage(context.Background(), map[string]struct{}{"0000001234": {}}, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coverage) != 1 || coverage[0].TransientDocumentFailures != 1 || coverage[0].ParsedDocuments != 1 {
+		t.Fatalf("coverage = %#v", coverage)
 	}
 }
 
@@ -347,6 +378,59 @@ func TestSECForm4InsiderSourceReportsCoverageWithoutTreatingNoFilingAsMissing(t 
 	}
 }
 
+func TestSECForm4InsiderSourceResumesFromCompletedIssuerChunk(t *testing.T) {
+	asOf := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	records := make([]SecuritySourceRecord, 0, form4CheckpointChunkSize+1)
+	allowed := make(map[string]struct{}, form4CheckpointChunkSize+1)
+	for i := 1; i <= form4CheckpointChunkSize+1; i++ {
+		cik := fmt.Sprintf("%010d", i)
+		records = append(records, SecuritySourceRecord{CIK: cik, FilingMetadata: []FilingMetadata{{
+			CIK: cik, Accession: fmt.Sprintf("%010d-26-%06d", i, i), Form: "4",
+			FiledAt: asOf.AddDate(0, 0, -1), PrimaryDocument: "ownership.xml",
+		}}})
+		allowed[cik] = struct{}{}
+	}
+	cacheDir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	firstCalls := 0
+	firstClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		firstCalls++
+		if firstCalls > form4CheckpointChunkSize {
+			cancel()
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		}
+		cik, _ := strconv.Atoi(strings.Split(r.URL.Path, "/")[4])
+		body := fmt.Sprintf(`<ownershipDocument><documentType>4</documentType><issuer><issuerCik>%010d</issuerCik><issuerTradingSymbol>T</issuerTradingSymbol></issuer></ownershipDocument>`, cik)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r}, nil
+	})}
+	metadataVersion := testSourceVersion("metadata", "form4-chunk-resume", asOf)
+	first := SECForm4InsiderSource{Downloader: &Downloader{Client: firstClient, CacheDir: cacheDir, MaxBytes: 1 << 20}, LookbackDays: 180}
+	if _, _, _, err := first.LoadInsiderTransactionsWithMetadata(ctx, records, metadataVersion, allowed, asOf); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first run error=%v want canceled context", err)
+	}
+
+	secondCalls := 0
+	secondClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		secondCalls++
+		cik, _ := strconv.Atoi(strings.Split(r.URL.Path, "/")[4])
+		body := fmt.Sprintf(`<ownershipDocument><documentType>4</documentType><issuer><issuerCik>%010d</issuerCik><issuerTradingSymbol>T</issuerTradingSymbol></issuer></ownershipDocument>`, cik)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r}, nil
+	})}
+	second := SECForm4InsiderSource{Downloader: &Downloader{Client: secondClient, CacheDir: cacheDir, MaxBytes: 1 << 20}, LookbackDays: 180}
+	_, coverage, _, err := second.LoadInsiderTransactionsWithMetadata(context.Background(), records, metadataVersion, allowed, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coverage) != form4CheckpointChunkSize+1 {
+		t.Fatalf("coverage=%d want=%d", len(coverage), form4CheckpointChunkSize+1)
+	}
+	if secondCalls != 1 {
+		t.Fatalf("retry HTTP calls=%d want=1; completed first chunk was not resumed", secondCalls)
+	}
+}
+
 func TestForm4DocumentLocationAllowsSafeSECXSLSubdirectory(t *testing.T) {
 	filing := FilingMetadata{
 		CIK:             "0000001234",
@@ -366,5 +450,23 @@ func TestForm4DocumentLocationAllowsSafeSECXSLSubdirectory(t *testing.T) {
 	filing.PrimaryDocument = "../ownership.xml"
 	if _, _, err := form4DocumentLocation("https://www.sec.gov", filing); err == nil {
 		t.Fatal("expected traversal path rejection")
+	}
+}
+
+func TestForm4DocumentLocationUsesAccessionFilerCIK(t *testing.T) {
+	filing := FilingMetadata{
+		CIK:             "0001070423",
+		Accession:       "0001581990-26-000045",
+		PrimaryDocument: "form4.xml",
+	}
+	url, cacheKey, err := form4DocumentLocation("https://www.sec.gov/Archives/edgar/data", filing)
+	if err != nil {
+		t.Fatalf("form4DocumentLocation() error = %v", err)
+	}
+	if want := "https://www.sec.gov/Archives/edgar/data/1581990/000158199026000045/form4.xml"; url != want {
+		t.Fatalf("url = %q, want %q", url, want)
+	}
+	if want := "form4-0001581990-000158199026000045-form4.xml"; cacheKey != want {
+		t.Fatalf("cache key = %q, want %q", cacheKey, want)
 	}
 }

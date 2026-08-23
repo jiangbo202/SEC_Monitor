@@ -196,20 +196,20 @@ func renderCandidateSummaryMessage(summary CandidateSummary) string {
 	lines := []string{
 		"小盘股研究候选摘要（仅研究与通知，不构成投资建议）",
 		fmt.Sprintf("批次：%s", summary.BatchID),
-		fmt.Sprintf("A级候选 %d 只，B级候选 %d 只。", summary.TotalA, summary.TotalB),
+		fmt.Sprintf("A 型强信号 %d 只，B 型成长观察 %d 只。", summary.TotalA, summary.TotalB),
 	}
 	if summary.TotalA == 0 && summary.TotalB == 0 {
 		lines = append(lines, "今日暂无 A/B 候选。")
 		return strings.Join(lines, "\n")
 	}
 	if len(summary.ItemsA) > 0 {
-		lines = append(lines, "", "A级候选：")
+		lines = append(lines, "", "A 型强信号：")
 		for _, item := range summary.ItemsA {
 			lines = append(lines, formatCandidateSummaryLine(item, summary.EventNotes[item.Ticker]))
 		}
 	}
 	if len(summary.ItemsB) > 0 {
-		lines = append(lines, "", "B级候选：")
+		lines = append(lines, "", "B 型成长观察：")
 		for _, item := range summary.ItemsB {
 			lines = append(lines, formatCandidateSummaryLine(item, summary.EventNotes[item.Ticker]))
 		}
