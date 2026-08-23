@@ -63,6 +63,78 @@ func TestBuildCandidateTechnicalAnalysisIncludesMA200WhenHistoryIsAvailable(t *t
 	}
 }
 
+func TestCalculateCloseOscillatorsUsesWilderRSIAndCloseRangeKDJ(t *testing.T) {
+	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	rising := make([]PriceSnapshot, 0, 20)
+	for day := 0; day < 20; day++ {
+		rising = append(rising, PriceSnapshot{TradeDate: base.AddDate(0, 0, day), CloseMicros: int64(10_000_000 + day*1_000_000)})
+	}
+	points := calculateCloseOscillators(rising)
+	latest := points[len(points)-1]
+	if latest.RSI14 == nil || *latest.RSI14 != 100 {
+		t.Fatalf("rising RSI = %v, want 100", latest.RSI14)
+	}
+	if latest.K == nil || latest.D == nil || latest.J == nil || *latest.K <= *latest.D {
+		t.Fatalf("rising close-range KDJ = %+v, want K above D", latest)
+	}
+	if points[technicalRSIPeriod-1].RSI14 != nil || points[technicalKDJPeriod-2].K != nil {
+		t.Fatalf("indicators became available before their minimum windows")
+	}
+}
+
+func TestCalculateCloseOscillatorsFlatSeriesIsNeutral(t *testing.T) {
+	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	rows := make([]PriceSnapshot, 0, technicalMinimumSamples)
+	for day := 0; day < technicalMinimumSamples; day++ {
+		rows = append(rows, PriceSnapshot{TradeDate: base.AddDate(0, 0, day), CloseMicros: 10_000_000})
+	}
+	analysis := buildCandidateOscillatorAnalysis(rows)
+	if analysis.Status != TechnicalStatusReady || analysis.RSI14 == nil || *analysis.RSI14 != 50 {
+		t.Fatalf("flat oscillator analysis = %+v", analysis)
+	}
+	if analysis.K == nil || analysis.D == nil || analysis.J == nil || *analysis.K != 50 || *analysis.D != 50 || *analysis.J != 50 {
+		t.Fatalf("flat KDJ = %+v, want 50/50/50", analysis)
+	}
+	if analysis.Signal != "neutral" {
+		t.Fatalf("flat signal = %q, want neutral", analysis.Signal)
+	}
+}
+
+func TestCalculateOscillatorsUsesStandardOHLCForKDJ(t *testing.T) {
+	base := time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC)
+	rows := make([]PriceSnapshot, 0, 20)
+	for day := 0; day < 20; day++ {
+		closeMicros := int64(10_000_000 + day*100_000)
+		rows = append(rows, PriceSnapshot{
+			TradeDate: base.AddDate(0, 0, day), OpenMicros: closeMicros - 50_000,
+			HighMicros: closeMicros + 500_000, LowMicros: closeMicros - 500_000, CloseMicros: closeMicros,
+		})
+	}
+	analysis := buildCandidateOscillatorAnalysis(rows)
+	if analysis.Status != TechnicalStatusReady || analysis.KDJMethod != standardKDJMethod {
+		t.Fatalf("standard OHLC oscillator = %+v", analysis)
+	}
+	history := candidateTechnicalHistoryRows(rows)
+	if !history[0].OHLCAvailable || history[0].KDJMethod != standardKDJMethod || history[0].OpenUSD <= 0 || history[0].HighUSD <= history[0].LowUSD {
+		t.Fatalf("standard OHLC history = %+v", history[0])
+	}
+}
+
+func TestCandidateTechnicalHistoryRowsIncludeOscillators(t *testing.T) {
+	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	rows := make([]PriceSnapshot, 0, 16)
+	for day := 0; day < 16; day++ {
+		rows = append(rows, PriceSnapshot{TradeDate: base.AddDate(0, 0, day), CloseMicros: int64(10_000_000 + day*100_000)})
+	}
+	history := candidateTechnicalHistoryRows(rows)
+	if len(history) != len(rows) || history[0].RSI14 == nil || history[0].K == nil || history[0].D == nil || history[0].J == nil {
+		t.Fatalf("latest history row missing oscillators: %+v", history[0])
+	}
+	if history[len(history)-1].RSI14 != nil || history[len(history)-1].K != nil {
+		t.Fatalf("oldest row should not have enough history: %+v", history[len(history)-1])
+	}
+}
+
 func TestBuildCandidateTechnicalAnalysisUsesImmediatePriorWindowAndLiquidity(t *testing.T) {
 	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	rows := make([]PriceSnapshot, 0, 41)

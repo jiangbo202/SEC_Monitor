@@ -52,7 +52,8 @@ func TestBackfillCandidateTechnicalHistoryPersistsOnlyIncompleteCandidates(t *te
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	records := make([]PriceRecord, 0, technicalHistorySamplesRequired)
 	for index := 0; index < technicalHistorySamplesRequired; index++ {
-		records = append(records, PriceRecord{Symbol: "HIST", Source: "fake", TradeDate: base.AddDate(0, 0, index), CloseMicros: 1_000_000 + int64(index), Volume: 100, Currency: "USD"})
+		closeMicros := 1_000_000 + int64(index)
+		records = append(records, PriceRecord{Symbol: "HIST", Source: "fake", TradeDate: base.AddDate(0, 0, index), OpenMicros: closeMicros - 10, HighMicros: closeMicros + 20, LowMicros: closeMicros - 20, CloseMicros: closeMicros, Volume: 100, Currency: "USD"})
 	}
 	provider := &fakeTechnicalHistoryProvider{records: records}
 	result, err := BackfillCandidateTechnicalHistory(context.Background(), db, provider, time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC), 35)
@@ -85,8 +86,8 @@ func TestBackfillTickerTechnicalHistoryPersistsAndReadsWatchTargetSeries(t *test
 	db := openMigratedTestDatabase(t)
 	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	provider := &fakeTechnicalHistoryProvider{records: []PriceRecord{
-		{Symbol: "WATCH", Source: "fake", TradeDate: base, CloseMicros: 10_000_000, Volume: 100, Currency: "USD"},
-		{Symbol: "WATCH", Source: "fake", TradeDate: base.AddDate(0, 0, 1), CloseMicros: 11_000_000, Volume: 200, Currency: "USD"},
+		{Symbol: "WATCH", Source: "fake", TradeDate: base, OpenMicros: 9_800_000, HighMicros: 10_200_000, LowMicros: 9_700_000, CloseMicros: 10_000_000, Volume: 100, Currency: "USD"},
+		{Symbol: "WATCH", Source: "fake", TradeDate: base.AddDate(0, 0, 1), OpenMicros: 10_500_000, HighMicros: 11_200_000, LowMicros: 10_300_000, CloseMicros: 11_000_000, Volume: 200, Currency: "USD"},
 	}}
 	result, err := BackfillTickerTechnicalHistory(context.Background(), db, provider, "watch", base.AddDate(0, 0, 2), 0)
 	if err != nil {
@@ -104,5 +105,8 @@ func TestBackfillTickerTechnicalHistoryPersistsAndReadsWatchTargetSeries(t *test
 	}
 	if history.Ticker != "WATCH" || len(history.History) != 2 || history.History[0].TradeDate != "2026-01-03" {
 		t.Fatalf("history = %+v", history)
+	}
+	if !history.History[0].OHLCAvailable || history.History[0].HighUSD != 11.2 || history.History[0].LowUSD != 10.3 {
+		t.Fatalf("OHLC history = %+v", history.History[0])
 	}
 }

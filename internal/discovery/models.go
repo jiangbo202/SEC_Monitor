@@ -385,6 +385,9 @@ type PriceSnapshot struct {
 	SourceVersion string    `json:"source_version" gorm:"size:128;uniqueIndex:idx_price_source_version_symbol_date,priority:2"`
 	Symbol        string    `json:"symbol" gorm:"size:64;uniqueIndex:idx_price_source_version_symbol_date,priority:3;index;index:idx_price_symbol_quality_trade_date,priority:1"`
 	TradeDate     time.Time `json:"trade_date" gorm:"uniqueIndex:idx_price_source_version_symbol_date,priority:4;index;index:idx_price_symbol_quality_trade_date,priority:3;index:idx_price_symbol_quality_source_trade_date,priority:4"`
+	OpenMicros    int64     `json:"open_micros"`
+	HighMicros    int64     `json:"high_micros"`
+	LowMicros     int64     `json:"low_micros"`
 	CloseMicros   int64     `json:"close_micros"`
 	Volume        int64     `json:"volume"`
 	Currency      string    `json:"currency" gorm:"size:8"`

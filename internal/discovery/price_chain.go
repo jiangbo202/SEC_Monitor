@@ -288,7 +288,7 @@ func chainSourceVersion(provider string, effective time.Time, childVersions []st
 	}
 	for _, record := range records {
 		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(fmt.Sprintf("%s|%s|%s|%d|%d", record.Source, record.Symbol, record.TradeDate.Format(time.DateOnly), record.CloseMicros, record.Volume)))
+		_, _ = h.Write([]byte(fmt.Sprintf("%s|%s|%s|%d|%d|%d|%d|%d", record.Source, record.Symbol, record.TradeDate.Format(time.DateOnly), record.OpenMicros, record.HighMicros, record.LowMicros, record.CloseMicros, record.Volume)))
 	}
 	sha := hex.EncodeToString(h.Sum(nil))
 	return provider + ":" + effective.Format(time.DateOnly) + ":" + sha[:12], sha

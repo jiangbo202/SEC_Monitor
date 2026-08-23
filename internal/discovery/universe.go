@@ -2359,7 +2359,7 @@ func (c *Coordinator) persistPrices(ctx context.Context, records []PriceRecord, 
 				quality = qualityForPriceError(err)
 			}
 		}
-		snapshots = append(snapshots, PriceSnapshot{Source: record.Source, SourceVersion: version, Symbol: record.Symbol, TradeDate: record.TradeDate, CloseMicros: record.CloseMicros, Volume: record.Volume, Currency: record.Currency, Adjusted: record.Adjusted, QualityStatus: quality, CreatedAt: c.Clock()})
+		snapshots = append(snapshots, PriceSnapshot{Source: record.Source, SourceVersion: version, Symbol: record.Symbol, TradeDate: record.TradeDate, OpenMicros: record.OpenMicros, HighMicros: record.HighMicros, LowMicros: record.LowMicros, CloseMicros: record.CloseMicros, Volume: record.Volume, Currency: record.Currency, Adjusted: record.Adjusted, QualityStatus: quality, CreatedAt: c.Clock()})
 	}
 	sort.Slice(snapshots, func(i, j int) bool { return canonicalLess(snapshots[i], snapshots[j]) })
 	for start := 0; start < len(snapshots); start += universeChunkSize {

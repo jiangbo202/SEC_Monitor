@@ -513,8 +513,21 @@ export interface CandidateTechnicalAnalysis {
   distance_to_200d_high_pct: number
   relative_strength: CandidateRelativeStrength
   anchored_vwap: CandidateAnchoredVWAP
+  oscillator: CandidateOscillatorAnalysis
   signals: CandidateTechnicalSignal[]
 	trade_setup: CandidateTradeSetup
+}
+
+export interface CandidateOscillatorAnalysis {
+  status: 'ready' | 'data_insufficient' | 'missing' | string
+  rsi_14?: number | null
+  k?: number | null
+  d?: number | null
+  j?: number | null
+  kdj_method: 'ohlc_9_3_3' | 'close_range_9_3_3' | string
+  signal: 'bullish' | 'bearish' | 'caution' | 'watch' | 'neutral' | 'unavailable' | string
+  label: string
+  reasons: string[]
 }
 
 export interface CandidateTradeSetup {
@@ -575,12 +588,21 @@ export interface CandidateRelativeStrength {
 
 export interface CandidateTechnicalHistoryRow {
   trade_date: string
+  open_usd: number
+  high_usd: number
+  low_usd: number
   close_usd: number
+  ohlc_available: boolean
   volume: number
   dollar_volume_usd: number
   source: string
   source_version: string
   backfilled: boolean
+  rsi_14?: number | null
+  k?: number | null
+  d?: number | null
+  j?: number | null
+  kdj_method: 'ohlc_9_3_3' | 'close_range_9_3_3' | string
 }
 
 export interface TickerTechnicalHistory {

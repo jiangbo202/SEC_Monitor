@@ -162,7 +162,8 @@ func ImportPriceCSV(ctx context.Context, db *gorm.DB, input io.Reader, format Pr
 	for index, record := range records {
 		snapshots[index] = PriceSnapshot{
 			Source: record.Source, SourceVersion: result.SourceVersion, Symbol: record.Symbol,
-			TradeDate: record.TradeDate, CloseMicros: record.CloseMicros, Volume: record.Volume,
+			TradeDate: record.TradeDate, OpenMicros: record.OpenMicros, HighMicros: record.HighMicros,
+			LowMicros: record.LowMicros, CloseMicros: record.CloseMicros, Volume: record.Volume,
 			Currency: record.Currency, Adjusted: record.Adjusted, QualityStatus: QualityStatusValid,
 		}
 	}
@@ -196,7 +197,7 @@ func persistPriceSnapshotsInBatches(tx *gorm.DB, snapshots []PriceSnapshot) erro
 				end = len(group)
 			}
 			chunk := group[start:end]
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(chunk, priceImportBatchSize).Error; err != nil {
+			if err := tx.Clauses(priceSnapshotConflictClause()).CreateInBatches(chunk, priceImportBatchSize).Error; err != nil {
 				return fmt.Errorf("persist price snapshot batch: %w", err)
 			}
 			persisted, err := loadPriceSnapshotChunk(tx, chunk)
@@ -208,19 +209,25 @@ func persistPriceSnapshotsInBatches(tx *gorm.DB, snapshots []PriceSnapshot) erro
 				if !exists {
 					return fmt.Errorf("persisted price snapshot is missing for %s %s", expected.Symbol, expected.TradeDate.Format(time.DateOnly))
 				}
-				if actual.CloseMicros != expected.CloseMicros || actual.Volume != expected.Volume || actual.Currency != expected.Currency || actual.Adjusted != expected.Adjusted || actual.QualityStatus != expected.QualityStatus {
+				if actual.OpenMicros != expected.OpenMicros || actual.HighMicros != expected.HighMicros || actual.LowMicros != expected.LowMicros || actual.CloseMicros != expected.CloseMicros || actual.Volume != expected.Volume || actual.Currency != expected.Currency || actual.Adjusted != expected.Adjusted || actual.QualityStatus != expected.QualityStatus {
 					return fmt.Errorf(
-						"%w for %s %s (source=%s version=%s; existing close_micros=%d volume=%d currency=%s adjusted=%t quality=%s; incoming close_micros=%d volume=%d currency=%s adjusted=%t quality=%s)",
+						"%w for %s %s (source=%s version=%s; existing ohlc=%d/%d/%d/%d volume=%d currency=%s adjusted=%t quality=%s; incoming ohlc=%d/%d/%d/%d volume=%d currency=%s adjusted=%t quality=%s)",
 						ErrPriceImportConflict,
 						expected.Symbol,
 						expected.TradeDate.Format(time.DateOnly),
 						expected.Source,
 						expected.SourceVersion,
+						actual.OpenMicros,
+						actual.HighMicros,
+						actual.LowMicros,
 						actual.CloseMicros,
 						actual.Volume,
 						actual.Currency,
 						actual.Adjusted,
 						actual.QualityStatus,
+						expected.OpenMicros,
+						expected.HighMicros,
+						expected.LowMicros,
 						expected.CloseMicros,
 						expected.Volume,
 						expected.Currency,
@@ -232,6 +239,36 @@ func persistPriceSnapshotsInBatches(tx *gorm.DB, snapshots []PriceSnapshot) erro
 		}
 	}
 	return nil
+}
+
+// priceSnapshotConflictClause keeps provider snapshots immutable, with one
+// deliberately narrow exception for rows written before OHLC persistence was
+// introduced. A replay may fill the previously empty open/high/low columns
+// only when every already-persisted value still matches the incoming record.
+// The validation below the insert continues to reject every other conflict.
+func priceSnapshotConflictClause() clause.OnConflict {
+	return clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "source"},
+			{Name: "source_version"},
+			{Name: "symbol"},
+			{Name: "trade_date"},
+		},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"open_micros": gorm.Expr("excluded.open_micros"),
+			"high_micros": gorm.Expr("excluded.high_micros"),
+			"low_micros":  gorm.Expr("excluded.low_micros"),
+		}),
+		Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: `
+			COALESCE(open_micros, 0) = 0 AND COALESCE(high_micros, 0) = 0 AND COALESCE(low_micros, 0) = 0
+			AND excluded.open_micros > 0 AND excluded.high_micros > 0 AND excluded.low_micros > 0
+			AND close_micros = excluded.close_micros
+			AND volume = excluded.volume
+			AND currency = excluded.currency
+			AND adjusted = excluded.adjusted
+			AND quality_status = excluded.quality_status
+		`}}},
+	}
 }
 
 func loadPriceSnapshotChunk(tx *gorm.DB, chunk []PriceSnapshot) (map[string]PriceSnapshot, error) {

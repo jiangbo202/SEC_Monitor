@@ -25,6 +25,8 @@ const (
 	technicalRelativeLongDays       = 60
 	technicalVolumeMultiple         = 1.5
 	technicalAnchoredVWAPMinSamples = 3
+	technicalRSIPeriod              = 14
+	technicalKDJPeriod              = 9
 )
 
 const (
@@ -45,34 +47,50 @@ type CandidateTechnicalSignal struct {
 // CandidateTechnicalAnalysis contains price-derived research signals only.
 // It is intentionally excluded from the fundamental candidate score.
 type CandidateTechnicalAnalysis struct {
-	Status                  string                     `json:"status"`
-	SampleDays              int                        `json:"sample_days"`
-	RequiredSampleDays      int                        `json:"required_sample_days"`
-	TradeDate               string                     `json:"trade_date"`
-	CloseUSD                float64                    `json:"close_usd"`
-	MA20USD                 float64                    `json:"ma20_usd"`
-	MA50USD                 float64                    `json:"ma50_usd"`
-	MA200USD                float64                    `json:"ma200_usd"`
-	MA200Available          bool                       `json:"ma200_available"`
-	PriorCloseUSD           float64                    `json:"prior_close_usd"`
-	PriorMA20USD            float64                    `json:"prior_ma20_usd"`
-	DistanceToMA20Pct       float64                    `json:"distance_to_ma20_pct"`
-	Prior20DayHighUSD       float64                    `json:"prior_20d_high_usd"`
-	DistanceTo20DayHighPct  float64                    `json:"distance_to_20d_high_pct"`
-	AverageVolume20         float64                    `json:"average_volume_20"`
-	VolumeRatio20           float64                    `json:"volume_ratio_20"`
-	DollarVolumeUSD         float64                    `json:"dollar_volume_usd"`
-	AverageDollarVolume20   float64                    `json:"average_dollar_volume_20"`
-	DollarVolumeRatio20     float64                    `json:"dollar_volume_ratio_20"`
-	LiquidityStatus         string                     `json:"liquidity_status"`
-	High50DayUSD            float64                    `json:"high_50d_usd"`
-	DistanceTo50DayHighPct  float64                    `json:"distance_to_50d_high_pct"`
-	High200DayUSD           float64                    `json:"high_200d_usd"`
-	DistanceTo200DayHighPct float64                    `json:"distance_to_200d_high_pct"`
-	RelativeStrength        CandidateRelativeStrength  `json:"relative_strength"`
-	AnchoredVWAP            CandidateAnchoredVWAP      `json:"anchored_vwap"`
-	Signals                 []CandidateTechnicalSignal `json:"signals"`
-	TradeSetup              CandidateTradeSetup        `json:"trade_setup"`
+	Status                  string                      `json:"status"`
+	SampleDays              int                         `json:"sample_days"`
+	RequiredSampleDays      int                         `json:"required_sample_days"`
+	TradeDate               string                      `json:"trade_date"`
+	CloseUSD                float64                     `json:"close_usd"`
+	MA20USD                 float64                     `json:"ma20_usd"`
+	MA50USD                 float64                     `json:"ma50_usd"`
+	MA200USD                float64                     `json:"ma200_usd"`
+	MA200Available          bool                        `json:"ma200_available"`
+	PriorCloseUSD           float64                     `json:"prior_close_usd"`
+	PriorMA20USD            float64                     `json:"prior_ma20_usd"`
+	DistanceToMA20Pct       float64                     `json:"distance_to_ma20_pct"`
+	Prior20DayHighUSD       float64                     `json:"prior_20d_high_usd"`
+	DistanceTo20DayHighPct  float64                     `json:"distance_to_20d_high_pct"`
+	AverageVolume20         float64                     `json:"average_volume_20"`
+	VolumeRatio20           float64                     `json:"volume_ratio_20"`
+	DollarVolumeUSD         float64                     `json:"dollar_volume_usd"`
+	AverageDollarVolume20   float64                     `json:"average_dollar_volume_20"`
+	DollarVolumeRatio20     float64                     `json:"dollar_volume_ratio_20"`
+	LiquidityStatus         string                      `json:"liquidity_status"`
+	High50DayUSD            float64                     `json:"high_50d_usd"`
+	DistanceTo50DayHighPct  float64                     `json:"distance_to_50d_high_pct"`
+	High200DayUSD           float64                     `json:"high_200d_usd"`
+	DistanceTo200DayHighPct float64                     `json:"distance_to_200d_high_pct"`
+	RelativeStrength        CandidateRelativeStrength   `json:"relative_strength"`
+	AnchoredVWAP            CandidateAnchoredVWAP       `json:"anchored_vwap"`
+	Oscillator              CandidateOscillatorAnalysis `json:"oscillator"`
+	Signals                 []CandidateTechnicalSignal  `json:"signals"`
+	TradeSetup              CandidateTradeSetup         `json:"trade_setup"`
+}
+
+// CandidateOscillatorAnalysis summarizes daily momentum indicators. Standard
+// KDJ uses the OHLC range; legacy close-only rows fall back explicitly until
+// their historical window has been refreshed.
+type CandidateOscillatorAnalysis struct {
+	Status    string   `json:"status"`
+	RSI14     *float64 `json:"rsi_14,omitempty"`
+	K         *float64 `json:"k,omitempty"`
+	D         *float64 `json:"d,omitempty"`
+	J         *float64 `json:"j,omitempty"`
+	KDJMethod string   `json:"kdj_method"`
+	Signal    string   `json:"signal"`
+	Label     string   `json:"label"`
+	Reasons   []string `json:"reasons"`
 }
 
 // CandidateAnchoredVWAP is a daily-close, volume-weighted approximation from
@@ -113,13 +131,22 @@ type candidateBenchmarkMatchedPrice struct {
 // technical research. Backfilled distinguishes a one-time history fetch from
 // the regular daily market sync.
 type CandidateTechnicalHistoryRow struct {
-	TradeDate       string  `json:"trade_date"`
-	CloseUSD        float64 `json:"close_usd"`
-	Volume          int64   `json:"volume"`
-	DollarVolumeUSD float64 `json:"dollar_volume_usd"`
-	Source          string  `json:"source"`
-	SourceVersion   string  `json:"source_version"`
-	Backfilled      bool    `json:"backfilled"`
+	TradeDate       string   `json:"trade_date"`
+	OpenUSD         float64  `json:"open_usd"`
+	HighUSD         float64  `json:"high_usd"`
+	LowUSD          float64  `json:"low_usd"`
+	CloseUSD        float64  `json:"close_usd"`
+	OHLCAvailable   bool     `json:"ohlc_available"`
+	Volume          int64    `json:"volume"`
+	DollarVolumeUSD float64  `json:"dollar_volume_usd"`
+	Source          string   `json:"source"`
+	SourceVersion   string   `json:"source_version"`
+	Backfilled      bool     `json:"backfilled"`
+	RSI14           *float64 `json:"rsi_14,omitempty"`
+	K               *float64 `json:"k,omitempty"`
+	D               *float64 `json:"d,omitempty"`
+	J               *float64 `json:"j,omitempty"`
+	KDJMethod       string   `json:"kdj_method"`
 }
 
 func hydrateCandidateTechnicalAnalysis(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) error {
@@ -445,18 +472,29 @@ func technicalPriceHistoryFromRaw(raw []PriceSnapshot, preferredSource string, l
 
 func candidateTechnicalHistoryRows(rows []PriceSnapshot) []CandidateTechnicalHistoryRow {
 	result := make([]CandidateTechnicalHistoryRow, 0, len(rows))
+	indicators := calculateCloseOscillators(rows)
 	// The calculation uses chronological data, while the detail table should
 	// lead with the newest available trading day.
 	for index := len(rows) - 1; index >= 0; index-- {
 		row := rows[index]
+		indicator := indicators[index]
 		result = append(result, CandidateTechnicalHistoryRow{
 			TradeDate:       row.TradeDate.Format("2006-01-02"),
+			OpenUSD:         priceSnapshotOpen(row),
+			HighUSD:         priceSnapshotHigh(row),
+			LowUSD:          priceSnapshotLow(row),
 			CloseUSD:        priceSnapshotClose(row),
+			OHLCAvailable:   priceSnapshotHasOHLC(row),
 			Volume:          row.Volume,
 			DollarVolumeUSD: priceSnapshotClose(row) * float64(maxInt64(row.Volume, 0)),
 			Source:          row.Source,
 			SourceVersion:   row.SourceVersion,
 			Backfilled:      strings.Contains(row.SourceVersion, ":technical-history:"),
+			RSI14:           indicator.RSI14,
+			K:               indicator.K,
+			D:               indicator.D,
+			J:               indicator.J,
+			KDJMethod:       indicator.KDJMethod,
 		})
 	}
 	return result
@@ -470,6 +508,7 @@ func buildCandidateTechnicalAnalysis(rows []PriceSnapshot) CandidateTechnicalAna
 		RequiredSampleDays: technicalMinimumSamples,
 		RelativeStrength:   CandidateRelativeStrength{Status: "missing", BenchmarkTicker: "IWM"},
 		AnchoredVWAP:       CandidateAnchoredVWAP{Status: "anchor_unavailable"},
+		Oscillator:         buildCandidateOscillatorAnalysis(rows),
 		Signals:            []CandidateTechnicalSignal{},
 		TradeSetup:         unavailableCandidateTradeSetup(TechnicalStatusMissing),
 	}

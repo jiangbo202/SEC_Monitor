@@ -23,46 +23,39 @@
       </el-form-item>
       <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
     </el-form>
-    <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.targets.empty')">
-      <el-table-column prop="ticker" label="Ticker" width="105">
+    <el-table class="target-list-table" :data="rows" v-loading="loading" border size="small" :empty-text="t('pages.targets.empty')">
+      <el-table-column label="标的" min-width="230">
         <template #default="{ row }">
-          <el-link type="primary" @click="openDetail(row)">{{ row.ticker }}</el-link>
+          <div class="target-identity">
+            <el-link class="target-ticker" type="primary" @click="openDetail(row)">{{ row.ticker }}</el-link>
+            <span class="target-company" :title="row.company_name">{{ row.company_name || '-' }}</span>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column prop="company_name" :label="t('common.companyName')" min-width="220" show-overflow-tooltip />
-      <el-table-column prop="cik" label="CIK" width="120" />
-      <el-table-column prop="target_type" :label="t('common.type')" width="90">
+      <el-table-column prop="group" :label="t('common.targetGroup')" width="110">
         <template #default="{ row }">
-          <el-tag :type="row.target_type === 'etf' ? 'warning' : 'info'" effect="plain">{{ row.target_type === 'etf' ? 'ETF' : 'Stock' }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="group" :label="t('common.targetGroup')" width="120">
-        <template #default="{ row }">
-          <el-tag v-if="row.group" effect="plain">{{ row.group }}</el-tag>
+          <el-tag v-if="row.group" size="small" effect="plain">{{ row.group }}</el-tag>
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column prop="status" :label="t('common.enabled')" width="90">
+      <el-table-column label="监控状态" width="150">
         <template #default="{ row }">
-          <el-switch
-            :model-value="row.status === 'enabled'"
-            inline-prompt
-            :active-text="t('pages.targets.enableShort')"
-            :inactive-text="t('pages.targets.disableShort')"
-            @change="(value: boolean) => setTargetEnabled(row, value)"
-          />
+          <div class="target-status-cell">
+            <el-switch
+              size="small"
+              :model-value="row.status === 'enabled'"
+              inline-prompt
+              :active-text="t('pages.targets.enableShort')"
+              :inactive-text="t('pages.targets.disableShort')"
+              @change="(value: boolean) => setTargetEnabled(row, value)"
+            />
+            <el-tooltip :disabled="!row.last_sync_error" :content="row.last_sync_error || ''" placement="top" effect="dark">
+              <el-tag size="small" class="status-tag" :type="syncStatusType(row.last_sync_status)" effect="plain">{{ syncStatusLabel(row.last_sync_status) }}</el-tag>
+            </el-tooltip>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column prop="last_sync_status" :label="t('common.sync')" width="120">
-        <template #default="{ row }">
-          <el-tag class="status-tag" :type="syncStatusType(row.last_sync_status)" effect="plain">{{ syncStatusLabel(row.last_sync_status) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="last_sync_at" :label="t('pages.targets.lastSync')" width="170">
-        <template #default="{ row }">{{ formatDateTime(row.last_sync_at) }}</template>
-      </el-table-column>
-      <el-table-column prop="last_new_filings" :label="t('common.newCount')" width="80" align="right" />
-      <el-table-column label="技术信号" min-width="180">
+      <el-table-column label="技术信号" min-width="290">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -78,39 +71,39 @@
               </template>
               <span v-else>{{ targetTechnicalStatusDescription(row) }}</span>
             </template>
-            <el-space wrap>
-              <el-tag v-for="signal in row.technical?.signals || []" :key="signal.kind" type="success" effect="plain">{{ signal.label }}</el-tag>
-              <el-tag v-if="row.technical?.status === 'ready'" :type="liquidityTagType(row.technical.liquidity_status)" effect="plain">流动性：{{ liquidityShortLabel(row.technical.liquidity_status) }}</el-tag>
-              <el-tag v-if="!(row.technical?.signals || []).length" :type="row.technical?.status === 'ready' ? 'info' : 'warning'" effect="plain">
+            <div class="target-signals">
+              <el-tag v-for="signal in (row.technical?.signals || []).slice(0, 2)" :key="signal.kind" size="small" type="success" effect="plain">{{ signal.label }}</el-tag>
+              <el-tag v-if="(row.technical?.signals || []).length > 2" size="small" type="info" effect="plain">+{{ (row.technical?.signals || []).length - 2 }}</el-tag>
+              <el-tag v-if="row.technical?.status === 'ready'" size="small" :type="liquidityTagType(row.technical.liquidity_status)" effect="plain">流动性{{ liquidityShortLabel(row.technical.liquidity_status) }}</el-tag>
+              <el-tag v-if="!(row.technical?.signals || []).length" size="small" :type="row.technical?.status === 'ready' ? 'info' : 'warning'" effect="plain">
                 {{ row.technical?.status === 'ready' ? '暂无突破' : targetTechnicalStatusLabel(row) }}
               </el-tag>
-            </el-space>
+            </div>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="交易计划" min-width="130">
+      <el-table-column label="交易计划" width="110">
         <template #default="{ row }">
           <el-tooltip :content="tradeSetupSummary(row.technical)" placement="top">
-            <el-tag :type="tradeSetupTagType(row.technical?.trade_setup?.status)" effect="plain">
+            <el-tag size="small" :type="tradeSetupTagType(row.technical?.trade_setup?.status)" effect="plain">
               {{ tradeSetupLabel(row.technical?.trade_setup?.status) }}
             </el-tag>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="财报预告" min-width="175">
+      <el-table-column label="财报预告" min-width="150">
         <template #default="{ row }">
           <el-tooltip :content="earningsPreviewTooltip(earningsPreviewFor(row))" placement="top" effect="dark">
-            <el-tag :type="earningsPreviewTagType(earningsPreviewFor(row))" effect="plain">
+            <el-tag size="small" :type="earningsPreviewTagType(earningsPreviewFor(row))" effect="plain">
               {{ earningsPreviewLabel(earningsPreviewFor(row)) }}
             </el-tag>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="last_sync_error" :label="t('pages.targets.syncError')" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="updated_at" :label="t('common.update')" width="170">
-        <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
+      <el-table-column prop="last_sync_at" :label="t('pages.targets.lastSync')" width="135">
+        <template #default="{ row }"><span class="target-sync-time">{{ formatCompactDateTime(row.last_sync_at) }}</span></template>
       </el-table-column>
-      <el-table-column :label="t('common.actions')" width="150" fixed="right">
+      <el-table-column :label="t('common.actions')" width="125" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" :loading="syncingId === row.id" @click="syncTarget(row)">{{ t('common.sync') }}</el-button>
           <el-dropdown trigger="click" @command="(command: string) => handleTargetCommand(command, row)">
@@ -454,7 +447,7 @@
             show-icon
             class="target-technical-alert"
           />
-          <TechnicalPriceHistoryChart :ticker="detailTarget.ticker" :rows="detailTechnicalHistory" />
+          <TechnicalPriceHistoryChart :ticker="detailTarget.ticker" :rows="detailTechnicalHistory" :technical="detailTechnicalAnalysis" />
         </div>
 
         <div class="target-detail-section">
@@ -526,7 +519,7 @@ import AIAnalysisResult from '@/components/AIAnalysisResult.vue'
 import type { AIAnalysisStructuredResult } from '@/api/types'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
-import type { AnalystRatingView, ApiResponse, CandidateFairValueEstimate, CandidateTechnicalHistoryRow, CompanyProfile, EarningsPreview, EarningsPreviewRefreshResult, EarningsPreviewView, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerInstitutionalHoldingHistory, TickerLookup, TickerTechnicalHistory, TradePlanSimulationRebuildResult, TradePlanSimulationReport, TradeSetupStatusEvent, WatchTarget } from '@/api/types'
+import type { AnalystRatingView, ApiResponse, CandidateFairValueEstimate, CandidateTechnicalAnalysis, CandidateTechnicalHistoryRow, CompanyProfile, EarningsPreview, EarningsPreviewRefreshResult, EarningsPreviewView, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerInstitutionalHoldingHistory, TickerLookup, TickerTechnicalHistory, TradePlanSimulationRebuildResult, TradePlanSimulationReport, TradeSetupStatusEvent, WatchTarget } from '@/api/types'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -548,6 +541,7 @@ const detailFilings = ref<Filing[]>([])
 const detailSyncDetails = ref<SyncRunDetail[]>([])
 const detailProfitHistory = ref<ProfitHistory | null>(null)
 const detailTechnicalHistory = ref<CandidateTechnicalHistoryRow[]>([])
+const detailTechnicalAnalysis = ref<CandidateTechnicalAnalysis | null>(null)
 const detailTradeSetupHistory = ref<TradeSetupStatusEvent[]>([])
 const detailCompanyProfile = ref<CompanyProfile | null>(null)
 const detailCompanyProfileRefreshing = ref(false)
@@ -902,6 +896,7 @@ async function loadTargetDetailData(row: WatchTarget) {
 	detailLoading.value = true
 	detailProfitHistory.value = null
 	detailTechnicalHistory.value = []
+	detailTechnicalAnalysis.value = null
 	detailTradeSetupHistory.value = []
 	detailCompanyProfile.value = null
 	detailAnalystRating.value = null
@@ -931,8 +926,10 @@ async function loadTargetDetailData(row: WatchTarget) {
 		try {
 			const technical = await apiClient.get<ApiResponse<TickerTechnicalHistory>>(`/watch-targets/${row.id}/technical-history`)
 			detailTechnicalHistory.value = technical.data.data.history || []
+			detailTechnicalAnalysis.value = technical.data.data.technical
 		} catch {
 			detailTechnicalHistory.value = []
+			detailTechnicalAnalysis.value = null
 		}
 		if (row.target_type === 'stock') {
 			try {
@@ -1035,6 +1032,7 @@ async function backfillTargetTechnicalHistory() {
     ElMessage.success(`已保存 ${response.data.data.persisted_count} 条本地日线数据`)
     const history = await apiClient.get<ApiResponse<TickerTechnicalHistory>>(`/watch-targets/${target.id}/technical-history`)
     detailTechnicalHistory.value = history.data.data.history || []
+    detailTechnicalAnalysis.value = history.data.data.technical
   } finally {
     detailTechnicalBackfilling.value = false
   }
@@ -1158,6 +1156,16 @@ function formatDateTime(value?: string | null) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString()
+}
+
+function formatCompactDateTime(value?: string | null) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    hour12: false,
+  }).format(date)
 }
 
 function formatDate(value?: string | null) {
@@ -1373,3 +1381,74 @@ onMounted(() => {
 })
 onUnmounted(() => { if (targetAIPollingTimer !== undefined) window.clearTimeout(targetAIPollingTimer) })
 </script>
+
+<style scoped>
+.target-list-table :deep(.el-table__cell) {
+  padding: 4px 0;
+}
+
+.target-list-table :deep(.cell) {
+  line-height: 18px;
+}
+
+.target-list-table :deep(.el-table__row) {
+  height: 42px;
+}
+
+.target-list-table :deep(.el-tag) {
+  max-width: 100%;
+  height: 22px;
+  padding: 0 7px;
+  line-height: 20px;
+}
+
+.target-identity {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.target-ticker {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.target-company {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.target-status-cell,
+.target-signals {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.target-signals {
+  overflow: hidden;
+}
+
+.target-signals :deep(.el-tag) {
+  flex: 0 0 auto;
+}
+
+.target-sync-time {
+  color: var(--el-text-color-regular);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .target-list-table :deep(.el-table__row) {
+    height: 40px;
+  }
+}
+</style>

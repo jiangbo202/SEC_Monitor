@@ -92,9 +92,8 @@
               <el-table-column prop="ticker" label="标的" width="110" fixed>
                 <template #default="{ row }"><el-link type="primary" @click="openCandidate(row.ticker)">{{ row.ticker }}</el-link></template>
               </el-table-column>
-              <el-table-column prop="company_name" label="公司 / 基金" min-width="180" show-overflow-tooltip />
               <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="tradeStatusType(row.status)" effect="plain">{{ tradeStatusLabel(row.status) }}</el-tag></template></el-table-column>
-              <el-table-column prop="reason" label="触发条件 / 原因" min-width="250" show-overflow-tooltip />
+              <el-table-column prop="reason" label="触发条件 / 原因" min-width="380" show-overflow-tooltip />
               <el-table-column label="收盘价" width="115" align="right"><template #default="{ row }">{{ row.close_usd ? `${formatNumber(row.close_usd)} USD` : '-' }}</template></el-table-column>
               <el-table-column label="基本面" width="100" align="center"><template #default="{ row }"><el-tag v-if="row.score" effect="plain">{{ row.grade }} {{ row.score }}</el-tag><span v-else>-</span></template></el-table-column>
               <el-table-column label="状态开始" width="165"><template #default="{ row }">{{ formatDateTime(row.since) }}</template></el-table-column>

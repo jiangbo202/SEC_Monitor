@@ -219,7 +219,7 @@ func TestImportPriceCSVIsAtomicAndIdempotent(t *testing.T) {
 	conflict := strings.Replace(normalizedPrices, "10.25,2000", "10.5,2000", 1)
 	if _, err := ImportPriceCSV(context.Background(), db, strings.NewReader(conflict), PriceFormatNormalized, opts); !errors.Is(err, ErrPriceImportConflict) {
 		t.Fatalf("conflicting idempotency error = %v", err)
-	} else if !strings.Contains(err.Error(), "existing close_micros=10250000 volume=2000") || !strings.Contains(err.Error(), "incoming close_micros=10500000 volume=2000") {
+	} else if !strings.Contains(err.Error(), "existing ohlc=10000000/11000000/9000000/10250000 volume=2000") || !strings.Contains(err.Error(), "incoming ohlc=10000000/11000000/9000000/10500000 volume=2000") {
 		t.Fatalf("conflict diagnostics = %v", err)
 	}
 }
@@ -245,6 +245,41 @@ func TestImportPriceCSVAllowsSameDayRevisionWithNewContentVersion(t *testing.T) 
 	}
 	if count != 4 {
 		t.Fatalf("price snapshot count = %d, want both two-row versions", count)
+	}
+}
+
+func TestPersistPriceSnapshotsUpgradesLegacyCloseOnlyRow(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	tradeDate := civilDate(t, "2026-06-18")
+	legacy := PriceSnapshot{
+		Source: "longbridge", SourceVersion: "longbridge:technical-history:2026-06-18",
+		Symbol: "ACME", TradeDate: tradeDate, CloseMicros: 10_250_000, Volume: 2_000,
+		Currency: "USD", Adjusted: false, QualityStatus: QualityStatusValid,
+	}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	// AutoMigrate adds the OHLC columns as NULL for rows created by an older
+	// binary. Reproduce that real upgrade state rather than only testing zeros.
+	if err := db.Model(&PriceSnapshot{}).Where("id = ?", legacy.ID).Updates(map[string]interface{}{
+		"open_micros": nil, "high_micros": nil, "low_micros": nil,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	incoming := legacy
+	incoming.ID = 0
+	incoming.OpenMicros = 10_000_000
+	incoming.HighMicros = 11_000_000
+	incoming.LowMicros = 9_000_000
+	if err := persistPriceSnapshotsInBatches(db, []PriceSnapshot{incoming}); err != nil {
+		t.Fatalf("upgrade close-only row: %v", err)
+	}
+	var stored PriceSnapshot
+	if err := db.First(&stored, legacy.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.OpenMicros != incoming.OpenMicros || stored.HighMicros != incoming.HighMicros || stored.LowMicros != incoming.LowMicros || stored.CloseMicros != incoming.CloseMicros {
+		t.Fatalf("upgraded OHLC = %d/%d/%d/%d", stored.OpenMicros, stored.HighMicros, stored.LowMicros, stored.CloseMicros)
 	}
 }
 
