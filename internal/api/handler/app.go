@@ -773,6 +773,7 @@ func (h *AppHandler) GetDiscoveryCandidateDetail(c *gin.Context) {
 		}
 		result.RecentFilings = filings
 	}
+	result.Catalysts = discovery.BuildCandidateCatalystTimeline(result)
 	OK(c, result)
 }
 

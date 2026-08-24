@@ -32,6 +32,7 @@ type AnalystRatingView struct {
 	Latest  *AnalystRatingSnapshot  `json:"latest,omitempty"`
 	History []AnalystRatingSnapshot `json:"history"`
 	Message string                  `json:"message"`
+	Quality DataQualityMetadata     `json:"quality"`
 }
 
 type AnalystRatingRefreshResult struct {
@@ -118,9 +119,11 @@ func GetAnalystRating(ctx context.Context, db *gorm.DB, ticker string) (AnalystR
 	}
 	if len(result.History) == 0 {
 		result.Message = "尚未同步分析师共识；可点击“刷新分析师评级”仅获取该标的最新公开数据。"
+		result.Quality = researchQualityMetadata(DataLayerFact, longbridgeAnalystRatingProvider, "", time.Time{}, 14*24*time.Hour, 45*24*time.Hour)
 		return result, nil
 	}
 	result.Latest = &result.History[0]
+	result.Quality = researchQualityMetadata(DataLayerFact, longbridgeAnalystRatingProvider, result.Latest.SnapshotHash, result.Latest.FetchedAt, 14*24*time.Hour, 45*24*time.Hour)
 	if result.Latest.Status == AnalystRatingStatusNoCoverage {
 		result.Message = "数据提供方当前暂无分析师覆盖；这在小盘和微盘股中较常见，不代表同步失败。"
 	} else {

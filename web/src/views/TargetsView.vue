@@ -1319,6 +1319,7 @@ function simulationStatusType(status?: string) {
 }
 
 function targetTechnicalStatusLabel(target: WatchTarget) {
+  if (target.technical?.status === 'corporate_action_review') return '待确认复权'
   if (target.technical?.status === 'data_insufficient') return '历史不足'
   if (target.technical?.status === 'missing') return '无行情数据'
   return '暂无技术数据'
@@ -1326,6 +1327,7 @@ function targetTechnicalStatusLabel(target: WatchTarget) {
 
 function targetTechnicalStatusDescription(target: WatchTarget) {
   const technical = target.technical
+  if (technical?.status === 'corporate_action_review') return technical.adjustment_review?.detail || '存在公司行动且价格复权状态未确认；技术信号已暂停。'
   if (technical?.status === 'data_insufficient') return `技术分析至少需要 ${technical.required_sample_days || 21} 个交易日，当前仅有 ${technical.sample_days || 0} 个。`
   return '尚未保存可用本地日线；请在详情中回填价格历史后计算技术信号。'
 }

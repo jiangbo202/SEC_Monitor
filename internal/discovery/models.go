@@ -695,6 +695,12 @@ type CandidateWatch struct {
 	Status              string     `json:"status" gorm:"size:16;index"`
 	Note                string     `json:"note" gorm:"type:text"`
 	ResearchStatus      string     `json:"research_status" gorm:"size:16;index"`
+	CompanyThesisStatus string     `json:"company_thesis_status" gorm:"size:32;index"`
+	SecurityReadiness   string     `json:"security_readiness" gorm:"size:32;index"`
+	ResearchAction      string     `json:"research_action" gorm:"size:32;index"`
+	ActionThreshold     string     `json:"action_threshold" gorm:"type:text"`
+	ThresholdOrigin     string     `json:"threshold_origin" gorm:"size:32"`
+	DecisionRationale   string     `json:"decision_rationale" gorm:"type:text"`
 	Thesis              string     `json:"thesis" gorm:"type:text"`
 	RiskNotes           string     `json:"risk_notes" gorm:"type:text"`
 	Invalidation        string     `json:"invalidation" gorm:"type:text"`
@@ -723,6 +729,12 @@ type CandidateResearchMemoVersion struct {
 	Version             int        `json:"version" gorm:"uniqueIndex:idx_candidate_research_memo_ticker_version,priority:2"`
 	SecurityID          uint       `json:"security_id" gorm:"index"`
 	Author              string     `json:"author" gorm:"size:128"`
+	CompanyThesisStatus string     `json:"company_thesis_status" gorm:"size:32;index"`
+	SecurityReadiness   string     `json:"security_readiness" gorm:"size:32;index"`
+	ResearchAction      string     `json:"research_action" gorm:"size:32;index"`
+	ActionThreshold     string     `json:"action_threshold" gorm:"type:text"`
+	ThresholdOrigin     string     `json:"threshold_origin" gorm:"size:32"`
+	DecisionRationale   string     `json:"decision_rationale" gorm:"type:text"`
 	Thesis              string     `json:"thesis" gorm:"type:text"`
 	MarketConcern       string     `json:"market_concern" gorm:"type:text"`
 	FalsifiableJudgment string     `json:"falsifiable_judgment" gorm:"type:text"`

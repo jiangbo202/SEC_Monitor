@@ -56,8 +56,13 @@ type DashboardMarketSummary struct {
 // is derived from persisted data only: opening the dashboard never probes a
 // provider that may be degraded or consuming a limited quota.
 type DashboardDataFreshness struct {
-	Status string `json:"status"`
-	Detail string `json:"detail"`
+	Status            string `json:"status"`
+	Detail            string `json:"detail"`
+	AsOf              string `json:"as_of,omitempty"`
+	ExpectedTradeDate string `json:"expected_trade_date,omitempty"`
+	Source            string `json:"source,omitempty"`
+	QualityStatus     string `json:"quality_status"`
+	FallbackUsed      bool   `json:"fallback_used"`
 }
 
 // DashboardMarketSeries purposefully excludes OHLC/volume history. Charts
@@ -167,6 +172,7 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 		}
 	}
 
+	marketSource := ""
 	if h.MarketTrend != nil {
 		if market, err := h.MarketTrend.List(ctx, 20); err != nil {
 			addWarning("大盘快照", err)
@@ -179,6 +185,7 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 				result.Decision.Market.Temperature = &temperature
 			}
 			result.Decision.Market.LastFetched = market.LastFetched
+			marketSource = market.Source
 		}
 	}
 	if h.USFutures != nil {
@@ -191,7 +198,7 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 			}
 		}
 	}
-	result.Decision.Market.Freshness = dashboardDataFreshness(result.Decision.Market.LastFetched, now)
+	result.Decision.Market.Freshness = dashboardDataFreshness(ctx, h.DiscoveryDB, dashboardLatestTradeDate(result.Decision.Market), marketSource, result.Decision.Market.LastFetched, now)
 
 	if err := h.loadDashboardCandidateActions(ctx, &result); err != nil {
 		addWarning("候选交易计划", err)
@@ -224,21 +231,85 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 	OK(c, result)
 }
 
-func dashboardDataFreshness(lastFetched *time.Time, now time.Time) DashboardDataFreshness {
+func dashboardDataFreshness(ctx context.Context, discoveryDB *gorm.DB, tradeDate, source string, lastFetched *time.Time, now time.Time) DashboardDataFreshness {
 	if lastFetched == nil || lastFetched.IsZero() {
-		return DashboardDataFreshness{Status: "unavailable", Detail: "尚未同步到可用的本地市场快照"}
+		return DashboardDataFreshness{Status: "unavailable", Detail: "尚未同步到可用的本地市场快照", QualityStatus: "missing", Source: source}
+	}
+	result := DashboardDataFreshness{AsOf: tradeDate, Source: source, QualityStatus: discovery.QualityStatusValid}
+	if discoveryDB != nil && tradeDate != "" {
+		calendar, err := discovery.NewDatabaseMarketCalendar(discoveryDB, discovery.DefaultNYSECalendarVersion)
+		if err == nil {
+			expected, expectedErr := discovery.LatestCompletedTradingDate(ctx, calendar, now)
+			if expectedErr == nil {
+				result.ExpectedTradeDate = expected.Format(time.DateOnly)
+				newYork, locationErr := time.LoadLocation("America/New_York")
+				if locationErr == nil {
+					observed, parseErr := time.ParseInLocation(time.DateOnly, tradeDate, newYork)
+					if parseErr == nil {
+						switch {
+						case tradeDate >= result.ExpectedTradeDate:
+							result.Status = "fresh"
+							result.Detail = "本地市场快照已覆盖最近完成的交易日"
+							return result
+						case tradingSessionDistance(ctx, calendar, observed, expected) <= 1:
+							result.Status = "stale"
+							result.QualityStatus = "stale"
+							result.Detail = "本地市场快照落后 1 个交易日；请核对同步状态"
+							return result
+						default:
+							result.Status = "expired"
+							result.QualityStatus = "expired"
+							result.Detail = "本地市场快照落后超过 1 个交易日，不应据此作出交易判断"
+							return result
+						}
+					}
+				}
+			}
+		}
 	}
 	age := now.Sub(lastFetched.UTC())
 	if age < 0 {
 		age = 0
 	}
 	if age <= 36*time.Hour {
-		return DashboardDataFreshness{Status: "fresh", Detail: "本地市场快照在最近 36 小时内更新"}
+		result.Status, result.Detail = "fresh", "本地市场快照在最近 36 小时内更新"
+		return result
 	}
 	if age <= 72*time.Hour {
-		return DashboardDataFreshness{Status: "stale", Detail: "本地市场快照已超过 36 小时；请先核对数据源健康状态"}
+		result.Status, result.QualityStatus, result.Detail = "stale", "stale", "无法核验交易日历；本地市场快照已超过 36 小时"
+		return result
 	}
-	return DashboardDataFreshness{Status: "expired", Detail: "本地市场快照已超过 72 小时，不应据此作出交易判断"}
+	result.Status, result.QualityStatus, result.Detail = "expired", "expired", "无法核验交易日历；本地市场快照已超过 72 小时，不应据此作出交易判断"
+	return result
+}
+
+func dashboardLatestTradeDate(summary DashboardMarketSummary) string {
+	latest := ""
+	for _, rows := range [][]DashboardMarketSeries{summary.Market, summary.Sectors, summary.Futures} {
+		for _, row := range rows {
+			if row.TradeDate > latest {
+				latest = row.TradeDate
+			}
+		}
+	}
+	return latest
+}
+
+func tradingSessionDistance(ctx context.Context, calendar discovery.MarketCalendar, observed, expected time.Time) int {
+	if !observed.Before(expected) {
+		return 0
+	}
+	distance := 0
+	for day := observed.AddDate(0, 0, 1); !day.After(expected) && distance <= 15; day = day.AddDate(0, 0, 1) {
+		trading, err := calendar.IsTradingDate(ctx, day.Format(time.DateOnly))
+		if err != nil {
+			return 16
+		}
+		if trading {
+			distance++
+		}
+	}
+	return distance
 }
 
 type dashboardPreferencesInput struct {

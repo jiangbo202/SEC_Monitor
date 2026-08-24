@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -20,11 +21,42 @@ const (
 	CandidateResearchStatusRejected    = "rejected"
 )
 
+const (
+	CompanyThesisUntested      = "untested"
+	CompanyThesisStrengthening = "strengthening"
+	CompanyThesisIntact        = "intact"
+	CompanyThesisWatch         = "watch"
+	CompanyThesisImpaired      = "impaired"
+	CompanyThesisBroken        = "broken"
+	CompanyThesisRetired       = "retired"
+
+	SecurityReadinessNotDecisionGrade = "not_decision_grade"
+	SecurityReadinessConditional      = "conditional"
+	SecurityReadinessReady            = "ready"
+	SecurityReadinessReunderwrite     = "re_underwrite"
+
+	ResearchActionWaitForProof       = "wait_for_proof"
+	ResearchActionPrioritizeResearch = "prioritize_research"
+	ResearchActionContinueMonitoring = "continue_monitoring"
+	ResearchActionReunderwrite       = "re_underwrite"
+	ResearchActionReject             = "reject"
+
+	ThresholdOriginInherited = "inherited"
+	ThresholdOriginDraft     = "draft"
+	ThresholdOriginApproved  = "approved"
+)
+
 type CandidateWatchInput struct {
 	Ticker              string     `json:"ticker"`
 	Note                string     `json:"note"`
 	Status              string     `json:"status"`
 	ResearchStatus      *string    `json:"research_status"`
+	CompanyThesisStatus *string    `json:"company_thesis_status"`
+	SecurityReadiness   *string    `json:"security_readiness"`
+	ResearchAction      *string    `json:"research_action"`
+	ActionThreshold     *string    `json:"action_threshold"`
+	ThresholdOrigin     *string    `json:"threshold_origin"`
+	DecisionRationale   *string    `json:"decision_rationale"`
 	Thesis              *string    `json:"thesis"`
 	RiskNotes           *string    `json:"risk_notes"`
 	Invalidation        *string    `json:"invalidation"`
@@ -296,7 +328,23 @@ func UpsertCandidateWatch(ctx context.Context, db *gorm.DB, input CandidateWatch
 	if err != nil {
 		return CandidateWatch{}, err
 	}
-	watch := CandidateWatch{Ticker: ticker, Status: status, Note: strings.TrimSpace(input.Note), ResearchStatus: researchStatus, UpdatedAt: time.Now().UTC()}
+	companyThesisStatus, err := validatedResearchEnum(input.CompanyThesisStatus, CompanyThesisUntested, []string{CompanyThesisUntested, CompanyThesisStrengthening, CompanyThesisIntact, CompanyThesisWatch, CompanyThesisImpaired, CompanyThesisBroken, CompanyThesisRetired}, "company thesis status")
+	if err != nil {
+		return CandidateWatch{}, err
+	}
+	securityReadiness, err := validatedResearchEnum(input.SecurityReadiness, SecurityReadinessNotDecisionGrade, []string{SecurityReadinessNotDecisionGrade, SecurityReadinessConditional, SecurityReadinessReady, SecurityReadinessReunderwrite}, "security readiness")
+	if err != nil {
+		return CandidateWatch{}, err
+	}
+	researchAction, err := validatedResearchEnum(input.ResearchAction, ResearchActionWaitForProof, []string{ResearchActionWaitForProof, ResearchActionPrioritizeResearch, ResearchActionContinueMonitoring, ResearchActionReunderwrite, ResearchActionReject}, "research action")
+	if err != nil {
+		return CandidateWatch{}, err
+	}
+	thresholdOrigin, err := validatedResearchEnum(input.ThresholdOrigin, ThresholdOriginDraft, []string{ThresholdOriginInherited, ThresholdOriginDraft, ThresholdOriginApproved}, "threshold origin")
+	if err != nil {
+		return CandidateWatch{}, err
+	}
+	watch := CandidateWatch{Ticker: ticker, Status: status, Note: strings.TrimSpace(input.Note), ResearchStatus: researchStatus, CompanyThesisStatus: companyThesisStatus, SecurityReadiness: securityReadiness, ResearchAction: researchAction, ThresholdOrigin: thresholdOrigin, UpdatedAt: time.Now().UTC()}
 	applyCandidateWatchResearchInput(&watch, input)
 	var baselineScore *CandidateScoreResult
 	if score, ok, err := currentCandidateScoreByTicker(ctx, db, ticker); err != nil {
@@ -352,6 +400,24 @@ func UpsertCandidateWatch(ctx context.Context, db *gorm.DB, input CandidateWatch
 	}
 	if input.ResearchStatus != nil {
 		updates["research_status"] = watch.ResearchStatus
+	}
+	if input.CompanyThesisStatus != nil {
+		updates["company_thesis_status"] = watch.CompanyThesisStatus
+	}
+	if input.SecurityReadiness != nil {
+		updates["security_readiness"] = watch.SecurityReadiness
+	}
+	if input.ResearchAction != nil {
+		updates["research_action"] = watch.ResearchAction
+	}
+	if input.ActionThreshold != nil {
+		updates["action_threshold"] = watch.ActionThreshold
+	}
+	if input.ThresholdOrigin != nil {
+		updates["threshold_origin"] = watch.ThresholdOrigin
+	}
+	if input.DecisionRationale != nil {
+		updates["decision_rationale"] = watch.DecisionRationale
 	}
 	if input.Thesis != nil {
 		updates["thesis"] = watch.Thesis
@@ -413,7 +479,8 @@ func UpsertCandidateWatch(ctx context.Context, db *gorm.DB, input CandidateWatch
 }
 
 func hasCandidateResearchMemoChanges(input CandidateWatchInput) bool {
-	return input.Thesis != nil || input.RiskNotes != nil || input.Invalidation != nil ||
+	return input.CompanyThesisStatus != nil || input.SecurityReadiness != nil || input.ResearchAction != nil || input.ActionThreshold != nil || input.ThresholdOrigin != nil || input.DecisionRationale != nil ||
+		input.Thesis != nil || input.RiskNotes != nil || input.Invalidation != nil ||
 		input.MarketConcern != nil || input.FalsifiableJudgment != nil || input.Catalyst != nil ||
 		input.CatalystSource != nil || input.CatalystDate != nil || input.ClearCatalystDate ||
 		input.NextReviewAt != nil || input.ClearNextReviewAt
@@ -433,6 +500,8 @@ func appendCandidateResearchMemoVersion(ctx context.Context, db *gorm.DB, watch 
 	}
 	version := CandidateResearchMemoVersion{
 		Ticker: watch.Ticker, Version: int(count) + 1, SecurityID: watch.SecurityID, Author: author,
+		CompanyThesisStatus: watch.CompanyThesisStatus, SecurityReadiness: watch.SecurityReadiness, ResearchAction: watch.ResearchAction,
+		ActionThreshold: watch.ActionThreshold, ThresholdOrigin: watch.ThresholdOrigin, DecisionRationale: watch.DecisionRationale,
 		Thesis: watch.Thesis, MarketConcern: watch.MarketConcern, FalsifiableJudgment: watch.FalsifiableJudgment,
 		Catalyst: watch.Catalyst, CatalystSource: watch.CatalystSource, CatalystDate: watch.CatalystDate,
 		RiskNotes: watch.RiskNotes, Invalidation: watch.Invalidation, NextReviewAt: watch.NextReviewAt,
@@ -567,7 +636,41 @@ func validatedCandidateResearchStatus(input *string, fallback string) (string, e
 	}
 }
 
+func validatedResearchEnum(input *string, fallback string, allowed []string, label string) (string, error) {
+	if input == nil {
+		return fallback, nil
+	}
+	value := strings.ToLower(strings.TrimSpace(*input))
+	if value == "" {
+		return fallback, nil
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("invalid %s", label)
+}
+
 func applyCandidateWatchResearchInput(watch *CandidateWatch, input CandidateWatchInput) {
+	if input.CompanyThesisStatus != nil {
+		watch.CompanyThesisStatus = strings.ToLower(strings.TrimSpace(*input.CompanyThesisStatus))
+	}
+	if input.SecurityReadiness != nil {
+		watch.SecurityReadiness = strings.ToLower(strings.TrimSpace(*input.SecurityReadiness))
+	}
+	if input.ResearchAction != nil {
+		watch.ResearchAction = strings.ToLower(strings.TrimSpace(*input.ResearchAction))
+	}
+	if input.ActionThreshold != nil {
+		watch.ActionThreshold = strings.TrimSpace(*input.ActionThreshold)
+	}
+	if input.ThresholdOrigin != nil {
+		watch.ThresholdOrigin = strings.ToLower(strings.TrimSpace(*input.ThresholdOrigin))
+	}
+	if input.DecisionRationale != nil {
+		watch.DecisionRationale = strings.TrimSpace(*input.DecisionRationale)
+	}
 	if input.Thesis != nil {
 		watch.Thesis = strings.TrimSpace(*input.Thesis)
 	}

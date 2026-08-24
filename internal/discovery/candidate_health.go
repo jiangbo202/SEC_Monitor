@@ -45,6 +45,7 @@ type CandidateHealth struct {
 	ReadyCandidates                int      `json:"ready_candidates"`
 	ResearchOnlyCandidates         int      `json:"research_only_candidates"`
 	BlockedCandidates              int      `json:"blocked_candidates"`
+	OpenDataQualityIncidents       int      `json:"open_data_quality_incidents"`
 	Issues                         []string `json:"issues"`
 }
 
@@ -194,6 +195,14 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 		}
 	}
 	result.ActiveRiskEvents = int(activeRiskEvents)
+	var openIncidents int64
+	if db.Migrator().HasTable(&DataQualityIncident{}) {
+		if err := db.WithContext(ctx).Model(&DataQualityIncident{}).
+			Where("status = ?", DataQualityIncidentOpen).Count(&openIncidents).Error; err != nil {
+			return result, err
+		}
+	}
+	result.OpenDataQualityIncidents = int(openIncidents)
 	readinessPage, err := ListCandidateScores(ctx, db, CandidateScoreQuery{BatchID: batch.BatchID, Page: 1, PageSize: maxDiscoveryPageSize})
 	if err != nil {
 		return result, err
@@ -245,8 +254,11 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 	if result.BlockedCandidates > 0 {
 		result.Issues = append(result.Issues, fmt.Sprintf("blocked_candidates:%d", result.BlockedCandidates))
 	}
+	if result.OpenDataQualityIncidents > 0 {
+		result.Issues = append(result.Issues, fmt.Sprintf("open_data_quality_incidents:%d", result.OpenDataQualityIncidents))
+	}
 	if result.MissingFinancials > 0 || result.MissingInsiders > 0 || result.MissingMarketCap > 0 || result.StalePriceCandidates > 0 || result.MissingPriceCandidates > 0 ||
-		result.ResearchOnlyCandidates > 0 || result.BlockedCandidates > 0 ||
+		result.ResearchOnlyCandidates > 0 || result.BlockedCandidates > 0 || result.OpenDataQualityIncidents > 0 ||
 		(result.TotalCandidates > 0 && insiderDataAvailable && !insiderCoverageExpected && result.CandidatesWithInsiderRecords == 0) ||
 		result.InsiderCoveragePartial > 0 || result.InsiderCoverageUnavailable > 0 ||
 		(result.TotalCandidates > 0 && result.CandidatesWithRecentFilings == 0) {

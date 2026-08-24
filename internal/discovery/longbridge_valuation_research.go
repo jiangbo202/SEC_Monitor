@@ -23,6 +23,7 @@ type CandidateValuationResearch struct {
 	Latest  *ValuationResearchSnapshot  `json:"latest,omitempty"`
 	History []ValuationResearchSnapshot `json:"history"`
 	Message string                      `json:"message"`
+	Quality DataQualityMetadata         `json:"quality"`
 }
 
 type ValuationResearchSnapshot struct {
@@ -33,6 +34,7 @@ type ValuationResearchSnapshot struct {
 	Peers         []ValuationPeer          `json:"peers"`
 	ChangeSummary string                   `json:"change_summary,omitempty"`
 	FetchedAt     time.Time                `json:"fetched_at"`
+	SourceVersion string                   `json:"source_version,omitempty"`
 }
 
 type ValuationResearchMetrics struct {
@@ -128,15 +130,17 @@ func GetCandidateValuationResearch(ctx context.Context, db *gorm.DB, ticker stri
 		if err := json.Unmarshal([]byte(row.PayloadJSON), &decoded); err != nil {
 			continue
 		}
-		decoded.ID, decoded.Ticker, decoded.ChangeSummary, decoded.FetchedAt = row.ID, row.Ticker, row.ChangeSummary, row.FetchedAt
+		decoded.ID, decoded.Ticker, decoded.ChangeSummary, decoded.FetchedAt, decoded.SourceVersion = row.ID, row.Ticker, row.ChangeSummary, row.FetchedAt, row.SnapshotHash
 		result.History = append(result.History, decoded)
 	}
 	if len(result.History) == 0 {
 		result.Message = "尚未同步 Longbridge 估值历史与同业比较；小盘股覆盖可能不完整。"
+		result.Quality = researchQualityMetadata(DataLayerFact, longbridgeCandidateResearchProvider, "", time.Time{}, 30*24*time.Hour, 90*24*time.Hour)
 		return result, nil
 	}
 	result.Latest = &result.History[0]
 	result.Message = "Longbridge 估值历史、行业分位与同业比较；仅用于研究展示，不能作为硬筛选。"
+	result.Quality = researchQualityMetadata(DataLayerFact, longbridgeCandidateResearchProvider, result.Latest.SourceVersion, result.Latest.FetchedAt, 30*24*time.Hour, 90*24*time.Hour)
 	return result, nil
 }
 

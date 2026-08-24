@@ -65,6 +65,7 @@ type OperationalReport struct {
 	SlowSECTargets            int64                   `json:"slow_sec_targets"`
 	SlowDiscoverySteps        int                     `json:"slow_discovery_steps"`
 	ProviderWarnings          int64                   `json:"provider_warnings"`
+	OpenDataQualityIncidents  int64                   `json:"open_data_quality_incidents"`
 	FailedNotificationBatches int64                   `json:"failed_notification_batches"`
 	DeadLetterBatches         int64                   `json:"dead_letter_batches"`
 	Summary                   string                  `json:"summary"`
@@ -192,6 +193,14 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	}
 
 	if s.discoveryDB != nil {
+		if s.discoveryDB.Migrator().HasTable(&discovery.DataQualityIncident{}) {
+			if err := s.discoveryDB.WithContext(ctx).Model(&discovery.DataQualityIncident{}).Where("status = ?", discovery.DataQualityIncidentOpen).Count(&report.OpenDataQualityIncidents).Error; err != nil {
+				return report, err
+			}
+			if report.OpenDataQualityIncidents > 0 {
+				report.addIssue("data_quality_incidents", "data_quality", "warning", "数据事实已隔离", fmt.Sprintf("%d 条异常事实已隔离；其他标的仍可继续发布，后续成功重试会自动关闭异常", report.OpenDataQualityIncidents), "discovery-logs", now)
+			}
+		}
 		if err := s.reportSlowDiscoverySteps(ctx, &report, now); err != nil {
 			return report, err
 		}

@@ -47,6 +47,38 @@ type MarketCalendar interface {
 	IsTradingDay(ctx context.Context, day time.Time) (bool, error)
 }
 
+// LatestCompletedTradingDate returns the latest fully closed NYSE session.
+// Daily facts must be compared with a trading session rather than elapsed
+// wall-clock hours: Friday's close is still current throughout a weekend.
+func LatestCompletedTradingDate(ctx context.Context, calendar MarketCalendar, now time.Time) (time.Time, error) {
+	if calendar == nil {
+		return time.Time{}, errors.New("market calendar is required")
+	}
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("load America/New_York: %w", err)
+	}
+	local := now.In(newYork)
+	candidate := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, newYork)
+	// Allow a small publication buffer after the regular close so an intraday
+	// quote can never be presented as a completed daily bar.
+	marketClose := time.Date(local.Year(), local.Month(), local.Day(), 16, 15, 0, 0, newYork)
+	if local.Before(marketClose) {
+		candidate = candidate.AddDate(0, 0, -1)
+	}
+	for offset := 0; offset <= 14; offset++ {
+		trading, lookupErr := calendar.IsTradingDate(ctx, candidate.Format(time.DateOnly))
+		if lookupErr != nil {
+			return time.Time{}, lookupErr
+		}
+		if trading {
+			return candidate, nil
+		}
+		candidate = candidate.AddDate(0, 0, -1)
+	}
+	return time.Time{}, errors.New("previous completed NYSE trading date not found")
+}
+
 type DatabaseMarketCalendar struct {
 	db      *gorm.DB
 	version string

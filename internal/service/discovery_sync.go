@@ -2038,27 +2038,8 @@ func enabledWatchTargetListings(targets []model.WatchTarget) []discovery.Listing
 // session. The scheduler may be configured in any local timezone; this guard
 // still prevents it from persisting an intraday quote as a daily close.
 func latestCompletedWatchTargetTradingDate(ctx context.Context, calendar discovery.MarketCalendar, now time.Time) (time.Time, bool, error) {
-	newYork, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	local := now.In(newYork)
-	candidate := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, newYork)
-	marketClose := time.Date(local.Year(), local.Month(), local.Day(), 16, 15, 0, 0, newYork)
-	if local.Before(marketClose) {
-		candidate = candidate.AddDate(0, 0, -1)
-	}
-	for offset := 0; offset <= 14; offset++ {
-		trading, err := calendar.IsTradingDate(ctx, candidate.Format(time.DateOnly))
-		if err != nil {
-			return time.Time{}, false, err
-		}
-		if trading {
-			return candidate, true, nil
-		}
-		candidate = candidate.AddDate(0, 0, -1)
-	}
-	return time.Time{}, false, errors.New("previous completed NYSE trading date not found")
+	day, err := discovery.LatestCompletedTradingDate(ctx, calendar, now)
+	return day, err == nil, err
 }
 
 // RefreshCandidateMarketHistoryAndScore repairs one candidate's local daily
@@ -2112,8 +2093,20 @@ func (s *DiscoverySyncService) autoWarmTechnicalHistory(ctx context.Context) Tec
 		log.Printf("discovery technical history warmup warning: %s", result.ErrorMessage)
 		return result
 	}
+	if !backfill.BenchmarkReady {
+		result.Status = "warning"
+		result.ErrorMessage = fmt.Sprintf("IWM 基准历史未就绪：状态 %s，样本 %d/%d，最近交易日 %s", backfill.BenchmarkStatus, backfill.BenchmarkSampleDays, backfill.BenchmarkRequiredDays, backfill.BenchmarkLatestDate)
+		log.Printf("discovery technical history warmup warning: %s", result.ErrorMessage)
+		return result
+	}
+	if len(backfill.Failures) > 0 {
+		result.Status = "warning"
+		result.ErrorMessage = fmt.Sprintf("技术历史部分缺失：%d 个标的未返回可用日线", len(backfill.Failures))
+		log.Printf("discovery technical history warmup warning: %s", result.ErrorMessage)
+		return result
+	}
 	result.Status = "completed"
-	log.Printf("discovery technical history warmup completed: candidates=%d requested=%d persisted=%d", backfill.CandidateCount, backfill.RequestedCount, backfill.PersistedCount)
+	log.Printf("discovery technical history warmup completed: candidates=%d requested=%d persisted=%d benchmark=%s %d/%d", backfill.CandidateCount, backfill.RequestedCount, backfill.PersistedCount, backfill.BenchmarkStatus, backfill.BenchmarkSampleDays, backfill.BenchmarkRequiredDays)
 	return result
 }
 

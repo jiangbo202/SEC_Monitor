@@ -7,8 +7,9 @@ import (
 )
 
 type fakeTechnicalHistoryProvider struct {
-	records []PriceRecord
-	called  []Listing
+	records    []PriceRecord
+	called     []Listing
+	failTicker string
 }
 
 func (p *fakeTechnicalHistoryProvider) Load(context.Context, []Listing) ([]PriceRecord, ProviderResult, error) {
@@ -16,8 +17,18 @@ func (p *fakeTechnicalHistoryProvider) Load(context.Context, []Listing) ([]Price
 }
 
 func (p *fakeTechnicalHistoryProvider) LoadHistory(_ context.Context, listings []Listing, _ string, _ int) ([]PriceRecord, error) {
-	p.called = append([]Listing(nil), listings...)
-	return append([]PriceRecord(nil), p.records...), nil
+	p.called = append(p.called, listings...)
+	expected := map[string]struct{}{}
+	for _, listing := range listings {
+		expected[listing.Ticker] = struct{}{}
+	}
+	rows := make([]PriceRecord, 0)
+	for _, record := range p.records {
+		if _, ok := expected[record.Symbol]; ok && record.Symbol != p.failTicker {
+			rows = append(rows, record)
+		}
+	}
+	return rows, nil
 }
 
 func TestNormalizeTechnicalHistoryLookbackUsesMA200Default(t *testing.T) {
@@ -54,16 +65,17 @@ func TestBackfillCandidateTechnicalHistoryPersistsOnlyIncompleteCandidates(t *te
 	for index := 0; index < technicalHistorySamplesRequired; index++ {
 		closeMicros := 1_000_000 + int64(index)
 		records = append(records, PriceRecord{Symbol: "HIST", Source: "fake", TradeDate: base.AddDate(0, 0, index), OpenMicros: closeMicros - 10, HighMicros: closeMicros + 20, LowMicros: closeMicros - 20, CloseMicros: closeMicros, Volume: 100, Currency: "USD"})
+		records = append(records, PriceRecord{Symbol: "IWM", Source: "fake", TradeDate: base.AddDate(0, 0, index), OpenMicros: closeMicros * 2, HighMicros: closeMicros*2 + 20, LowMicros: closeMicros*2 - 20, CloseMicros: closeMicros * 2, Volume: 1000, Currency: "USD"})
 	}
 	provider := &fakeTechnicalHistoryProvider{records: records}
 	result, err := BackfillCandidateTechnicalHistory(context.Background(), db, provider, time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC), 35)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.CandidateCount != 1 || result.RequestedCount != 1 || result.PersistedCount != technicalHistorySamplesRequired {
+	if result.CandidateCount != 1 || result.RequestedCount != 2 || result.PersistedCount != technicalHistorySamplesRequired*2 || !result.BenchmarkReady {
 		t.Fatalf("result = %+v", result)
 	}
-	if len(provider.called) != 1 || provider.called[0].ProviderTicker != "HIST.P" {
+	if len(provider.called) != 2 || provider.called[0].Ticker != "IWM" || provider.called[1].ProviderTicker != "HIST.P" {
 		t.Fatalf("listings = %+v", provider.called)
 	}
 	var count int64
@@ -79,6 +91,45 @@ func TestBackfillCandidateTechnicalHistoryPersistsOnlyIncompleteCandidates(t *te
 	}
 	if second.AlreadyReadyCount != 1 || second.RequestedCount != 0 {
 		t.Fatalf("second result = %+v", second)
+	}
+}
+
+func TestBackfillCandidateTechnicalHistoryDegradesWhenIWMIsMissing(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0000011112", CompanyName: "Benchmark Gap Co", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	securityBatch := UniverseBatch{BatchID: "security-gap", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now()}
+	marketBatch := UniverseBatch{BatchID: "market-gap", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, EffectiveDate: "2026-07-14", StartedAt: time.Now()}
+	if err := db.Create(&[]UniverseBatch{securityBatch, marketBatch}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: marketBatch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&SecurityBatchIdentity{BatchID: securityBatch.BatchID, SecurityID: security.ID, Ticker: "GAP", ProviderTicker: "GAP", MappingStatus: MappingStatusCurrent}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CandidateScoreSnapshot{BatchID: marketBatch.BatchID, SecurityID: security.ID, Ticker: "GAP", Grade: CandidateGradeA, EligibleA: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	records := make([]PriceRecord, 0, technicalMA200LookbackDays)
+	for index := 0; index < technicalMA200LookbackDays; index++ {
+		closeMicros := int64(1_000_000 + index)
+		records = append(records, PriceRecord{Symbol: "GAP", Source: "fake", TradeDate: base.AddDate(0, 0, index), OpenMicros: closeMicros, HighMicros: closeMicros + 10, LowMicros: closeMicros - 10, CloseMicros: closeMicros, Volume: 100})
+	}
+	provider := &fakeTechnicalHistoryProvider{records: records, failTicker: "IWM"}
+	result, err := BackfillCandidateTechnicalHistory(context.Background(), db, provider, time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC), 320)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BenchmarkReady || result.BenchmarkStatus != "missing" || result.BenchmarkSampleDays != 0 || len(result.Failures) != 1 || result.Failures[0].Ticker != "IWM" || len(result.Warnings) == 0 {
+		t.Fatalf("degraded result = %+v", result)
+	}
+	if len(provider.called) != 2 || provider.called[0].Ticker != "IWM" {
+		t.Fatalf("benchmark was not requested first: %+v", provider.called)
 	}
 }
 

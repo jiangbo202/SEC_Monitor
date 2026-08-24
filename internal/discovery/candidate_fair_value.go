@@ -56,6 +56,7 @@ type CandidateFairValueEstimate struct {
 	MetricScenarios          []FairValueMetricScenario `json:"metric_scenarios"`
 	Methodology              string                    `json:"methodology"`
 	Message                  string                    `json:"message"`
+	Quality                  DataQualityMetadata       `json:"quality"`
 }
 
 type FairValueScenarioRange struct {
@@ -82,6 +83,7 @@ func buildCandidateFairValueEstimate(technical CandidateTechnicalAnalysis, analy
 		Currency:        "USD",
 		MetricScenarios: []FairValueMetricScenario{},
 		Methodology:     "本地历史倍数情景：参考收盘价 ×（Longbridge 历史 P/E、P/B、P/S 低/中/高倍数 ÷ 当前对应倍数），再对可用指标等权平均。非 DCF、非 Longbridge 官方公允价值，也不构成投资建议。",
+		Quality:         DataQualityMetadata{Layer: DataLayerFeature, Source: "local_research", SourceVersion: "fair-value-scenario-v1", QualityStatus: QualityStatusMissing},
 	}
 	if analyst != nil && strings.TrimSpace(analyst.Currency) != "" {
 		result.Currency = strings.TrimSpace(analyst.Currency)
@@ -91,6 +93,7 @@ func buildCandidateFairValueEstimate(technical CandidateTechnicalAnalysis, analy
 		result.ReferencePrice = &value
 		result.ReferencePriceDate = technical.TradeDate
 		result.ReferencePriceSource = "本地日线收盘价"
+		result.Quality.AsOf = technical.TradeDate
 	} else if analyst != nil && analyst.ReferencePriceMicros > 0 {
 		value := float64(analyst.ReferencePriceMicros) / 1_000_000
 		result.ReferencePrice = &value
@@ -141,16 +144,19 @@ func buildCandidateFairValueEstimate(technical CandidateTechnicalAnalysis, analy
 	}
 	if result.MarketConsensusTarget != nil && result.LocalHistoricalScenario != nil {
 		result.Status = CandidateFairValueStatusAvailable
+		result.Quality.QualityStatus = QualityStatusValid
 		result.Message = "市场一致目标价来自 Longbridge 机构评级；本地情景区间仅用 Longbridge 历史估值倍数归一计算。两者均不等同于公允价值。"
 		return result
 	}
 	if result.MarketConsensusTarget != nil {
 		result.Status = CandidateFairValueStatusAvailable
+		result.Quality.QualityStatus = QualityStatusValid
 		result.Message = "已取得 Longbridge 市场一致目标价；当前没有可同时使用的正值 P/E、P/B 或 P/S 历史倍数，因此未生成本地历史估值情景。"
 		return result
 	}
 	if result.LocalHistoricalScenario != nil {
 		result.Status = CandidateFairValueStatusAvailable
+		result.Quality.QualityStatus = QualityStatusValid
 		result.Message = "已生成本地历史估值情景；Longbridge 暂无该标的可用的机构市场一致目标价。"
 		return result
 	}

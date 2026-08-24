@@ -30,12 +30,13 @@ const (
 )
 
 const (
-	TechnicalStatusReady                = "ready"
-	TechnicalStatusDataInsufficient     = "data_insufficient"
-	TechnicalStatusMissing              = "missing"
-	TechnicalSignalCrossAboveMA20       = "cross_above_ma20"
-	TechnicalSignalBreakout20DayHigh    = "breakout_20d_high"
-	TechnicalSignalVolumeBackedBreakout = "volume_backed_breakout"
+	TechnicalStatusReady                 = "ready"
+	TechnicalStatusDataInsufficient      = "data_insufficient"
+	TechnicalStatusMissing               = "missing"
+	TechnicalStatusCorporateActionReview = "corporate_action_review"
+	TechnicalSignalCrossAboveMA20        = "cross_above_ma20"
+	TechnicalSignalBreakout20DayHigh     = "breakout_20d_high"
+	TechnicalSignalVolumeBackedBreakout  = "volume_backed_breakout"
 )
 
 type CandidateTechnicalSignal struct {
@@ -76,6 +77,17 @@ type CandidateTechnicalAnalysis struct {
 	Oscillator              CandidateOscillatorAnalysis `json:"oscillator"`
 	Signals                 []CandidateTechnicalSignal  `json:"signals"`
 	TradeSetup              CandidateTradeSetup         `json:"trade_setup"`
+	AdjustmentReview        PriceAdjustmentReview       `json:"adjustment_review"`
+}
+
+// PriceAdjustmentReview keeps corporate-action facts separate from technical
+// calculations. An unadjusted series around a reverse split is not silently
+// allowed to emit momentum or breakout signals.
+type PriceAdjustmentReview struct {
+	Status        string   `json:"status"`
+	QualityStatus string   `json:"quality_status"`
+	EventKinds    []string `json:"event_kinds"`
+	Detail        string   `json:"detail"`
 }
 
 // CandidateOscillatorAnalysis summarizes daily momentum indicators. Standard
@@ -172,6 +184,16 @@ func hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx context.Context, db
 	for _, event := range events {
 		eventsBySecurity[event.SecurityID] = append(eventsBySecurity[event.SecurityID], event)
 	}
+	capitalActionsBySecurity := make(map[uint][]string, len(securityIDs))
+	if len(securityIDs) > 0 {
+		var actions []CapitalRiskSnapshot
+		if err := db.WithContext(ctx).Where("security_id IN ? AND active = ? AND kind = ?", securityIDs, true, CapitalEventReverseSplit).Find(&actions).Error; err != nil {
+			return err
+		}
+		for _, action := range actions {
+			capitalActionsBySecurity[action.SecurityID] = append(capitalActionsBySecurity[action.SecurityID], action.Kind)
+		}
+	}
 	benchmarkCache := map[string][]PriceSnapshot{}
 	for i := range items {
 		rows := priceHistories[items[i].SecurityID]
@@ -191,6 +213,12 @@ func hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx context.Context, db
 		items[i].Technical.RelativeStrength = buildCandidateRelativeStrengthFromRows(rows, benchmarkRows)
 		items[i].Technical.AnchoredVWAP = buildCandidateAnchoredVWAP(rows, eventsBySecurity[items[i].SecurityID], items[i].PriceTradeDate, items[i].PriceSource)
 		items[i].Technical.TradeSetup = buildCandidateTradeSetup(items[i].Technical)
+		if kinds := capitalActionsBySecurity[items[i].SecurityID]; len(kinds) > 0 && hasUnadjustedPriceRows(rows) {
+			items[i].Technical.Status = TechnicalStatusCorporateActionReview
+			items[i].Technical.AdjustmentReview = PriceAdjustmentReview{Status: "review_required", QualityStatus: QualityStatusConflict, EventKinds: uniqueStrings(kinds), Detail: "存在拆股/合股事件，且本地价格未确认复权；技术信号已暂停"}
+			items[i].Technical.Signals = []CandidateTechnicalSignal{}
+			items[i].Technical.TradeSetup = unavailableCandidateTradeSetup(TechnicalStatusCorporateActionReview)
+		}
 	}
 	return hydrateTradeSetupStatusSince(ctx, db, items)
 }
@@ -511,6 +539,7 @@ func buildCandidateTechnicalAnalysis(rows []PriceSnapshot) CandidateTechnicalAna
 		Oscillator:         buildCandidateOscillatorAnalysis(rows),
 		Signals:            []CandidateTechnicalSignal{},
 		TradeSetup:         unavailableCandidateTradeSetup(TechnicalStatusMissing),
+		AdjustmentReview:   priceAdjustmentReview(rows),
 	}
 	if len(rows) == 0 {
 		return analysis
@@ -582,6 +611,45 @@ func buildCandidateTechnicalAnalysis(rows []PriceSnapshot) CandidateTechnicalAna
 	}
 	analysis.TradeSetup = buildCandidateTradeSetup(analysis)
 	return analysis
+}
+
+func priceAdjustmentReview(rows []PriceSnapshot) PriceAdjustmentReview {
+	result := PriceAdjustmentReview{Status: "unverified", QualityStatus: QualityStatusMissing, EventKinds: []string{}, Detail: "价格源未声明完整复权状态"}
+	if len(rows) == 0 {
+		return result
+	}
+	for _, row := range rows {
+		if !row.Adjusted {
+			return result
+		}
+	}
+	result.Status = "adjusted"
+	result.QualityStatus = QualityStatusValid
+	result.Detail = "价格窗口已由来源标记为复权序列"
+	return result
+}
+
+func hasUnadjustedPriceRows(rows []PriceSnapshot) bool {
+	for _, row := range rows {
+		if !row.Adjusted {
+			return true
+		}
+	}
+	return false
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // MissingCandidateTechnicalAnalysis returns the API-safe zero-history state

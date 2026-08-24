@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -60,6 +61,9 @@ func TestBuildCandidateEffectivenessCalculatesCohortsAndOptionalBenchmark(t *tes
 	if window20.HorizonDays != 20 || window20.SampleCount != 2 || window20.AverageReturnPct == nil || *window20.AverageReturnPct < 4.9 || *window20.AverageReturnPct > 5.1 || window20.WinRatePct == nil || *window20.WinRatePct != 50 || window20.MaxDrawdownPct == nil || *window20.MaxDrawdownPct > -9.9 || window20.BenchmarkReturnPct == nil || window20.ExcessReturnPct == nil {
 		t.Fatalf("20-day cohort = %#v", window20)
 	}
+	if report.Status != "validating" || window20.VerificationStatus != "validating" || window20.BenchmarkSampleCount != 2 || report.MinimumSampleCount != candidateEffectivenessMinimumSamples {
+		t.Fatalf("verification state = report:%+v window:%+v", report, window20)
+	}
 }
 
 func TestBuildCandidateEffectivenessMarksBenchmarkUnavailableWithoutIWM(t *testing.T) {
@@ -68,7 +72,47 @@ func TestBuildCandidateEffectivenessMarksBenchmarkUnavailableWithoutIWM(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.BenchmarkAvailable || len(report.Cohorts) != 3 || len(report.Cohorts[0].Windows) != 4 {
+	if report.BenchmarkAvailable || report.Status != "unverified" || len(report.Cohorts) != 3 || len(report.Cohorts[0].Windows) != 4 {
 		t.Fatalf("empty report = %#v", report)
+	}
+}
+
+func TestBuildCandidateEffectivenessRequiresIndependentSignalDates(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	batch := UniverseBatch{BatchID: "same-day-signals", Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: "2026-07-21", StartedAt: base}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	prices := make([]PriceSnapshot, 0, 31*21)
+	for day := 0; day <= 20; day++ {
+		date := base.AddDate(0, 0, day)
+		closeMicros := int64(2_000_000 + day*2_000)
+		prices = append(prices, PriceSnapshot{Source: "test", SourceVersion: "iwm", Symbol: "IWM", TradeDate: date, OpenMicros: closeMicros, HighMicros: closeMicros + 10, LowMicros: closeMicros - 10, CloseMicros: closeMicros, QualityStatus: QualityStatusValid})
+	}
+	for index := 0; index < candidateEffectivenessMinimumSamples; index++ {
+		ticker := fmt.Sprintf("S%02d", index)
+		if err := db.Create(&CandidateSignalEvent{BatchID: batch.BatchID, SecurityID: uint(index + 1), Ticker: ticker, Grade: CandidateGradeB, EventType: CandidateSignalEnteredB, SignalDate: base, BaselineTradeDate: base, BaselineCloseMicros: 1_000_000}).Error; err != nil {
+			t.Fatal(err)
+		}
+		for day := 1; day <= 20; day++ {
+			date := base.AddDate(0, 0, day)
+			closeMicros := int64(1_000_000 + day*1_000)
+			prices = append(prices, PriceSnapshot{Source: "test", SourceVersion: ticker, Symbol: ticker, TradeDate: date, CloseMicros: closeMicros, QualityStatus: QualityStatusValid})
+		}
+	}
+	if err := db.Create(&prices).Error; err != nil {
+		t.Fatal(err)
+	}
+	report, err := BuildCandidateEffectiveness(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window20 := report.Cohorts[0].Windows[2]
+	if window20.SampleCount != candidateEffectivenessMinimumSamples || window20.DistinctSignalDates != 1 || window20.VerificationStatus != "validating" || report.DistinctSignalDates != 1 {
+		t.Fatalf("same-day cohort should remain validating: report=%+v window=%+v", report, window20)
 	}
 }

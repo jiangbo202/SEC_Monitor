@@ -2367,7 +2367,10 @@ func (c *Coordinator) persistPrices(ctx context.Context, records []PriceRecord, 
 		if end > len(snapshots) {
 			end = len(snapshots)
 		}
-		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error { return persistPriceSnapshotsInBatches(tx, snapshots[start:end]) }); err != nil {
+		if err := c.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			_, persistErr := persistPriceSnapshotsWithQuarantine(tx, snapshots[start:end], c.Clock())
+			return persistErr
+		}); err != nil {
 			return err
 		}
 		if c.AfterStageChunk != nil {

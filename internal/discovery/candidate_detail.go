@@ -29,6 +29,7 @@ type CandidateDetail struct {
 	CapitalRisks       []CapitalRiskSnapshot          `json:"capital_risks"`
 	CapitalRiskSummary CandidateCapitalRiskSummary    `json:"capital_risk_summary"`
 	RecentFilings      []RecentSECFiling              `json:"recent_filings"`
+	Catalysts          []CandidateCatalystEvent       `json:"catalysts"`
 	Sector             SectorExplanation              `json:"sector"`
 	BusinessModel      CandidateBusinessModelEvidence `json:"business_model"`
 	Valuation          CandidateValuation             `json:"valuation"`
@@ -75,7 +76,7 @@ type RecentSECFiling struct {
 }
 
 func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (CandidateDetail, error) {
-	result := CandidateDetail{ScoreHistory: []CandidateScoreHistoryPoint{}, SignalEvents: []CandidateSignalEvent{}, Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, ResearchVersions: []CandidateResearchMemoVersion{}, TechnicalHistory: []CandidateTechnicalHistoryRow{}, TradeSetupHistory: []TradeSetupStatusEvent{}, ProfitHistory: ProfitHistory{Quarterly: []ProfitHistoryPoint{}, Annual: []ProfitHistoryPoint{}}, AnalystRating: AnalystRatingView{History: []AnalystRatingSnapshot{}}, MarketResearch: CandidateMarketResearch{EPSForecast: EPSForecastView{History: []EPSForecastSnapshot{}}, Anomalies: []MarketAnomalySnapshot{}, InstitutionalHolders: []InstitutionalHolderSnapshot{}, FundHolders: []FundHolderSnapshot{}}, OptionResearch: OptionResearchView{History: []OptionResearchSnapshot{}}, ValuationResearch: CandidateValuationResearch{History: []ValuationResearchSnapshot{}}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
+	result := CandidateDetail{ScoreHistory: []CandidateScoreHistoryPoint{}, SignalEvents: []CandidateSignalEvent{}, Insiders: []InsiderTransactionSnapshot{}, CapitalRisks: []CapitalRiskSnapshot{}, RecentFilings: []RecentSECFiling{}, Catalysts: []CandidateCatalystEvent{}, ResearchVersions: []CandidateResearchMemoVersion{}, TechnicalHistory: []CandidateTechnicalHistoryRow{}, TradeSetupHistory: []TradeSetupStatusEvent{}, ProfitHistory: ProfitHistory{Quarterly: []ProfitHistoryPoint{}, Annual: []ProfitHistoryPoint{}}, AnalystRating: AnalystRatingView{History: []AnalystRatingSnapshot{}}, MarketResearch: CandidateMarketResearch{EPSForecast: EPSForecastView{History: []EPSForecastSnapshot{}}, Anomalies: []MarketAnomalySnapshot{}, InstitutionalHolders: []InstitutionalHolderSnapshot{}, FundHolders: []FundHolderSnapshot{}}, OptionResearch: OptionResearchView{History: []OptionResearchSnapshot{}}, ValuationResearch: CandidateValuationResearch{History: []ValuationResearchSnapshot{}}, DataQuality: map[string]string{}, Evidence: []Evidence{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -309,6 +310,7 @@ func GetCandidateDetail(ctx context.Context, db *gorm.DB, ticker string) (Candid
 		result.DataQuality["recent_filings"] = QualityStatusMissing
 	}
 	result.DataLineage = buildCandidateDataLineage(result, batch, evidenceBatchID, technicalItems[0], shareEvidence)
+	result.Catalysts = BuildCandidateCatalystTimeline(result)
 	result.Evidence = candidateDetailEvidence(result)
 	return result, nil
 }
