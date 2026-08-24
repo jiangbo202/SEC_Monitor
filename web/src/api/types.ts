@@ -475,9 +475,21 @@ export interface TechnicalHistoryBackfillResult {
   candidate_count: number
   already_ready_count: number
   requested_count: number
+	deferred_retry_count: number
+	pending_retry_count: number
+	retry_due_count: number
+  benchmark_ticker: string
+  benchmark_ready: boolean
+  benchmark_requested: boolean
+  benchmark_status: 'ready' | 'missing' | 'insufficient' | 'stale' | string
+  benchmark_sample_days: number
+  benchmark_required_days: number
+  benchmark_latest_date: string
   record_count: number
   persisted_count: number
   source_record_counts: Record<string, number>
+  failures: Array<{ ticker: string; reason: string; attempt_count: number; sample_days: number; required_days: number; next_retry_at?: string | null }>
+  warnings: string[]
 }
 
 export interface CandidateTechnicalSignal {
@@ -514,8 +526,14 @@ export interface CandidateTechnicalAnalysis {
   relative_strength: CandidateRelativeStrength
   anchored_vwap: CandidateAnchoredVWAP
   oscillator: CandidateOscillatorAnalysis
-  signals: CandidateTechnicalSignal[]
+	signals: CandidateTechnicalSignal[]
 	trade_setup: CandidateTradeSetup
+  adjustment_review?: {
+    status: 'adjusted' | 'unverified' | 'review_required' | string
+    quality_status: string
+    event_kinds: string[]
+    detail: string
+  }
 }
 
 export interface CandidateOscillatorAnalysis {
@@ -806,6 +824,12 @@ export interface CandidateWatch {
   status: string
   note: string
   research_status: 'inbox' | 'researching' | 'conviction' | 'rejected' | string
+  company_thesis_status: string
+  security_readiness: string
+  research_action: string
+  action_threshold: string
+  threshold_origin: string
+  decision_rationale: string
   thesis: string
   risk_notes: string
   invalidation: string
@@ -874,6 +898,12 @@ export interface CandidateResearchMemoVersion {
   version: number
   security_id: number
   author: string
+  company_thesis_status: string
+  security_readiness: string
+  research_action: string
+  action_threshold: string
+  threshold_origin: string
+  decision_rationale: string
   thesis: string
   market_concern: string
   falsifiable_judgment: string
@@ -900,11 +930,41 @@ export interface CandidateResearchPosition {
   updated_at: string
 }
 
+export interface DataQualityMetadata {
+  layer: 'raw' | 'fact' | 'feature' | 'decision' | string
+  source?: string
+  source_version?: string
+  as_of?: string
+  quality_status: string
+  fallback_used?: boolean
+  coverage_pct?: number | null
+}
+
+export interface CandidateResearchPositionView extends CandidateResearchPosition {
+  sector_category: string
+  current_price_usd?: number | null
+  return_since_reference_pct?: number | null
+  research_readiness: string
+  investability_status: string
+  average_dollar_volume_usd: number
+  next_catalyst_at?: string | null
+  risk_flags: string[]
+  quality: DataQualityMetadata
+}
+
 export interface CandidateResearchPortfolio {
   total_max_weight_pct: number
   position_count: number
   sector_weights: Record<string, number>
-  items: CandidateResearchPosition[]
+  largest_sector: string
+  largest_sector_weight_pct: number
+  constrained_count: number
+  blocked_count: number
+  data_gap_count: number
+  event_risk_count: number
+  upcoming_catalyst_count: number
+  warnings: string[]
+  items: CandidateResearchPositionView[]
 }
 
 export interface CandidateOverview {
@@ -1192,6 +1252,20 @@ export interface CandidateDetail {
 	data_lineage: CandidateDataLineage
   evidence: DiscoveryEvidence[]
   recent_filings: RecentSECFiling[]
+  catalysts?: CandidateCatalystEvent[]
+}
+
+export interface CandidateCatalystEvent {
+  id: string
+  ticker: string
+  event_type: string
+  title: string
+  event_date: string
+  timing_status: 'observed' | 'scheduled' | 'needs_source' | string
+  evidence_type: 'fact' | 'user_judgment' | string
+  source: string
+  source_url?: string
+  quality: DataQualityMetadata
 }
 
 export interface EPSForecastSnapshot {
@@ -1249,10 +1323,11 @@ export interface FundHolderSnapshot {
 }
 
 export interface CandidateMarketResearch {
-  eps_forecast: { latest?: EPSForecastSnapshot | null; history: EPSForecastSnapshot[]; message: string }
+  eps_forecast: { latest?: EPSForecastSnapshot | null; history: EPSForecastSnapshot[]; message: string; quality?: DataQualityMetadata }
   anomalies: MarketAnomalySnapshot[]
   institutional_holders: InstitutionalHolderSnapshot[]
   fund_holders: FundHolderSnapshot[]
+  quality?: DataQualityMetadata
 }
 
 export interface TickerInstitutionalHoldingHistory {
@@ -1264,8 +1339,8 @@ export interface TickerInstitutionalHoldingHistory {
 
 export interface ValuationMetricResearch { current?: number | null; low?: number | null; high?: number | null; median?: number | null; history: Array<{ date: string; value?: number | null }> }
 export interface ValuationPercentileResearch { value?: number | null; low?: number | null; high?: number | null; median?: number | null; ranking?: number | null; rank_index: string; rank_total: string }
-export interface CandidateValuationResearchSnapshot { id: number; ticker: string; metrics: { pe: ValuationMetricResearch; pb: ValuationMetricResearch; ps: ValuationMetricResearch }; percentiles: { pe: ValuationPercentileResearch; pb: ValuationPercentileResearch; ps: ValuationPercentileResearch }; peers: Array<{ symbol: string; name: string; currency: string; pe?: number | null; pb?: number | null; ps?: number | null }>; change_summary?: string; fetched_at: string }
-export interface CandidateValuationResearch { latest?: CandidateValuationResearchSnapshot | null; history: CandidateValuationResearchSnapshot[]; message: string }
+export interface CandidateValuationResearchSnapshot { id: number; ticker: string; metrics: { pe: ValuationMetricResearch; pb: ValuationMetricResearch; ps: ValuationMetricResearch }; percentiles: { pe: ValuationPercentileResearch; pb: ValuationPercentileResearch; ps: ValuationPercentileResearch }; peers: Array<{ symbol: string; name: string; currency: string; pe?: number | null; pb?: number | null; ps?: number | null }>; change_summary?: string; fetched_at: string; source_version?: string }
+export interface CandidateValuationResearch { latest?: CandidateValuationResearchSnapshot | null; history: CandidateValuationResearchSnapshot[]; message: string; quality?: DataQualityMetadata }
 export interface CandidateFairValueEstimate {
   status: 'available' | 'insufficient' | string
   currency: string
@@ -1281,6 +1356,7 @@ export interface CandidateFairValueEstimate {
   metric_scenarios: Array<{ metric: string; current_multiple: number; historical_low: number; historical_mid: number; historical_high: number; price_low: number; price_mid: number; price_high: number }>
   methodology: string
   message: string
+  quality?: DataQualityMetadata
 }
 
 export interface AnalystRatingSnapshot {
@@ -1313,6 +1389,7 @@ export interface AnalystRatingView {
   latest?: AnalystRatingSnapshot | null
   history: AnalystRatingSnapshot[]
   message: string
+  quality?: DataQualityMetadata
 }
 
 export interface CandidateCapitalRiskSummary {
@@ -1389,6 +1466,10 @@ export interface CandidateHealth {
   ready_candidates?: number
   research_only_candidates?: number
   blocked_candidates?: number
+  open_data_quality_incidents?: number
+	technical_history_retry_pending?: number
+	technical_history_retry_due?: number
+	technical_history_retry_deferred?: number
   issues: string[]
 }
 
@@ -1603,6 +1684,10 @@ export interface CandidateReport {
 export interface CandidateEffectivenessWindow {
   horizon_days: number
   sample_count: number
+  pending_count: number
+  benchmark_sample_count: number
+  distinct_signal_dates: number
+  verification_status: 'unverified' | 'validating' | 'validated' | string
   average_return_pct?: number | null
   win_rate_pct?: number | null
   max_drawdown_pct?: number | null
@@ -1618,8 +1703,17 @@ export interface CandidateEffectivenessCohort {
 
 export interface CandidateEffectivenessReport {
   generated_at: string
+  status: 'unverified' | 'validating' | 'validated' | string
+  status_detail: string
+  minimum_sample_count: number
   benchmark_ticker: string
   benchmark_available: boolean
+  benchmark_history_status: 'ready' | 'missing' | 'insufficient' | 'stale' | string
+  benchmark_history_sample_days: number
+  benchmark_history_required_days: number
+  benchmark_latest_trade_date: string
+  distinct_signal_dates: number
+  minimum_distinct_signal_dates: number
   cohort_source: 'signal_events' | 'legacy_first_entry' | string
   cohorts: CandidateEffectivenessCohort[]
 }
@@ -1972,6 +2066,10 @@ export interface OperationalReport {
 	 slow_sec_targets: number
 	 slow_discovery_steps: number
   provider_warnings: number
+	open_data_quality_incidents: number
+	technical_history_pending: number
+	technical_history_retry_due: number
+	technical_history_deferred: number
   failed_notification_batches: number
   dead_letter_batches: number
   summary: string

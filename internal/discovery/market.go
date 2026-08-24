@@ -241,6 +241,65 @@ func persistPriceSnapshotsInBatches(tx *gorm.DB, snapshots []PriceSnapshot) erro
 	return nil
 }
 
+// persistPriceSnapshotsWithQuarantine is used by automated provider jobs.
+// One non-deterministic provider row must not roll back hundreds of unrelated
+// valid symbols. Manual CSV imports keep using the strict function above so an
+// operator still receives immediate feedback about a conflicting file.
+func persistPriceSnapshotsWithQuarantine(tx *gorm.DB, snapshots []PriceSnapshot, observedAt time.Time) (int, error) {
+	quarantined := 0
+	for index := range snapshots {
+		snapshot := snapshots[index]
+		err := persistPriceSnapshotsInBatches(tx, []PriceSnapshot{snapshot})
+		if err == nil {
+			if resolveErr := resolvePriceQualityIncidents(tx, snapshot, observedAt); resolveErr != nil {
+				return quarantined, resolveErr
+			}
+			continue
+		}
+		if !errors.Is(err, ErrPriceImportConflict) {
+			return quarantined, err
+		}
+		quarantined++
+		if recordErr := recordPriceQualityIncident(tx, snapshot, err, observedAt); recordErr != nil {
+			return quarantined, recordErr
+		}
+	}
+	return quarantined, nil
+}
+
+func resolvePriceQualityIncidents(tx *gorm.DB, snapshot PriceSnapshot, resolvedAt time.Time) error {
+	if resolvedAt.IsZero() {
+		resolvedAt = time.Now().UTC()
+	}
+	entityKey := strings.ToUpper(strings.TrimSpace(snapshot.Symbol)) + ":" + snapshot.TradeDate.Format(time.DateOnly)
+	return tx.Model(&DataQualityIncident{}).
+		Where("domain = ? AND entity_key = ? AND source = ? AND status = ?", "price", entityKey, snapshot.Source, DataQualityIncidentOpen).
+		Updates(map[string]interface{}{"status": DataQualityIncidentResolved, "retryable": false, "resolved_at": resolvedAt.UTC(), "updated_at": resolvedAt.UTC()}).Error
+}
+
+func recordPriceQualityIncident(tx *gorm.DB, snapshot PriceSnapshot, conflict error, observedAt time.Time) error {
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	entityKey := strings.ToUpper(strings.TrimSpace(snapshot.Symbol)) + ":" + snapshot.TradeDate.Format(time.DateOnly)
+	fingerprintPayload := strings.Join([]string{"price", snapshot.Source, snapshot.SourceVersion, entityKey, ReasonPriceConflict}, "\x00")
+	fingerprintBytes := sha256.Sum256([]byte(fingerprintPayload))
+	incident := DataQualityIncident{
+		Fingerprint: hex.EncodeToString(fingerprintBytes[:]), Layer: DataLayerFact, Domain: "price", EntityKey: entityKey,
+		Reason: ReasonPriceConflict, Source: snapshot.Source, SourceVersion: snapshot.SourceVersion,
+		Status: DataQualityIncidentOpen, Retryable: true, OccurrenceCount: 1,
+		Detail: conflict.Error(), FirstObservedAt: observedAt.UTC(), LastObservedAt: observedAt.UTC(),
+	}
+	return tx.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "fingerprint"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"status": DataQualityIncidentOpen, "retryable": true, "detail": incident.Detail,
+			"last_observed_at": incident.LastObservedAt, "resolved_at": nil,
+			"occurrence_count": gorm.Expr("occurrence_count + 1"), "updated_at": incident.LastObservedAt,
+		}),
+	}).Create(&incident).Error
+}
+
 // priceSnapshotConflictClause keeps provider snapshots immutable, with one
 // deliberately narrow exception for rows written before OHLC persistence was
 // introduced. A replay may fill the previously empty open/high/low columns

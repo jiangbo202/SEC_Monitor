@@ -65,6 +65,10 @@ type OperationalReport struct {
 	SlowSECTargets            int64                   `json:"slow_sec_targets"`
 	SlowDiscoverySteps        int                     `json:"slow_discovery_steps"`
 	ProviderWarnings          int64                   `json:"provider_warnings"`
+	OpenDataQualityIncidents  int64                   `json:"open_data_quality_incidents"`
+	TechnicalHistoryPending   int64                   `json:"technical_history_pending"`
+	TechnicalHistoryRetryDue  int64                   `json:"technical_history_retry_due"`
+	TechnicalHistoryDeferred  int64                   `json:"technical_history_deferred"`
 	FailedNotificationBatches int64                   `json:"failed_notification_batches"`
 	DeadLetterBatches         int64                   `json:"dead_letter_batches"`
 	Summary                   string                  `json:"summary"`
@@ -192,6 +196,46 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	}
 
 	if s.discoveryDB != nil {
+		if s.discoveryDB.Migrator().HasTable(&discovery.TechnicalHistoryRetryState{}) {
+			var pointer discovery.CurrentBatchPointer
+			pointerErr := s.discoveryDB.WithContext(ctx).Where("kind = ?", discovery.BatchKindPrescreen).First(&pointer).Error
+			if pointerErr != nil && !errors.Is(pointerErr, gorm.ErrRecordNotFound) {
+				return report, pointerErr
+			}
+			if pointerErr == nil {
+				retryQuery := func() *gorm.DB {
+					return s.discoveryDB.WithContext(ctx).Model(&discovery.TechnicalHistoryRetryState{}).
+						Where("batch_id = ? AND status <> ?", pointer.BatchID, discovery.TechnicalHistoryRetryResolved)
+				}
+				if err := retryQuery().Count(&report.TechnicalHistoryPending).Error; err != nil {
+					return report, err
+				}
+				if err := retryQuery().Where("next_retry_at IS NULL OR next_retry_at <= ?", now.UTC()).Count(&report.TechnicalHistoryRetryDue).Error; err != nil {
+					return report, err
+				}
+				if err := retryQuery().Where("status = ?", discovery.TechnicalHistoryRetryDeferred).Count(&report.TechnicalHistoryDeferred).Error; err != nil {
+					return report, err
+				}
+			}
+			if report.TechnicalHistoryPending > 0 {
+				severity := "warning"
+				title := "候选技术历史正在自动补齐"
+				if report.TechnicalHistoryDeferred > 0 {
+					severity = "critical"
+					title = "部分候选技术历史连续失败"
+				}
+				detail := fmt.Sprintf("待补齐 %d 个，到期可重试 %d 个，连续失败暂缓 %d 个；单个标的失败不会重跑已完成标的", report.TechnicalHistoryPending, report.TechnicalHistoryRetryDue, report.TechnicalHistoryDeferred)
+				report.addIssue("technical_history_retry_queue", "data_quality", severity, title, detail, "discovery-logs", now)
+			}
+		}
+		if s.discoveryDB.Migrator().HasTable(&discovery.DataQualityIncident{}) {
+			if err := s.discoveryDB.WithContext(ctx).Model(&discovery.DataQualityIncident{}).Where("status = ? AND domain <> ?", discovery.DataQualityIncidentOpen, "technical_history").Count(&report.OpenDataQualityIncidents).Error; err != nil {
+				return report, err
+			}
+			if report.OpenDataQualityIncidents > 0 {
+				report.addIssue("data_quality_incidents", "data_quality", "warning", "数据事实已隔离", fmt.Sprintf("%d 条异常事实已隔离；其他标的仍可继续发布，后续成功重试会自动关闭异常", report.OpenDataQualityIncidents), "discovery-logs", now)
+			}
+		}
 		if err := s.reportSlowDiscoverySteps(ctx, &report, now); err != nil {
 			return report, err
 		}

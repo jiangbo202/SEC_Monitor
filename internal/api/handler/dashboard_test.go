@@ -60,3 +60,41 @@ func TestDashboardSummaryReadsLocalSnapshotsOnly(t *testing.T) {
 		t.Fatalf("recent filings=%+v", response.Data.Monitoring.RecentFilings)
 	}
 }
+
+func TestDashboardFreshnessUsesTradingCalendarAcrossWeekend(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&discovery.MarketHoliday{}, &discovery.MarketCalendarYear{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := discovery.SeedDefaultNYSEMarketCalendar(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	lastFetched := time.Date(2026, 8, 21, 21, 45, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 23, 23, 30, 0, 0, time.UTC)
+	got := dashboardDataFreshness(t.Context(), db, "2026-08-21", "longbridge", &lastFetched, now)
+	if got.Status != "fresh" || got.ExpectedTradeDate != "2026-08-21" || got.QualityStatus != discovery.QualityStatusValid {
+		t.Fatalf("freshness=%+v", got)
+	}
+}
+
+func TestDashboardFreshnessExpiresAfterTwoMissedTradingSessions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&discovery.MarketHoliday{}, &discovery.MarketCalendarYear{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := discovery.SeedDefaultNYSEMarketCalendar(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	lastFetched := time.Date(2026, 8, 20, 21, 45, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 24, 21, 0, 0, 0, time.UTC)
+	got := dashboardDataFreshness(t.Context(), db, "2026-08-20", "longbridge", &lastFetched, now)
+	if got.Status != "expired" || got.ExpectedTradeDate != "2026-08-24" {
+		t.Fatalf("freshness=%+v", got)
+	}
+}

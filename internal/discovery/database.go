@@ -97,6 +97,8 @@ func Migrate(db *gorm.DB) error {
 			&ProviderHealth{},
 			&MarketHoliday{},
 			&MarketCalendarYear{},
+			&DataQualityIncident{},
+			&TechnicalHistoryRetryState{},
 			&PriceSnapshot{},
 			&TickerEvaluationSnapshot{},
 			&ShareSnapshot{},
@@ -168,6 +170,18 @@ func Migrate(db *gorm.DB) error {
 			if err := tx.Model(&Security{}).Where("1 = 1").Updates(map[string]any{"catalog_status": SecurityCatalogPublished, "published_at": gorm.Expr("COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")}).Error; err != nil {
 				return fmt.Errorf("publish legacy security catalog: %w", err)
 			}
+		}
+		if err := tx.Model(&CandidateWatch{}).Where("company_thesis_status = ? OR company_thesis_status IS NULL", "").Update("company_thesis_status", CompanyThesisUntested).Error; err != nil {
+			return fmt.Errorf("backfill candidate company thesis status: %w", err)
+		}
+		if err := tx.Model(&CandidateWatch{}).Where("security_readiness = ? OR security_readiness IS NULL", "").Update("security_readiness", SecurityReadinessNotDecisionGrade).Error; err != nil {
+			return fmt.Errorf("backfill candidate security readiness: %w", err)
+		}
+		if err := tx.Model(&CandidateWatch{}).Where("research_action = ? OR research_action IS NULL", "").Update("research_action", ResearchActionWaitForProof).Error; err != nil {
+			return fmt.Errorf("backfill candidate research action: %w", err)
+		}
+		if err := tx.Model(&CandidateWatch{}).Where("threshold_origin = ? OR threshold_origin IS NULL", "").Update("threshold_origin", ThresholdOriginDraft).Error; err != nil {
+			return fmt.Errorf("backfill candidate threshold origin: %w", err)
 		}
 		if err := SeedDefaultSmallCapPolicy(tx.Statement.Context, tx); err != nil {
 			return err

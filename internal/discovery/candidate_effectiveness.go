@@ -11,12 +11,24 @@ import (
 
 var candidateEffectivenessHorizons = []int{1, 5, 20, 60}
 
+const candidateEffectivenessMinimumSamples = 30
+const candidateEffectivenessMinimumSignalDates = 5
+
 type CandidateEffectivenessReport struct {
-	GeneratedAt        time.Time                      `json:"generated_at"`
-	BenchmarkTicker    string                         `json:"benchmark_ticker"`
-	BenchmarkAvailable bool                           `json:"benchmark_available"`
-	CohortSource       string                         `json:"cohort_source"`
-	Cohorts            []CandidateEffectivenessCohort `json:"cohorts"`
+	GeneratedAt                  time.Time                      `json:"generated_at"`
+	Status                       string                         `json:"status"`
+	StatusDetail                 string                         `json:"status_detail"`
+	MinimumSampleCount           int                            `json:"minimum_sample_count"`
+	BenchmarkTicker              string                         `json:"benchmark_ticker"`
+	BenchmarkAvailable           bool                           `json:"benchmark_available"`
+	BenchmarkHistoryStatus       string                         `json:"benchmark_history_status"`
+	BenchmarkHistorySampleDays   int                            `json:"benchmark_history_sample_days"`
+	BenchmarkHistoryRequiredDays int                            `json:"benchmark_history_required_days"`
+	BenchmarkLatestTradeDate     string                         `json:"benchmark_latest_trade_date"`
+	DistinctSignalDates          int                            `json:"distinct_signal_dates"`
+	MinimumDistinctSignalDates   int                            `json:"minimum_distinct_signal_dates"`
+	CohortSource                 string                         `json:"cohort_source"`
+	Cohorts                      []CandidateEffectivenessCohort `json:"cohorts"`
 }
 
 type CandidateEffectivenessCohort struct {
@@ -26,13 +38,17 @@ type CandidateEffectivenessCohort struct {
 }
 
 type CandidateEffectivenessWindow struct {
-	HorizonDays        int      `json:"horizon_days"`
-	SampleCount        int      `json:"sample_count"`
-	AverageReturnPct   *float64 `json:"average_return_pct"`
-	WinRatePct         *float64 `json:"win_rate_pct"`
-	MaxDrawdownPct     *float64 `json:"max_drawdown_pct"`
-	BenchmarkReturnPct *float64 `json:"benchmark_return_pct"`
-	ExcessReturnPct    *float64 `json:"excess_return_pct"`
+	HorizonDays          int      `json:"horizon_days"`
+	SampleCount          int      `json:"sample_count"`
+	PendingCount         int      `json:"pending_count"`
+	BenchmarkSampleCount int      `json:"benchmark_sample_count"`
+	DistinctSignalDates  int      `json:"distinct_signal_dates"`
+	VerificationStatus   string   `json:"verification_status"`
+	AverageReturnPct     *float64 `json:"average_return_pct"`
+	WinRatePct           *float64 `json:"win_rate_pct"`
+	MaxDrawdownPct       *float64 `json:"max_drawdown_pct"`
+	BenchmarkReturnPct   *float64 `json:"benchmark_return_pct"`
+	ExcessReturnPct      *float64 `json:"excess_return_pct"`
 }
 
 type candidateCohortSeed struct {
@@ -44,7 +60,10 @@ type candidateCohortSeed struct {
 
 func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEffectivenessReport, error) {
 	report := CandidateEffectivenessReport{
-		GeneratedAt: time.Now().UTC(), BenchmarkTicker: "IWM",
+		GeneratedAt: time.Now().UTC(), BenchmarkTicker: "IWM", Status: "unverified",
+		StatusDetail: "尚无达到持有期的有效样本，评分仅用于研究排序", MinimumSampleCount: candidateEffectivenessMinimumSamples,
+		BenchmarkHistoryStatus: "missing", BenchmarkHistoryRequiredDays: technicalMA200LookbackDays,
+		MinimumDistinctSignalDates: candidateEffectivenessMinimumSignalDates,
 		Cohorts: []CandidateEffectivenessCohort{
 			{Grade: "all", Windows: emptyCandidateEffectivenessWindows()},
 			{Grade: CandidateGradeA, Windows: emptyCandidateEffectivenessWindows()},
@@ -57,11 +76,33 @@ func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEff
 	if ctx == nil {
 		return report, errors.New("context is required")
 	}
+	expectedDate := ""
+	if batch, ok, batchErr := currentPublishedPrescreenBatch(ctx, db); batchErr != nil {
+		return report, batchErr
+	} else if ok {
+		expectedDate = batch.EffectiveDate
+	}
+	benchmarkHistory, err := loadBenchmarkHistoryReadiness(ctx, db, report.BenchmarkTicker, technicalMA200LookbackDays, expectedDate)
+	if err != nil {
+		return report, err
+	}
+	report.BenchmarkHistoryStatus = benchmarkHistory.Status
+	report.BenchmarkHistorySampleDays = benchmarkHistory.SampleDays
+	report.BenchmarkHistoryRequiredDays = benchmarkHistory.Required
+	report.BenchmarkLatestTradeDate = benchmarkHistory.LatestDate
 	seeds, source, err := candidateCohortSeeds(ctx, db)
 	if err != nil {
 		return report, err
 	}
 	report.CohortSource = source
+	signalDates := map[string]struct{}{}
+	for _, seed := range seeds {
+		date := seed.BaselineDate.Format(time.DateOnly)
+		if !seed.BaselineDate.IsZero() {
+			signalDates[date] = struct{}{}
+		}
+	}
+	report.DistinctSignalDates = len(signalDates)
 	for index := range report.Cohorts {
 		grade := report.Cohorts[index].Grade
 		selected := make([]candidateCohortSeed, 0, len(seeds))
@@ -78,13 +119,31 @@ func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEff
 		report.Cohorts[index].Windows = windows
 		report.BenchmarkAvailable = report.BenchmarkAvailable || benchmarkAvailable
 	}
+	if len(report.Cohorts) > 0 {
+		for _, window := range report.Cohorts[0].Windows {
+			if window.HorizonDays != 20 {
+				continue
+			}
+			report.Status = window.VerificationStatus
+			switch {
+			case report.BenchmarkHistoryStatus != "ready":
+				report.StatusDetail = "IWM 基准历史未就绪；当前无法验证相对收益"
+			case window.VerificationStatus == "validated":
+				report.StatusDetail = "20 日样本量、独立信号日期与 IWM 配对覆盖已达到最低验证门槛"
+			case window.SampleCount >= candidateEffectivenessMinimumSamples && window.DistinctSignalDates < candidateEffectivenessMinimumSignalDates:
+				report.StatusDetail = "20 日证券样本已达到数量门槛，但独立信号日期不足，暂不视为稳定预测能力"
+			case window.VerificationStatus == "validating":
+				report.StatusDetail = "正在积累 20 日有效样本；当前结果不得解释为稳定预测能力"
+			}
+		}
+	}
 	return report, nil
 }
 
 func emptyCandidateEffectivenessWindows() []CandidateEffectivenessWindow {
 	items := make([]CandidateEffectivenessWindow, 0, len(candidateEffectivenessHorizons))
 	for _, horizon := range candidateEffectivenessHorizons {
-		items = append(items, CandidateEffectivenessWindow{HorizonDays: horizon})
+		items = append(items, CandidateEffectivenessWindow{HorizonDays: horizon, VerificationStatus: "unverified"})
 	}
 	return items
 }
@@ -156,6 +215,7 @@ func buildCandidateCohortWindows(ctx context.Context, db *gorm.DB, seeds []candi
 	for index, horizon := range candidateEffectivenessHorizons {
 		returns := []float64{}
 		benchmarkReturns := []float64{}
+		matureSignalDates := map[string]struct{}{}
 		maxDrawdown := 0.0
 		for _, seed := range seeds {
 			baseDate, baseClose, ok := seed.BaselineDate, seed.BaselineClose, !seed.BaselineDate.IsZero() && seed.BaselineClose > 0
@@ -174,9 +234,11 @@ func buildCandidateCohortWindows(ctx context.Context, db *gorm.DB, seeds []candi
 				return result, benchmarkAvailable, err
 			}
 			if !mature {
+				result[index].PendingCount++
 				continue
 			}
 			returns = append(returns, ret)
+			matureSignalDates[baseDate.Format(time.DateOnly)] = struct{}{}
 			if drawdown < maxDrawdown {
 				maxDrawdown = drawdown
 			}
@@ -198,6 +260,12 @@ func buildCandidateCohortWindows(ctx context.Context, db *gorm.DB, seeds []candi
 		result[index].AverageReturnPct = &averageReturn
 		result[index].WinRatePct = &winRate
 		result[index].MaxDrawdownPct = &maxDrawdown
+		result[index].BenchmarkSampleCount = len(benchmarkReturns)
+		result[index].DistinctSignalDates = len(matureSignalDates)
+		result[index].VerificationStatus = "validating"
+		if len(returns) >= candidateEffectivenessMinimumSamples && len(benchmarkReturns) == len(returns) && len(matureSignalDates) >= candidateEffectivenessMinimumSignalDates {
+			result[index].VerificationStatus = "validated"
+		}
 		if len(benchmarkReturns) > 0 {
 			benchmarkReturn := averageFloat64(benchmarkReturns)
 			excessReturn := averageReturn - benchmarkReturn

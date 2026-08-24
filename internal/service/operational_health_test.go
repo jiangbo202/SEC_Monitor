@@ -93,6 +93,36 @@ func TestOperationalHealthReportsProviderCoverageAndProfileRecovery(t *testing.T
 	}
 }
 
+func TestOperationalHealthReportsTechnicalHistoryRetryQueue(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	now := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	if err := discoveryDB.Create(&discovery.CurrentBatchPointer{Kind: discovery.BatchKindPrescreen, BatchID: "market-retry"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	due := now.Add(-time.Minute)
+	later := now.Add(6 * time.Hour)
+	states := []discovery.TechnicalHistoryRetryState{
+		{Ticker: "DUE", BatchID: "market-retry", Status: discovery.TechnicalHistoryRetryBackoff, Reason: "provider_request_failed", FailureCount: 2, NextRetryAt: &due, LastAttemptAt: now.Add(-time.Hour)},
+		{Ticker: "WAIT", BatchID: "market-retry", Status: discovery.TechnicalHistoryRetryBackoff, Reason: "no_usable_records", FailureCount: 3, NextRetryAt: &later, LastAttemptAt: now.Add(-time.Hour)},
+		{Ticker: "HARD", BatchID: "market-retry", Status: discovery.TechnicalHistoryRetryDeferred, Reason: "no_usable_records", FailureCount: 5, NextRetryAt: &later, LastAttemptAt: now.Add(-time.Hour)},
+		{Ticker: "OLD", BatchID: "old-market", Status: discovery.TechnicalHistoryRetryDeferred, Reason: "no_usable_records", FailureCount: 8, NextRetryAt: &due, LastAttemptAt: now.Add(-time.Hour)},
+	}
+	if err := discoveryDB.Create(&states).Error; err != nil {
+		t.Fatal(err)
+	}
+	report, err := NewOperationalHealthService(db, discoveryDB, nil, nil).ReportAt(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.TechnicalHistoryPending != 3 || report.TechnicalHistoryRetryDue != 1 || report.TechnicalHistoryDeferred != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.Status != "critical" || !hasOperationalIssue(report.Issues, "technical_history_retry_queue") {
+		t.Fatalf("issues = %+v", report.Issues)
+	}
+}
+
 func TestOperationalHealthTreatsProviderValidationAsWarningAndReportsMissingMacroCoverage(t *testing.T) {
 	db := testDB(t)
 	discoveryDB := testDiscoveryDB(t)

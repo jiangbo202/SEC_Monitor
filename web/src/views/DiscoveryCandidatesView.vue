@@ -117,7 +117,7 @@
           </div>
           <div v-if="health" class="operations-detail-group">
             <strong>行情与风险</strong>
-            <span>当日价格 {{ health.current_price_candidates }} · 前一交易日 {{ health.fallback_price_candidates }} · 缺失/过期 {{ health.missing_price_candidates + health.stale_price_candidates }} · 缺市值 {{ health.missing_market_cap }} · 活跃风险 {{ health.active_risk_events }}</span>
+            <span>当日价格 {{ health.current_price_candidates }} · 前一交易日 {{ health.fallback_price_candidates }} · 缺失/过期 {{ health.missing_price_candidates + health.stale_price_candidates }} · 技术历史待补 {{ health.technical_history_retry_pending || 0 }}（到期 {{ health.technical_history_retry_due || 0 }} / 连续失败 {{ health.technical_history_retry_deferred || 0 }}）· 缺市值 {{ health.missing_market_cap }} · 活跃风险 {{ health.active_risk_events }}</span>
           </div>
           <div v-if="health?.issues.length" class="operations-detail-group is-warning">
             <strong>健康提示</strong>
@@ -1114,7 +1114,7 @@
         </el-card>
 
         <el-card shadow="never">
-          <template #header><div class="card-header-actions"><span>估值历史与同业比较（Longbridge）</span><el-button size="small" :loading="valuationResearchRefreshing" @click="refreshCandidateValuationResearch">刷新估值研究</el-button></div></template>
+          <template #header><div class="card-header-actions"><span>估值历史与同业比较（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.valuation_research?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.valuation_research?.quality?.quality_status) }}</el-tag></span><el-button size="small" :loading="valuationResearchRefreshing" @click="refreshCandidateValuationResearch">刷新估值研究</el-button></div></template>
           <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="小盘与亏损公司可能缺少 PE、同业或历史覆盖；此数据仅用于研究比较，绝不作为候选硬筛选。" />
           <template v-if="candidateDetail.valuation_research?.latest">
             <el-table :data="valuationMetricRows(candidateDetail.valuation_research.latest)" size="small" border style="margin-top: 12px">
@@ -1140,7 +1140,7 @@
         <el-card shadow="never">
           <template #header>
             <div class="card-header-actions">
-              <span>市场预期、异动与机构持仓（Longbridge）</span>
+              <span>市场预期、异动与机构持仓（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.market_research?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.market_research?.quality?.quality_status) }}</el-tag></span>
               <el-button size="small" :loading="marketResearchRefreshing" @click="refreshCandidateMarketResearch">刷新 P1 市场研究</el-button>
             </div>
           </template>
@@ -1185,7 +1185,7 @@
         <el-card shadow="never">
           <template #header>
             <div class="card-header-actions">
-              <span>机构与分析师共识（Longbridge）</span>
+              <span>机构与分析师共识（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.analyst_rating?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.analyst_rating?.quality?.quality_status) }}</el-tag></span>
               <el-button size="small" :loading="analystRatingRefreshing" @click="refreshCandidateAnalystRating">刷新分析师评级</el-button>
             </div>
           </template>
@@ -1501,10 +1501,28 @@
         </el-card>
 
         <el-card shadow="never">
+          <template #header>研究事件与催化剂时间线</template>
+          <el-alert type="info" :closable="false" show-icon title="绿色为 SEC 已发生事实；橙色为用户计划中的催化剂。用户判断必须同时填写日期和来源，才标记为资料完整。" class="business-model-alert" />
+          <el-table :data="candidateDetail.catalysts || []" size="small" border empty-text="暂无研究事件或催化剂">
+            <el-table-column prop="event_date" label="日期" width="112"><template #default="{ row }">{{ formatDate(row.event_date) }}</template></el-table-column>
+            <el-table-column label="性质" width="112"><template #default="{ row }"><el-tag :type="row.evidence_type === 'fact' ? 'success' : 'warning'" effect="plain">{{ row.evidence_type === 'fact' ? '事实事件' : '用户判断' }}</el-tag></template></el-table-column>
+            <el-table-column label="类型" width="126"><template #default="{ row }">{{ catalystEventLabel(row.event_type) }}</template></el-table-column>
+            <el-table-column prop="title" label="内容" min-width="260" show-overflow-tooltip />
+            <el-table-column label="证据" width="130"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">{{ row.source }}</el-link><span v-else>{{ row.source }}</span></template></el-table-column>
+            <el-table-column label="状态" width="106"><template #default="{ row }"><el-tag :type="row.quality?.quality_status === 'valid' ? 'success' : 'warning'" effect="plain">{{ catalystTimingLabel(row.timing_status) }}</el-tag></template></el-table-column>
+          </el-table>
+        </el-card>
+
+        <el-card shadow="never">
           <template #header>预期差研究卡（用户论点，不是系统事实）</template>
           <el-alert type="info" :closable="false" show-icon title="SEC 公告、财务和融资证据在上方独立展示；以下内容均由用户维护，需通过后续公告或数据验证。" class="business-model-alert" />
           <template v-if="candidateDetail.research">
             <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="公司论点"><el-tag effect="plain">{{ companyThesisStatusLabel(candidateDetail.research.company_thesis_status) }}</el-tag></el-descriptions-item>
+              <el-descriptions-item label="证券研究就绪度"><el-tag :type="securityReadinessTagType(candidateDetail.research.security_readiness)" effect="plain">{{ securityReadinessLabel(candidateDetail.research.security_readiness) }}</el-tag></el-descriptions-item>
+              <el-descriptions-item label="当前研究动作">{{ researchActionLabel(candidateDetail.research.research_action) }}</el-descriptions-item>
+              <el-descriptions-item label="动作阈值">{{ candidateDetail.research.action_threshold || '-' }}<small v-if="candidateDetail.research.action_threshold">（{{ thresholdOriginLabel(candidateDetail.research.threshold_origin) }}）</small></el-descriptions-item>
+              <el-descriptions-item label="判断依据">{{ candidateDetail.research.decision_rationale || '-' }}</el-descriptions-item>
               <el-descriptions-item label="市场当前担忧">{{ candidateDetail.research.market_concern || '-' }}</el-descriptions-item>
               <el-descriptions-item label="可证伪判断">{{ candidateDetail.research.falsifiable_judgment || candidateDetail.research.thesis || '-' }}</el-descriptions-item>
               <el-descriptions-item label="下个催化剂">{{ candidateDetail.research.catalyst || '-' }}{{ candidateDetail.research.catalyst_date ? `（${formatDate(candidateDetail.research.catalyst_date)}）` : '' }}</el-descriptions-item>
@@ -1517,6 +1535,9 @@
                   <el-table-column prop="version" label="版本" width="72" />
                   <el-table-column prop="created_at" label="保存时间" width="130"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
                   <el-table-column prop="author" label="作者" width="110" />
+                  <el-table-column label="公司论点" width="110"><template #default="{ row }">{{ companyThesisStatusLabel(row.company_thesis_status) }}</template></el-table-column>
+                  <el-table-column label="证券就绪度" width="110"><template #default="{ row }">{{ securityReadinessLabel(row.security_readiness) }}</template></el-table-column>
+                  <el-table-column label="研究动作" width="120"><template #default="{ row }">{{ researchActionLabel(row.research_action) }}</template></el-table-column>
                   <el-table-column prop="falsifiable_judgment" label="可证伪判断" min-width="220" show-overflow-tooltip />
                   <el-table-column prop="invalidation" label="失效条件" min-width="180" show-overflow-tooltip />
                 </el-table>
@@ -1679,6 +1700,13 @@
             <el-option label="淘汰" value="rejected" />
           </el-select>
         </el-form-item>
+        <el-row :gutter="12">
+          <el-col :span="8"><el-form-item label="公司论点状态"><el-select fit-input-width v-model="watchEditor.company_thesis_status"><el-option label="未检验" value="untested" /><el-option label="增强" value="strengthening" /><el-option label="成立" value="intact" /><el-option label="观察" value="watch" /><el-option label="受损" value="impaired" /><el-option label="失效" value="broken" /><el-option label="结束跟踪" value="retired" /></el-select></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="证券研究就绪度"><el-select fit-input-width v-model="watchEditor.security_readiness"><el-option label="不可形成结论" value="not_decision_grade" /><el-option label="有条件" value="conditional" /><el-option label="就绪" value="ready" /><el-option label="需重做研究" value="re_underwrite" /></el-select></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="研究动作"><el-select fit-input-width v-model="watchEditor.research_action"><el-option label="等待证据" value="wait_for_proof" /><el-option label="优先研究" value="prioritize_research" /><el-option label="继续观察" value="continue_monitoring" /><el-option label="重新研究" value="re_underwrite" /><el-option label="淘汰" value="reject" /></el-select></el-form-item></el-col>
+        </el-row>
+        <el-row :gutter="12"><el-col :span="16"><el-form-item label="动作阈值"><el-input v-model="watchEditor.action_threshold" placeholder="明确指标、阈值、来源和触发动作" /></el-form-item></el-col><el-col :span="8"><el-form-item label="阈值来源"><el-select fit-input-width v-model="watchEditor.threshold_origin"><el-option label="沿用既有规则" value="inherited" /><el-option label="待确认草案" value="draft" /><el-option label="已确认规则" value="approved" /></el-select></el-form-item></el-col></el-row>
+        <el-form-item label="当前判断依据"><el-input v-model="watchEditor.decision_rationale" type="textarea" :rows="2" placeholder="说明事实证据如何影响公司论点与证券研究就绪度" /></el-form-item>
         <el-form-item label="研究备注"><el-input v-model="watchEditor.note" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="研究论点"><el-input v-model="watchEditor.thesis" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="市场当前担忧"><el-input v-model="watchEditor.market_concern" type="textarea" :rows="2" placeholder="例如：市场担心现金消耗或关键产品需求" /></el-form-item>
@@ -1696,17 +1724,21 @@
     <el-dialog v-model="researchPortfolioVisible" title="手工研究组合（不连接券商、不生成交易指令）" width="980px">
       <el-alert type="info" :closable="false" show-icon title="仅记录研究上限、参考成本和流动性/事件风险约束；不读取真实账户，也不会触发交易。" class="summary-alert" />
       <el-alert v-if="(researchPortfolio?.total_max_weight_pct || 0) > 100" type="warning" :closable="false" show-icon :title="`研究上限合计 ${formatPct(researchPortfolio?.total_max_weight_pct)}，超过 100%；请检查集中度。`" class="summary-alert" />
-      <el-descriptions :column="3" border size="small" class="research-portfolio-summary">
+      <el-alert v-if="researchPortfolio?.warnings?.length" type="warning" :closable="false" show-icon :title="portfolioWarningText(researchPortfolio.warnings)" class="summary-alert" />
+      <el-descriptions :column="4" border size="small" class="research-portfolio-summary">
         <el-descriptions-item label="标的数">{{ researchPortfolio?.position_count || 0 }}</el-descriptions-item>
         <el-descriptions-item label="上限权重合计">{{ formatPct(researchPortfolio?.total_max_weight_pct) }}</el-descriptions-item>
-        <el-descriptions-item label="赛道上限"><span v-for="(weight, sector) in researchPortfolio?.sector_weights || {}" :key="sector" class="portfolio-sector">{{ sector }} {{ formatPct(weight) }}</span><span v-if="!Object.keys(researchPortfolio?.sector_weights || {}).length">-</span></el-descriptions-item>
+        <el-descriptions-item label="最大赛道">{{ researchPortfolio?.largest_sector || '-' }} {{ formatPct(researchPortfolio?.largest_sector_weight_pct) }}</el-descriptions-item>
+        <el-descriptions-item label="风险摘要">受限 {{ researchPortfolio?.constrained_count || 0 }} · 阻断 {{ researchPortfolio?.blocked_count || 0 }} · 数据缺口 {{ researchPortfolio?.data_gap_count || 0 }} · 14日催化 {{ researchPortfolio?.upcoming_catalyst_count || 0 }}</el-descriptions-item>
       </el-descriptions>
       <div class="research-portfolio-toolbar"><el-button type="primary" plain @click="newResearchPosition()">新增研究仓位</el-button></div>
       <el-table :data="researchPortfolio?.items || []" v-loading="researchPortfolioLoading" size="small" border empty-text="尚未设置手工研究仓位">
         <el-table-column prop="ticker" label="Ticker" width="100" />
         <el-table-column label="最大权重" width="110" align="right"><template #default="{ row }">{{ formatPct(row.max_weight_pct) }}</template></el-table-column>
         <el-table-column label="参考成本" width="125" align="right"><template #default="{ row }">{{ formatPrice(row.reference_cost_usd, 'USD') }}</template></el-table-column>
-        <el-table-column label="日均成交量参与上限" width="170" align="right"><template #default="{ row }">{{ formatPct(row.max_daily_volume_participation_pct) }}</template></el-table-column>
+        <el-table-column label="当前价 / 参考变化" width="155" align="right"><template #default="{ row }">{{ formatPrice(row.current_price_usd, 'USD') }}<small v-if="row.return_since_reference_pct != null" class="cell-note">{{ formatPerformance(row.return_since_reference_pct) }}</small></template></el-table-column>
+        <el-table-column label="数据 / 流动性" width="150"><template #default="{ row }"><el-tag :type="row.research_readiness === 'ready' ? 'success' : 'warning'" effect="plain">{{ row.research_readiness || '无候选数据' }}</el-tag><small class="cell-note">{{ investabilityLabel(row.investability_status) }}</small></template></el-table-column>
+        <el-table-column label="风险标记" min-width="190"><template #default="{ row }"><span v-if="!row.risk_flags?.length">-</span><el-tag v-for="flag in row.risk_flags" :key="flag" type="warning" effect="plain" class="portfolio-sector">{{ portfolioRiskFlagLabel(flag) }}</el-tag></template></el-table-column>
         <el-table-column prop="event_risk_note" label="事件风险" min-width="170" show-overflow-tooltip />
         <el-table-column prop="liquidity_note" label="流动性约束" min-width="170" show-overflow-tooltip />
         <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="editResearchPosition(row)">编辑</el-button><el-button link type="danger" @click="deleteResearchPosition(row.id)">删除</el-button></template></el-table-column>
@@ -1726,8 +1758,20 @@
     </el-dialog>
 
     <el-dialog v-model="effectivenessVisible" title="候选效果评估" width="920px">
-      <el-alert :type="effectiveness?.benchmark_available ? 'info' : 'warning'" :closable="false" show-icon class="summary-alert"
+      <el-alert :type="effectiveness?.status === 'validated' ? 'success' : 'warning'" :closable="false" show-icon class="summary-alert"
         :title="effectivenessNotice" />
+      <el-descriptions :column="3" border size="small" class="effectiveness-readiness">
+        <el-descriptions-item label="IWM 历史">
+          <el-tag size="small" :type="benchmarkHistoryTagType(effectiveness?.benchmark_history_status)">{{ benchmarkHistoryLabel(effectiveness?.benchmark_history_status) }}</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="基准交易日">
+          {{ effectiveness?.benchmark_history_sample_days || 0 }} / {{ effectiveness?.benchmark_history_required_days || 200 }}
+          <small v-if="effectiveness?.benchmark_latest_trade_date">｜截至 {{ effectiveness.benchmark_latest_trade_date }}</small>
+        </el-descriptions-item>
+        <el-descriptions-item label="独立信号日期">
+          {{ effectiveness?.distinct_signal_dates || 0 }} / {{ effectiveness?.minimum_distinct_signal_dates || 5 }}
+        </el-descriptions-item>
+      </el-descriptions>
       <el-table :data="effectiveness?.cohorts || []" border empty-text="暂无可评估候选">
         <el-table-column prop="grade" label="Cohort" width="100"><template #default="{ row }">{{ effectivenessCohortLabel(row.grade) }}</template></el-table-column>
         <el-table-column prop="candidate_count" label="首次入选数" width="110" align="right" />
@@ -1736,8 +1780,9 @@
             <template v-if="effectivenessWindow(row, horizon)?.sample_count">
               {{ formatPerformance(effectivenessWindow(row, horizon)?.average_return_pct) }}｜胜率 {{ formatPct(effectivenessWindow(row, horizon)?.win_rate_pct) }}｜回撤 {{ formatPerformance(effectivenessWindow(row, horizon)?.max_drawdown_pct) }}
               <small v-if="effectivenessWindow(row, horizon)?.excess_return_pct != null">｜相对 {{ formatPerformance(effectivenessWindow(row, horizon)?.excess_return_pct) }}</small>
+              <small>｜样本 {{ effectivenessWindow(row, horizon)?.sample_count }}，独立日期 {{ effectivenessWindow(row, horizon)?.distinct_signal_dates || 0 }}，待成熟 {{ effectivenessWindow(row, horizon)?.pending_count }}</small>
             </template>
-            <span v-else>-</span>
+            <span v-else>未验证（待成熟 {{ effectivenessWindow(row, horizon)?.pending_count || 0 }}）</span>
           </template>
         </el-table-column>
       </el-table>
@@ -1830,6 +1875,12 @@ const watchEditor = reactive({
   ticker: '',
   note: '',
   research_status: 'inbox',
+  company_thesis_status: 'untested',
+  security_readiness: 'not_decision_grade',
+  research_action: 'wait_for_proof',
+  action_threshold: '',
+  threshold_origin: 'draft',
+  decision_rationale: '',
   thesis: '',
   market_concern: '',
   falsifiable_judgment: '',
@@ -1850,9 +1901,11 @@ const effectivenessNotice = computed(() => {
   const baseline = source === 'signal_events'
     ? '按入选/质量升级当日固化的候选信号与价格基线统计，不会被后续名单变化改写。'
     : '当前尚无事件化历史，暂按历史批次中的首次入选回溯；后续同步生成信号后会自动切换为不可变事件基线。'
-  return effectiveness.value?.benchmark_available
-    ? `收益相对 ${benchmark} 计算；${baseline}`
-    : `未找到 ${benchmark} 本地价格历史；当前仅展示候选自身表现。${baseline}`
+  const status = effectiveness.value?.status_detail || '尚未验证评分效果。'
+  const benchmarkState = effectiveness.value?.benchmark_history_status === 'ready'
+    ? (effectiveness.value?.benchmark_available ? `收益相对 ${benchmark} 计算。` : `${benchmark} 历史已就绪，正在等待候选持有期成熟。`)
+    : `${benchmark} 历史${benchmarkHistoryLabel(effectiveness.value?.benchmark_history_status)}，当前不计算相对收益。`
+  return `${status} ${benchmarkState}${baseline}`
 })
 const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
@@ -2343,7 +2396,14 @@ async function backfillTechnicalHistory() {
     )
     const result = res.data.data
     const sources = Object.entries(result.source_record_counts || {}).map(([source, count]) => `${source} ${count}`).join(' / ') || '无'
-    ElMessage.success(`技术历史回填完成：请求 ${result.requested_count}，写入 ${result.persisted_count} 条（${sources}）`)
+    if (!result.benchmark_ready || (result.failures?.length || 0) > 0) {
+		const failedItems = result.failures || []
+		const failed = failedItems.slice(0, 8).map(item => item.ticker).join('、') || 'IWM'
+		const remaining = failedItems.length > 8 ? ` 等 ${failedItems.length} 个` : ''
+		ElMessage.warning(`技术历史已部分写入 ${result.persisted_count} 条；基准状态：${benchmarkHistoryLabel(result.benchmark_status)}；${failed}${remaining} 已进入独立重试队列`)
+    } else {
+      ElMessage.success(`技术历史回填完成：请求 ${result.requested_count}，写入 ${result.persisted_count} 条（${sources}）；IWM ${result.benchmark_sample_days}/${result.benchmark_required_days} 日已就绪`)
+    }
     await load()
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '技术历史回填失败，请检查行情源额度与配置')
@@ -2753,6 +2813,12 @@ async function editCandidateWatch(row: CandidateWatch) {
   watchEditor.ticker = row.ticker
   watchEditor.note = row.note || ''
   watchEditor.research_status = row.research_status || 'inbox'
+  watchEditor.company_thesis_status = row.company_thesis_status || 'untested'
+  watchEditor.security_readiness = row.security_readiness || 'not_decision_grade'
+  watchEditor.research_action = row.research_action || 'wait_for_proof'
+  watchEditor.action_threshold = row.action_threshold || ''
+  watchEditor.threshold_origin = row.threshold_origin || 'draft'
+  watchEditor.decision_rationale = row.decision_rationale || ''
   watchEditor.thesis = row.thesis || ''
   watchEditor.market_concern = row.market_concern || ''
   watchEditor.falsifiable_judgment = row.falsifiable_judgment || ''
@@ -2808,6 +2874,12 @@ async function saveCandidateResearch() {
       ticker: watchEditor.ticker,
       note: watchEditor.note,
       research_status: watchEditor.research_status,
+      company_thesis_status: watchEditor.company_thesis_status,
+      security_readiness: watchEditor.security_readiness,
+      research_action: watchEditor.research_action,
+      action_threshold: watchEditor.action_threshold,
+      threshold_origin: watchEditor.threshold_origin,
+      decision_rationale: watchEditor.decision_rationale,
       thesis: watchEditor.thesis,
       market_concern: watchEditor.market_concern,
       falsifiable_judgment: watchEditor.falsifiable_judgment,
@@ -3060,6 +3132,57 @@ function researchStatusTagType(status?: string) {
   return 'primary'
 }
 
+function companyThesisStatusLabel(status?: string) {
+  return ({ untested: '未检验', strengthening: '增强', intact: '成立', watch: '观察', impaired: '受损', broken: '失效', retired: '结束跟踪' } as Record<string, string>)[status || ''] || '未检验'
+}
+
+function securityReadinessLabel(status?: string) {
+  return ({ not_decision_grade: '不可形成结论', conditional: '有条件', ready: '就绪', re_underwrite: '需重做研究' } as Record<string, string>)[status || ''] || '不可形成结论'
+}
+
+function securityReadinessTagType(status?: string) {
+  if (status === 'ready') return 'success'
+  if (status === 'conditional') return 'warning'
+  if (status === 're_underwrite') return 'danger'
+  return 'info'
+}
+
+function researchActionLabel(action?: string) {
+  return ({ wait_for_proof: '等待证据', prioritize_research: '优先研究', continue_monitoring: '继续观察', re_underwrite: '重新研究', reject: '淘汰' } as Record<string, string>)[action || ''] || '等待证据'
+}
+
+function thresholdOriginLabel(origin?: string) {
+  return ({ inherited: '沿用既有规则', draft: '待确认草案', approved: '已确认规则' } as Record<string, string>)[origin || ''] || '待确认草案'
+}
+
+function catalystEventLabel(type?: string) {
+  return ({ financial_report: '定期报告', financing: '融资事件', material_event: '重大事项', shareholder_meeting: '股东大会', ownership_change: '持股变化', capital_event: '资本风险', user_catalyst: '计划催化剂', sec_filing: 'SEC 公告' } as Record<string, string>)[type || ''] || type || '-'
+}
+
+function catalystTimingLabel(status?: string) {
+  return ({ observed: '已发生', scheduled: '资料完整', needs_source: '待补来源' } as Record<string, string>)[status || ''] || status || '-'
+}
+
+function portfolioRiskFlagLabel(flag: string) {
+  return ({ research_data_not_ready: '研究数据未就绪', investability_blocked: '流动性阻断', investability_constrained: '流动性受限', current_candidate_unavailable: '当前候选缺失', manual_event_risk: '人工事件约束', catalyst_within_14_days: '14日内催化', single_name_weight_above_10pct: '单标的>10%' } as Record<string, string>)[flag] || flag
+}
+
+function portfolioWarningText(warnings: string[]) {
+  const labels: Record<string, string> = { total_research_weight_above_100pct: '研究权重上限合计超过 100%', sector_concentration_above_40pct: '单一赛道研究上限超过 40%', blocked_investability_positions: '存在流动性阻断标的', position_data_gaps: '存在当前候选或数据质量缺口' }
+  return warnings.map((item) => labels[item] || item).join('；')
+}
+
+function researchQualityLabel(status?: string) {
+  return ({ valid: '数据有效', stale: '数据偏旧', expired: '数据过期', missing: '暂无数据' } as Record<string, string>)[status || ''] || status || '暂无数据'
+}
+
+function researchQualityTagType(status?: string) {
+  if (status === 'valid') return 'success'
+  if (status === 'stale') return 'warning'
+  if (status === 'expired') return 'danger'
+  return 'info'
+}
+
 function reviewQueueStateLabel(state?: string, days?: number) {
   if (state === 'overdue') return `已逾期 ${Math.abs(days || 0)} 天`
   if (state === 'due_today') return '今天复查'
@@ -3082,6 +3205,17 @@ function effectivenessCohortLabel(grade: string) {
 
 function effectivenessWindow(cohort: CandidateEffectivenessCohort, horizon: number) {
   return cohort.windows.find((item) => item.horizon_days === horizon)
+}
+
+function benchmarkHistoryLabel(status?: string) {
+  return ({ ready: '已就绪', missing: '缺失', insufficient: '样本不足', stale: '已过期' } as Record<string, string>)[status || ''] || '状态未知'
+}
+
+function benchmarkHistoryTagType(status?: string) {
+  if (status === 'ready') return 'success'
+  if (status === 'stale') return 'warning'
+  if (status === 'missing') return 'danger'
+  return 'warning'
 }
 
 function qualityTagType(tag: string) {
@@ -3471,6 +3605,8 @@ function formatHealthIssue(issue: string) {
   if (code === 'insider_coverage_unavailable') return `内幕交易覆盖不可用：${count || 0}`
   if (code === 'pending_financial_recalculations') return `待财务重算：${count || 0}`
   if (code === 'candidate_recent_filings') return `候选近期 SEC 公告覆盖：${count || 0}`
+	if (code === 'technical_history_retry_pending') return `技术历史待自动补齐：${count || 0}`
+	if (code === 'open_data_quality_incidents') return `已隔离的数据质量异常：${count || 0}`
   if (code === 'no_current_published_prescreen_batch') return '暂无已发布的小盘候选批次'
   return issue
 }
@@ -3667,6 +3803,9 @@ function compactTechnicalSignalType(row: CandidateScore) {
 }
 
 function technicalStatusDescription(technical?: CandidateScore['technical']) {
+  if (technical?.status === 'corporate_action_review') {
+    return technical.adjustment_review?.detail || '存在公司行动且价格复权状态未确认；技术信号已暂停。'
+  }
   if (technical?.status === 'data_insufficient') {
     return `技术分析需要至少 ${technical.required_sample_days || 21} 个有效交易日，当前仅有 ${technical.sample_days || 0} 个；不会据此生成信号。`
   }
@@ -4473,6 +4612,10 @@ onUnmounted(() => {
 }
 
 .summary-alert {
+  margin-bottom: 12px;
+}
+
+.effectiveness-readiness {
   margin-bottom: 12px;
 }
 

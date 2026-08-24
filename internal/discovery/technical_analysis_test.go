@@ -51,6 +51,33 @@ func TestBuildCandidateTechnicalAnalysisInsufficientHistory(t *testing.T) {
 	}
 }
 
+func TestCandidateTechnicalAnalysisPausesSignalsForUnadjustedReverseSplit(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0000099999", CompanyName: "Split Review", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&UniverseBatch{BatchID: "facts", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CapitalRiskSnapshot{BatchID: "facts", SecurityID: security.ID, Kind: CapitalEventReverseSplit, Accession: "split", EffectiveAt: time.Now().AddDate(0, 0, -5), Active: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	rows := make([]PriceSnapshot, 0, technicalMinimumSamples)
+	for day := 0; day < technicalMinimumSamples; day++ {
+		rows = append(rows, PriceSnapshot{TradeDate: base.AddDate(0, 0, day), CloseMicros: int64(10_000_000 + day*100_000), Volume: 100, Adjusted: false, QualityStatus: QualityStatusValid})
+	}
+	items := []CandidateScoreResult{{CandidateScoreSnapshot: CandidateScoreSnapshot{SecurityID: security.ID, Ticker: "SPLT"}}}
+	if err := hydrateCandidateTechnicalAnalysisWithPriceHistories(context.Background(), db, items, map[uint][]PriceSnapshot{security.ID: rows}); err != nil {
+		t.Fatal(err)
+	}
+	technical := items[0].Technical
+	if technical.Status != TechnicalStatusCorporateActionReview || technical.AdjustmentReview.Status != "review_required" || len(technical.Signals) != 0 || technical.TradeSetup.Status != "unavailable" {
+		t.Fatalf("technical=%+v", technical)
+	}
+}
+
 func TestBuildCandidateTechnicalAnalysisIncludesMA200WhenHistoryIsAvailable(t *testing.T) {
 	base := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
 	rows := make([]PriceSnapshot, 0, technicalMA200LookbackDays)

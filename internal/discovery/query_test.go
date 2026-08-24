@@ -860,8 +860,16 @@ func TestCandidateWatchResearchFieldsSupportPartialUpdates(t *testing.T) {
 	catalystDate := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
 	nextReview := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
 	researching := CandidateResearchStatusResearching
+	companyThesis := CompanyThesisIntact
+	securityReadiness := SecurityReadinessConditional
+	researchAction := ResearchActionWaitForProof
+	actionThreshold := "下季现金 runway 仍高于 12 个月"
+	thresholdOrigin := ThresholdOriginDraft
+	decisionRationale := "当前事实支持公司论点，但估值证据仍不足"
 	watch, err := UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{
 		Ticker: "RSCH", ResearchStatus: &researching, Thesis: &thesis, RiskNotes: &risk,
+		CompanyThesisStatus: &companyThesis, SecurityReadiness: &securityReadiness, ResearchAction: &researchAction,
+		ActionThreshold: &actionThreshold, ThresholdOrigin: &thresholdOrigin, DecisionRationale: &decisionRationale,
 		MarketConcern: &marketConcern, FalsifiableJudgment: &falsifiableJudgment,
 		Catalyst: &catalyst, CatalystSource: &catalystSource, CatalystDate: &catalystDate,
 		NextReviewAt: &nextReview,
@@ -869,7 +877,7 @@ func TestCandidateWatchResearchFieldsSupportPartialUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if watch.ResearchStatus != researching || watch.Thesis != thesis || watch.RiskNotes != risk ||
+	if watch.ResearchStatus != researching || watch.CompanyThesisStatus != companyThesis || watch.SecurityReadiness != securityReadiness || watch.ResearchAction != researchAction || watch.ActionThreshold != actionThreshold || watch.ThresholdOrigin != thresholdOrigin || watch.DecisionRationale != decisionRationale || watch.Thesis != thesis || watch.RiskNotes != risk ||
 		watch.MarketConcern != marketConcern || watch.FalsifiableJudgment != falsifiableJudgment ||
 		watch.Catalyst != catalyst || watch.CatalystSource != catalystSource || watch.CatalystDate == nil || !watch.CatalystDate.Equal(catalystDate) ||
 		watch.NextReviewAt == nil || !watch.NextReviewAt.Equal(nextReview) {
@@ -911,8 +919,12 @@ func TestCandidateWatchResearchFieldsSupportPartialUpdates(t *testing.T) {
 		t.Fatalf("clear catalyst date watch=%#v err=%v", watch, err)
 	}
 	var latest CandidateResearchMemoVersion
-	if err := db.Where("ticker = ?", "RSCH").Order("version DESC").First(&latest).Error; err != nil || latest.Version != 3 || latest.CatalystDate != nil || latest.Author != "local_user" {
+	if err := db.Where("ticker = ?", "RSCH").Order("version DESC").First(&latest).Error; err != nil || latest.Version != 3 || latest.CatalystDate != nil || latest.Author != "local_user" || latest.CompanyThesisStatus != companyThesis || latest.SecurityReadiness != securityReadiness || latest.ResearchAction != researchAction {
 		t.Fatalf("latest memo version=%#v err=%v", latest, err)
+	}
+	invalidReadiness := "certain"
+	if _, err := UpsertCandidateWatch(context.Background(), db, CandidateWatchInput{Ticker: "RSCH", SecurityReadiness: &invalidReadiness}); err == nil {
+		t.Fatal("expected invalid security readiness error")
 	}
 }
 

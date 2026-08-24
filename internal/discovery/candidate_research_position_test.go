@@ -22,6 +22,9 @@ func TestCandidateResearchPositionLifecycle(t *testing.T) {
 	if err != nil || portfolio.PositionCount != 1 || portfolio.TotalMaxWeightPct != 4 {
 		t.Fatalf("portfolio=%#v err=%v", portfolio, err)
 	}
+	if portfolio.DataGapCount != 1 || len(portfolio.Items) != 1 || len(portfolio.Items[0].RiskFlags) == 0 || portfolio.Items[0].Quality.QualityStatus != QualityStatusMissing {
+		t.Fatalf("portfolio risk enrichment=%#v", portfolio)
+	}
 	position, err = UpsertCandidateResearchPosition(context.Background(), db, CandidateResearchPositionInput{Ticker: "PLAN", MaxWeightPct: 6, MaxDailyVolumeParticipation: 10, ClearReferenceCostUSD: true})
 	if err != nil || position.MaxWeightPct != 6 || position.ReferenceCostUSD != nil {
 		t.Fatalf("updated position=%#v err=%v", position, err)

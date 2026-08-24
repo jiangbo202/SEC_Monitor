@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -21,15 +22,44 @@ const (
 // TechnicalHistoryBackfillResult describes a manual, one-time price-history
 // warm-up. It does not publish a new market batch or change candidate scores.
 type TechnicalHistoryBackfillResult struct {
-	BatchID              string         `json:"batch_id"`
-	EffectiveDate        string         `json:"effective_date"`
-	LookbackCalendarDays int            `json:"lookback_calendar_days"`
-	CandidateCount       int            `json:"candidate_count"`
-	AlreadyReadyCount    int            `json:"already_ready_count"`
-	RequestedCount       int            `json:"requested_count"`
-	RecordCount          int            `json:"record_count"`
-	PersistedCount       int            `json:"persisted_count"`
-	SourceRecordCounts   map[string]int `json:"source_record_counts"`
+	BatchID               string                    `json:"batch_id"`
+	EffectiveDate         string                    `json:"effective_date"`
+	LookbackCalendarDays  int                       `json:"lookback_calendar_days"`
+	CandidateCount        int                       `json:"candidate_count"`
+	AlreadyReadyCount     int                       `json:"already_ready_count"`
+	RequestedCount        int                       `json:"requested_count"`
+	DeferredRetryCount    int                       `json:"deferred_retry_count"`
+	PendingRetryCount     int                       `json:"pending_retry_count"`
+	RetryDueCount         int                       `json:"retry_due_count"`
+	BenchmarkTicker       string                    `json:"benchmark_ticker"`
+	BenchmarkReady        bool                      `json:"benchmark_ready"`
+	BenchmarkRequested    bool                      `json:"benchmark_requested"`
+	BenchmarkStatus       string                    `json:"benchmark_status"`
+	BenchmarkSampleDays   int                       `json:"benchmark_sample_days"`
+	BenchmarkRequiredDays int                       `json:"benchmark_required_days"`
+	BenchmarkLatestDate   string                    `json:"benchmark_latest_date"`
+	RecordCount           int                       `json:"record_count"`
+	PersistedCount        int                       `json:"persisted_count"`
+	SourceRecordCounts    map[string]int            `json:"source_record_counts"`
+	Failures              []TechnicalHistoryFailure `json:"failures"`
+	Warnings              []string                  `json:"warnings"`
+}
+
+type TechnicalHistoryFailure struct {
+	Ticker       string     `json:"ticker"`
+	Reason       string     `json:"reason"`
+	AttemptCount int        `json:"attempt_count"`
+	SampleDays   int        `json:"sample_days"`
+	RequiredDays int        `json:"required_days"`
+	NextRetryAt  *time.Time `json:"next_retry_at,omitempty"`
+}
+
+type benchmarkHistoryReadiness struct {
+	Status     string
+	SampleDays int
+	Required   int
+	LatestDate string
+	Ready      bool
 }
 
 // TickerTechnicalHistory is the local end-of-day history for an arbitrary
@@ -57,11 +87,42 @@ func GetTickerTechnicalHistory(ctx context.Context, db *gorm.DB, ticker string) 
 		return result, err
 	}
 	result.Technical = buildCandidateTechnicalAnalysis(rows)
+	if err := applyTickerCorporateActionReview(ctx, db, result.Ticker, rows, &result.Technical); err != nil {
+		return result, err
+	}
 	if err := hydrateTickerTradeSetupStatusSince(ctx, db, result.Ticker, &result.Technical); err != nil {
 		return result, err
 	}
 	result.History = candidateTechnicalHistoryRows(rows)
 	return result, nil
+}
+
+func applyTickerCorporateActionReview(ctx context.Context, db *gorm.DB, ticker string, rows []PriceSnapshot, technical *CandidateTechnicalAnalysis) error {
+	if technical == nil || !hasUnadjustedPriceRows(rows) {
+		return nil
+	}
+	var security Security
+	err := db.WithContext(ctx).Table("securities").
+		Select("securities.*").Joins("JOIN listings ON listings.security_id = securities.id").
+		Where("listings.ticker = ?", strings.ToUpper(strings.TrimSpace(ticker))).Order("listings.valid_from DESC").First(&security).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var actions []CapitalRiskSnapshot
+	if err := db.WithContext(ctx).Where("security_id = ? AND active = ? AND kind = ?", security.ID, true, CapitalEventReverseSplit).Find(&actions).Error; err != nil {
+		return err
+	}
+	if len(actions) == 0 {
+		return nil
+	}
+	technical.Status = TechnicalStatusCorporateActionReview
+	technical.AdjustmentReview = PriceAdjustmentReview{Status: "review_required", QualityStatus: QualityStatusConflict, EventKinds: []string{CapitalEventReverseSplit}, Detail: "存在拆股/合股事件，且本地价格未确认复权；技术信号已暂停"}
+	technical.Signals = []CandidateTechnicalSignal{}
+	technical.TradeSetup = unavailableCandidateTradeSetup(TechnicalStatusCorporateActionReview)
+	return nil
 }
 
 // BackfillTickerTechnicalHistory persists a one-time local EOD history for a
@@ -121,7 +182,17 @@ func normalizeTechnicalHistoryLookbackDays(value int) int {
 }
 
 func BackfillCandidateTechnicalHistory(ctx context.Context, db *gorm.DB, provider HistoricalPriceProvider, now time.Time, lookbackDays int) (TechnicalHistoryBackfillResult, error) {
-	result := TechnicalHistoryBackfillResult{SourceRecordCounts: map[string]int{}}
+	return backfillCandidateTechnicalHistory(ctx, db, provider, now, lookbackDays, true)
+}
+
+// BackfillDueCandidateTechnicalHistory is used by scheduled warmups. Unlike a
+// manual operator retry, it honors each symbol's durable backoff checkpoint.
+func BackfillDueCandidateTechnicalHistory(ctx context.Context, db *gorm.DB, provider HistoricalPriceProvider, now time.Time, lookbackDays int) (TechnicalHistoryBackfillResult, error) {
+	return backfillCandidateTechnicalHistory(ctx, db, provider, now, lookbackDays, false)
+}
+
+func backfillCandidateTechnicalHistory(ctx context.Context, db *gorm.DB, provider HistoricalPriceProvider, now time.Time, lookbackDays int, forceRetry bool) (TechnicalHistoryBackfillResult, error) {
+	result := TechnicalHistoryBackfillResult{SourceRecordCounts: map[string]int{}, BenchmarkTicker: "IWM", Failures: []TechnicalHistoryFailure{}, Warnings: []string{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -157,37 +228,229 @@ func BackfillCandidateTechnicalHistory(ctx context.Context, db *gorm.DB, provide
 	if result.LookbackCalendarDays >= defaultTechnicalHistoryLookbackDays {
 		requiredSamples = technicalMA200LookbackDays
 	}
-	listings, readyCount, err := candidateTechnicalHistoryListings(ctx, db, batch, scores, requiredSamples)
+	result.BenchmarkRequiredDays = requiredSamples
+	currentTickers := make([]string, 0, len(scores)+1)
+	for _, score := range scores {
+		currentTickers = append(currentTickers, strings.ToUpper(strings.TrimSpace(score.Ticker)))
+	}
+	currentTickers = append(currentTickers, result.BenchmarkTicker)
+	if err := resolveSatisfiedTechnicalHistoryRetries(ctx, db, batch.BatchID, currentTickers, requiredSamples, batch.EffectiveDate, now); err != nil {
+		return result, err
+	}
+	listings, readyCount, benchmarkReady, err := candidateTechnicalHistoryListings(ctx, db, batch, scores, requiredSamples)
 	if err != nil {
 		return result, err
 	}
 	result.AlreadyReadyCount = readyCount
-	result.RequestedCount = len(listings)
-	if len(listings) == 0 {
-		return result, nil
-	}
-
-	records, err := provider.LoadHistory(ctx, listings, result.EffectiveDate, result.LookbackCalendarDays)
+	result.BenchmarkReady = benchmarkReady
+	listings, result.DeferredRetryCount, err = filterTechnicalHistoryRetries(ctx, db, batch.BatchID, listings, now, forceRetry)
 	if err != nil {
 		return result, err
 	}
+	result.RequestedCount = len(listings)
+	for _, listing := range listings {
+		if strings.EqualFold(listing.Ticker, result.BenchmarkTicker) {
+			result.BenchmarkRequested = true
+		}
+	}
+	if len(listings) == 0 {
+		readiness, readinessErr := loadBenchmarkHistoryReadiness(ctx, db, result.BenchmarkTicker, requiredSamples, batch.EffectiveDate)
+		if readinessErr != nil {
+			return result, readinessErr
+		}
+		applyBenchmarkReadiness(&result, readiness)
+		result.PendingRetryCount, result.RetryDueCount, _, err = technicalHistoryRetryCounts(ctx, db, batch.BatchID, now)
+		if err != nil {
+			return result, err
+		}
+		if result.DeferredRetryCount > 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%d 个标的仍在退避窗口，将由后续调度继续重试", result.DeferredRetryCount))
+		}
+		return result, nil
+	}
+
+	benchmarkListings, candidateListings := splitBenchmarkListings(listings, result.BenchmarkTicker)
+	records := make([]PriceRecord, 0)
+	failureReasons := make(map[string]string, len(listings))
+	// The benchmark is deliberately fetched in its own first request. A large
+	// candidate batch can no longer consume the request budget while silently
+	// leaving the comparison series empty.
+	for _, group := range [][]Listing{benchmarkListings, candidateListings} {
+		if len(group) == 0 {
+			continue
+		}
+		rows, loadErr := provider.LoadHistory(ctx, group, result.EffectiveDate, result.LookbackCalendarDays)
+		if loadErr != nil {
+			for _, listing := range group {
+				failureReasons[strings.ToUpper(strings.TrimSpace(listing.Ticker))] = "provider_request_failed"
+			}
+			continue
+		}
+		filtered, missing := technicalHistoryRecordsForListings(rows, group)
+		records = append(records, filtered...)
+		for _, ticker := range missing {
+			failureReasons[ticker] = "no_usable_records"
+		}
+	}
 	snapshots := technicalHistorySnapshots(records, result.EffectiveDate, result.SourceRecordCounts)
 	result.RecordCount = len(snapshots)
-	if len(snapshots) == 0 {
-		return result, errors.New("history provider returned no usable price records")
+	if len(snapshots) > 0 {
+		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return persistPriceSnapshotsInBatches(tx, snapshots)
+		}); err != nil {
+			return result, err
+		}
+		result.PersistedCount = len(snapshots)
 	}
-	if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return persistPriceSnapshotsInBatches(tx, snapshots)
-	}); err != nil {
+	requestedTickers := make([]string, 0, len(listings))
+	for _, listing := range listings {
+		requestedTickers = append(requestedTickers, strings.ToUpper(strings.TrimSpace(listing.Ticker)))
+	}
+	coverageByTicker, err := loadTechnicalHistoryCoverage(ctx, db, requestedTickers)
+	if err != nil {
 		return result, err
 	}
-	result.PersistedCount = len(snapshots)
+	for _, ticker := range requestedTickers {
+		coverage := coverageByTicker[ticker]
+		reason := failureReasons[ticker]
+		if reason == "" && coverage.SampleDays < requiredSamples {
+			reason = "insufficient_history"
+		}
+		if reason == "" && strings.TrimSpace(batch.EffectiveDate) != "" && coverage.LatestDate < batch.EffectiveDate {
+			reason = "stale_history"
+		}
+		if reason == "" {
+			if err := resolveTechnicalHistoryRetry(ctx, db, batch.BatchID, ticker, coverage, requiredSamples, now); err != nil {
+				return result, err
+			}
+			continue
+		}
+		state, retryErr := recordTechnicalHistoryRetry(ctx, db, batch.BatchID, ticker, reason, coverage, requiredSamples, now)
+		if retryErr != nil {
+			return result, retryErr
+		}
+		result.Failures = append(result.Failures, TechnicalHistoryFailure{
+			Ticker: ticker, Reason: reason, AttemptCount: state.FailureCount,
+			SampleDays: coverage.SampleDays, RequiredDays: requiredSamples, NextRetryAt: state.NextRetryAt,
+		})
+	}
+	sort.Slice(result.Failures, func(i, j int) bool { return result.Failures[i].Ticker < result.Failures[j].Ticker })
+	readiness, err := loadBenchmarkHistoryReadiness(ctx, db, result.BenchmarkTicker, requiredSamples, batch.EffectiveDate)
+	if err != nil {
+		return result, err
+	}
+	applyBenchmarkReadiness(&result, readiness)
+	if !result.BenchmarkReady {
+		result.Warnings = append(result.Warnings, "IWM 基准历史未就绪，候选相对收益与效果验证保持降级状态")
+	}
+	if len(result.Failures) > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("%d 个标的已进入独立重试队列；其他标的历史已保留", len(result.Failures)))
+	}
+	if result.DeferredRetryCount > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("%d 个标的仍在退避窗口，将由后续调度继续重试", result.DeferredRetryCount))
+	}
+	result.PendingRetryCount, result.RetryDueCount, _, err = technicalHistoryRetryCounts(ctx, db, batch.BatchID, now)
+	if err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
-func candidateTechnicalHistoryListings(ctx context.Context, db *gorm.DB, batch UniverseBatch, scores []CandidateScoreSnapshot, requiredSamples int) ([]Listing, int, error) {
+func splitBenchmarkListings(listings []Listing, benchmark string) ([]Listing, []Listing) {
+	benchmarkRows := make([]Listing, 0, 1)
+	candidates := make([]Listing, 0, len(listings))
+	for _, listing := range listings {
+		if strings.EqualFold(strings.TrimSpace(listing.Ticker), benchmark) {
+			benchmarkRows = append(benchmarkRows, listing)
+			continue
+		}
+		candidates = append(candidates, listing)
+	}
+	return benchmarkRows, candidates
+}
+
+func technicalHistoryRecordsForListings(records []PriceRecord, listings []Listing) ([]PriceRecord, []string) {
+	expected := make(map[string]struct{}, len(listings))
+	for _, listing := range listings {
+		if ticker := strings.ToUpper(strings.TrimSpace(listing.Ticker)); ticker != "" {
+			expected[ticker] = struct{}{}
+		}
+	}
+	covered := make(map[string]struct{}, len(expected))
+	filtered := make([]PriceRecord, 0, len(records))
+	for _, record := range records {
+		ticker := strings.ToUpper(strings.TrimSpace(record.Symbol))
+		if _, ok := expected[ticker]; !ok {
+			continue
+		}
+		filtered = append(filtered, record)
+		if record.CloseMicros > 0 {
+			covered[ticker] = struct{}{}
+		}
+	}
+	missing := make([]string, 0)
+	for ticker := range expected {
+		if _, ok := covered[ticker]; !ok {
+			missing = append(missing, ticker)
+		}
+	}
+	sort.Strings(missing)
+	return filtered, missing
+}
+
+func technicalHistoryTickerList(listings []Listing) string {
+	tickers := make([]string, 0, len(listings))
+	for _, listing := range listings {
+		if ticker := strings.ToUpper(strings.TrimSpace(listing.Ticker)); ticker != "" {
+			tickers = append(tickers, ticker)
+		}
+	}
+	return strings.Join(tickers, "、")
+}
+
+func loadBenchmarkHistoryReadiness(ctx context.Context, db *gorm.DB, ticker string, required int, expectedDate string) (benchmarkHistoryReadiness, error) {
+	result := benchmarkHistoryReadiness{Status: "missing", Required: required}
+	var rows []PriceSnapshot
+	if err := db.WithContext(ctx).Where("symbol = ? AND quality_status = ? AND close_micros > 0", strings.ToUpper(strings.TrimSpace(ticker)), QualityStatusValid).Order("trade_date ASC").Find(&rows).Error; err != nil {
+		return result, err
+	}
+	dates := map[string]struct{}{}
+	for _, row := range rows {
+		if !priceSnapshotHasOHLC(row) {
+			continue
+		}
+		date := row.TradeDate.Format(time.DateOnly)
+		dates[date] = struct{}{}
+		if date > result.LatestDate {
+			result.LatestDate = date
+		}
+	}
+	result.SampleDays = len(dates)
+	switch {
+	case result.SampleDays == 0:
+		result.Status = "missing"
+	case result.SampleDays < required:
+		result.Status = "insufficient"
+	case strings.TrimSpace(expectedDate) != "" && result.LatestDate < expectedDate:
+		result.Status = "stale"
+	default:
+		result.Status = "ready"
+		result.Ready = true
+	}
+	return result, nil
+}
+
+func applyBenchmarkReadiness(result *TechnicalHistoryBackfillResult, readiness benchmarkHistoryReadiness) {
+	result.BenchmarkStatus = readiness.Status
+	result.BenchmarkSampleDays = readiness.SampleDays
+	result.BenchmarkRequiredDays = readiness.Required
+	result.BenchmarkLatestDate = readiness.LatestDate
+	result.BenchmarkReady = readiness.Ready
+}
+
+func candidateTechnicalHistoryListings(ctx context.Context, db *gorm.DB, batch UniverseBatch, scores []CandidateScoreSnapshot, requiredSamples int) ([]Listing, int, bool, error) {
 	if len(scores) == 0 {
-		return []Listing{}, 0, nil
+		return []Listing{{Ticker: "IWM", ProviderTicker: "IWM", MappingStatus: MappingStatusCurrent}}, 0, false, nil
 	}
 	securityIDs := make([]uint, 0, len(scores))
 	tickers := make([]string, 0, len(scores))
@@ -195,13 +458,14 @@ func candidateTechnicalHistoryListings(ctx context.Context, db *gorm.DB, batch U
 		securityIDs = append(securityIDs, score.SecurityID)
 		tickers = append(tickers, strings.ToUpper(strings.TrimSpace(score.Ticker)))
 	}
+	tickers = append(tickers, "IWM")
 	identityBatchID := strings.TrimSpace(batch.UniverseSourceVersion)
 	if identityBatchID == "" {
 		identityBatchID = batch.BatchID
 	}
 	var identities []SecurityBatchIdentity
 	if err := db.WithContext(ctx).Where("batch_id = ? AND security_id IN ?", identityBatchID, securityIDs).Find(&identities).Error; err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	identityBySecurity := make(map[uint]SecurityBatchIdentity, len(identities))
 	for _, identity := range identities {
@@ -209,9 +473,10 @@ func candidateTechnicalHistoryListings(ctx context.Context, db *gorm.DB, batch U
 	}
 	var prices []PriceSnapshot
 	if err := db.WithContext(ctx).Where("symbol IN ? AND quality_status = ?", tickers, QualityStatusValid).Find(&prices).Error; err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	datesByTicker := map[string]map[string]struct{}{}
+	latestByTicker := map[string]string{}
 	for _, price := range prices {
 		// A legacy close-only row is not sufficient for standard KDJ or candle
 		// rendering. Keep requesting the symbol until the required OHLC window
@@ -223,7 +488,11 @@ func candidateTechnicalHistoryListings(ctx context.Context, db *gorm.DB, batch U
 		if datesByTicker[ticker] == nil {
 			datesByTicker[ticker] = map[string]struct{}{}
 		}
-		datesByTicker[ticker][price.TradeDate.Format(time.DateOnly)] = struct{}{}
+		date := price.TradeDate.Format(time.DateOnly)
+		datesByTicker[ticker][date] = struct{}{}
+		if date > latestByTicker[ticker] {
+			latestByTicker[ticker] = date
+		}
 	}
 	seen := map[string]struct{}{}
 	listings := make([]Listing, 0, len(scores))
@@ -233,7 +502,7 @@ func candidateTechnicalHistoryListings(ctx context.Context, db *gorm.DB, batch U
 		if ticker == "" {
 			continue
 		}
-		if len(datesByTicker[ticker]) >= requiredSamples {
+		if len(datesByTicker[ticker]) >= requiredSamples && (strings.TrimSpace(batch.EffectiveDate) == "" || latestByTicker[ticker] >= batch.EffectiveDate) {
 			ready++
 			continue
 		}
@@ -249,8 +518,15 @@ func candidateTechnicalHistoryListings(ctx context.Context, db *gorm.DB, batch U
 		}
 		listings = append(listings, listing)
 	}
+	benchmarkLatest := latestByTicker["IWM"]
+	// Count alone is not enough: IWM must also cover the current published
+	// market date so future cohort outcomes continue to accumulate each day.
+	benchmarkReady := len(datesByTicker["IWM"]) >= requiredSamples && (strings.TrimSpace(batch.EffectiveDate) == "" || benchmarkLatest >= batch.EffectiveDate)
+	if !benchmarkReady {
+		listings = append(listings, Listing{Ticker: "IWM", ProviderTicker: "IWM", MappingStatus: MappingStatusCurrent})
+	}
 	sort.Slice(listings, func(i, j int) bool { return listings[i].Ticker < listings[j].Ticker })
-	return listings, ready, nil
+	return listings, ready, benchmarkReady, nil
 }
 
 func technicalHistorySnapshots(records []PriceRecord, effectiveDate string, sourceCounts map[string]int) []PriceSnapshot {

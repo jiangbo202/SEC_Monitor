@@ -30,6 +30,7 @@ type CandidateMarketResearch struct {
 	Anomalies            []MarketAnomalySnapshot       `json:"anomalies"`
 	InstitutionalHolders []InstitutionalHolderSnapshot `json:"institutional_holders"`
 	FundHolders          []FundHolderSnapshot          `json:"fund_holders"`
+	Quality              DataQualityMetadata           `json:"quality"`
 }
 
 // TickerInstitutionalHoldingHistory exposes the complete locally retained
@@ -47,6 +48,7 @@ type EPSForecastView struct {
 	Latest  *EPSForecastSnapshot  `json:"latest,omitempty"`
 	History []EPSForecastSnapshot `json:"history"`
 	Message string                `json:"message"`
+	Quality DataQualityMetadata   `json:"quality"`
 }
 
 type CandidateMarketResearchRefreshResult struct {
@@ -107,9 +109,11 @@ func GetCandidateMarketResearch(ctx context.Context, db *gorm.DB, ticker string)
 	}
 	if len(result.EPSForecast.History) == 0 {
 		result.EPSForecast.Message = "尚未同步 EPS 市场预期；可在候选详情手动刷新。"
+		result.EPSForecast.Quality = researchQualityMetadata(DataLayerFact, longbridgeCandidateResearchProvider, "", time.Time{}, 14*24*time.Hour, 45*24*time.Hour)
 	} else {
 		result.EPSForecast.Latest = &result.EPSForecast.History[0]
 		result.EPSForecast.Message = "Longbridge EPS 预期快照；预期变化仅作为研究提醒。"
+		result.EPSForecast.Quality = researchQualityMetadata(DataLayerFact, longbridgeCandidateResearchProvider, result.EPSForecast.Latest.SnapshotHash, result.EPSForecast.Latest.FetchedAt, 14*24*time.Hour, 45*24*time.Hour)
 	}
 	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("alert_time DESC, id DESC").Limit(20).Find(&result.Anomalies).Error; err != nil {
 		return result, err
@@ -120,6 +124,30 @@ func GetCandidateMarketResearch(ctx context.Context, db *gorm.DB, ticker string)
 	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, position_ratio DESC, id DESC").Limit(50).Find(&result.FundHolders).Error; err != nil {
 		return result, err
 	}
+	latest := time.Time{}
+	version := ""
+	if result.EPSForecast.Latest != nil {
+		latest, version = result.EPSForecast.Latest.FetchedAt, result.EPSForecast.Latest.SnapshotHash
+	}
+	for _, row := range result.Anomalies {
+		if row.FetchedAt.After(latest) {
+			latest = row.FetchedAt
+			version = ""
+		}
+	}
+	for _, row := range result.InstitutionalHolders {
+		if row.FetchedAt.After(latest) {
+			latest = row.FetchedAt
+			version = ""
+		}
+	}
+	for _, row := range result.FundHolders {
+		if row.FetchedAt.After(latest) {
+			latest = row.FetchedAt
+			version = ""
+		}
+	}
+	result.Quality = researchQualityMetadata(DataLayerFact, longbridgeCandidateResearchProvider, version, latest, 30*24*time.Hour, 90*24*time.Hour)
 	return result, nil
 }
 

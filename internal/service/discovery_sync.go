@@ -1851,7 +1851,7 @@ func (s *DiscoverySyncService) BackfillTechnicalHistory(ctx context.Context, loo
 	if err != nil {
 		return discovery.TechnicalHistoryBackfillResult{}, err
 	}
-	return s.backfillTechnicalHistoryWithConfig(ctx, cfg, lookbackDays)
+	return s.backfillTechnicalHistoryWithConfig(ctx, cfg, lookbackDays, true)
 }
 
 // BackfillTickerTechnicalHistory warms local price history for one manually
@@ -2038,27 +2038,8 @@ func enabledWatchTargetListings(targets []model.WatchTarget) []discovery.Listing
 // session. The scheduler may be configured in any local timezone; this guard
 // still prevents it from persisting an intraday quote as a daily close.
 func latestCompletedWatchTargetTradingDate(ctx context.Context, calendar discovery.MarketCalendar, now time.Time) (time.Time, bool, error) {
-	newYork, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	local := now.In(newYork)
-	candidate := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, newYork)
-	marketClose := time.Date(local.Year(), local.Month(), local.Day(), 16, 15, 0, 0, newYork)
-	if local.Before(marketClose) {
-		candidate = candidate.AddDate(0, 0, -1)
-	}
-	for offset := 0; offset <= 14; offset++ {
-		trading, err := calendar.IsTradingDate(ctx, candidate.Format(time.DateOnly))
-		if err != nil {
-			return time.Time{}, false, err
-		}
-		if trading {
-			return candidate, true, nil
-		}
-		candidate = candidate.AddDate(0, 0, -1)
-	}
-	return time.Time{}, false, errors.New("previous completed NYSE trading date not found")
+	day, err := discovery.LatestCompletedTradingDate(ctx, calendar, now)
+	return day, err == nil, err
 }
 
 // RefreshCandidateMarketHistoryAndScore repairs one candidate's local daily
@@ -2104,7 +2085,7 @@ func (s *DiscoverySyncService) autoWarmTechnicalHistory(ctx context.Context) Tec
 	// Only candidates without the full MA200 baseline are requested. Passing
 	// zero selects the technical-history default (roughly 220 trading days),
 	// so existing candidates never re-download their history during daily runs.
-	backfill, err := s.backfillTechnicalHistoryWithConfig(ctx, cfg, 0)
+	backfill, err := s.backfillTechnicalHistoryWithConfig(ctx, cfg, 0, false)
 	result.Result = backfill
 	if err != nil {
 		result.Status = "warning"
@@ -2112,8 +2093,26 @@ func (s *DiscoverySyncService) autoWarmTechnicalHistory(ctx context.Context) Tec
 		log.Printf("discovery technical history warmup warning: %s", result.ErrorMessage)
 		return result
 	}
+	if !backfill.BenchmarkReady {
+		result.Status = "warning"
+		result.ErrorMessage = fmt.Sprintf("IWM 基准历史未就绪：状态 %s，样本 %d/%d，最近交易日 %s", backfill.BenchmarkStatus, backfill.BenchmarkSampleDays, backfill.BenchmarkRequiredDays, backfill.BenchmarkLatestDate)
+		log.Printf("discovery technical history warmup warning: %s", result.ErrorMessage)
+		return result
+	}
+	if len(backfill.Failures) > 0 {
+		result.Status = "warning"
+		result.ErrorMessage = fmt.Sprintf("技术历史部分缺失：%d 个标的已进入独立重试队列", len(backfill.Failures))
+		log.Printf("discovery technical history warmup warning: %s", result.ErrorMessage)
+		return result
+	}
+	if backfill.PendingRetryCount > 0 {
+		result.Status = "warning"
+		result.ErrorMessage = fmt.Sprintf("技术历史重试队列尚有 %d 个标的（当前到期 %d 个）", backfill.PendingRetryCount, backfill.RetryDueCount)
+		log.Printf("discovery technical history warmup warning: %s", result.ErrorMessage)
+		return result
+	}
 	result.Status = "completed"
-	log.Printf("discovery technical history warmup completed: candidates=%d requested=%d persisted=%d", backfill.CandidateCount, backfill.RequestedCount, backfill.PersistedCount)
+	log.Printf("discovery technical history warmup completed: candidates=%d requested=%d persisted=%d benchmark=%s %d/%d", backfill.CandidateCount, backfill.RequestedCount, backfill.PersistedCount, backfill.BenchmarkStatus, backfill.BenchmarkSampleDays, backfill.BenchmarkRequiredDays)
 	return result
 }
 
@@ -2365,7 +2364,7 @@ func discoveryCacheTTL(cfg config.DiscoveryConfig) time.Duration {
 	return ttl
 }
 
-func (s *DiscoverySyncService) backfillTechnicalHistoryWithConfig(ctx context.Context, cfg config.DiscoveryConfig, lookbackDays int) (discovery.TechnicalHistoryBackfillResult, error) {
+func (s *DiscoverySyncService) backfillTechnicalHistoryWithConfig(ctx context.Context, cfg config.DiscoveryConfig, lookbackDays int, forceRetry bool) (discovery.TechnicalHistoryBackfillResult, error) {
 	timeout := time.Duration(cfg.TaskTimeoutMin) * time.Minute
 	if timeout <= 0 {
 		timeout = 60 * time.Minute
@@ -2386,7 +2385,10 @@ func (s *DiscoverySyncService) backfillTechnicalHistoryWithConfig(ctx context.Co
 	if !ok {
 		return discovery.TechnicalHistoryBackfillResult{}, errors.New("configured price provider does not support technical history backfill")
 	}
-	return discovery.BackfillCandidateTechnicalHistory(ctx, s.db, history, time.Now(), lookbackDays)
+	if forceRetry {
+		return discovery.BackfillCandidateTechnicalHistory(ctx, s.db, history, time.Now(), lookbackDays)
+	}
+	return discovery.BackfillDueCandidateTechnicalHistory(ctx, s.db, history, time.Now(), lookbackDays)
 }
 
 func (s *DiscoverySyncService) backfillTickerTechnicalHistoryWithConfig(ctx context.Context, cfg config.DiscoveryConfig, ticker string, lookbackDays int) (discovery.TechnicalHistoryBackfillResult, error) {

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 const normalizedPrices = `symbol,trade_date,open,high,low,close,volume,currency,is_adjusted,source
@@ -245,6 +247,55 @@ func TestImportPriceCSVAllowsSameDayRevisionWithNewContentVersion(t *testing.T) 
 	}
 	if count != 4 {
 		t.Fatalf("price snapshot count = %d, want both two-row versions", count)
+	}
+}
+
+func TestAutomatedPricePersistenceQuarantinesConflictAndKeepsOtherSymbols(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	date := civilDate(t, "2026-06-18")
+	existing := PriceSnapshot{Source: "longbridge", SourceVersion: "same-content", Symbol: "AA", TradeDate: date, CloseMicros: 10_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatal(err)
+	}
+	conflict := existing
+	conflict.ID = 0
+	conflict.CloseMicros = 11_000_000
+	valid := PriceSnapshot{Source: "longbridge", SourceVersion: "same-content", Symbol: "BB", TradeDate: date, CloseMicros: 20_000_000, Volume: 200, Currency: "USD", QualityStatus: QualityStatusValid}
+	var quarantined int
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var persistErr error
+		quarantined, persistErr = persistPriceSnapshotsWithQuarantine(tx, []PriceSnapshot{conflict, valid}, time.Now().UTC())
+		return persistErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if quarantined != 1 {
+		t.Fatalf("quarantined=%d", quarantined)
+	}
+	var validCount, incidentCount int64
+	if err := db.Model(&PriceSnapshot{}).Where("symbol = ?", "BB").Count(&validCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&DataQualityIncident{}).Where("domain = ? AND entity_key = ? AND status = ?", "price", "AA:2026-06-18", DataQualityIncidentOpen).Count(&incidentCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if validCount != 1 || incidentCount != 1 {
+		t.Fatalf("valid=%d incidents=%d", validCount, incidentCount)
+	}
+	exact := existing
+	exact.ID = 0
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		_, persistErr := persistPriceSnapshotsWithQuarantine(tx, []PriceSnapshot{exact}, time.Now().UTC())
+		return persistErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var resolved int64
+	if err := db.Model(&DataQualityIncident{}).Where("domain = ? AND entity_key = ? AND status = ?", "price", "AA:2026-06-18", DataQualityIncidentResolved).Count(&resolved).Error; err != nil {
+		t.Fatal(err)
+	}
+	if resolved != 1 {
+		t.Fatalf("resolved incidents=%d", resolved)
 	}
 }
 
