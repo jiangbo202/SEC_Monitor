@@ -117,7 +117,7 @@
           </div>
           <div v-if="health" class="operations-detail-group">
             <strong>行情与风险</strong>
-            <span>当日价格 {{ health.current_price_candidates }} · 前一交易日 {{ health.fallback_price_candidates }} · 缺失/过期 {{ health.missing_price_candidates + health.stale_price_candidates }} · 缺市值 {{ health.missing_market_cap }} · 活跃风险 {{ health.active_risk_events }}</span>
+            <span>当日价格 {{ health.current_price_candidates }} · 前一交易日 {{ health.fallback_price_candidates }} · 缺失/过期 {{ health.missing_price_candidates + health.stale_price_candidates }} · 技术历史待补 {{ health.technical_history_retry_pending || 0 }}（到期 {{ health.technical_history_retry_due || 0 }} / 连续失败 {{ health.technical_history_retry_deferred || 0 }}）· 缺市值 {{ health.missing_market_cap }} · 活跃风险 {{ health.active_risk_events }}</span>
           </div>
           <div v-if="health?.issues.length" class="operations-detail-group is-warning">
             <strong>健康提示</strong>
@@ -2397,8 +2397,10 @@ async function backfillTechnicalHistory() {
     const result = res.data.data
     const sources = Object.entries(result.source_record_counts || {}).map(([source, count]) => `${source} ${count}`).join(' / ') || '无'
     if (!result.benchmark_ready || (result.failures?.length || 0) > 0) {
-      const failed = (result.failures || []).map(item => item.ticker).join('、') || 'IWM'
-      ElMessage.warning(`技术历史已部分写入 ${result.persisted_count} 条；基准状态：${benchmarkHistoryLabel(result.benchmark_status)}，缺失：${failed}`)
+		const failedItems = result.failures || []
+		const failed = failedItems.slice(0, 8).map(item => item.ticker).join('、') || 'IWM'
+		const remaining = failedItems.length > 8 ? ` 等 ${failedItems.length} 个` : ''
+		ElMessage.warning(`技术历史已部分写入 ${result.persisted_count} 条；基准状态：${benchmarkHistoryLabel(result.benchmark_status)}；${failed}${remaining} 已进入独立重试队列`)
     } else {
       ElMessage.success(`技术历史回填完成：请求 ${result.requested_count}，写入 ${result.persisted_count} 条（${sources}）；IWM ${result.benchmark_sample_days}/${result.benchmark_required_days} 日已就绪`)
     }
@@ -3603,6 +3605,8 @@ function formatHealthIssue(issue: string) {
   if (code === 'insider_coverage_unavailable') return `内幕交易覆盖不可用：${count || 0}`
   if (code === 'pending_financial_recalculations') return `待财务重算：${count || 0}`
   if (code === 'candidate_recent_filings') return `候选近期 SEC 公告覆盖：${count || 0}`
+	if (code === 'technical_history_retry_pending') return `技术历史待自动补齐：${count || 0}`
+	if (code === 'open_data_quality_incidents') return `已隔离的数据质量异常：${count || 0}`
   if (code === 'no_current_published_prescreen_batch') return '暂无已发布的小盘候选批次'
   return issue
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -46,6 +47,9 @@ type CandidateHealth struct {
 	ResearchOnlyCandidates         int      `json:"research_only_candidates"`
 	BlockedCandidates              int      `json:"blocked_candidates"`
 	OpenDataQualityIncidents       int      `json:"open_data_quality_incidents"`
+	TechnicalHistoryRetryPending   int      `json:"technical_history_retry_pending"`
+	TechnicalHistoryRetryDue       int      `json:"technical_history_retry_due"`
+	TechnicalHistoryRetryDeferred  int      `json:"technical_history_retry_deferred"`
 	Issues                         []string `json:"issues"`
 }
 
@@ -198,11 +202,20 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 	var openIncidents int64
 	if db.Migrator().HasTable(&DataQualityIncident{}) {
 		if err := db.WithContext(ctx).Model(&DataQualityIncident{}).
-			Where("status = ?", DataQualityIncidentOpen).Count(&openIncidents).Error; err != nil {
+			Where("status = ? AND domain <> ?", DataQualityIncidentOpen, "technical_history").Count(&openIncidents).Error; err != nil {
 			return result, err
 		}
 	}
 	result.OpenDataQualityIncidents = int(openIncidents)
+	if db.Migrator().HasTable(&TechnicalHistoryRetryState{}) {
+		pending, due, deferred, retryErr := technicalHistoryRetryCounts(ctx, db, batch.BatchID, time.Now().UTC())
+		if retryErr != nil {
+			return result, retryErr
+		}
+		result.TechnicalHistoryRetryPending = pending
+		result.TechnicalHistoryRetryDue = due
+		result.TechnicalHistoryRetryDeferred = deferred
+	}
 	readinessPage, err := ListCandidateScores(ctx, db, CandidateScoreQuery{BatchID: batch.BatchID, Page: 1, PageSize: maxDiscoveryPageSize})
 	if err != nil {
 		return result, err
@@ -257,8 +270,11 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 	if result.OpenDataQualityIncidents > 0 {
 		result.Issues = append(result.Issues, fmt.Sprintf("open_data_quality_incidents:%d", result.OpenDataQualityIncidents))
 	}
+	if result.TechnicalHistoryRetryPending > 0 {
+		result.Issues = append(result.Issues, fmt.Sprintf("technical_history_retry_pending:%d", result.TechnicalHistoryRetryPending))
+	}
 	if result.MissingFinancials > 0 || result.MissingInsiders > 0 || result.MissingMarketCap > 0 || result.StalePriceCandidates > 0 || result.MissingPriceCandidates > 0 ||
-		result.ResearchOnlyCandidates > 0 || result.BlockedCandidates > 0 || result.OpenDataQualityIncidents > 0 ||
+		result.ResearchOnlyCandidates > 0 || result.BlockedCandidates > 0 || result.OpenDataQualityIncidents > 0 || result.TechnicalHistoryRetryPending > 0 ||
 		(result.TotalCandidates > 0 && insiderDataAvailable && !insiderCoverageExpected && result.CandidatesWithInsiderRecords == 0) ||
 		result.InsiderCoveragePartial > 0 || result.InsiderCoverageUnavailable > 0 ||
 		(result.TotalCandidates > 0 && result.CandidatesWithRecentFilings == 0) {

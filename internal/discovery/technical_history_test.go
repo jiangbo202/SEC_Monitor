@@ -133,6 +133,91 @@ func TestBackfillCandidateTechnicalHistoryDegradesWhenIWMIsMissing(t *testing.T)
 	}
 }
 
+func TestScheduledTechnicalHistoryBackfillHonorsPerTickerBackoffAndManualRetryResolves(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0000011113", CompanyName: "Retry Co", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	securityBatch := UniverseBatch{BatchID: "security-retry", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now()}
+	marketBatch := UniverseBatch{BatchID: "market-retry", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, StartedAt: time.Now()}
+	if err := db.Create(&[]UniverseBatch{securityBatch, marketBatch}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: marketBatch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&SecurityBatchIdentity{BatchID: securityBatch.BatchID, SecurityID: security.ID, Ticker: "RETRY", ProviderTicker: "RETRY", MappingStatus: MappingStatusCurrent}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CandidateScoreSnapshot{BatchID: marketBatch.BatchID, SecurityID: security.ID, Ticker: "RETRY", Grade: CandidateGradeA, EligibleA: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	records := make([]PriceRecord, 0, technicalHistorySamplesRequired*2)
+	for index := 0; index < technicalHistorySamplesRequired; index++ {
+		closeMicros := int64(1_000_000 + index)
+		for _, ticker := range []string{"IWM", "RETRY"} {
+			records = append(records, PriceRecord{Symbol: ticker, Source: "fake", TradeDate: base.AddDate(0, 0, index), OpenMicros: closeMicros, HighMicros: closeMicros + 10, LowMicros: closeMicros - 10, CloseMicros: closeMicros, Volume: 100})
+		}
+	}
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	provider := &fakeTechnicalHistoryProvider{records: records, failTicker: "RETRY"}
+	first, err := BackfillDueCandidateTechnicalHistory(context.Background(), db, provider, now, technicalHistorySamplesRequired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Failures) != 1 || first.Failures[0].Ticker != "RETRY" || first.Failures[0].AttemptCount != 1 || first.PendingRetryCount != 1 {
+		t.Fatalf("first = %+v", first)
+	}
+	calledAfterFirst := len(provider.called)
+	second, err := BackfillDueCandidateTechnicalHistory(context.Background(), db, provider, now.Add(time.Hour), technicalHistorySamplesRequired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.RequestedCount != 0 || second.DeferredRetryCount != 1 || len(provider.called) != calledAfterFirst {
+		t.Fatalf("second = %+v, calls=%+v", second, provider.called)
+	}
+	manual, err := BackfillCandidateTechnicalHistory(context.Background(), db, provider, now.Add(2*time.Hour), technicalHistorySamplesRequired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manual.RequestedCount != 1 || len(manual.Failures) != 1 || manual.Failures[0].AttemptCount != 2 {
+		t.Fatalf("manual = %+v", manual)
+	}
+	localRows := make([]PriceRecord, 0, technicalHistorySamplesRequired)
+	for _, record := range records {
+		if record.Symbol == "RETRY" {
+			localRows = append(localRows, record)
+		}
+	}
+	if _, err := PersistTechnicalPriceHistory(context.Background(), db, localRows, "fake:daily-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	calledBeforeReconcile := len(provider.called)
+	reconciled, err := BackfillDueCandidateTechnicalHistory(context.Background(), db, provider, now.Add(3*time.Hour), technicalHistorySamplesRequired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.RequestedCount != 0 || reconciled.PendingRetryCount != 0 || len(provider.called) != calledBeforeReconcile {
+		t.Fatalf("reconciled = %+v, calls=%+v", reconciled, provider.called)
+	}
+	var state TechnicalHistoryRetryState
+	if err := db.Where("ticker = ?", "RETRY").First(&state).Error; err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != TechnicalHistoryRetryResolved || state.FailureCount != 0 || state.LastSuccessAt == nil {
+		t.Fatalf("state = %+v", state)
+	}
+	var openIncidents int64
+	if err := db.Model(&DataQualityIncident{}).Where("domain = ? AND entity_key = ? AND status = ?", "technical_history", "RETRY", DataQualityIncidentOpen).Count(&openIncidents).Error; err != nil {
+		t.Fatal(err)
+	}
+	if openIncidents != 0 {
+		t.Fatalf("open technical-history incidents = %d", openIncidents)
+	}
+}
+
 func TestBackfillTickerTechnicalHistoryPersistsAndReadsWatchTargetSeries(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)

@@ -60,6 +60,20 @@ the incident automatically.
   least 5 distinct signal dates; many securities entering on one day are not
   treated as independent market-regime evidence.
 
+## Historical-price recovery
+
+- Every incomplete ticker owns a durable retry checkpoint with its failure
+  reason, sample depth, attempt count and next retry time. Scheduled warmups
+  only request due tickers; a manual operator action may explicitly bypass the
+  backoff window.
+- Provider errors, empty responses, insufficient history and stale history are
+  separate conditions with bounded exponential backoff. Five consecutive
+  failures move a ticker to a visible deferred state, but do not discard it.
+- A failed ticker opens a fact-layer `DataQualityIncident`; a later complete,
+  current OHLCV series resolves both the retry checkpoint and incident.
+- Health metrics are scoped to the current published candidate batch. A retry
+  for one ticker never deletes or re-downloads already complete histories.
+
 ## Current mapping
 
 | Layer | Existing durable records |

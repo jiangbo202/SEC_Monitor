@@ -98,6 +98,7 @@ func Migrate(db *gorm.DB) error {
 			&MarketHoliday{},
 			&MarketCalendarYear{},
 			&DataQualityIncident{},
+			&TechnicalHistoryRetryState{},
 			&PriceSnapshot{},
 			&TickerEvaluationSnapshot{},
 			&ShareSnapshot{},

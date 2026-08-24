@@ -475,6 +475,9 @@ export interface TechnicalHistoryBackfillResult {
   candidate_count: number
   already_ready_count: number
   requested_count: number
+	deferred_retry_count: number
+	pending_retry_count: number
+	retry_due_count: number
   benchmark_ticker: string
   benchmark_ready: boolean
   benchmark_requested: boolean
@@ -485,7 +488,7 @@ export interface TechnicalHistoryBackfillResult {
   record_count: number
   persisted_count: number
   source_record_counts: Record<string, number>
-  failures: Array<{ ticker: string; reason: string }>
+  failures: Array<{ ticker: string; reason: string; attempt_count: number; sample_days: number; required_days: number; next_retry_at?: string | null }>
   warnings: string[]
 }
 
@@ -1464,6 +1467,9 @@ export interface CandidateHealth {
   research_only_candidates?: number
   blocked_candidates?: number
   open_data_quality_incidents?: number
+	technical_history_retry_pending?: number
+	technical_history_retry_due?: number
+	technical_history_retry_deferred?: number
   issues: string[]
 }
 
@@ -2060,6 +2066,10 @@ export interface OperationalReport {
 	 slow_sec_targets: number
 	 slow_discovery_steps: number
   provider_warnings: number
+	open_data_quality_incidents: number
+	technical_history_pending: number
+	technical_history_retry_due: number
+	technical_history_deferred: number
   failed_notification_batches: number
   dead_letter_batches: number
   summary: string
