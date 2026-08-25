@@ -738,7 +738,47 @@ func (h *AppHandler) UpsertCandidateResearchPosition(c *gin.Context) {
 		Error(c, err)
 		return
 	}
+	before, found, err := discovery.FindCandidateResearchPosition(c.Request.Context(), h.DiscoveryDB, input.Ticker)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	gate := discovery.ResearchActionGate{Status: discovery.ResearchActionGateReady, Allowed: true, Reasons: []string{}}
+	increasesRisk := discovery.ResearchPositionIncreasesRisk(before, found, input)
+	if increasesRisk {
+		gate, err = discovery.BuildResearchActionGate(c.Request.Context(), h.DiscoveryDB, time.Now().UTC())
+		if err != nil {
+			Error(c, err)
+			return
+		}
+	}
+	if increasesRisk && !gate.Allowed {
+		if !input.GateOverride {
+			Error(c, fmt.Errorf("%w: 当日研究门控未通过，新增或提高研究仓位需要人工覆盖：%s", service.ErrValidation, strings.Join(gate.Reasons, "；")))
+			return
+		}
+		if len([]rune(strings.TrimSpace(input.GateOverrideReason))) < 10 {
+			Error(c, fmt.Errorf("%w: 人工覆盖原因至少需要 10 个字符", service.ErrValidation))
+			return
+		}
+	}
 	result, err := discovery.UpsertCandidateResearchPosition(c.Request.Context(), h.DiscoveryDB, input)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	if h.Audit != nil {
+		action := "upsert_research_position"
+		if input.GateOverride && !gate.Allowed {
+			action = "override_research_action_gate"
+		}
+		_ = h.Audit.Record(c.Request.Context(), operator(c), action, "candidate_research_position", result.Ticker, before, map[string]any{"position": result, "gate": gate, "override_reason": strings.TrimSpace(input.GateOverrideReason)})
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetDiscoveryResearchActionGate(c *gin.Context) {
+	result, err := discovery.BuildResearchActionGate(c.Request.Context(), h.DiscoveryDB, time.Now().UTC())
 	if err != nil {
 		Error(c, err)
 		return
@@ -1141,6 +1181,32 @@ func (h *AppHandler) BackfillDiscoveryCandidateTechnicalHistory(c *gin.Context) 
 	OK(c, result)
 }
 
+func (h *AppHandler) ListDiscoveryTechnicalHistoryRecoveryQueue(c *gin.Context) {
+	result, err := discovery.ListTechnicalHistoryRecoveryQueue(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) RetryDiscoveryTechnicalHistoryTicker(c *gin.Context) {
+	ticker := strings.ToUpper(strings.TrimSpace(c.Param("ticker")))
+	if ticker == "" {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := h.discoverySyncService().BackfillTickerTechnicalHistory(context.WithoutCancel(c.Request.Context()), ticker, 0)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	if h.Audit != nil {
+		_ = h.Audit.Record(c.Request.Context(), operator(c), "retry_technical_history", "ticker", ticker, nil, result)
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) GetDiscoveryCandidateReport(c *gin.Context) {
 	result, err := discovery.BuildCandidateReport(c.Request.Context(), h.DiscoveryDB, c.Query("date"))
 	if err != nil {
@@ -1155,6 +1221,40 @@ func (h *AppHandler) GetDiscoveryCandidateEffectiveness(c *gin.Context) {
 	if err != nil {
 		Error(c, err)
 		return
+	}
+	OK(c, result)
+}
+
+// RefreshDiscoveryCandidateEffectiveness advances only local signal outcomes.
+// It never calls a market provider; missing future closes remain pending until
+// a normal daily price sync persists them.
+func (h *AppHandler) RefreshDiscoveryCandidateEffectiveness(c *gin.Context) {
+	tracking, err := discovery.RefreshCandidateSignalOutcomes(c.Request.Context(), h.DiscoveryDB, time.Now().UTC())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	report, err := discovery.BuildCandidateEffectiveness(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, gin.H{"tracking": tracking, "report": report})
+}
+
+func (h *AppHandler) ReplayDiscoveryCandidateEffectiveness(c *gin.Context) {
+	var input discovery.CandidateEffectivenessReplayInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := discovery.ReplayCandidateSignalHistory(context.WithoutCancel(c.Request.Context()), h.DiscoveryDB, input, time.Now().UTC())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	if input.Confirm && h.Audit != nil {
+		_ = h.Audit.Record(c.Request.Context(), operator(c), "replay_candidate_effectiveness", "scoring_version", result.ScoringVersion, nil, result)
 	}
 	OK(c, result)
 }

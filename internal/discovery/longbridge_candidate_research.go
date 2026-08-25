@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -27,10 +28,37 @@ const longbridgeCandidateResearchProvider = "longbridge"
 // candidate. It deliberately does not change a candidate's fundamental score.
 type CandidateMarketResearch struct {
 	EPSForecast          EPSForecastView               `json:"eps_forecast"`
+	EPSRevision          EPSRevisionSummary            `json:"eps_revision"`
+	EarningsSurprise     EarningsSurpriseAvailability  `json:"earnings_surprise"`
 	Anomalies            []MarketAnomalySnapshot       `json:"anomalies"`
 	InstitutionalHolders []InstitutionalHolderSnapshot `json:"institutional_holders"`
 	FundHolders          []FundHolderSnapshot          `json:"fund_holders"`
 	Quality              DataQualityMetadata           `json:"quality"`
+}
+
+// EPSRevisionSummary turns immutable consensus snapshots into an explicit
+// research feature. It compares only the same forecast period and never
+// substitutes a later period, which would manufacture a revision signal.
+type EPSRevisionSummary struct {
+	Status             string              `json:"status"`
+	Direction          string              `json:"direction"`
+	ForecastStartDate  string              `json:"forecast_start_date,omitempty"`
+	ForecastEndDate    string              `json:"forecast_end_date,omitempty"`
+	CurrentMedian      *float64            `json:"current_median,omitempty"`
+	PreviousMedian     *float64            `json:"previous_median,omitempty"`
+	MedianChangePct    *float64            `json:"median_change_pct,omitempty"`
+	RevisionBreadthPct *float64            `json:"revision_breadth_pct,omitempty"`
+	ComparedSnapshots  int                 `json:"compared_snapshots"`
+	Message            string              `json:"message"`
+	Quality            DataQualityMetadata `json:"quality"`
+}
+
+// EarningsSurpriseAvailability makes the missing actual-versus-pre-report
+// consensus bridge visible instead of deriving a misleading surprise from a
+// forecast fetched after the filing was accepted.
+type EarningsSurpriseAvailability struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
 // TickerInstitutionalHoldingHistory exposes the complete locally retained
@@ -96,7 +124,7 @@ func NewLongbridgeCandidateResearchOptions(cfg config.DiscoveryConfig) Longbridg
 // GetCandidateMarketResearch never calls Longbridge. Detail views stay fast
 // and auditable, while refreshes are explicit or performed by the bounded job.
 func GetCandidateMarketResearch(ctx context.Context, db *gorm.DB, ticker string) (CandidateMarketResearch, error) {
-	result := CandidateMarketResearch{EPSForecast: EPSForecastView{History: []EPSForecastSnapshot{}}, Anomalies: []MarketAnomalySnapshot{}, InstitutionalHolders: []InstitutionalHolderSnapshot{}, FundHolders: []FundHolderSnapshot{}}
+	result := CandidateMarketResearch{EPSForecast: EPSForecastView{History: []EPSForecastSnapshot{}}, EPSRevision: EPSRevisionSummary{Status: "insufficient", Direction: "unknown"}, EarningsSurprise: EarningsSurpriseAvailability{Status: "unavailable", Message: "尚无可与财报接受时间严格对齐的实际 EPS 与财报前共识快照；不计算可能包含未来信息的业绩预期差。"}, Anomalies: []MarketAnomalySnapshot{}, InstitutionalHolders: []InstitutionalHolderSnapshot{}, FundHolders: []FundHolderSnapshot{}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -115,6 +143,7 @@ func GetCandidateMarketResearch(ctx context.Context, db *gorm.DB, ticker string)
 		result.EPSForecast.Message = "Longbridge EPS 预期快照；预期变化仅作为研究提醒。"
 		result.EPSForecast.Quality = researchQualityMetadata(DataLayerFact, longbridgeCandidateResearchProvider, result.EPSForecast.Latest.SnapshotHash, result.EPSForecast.Latest.FetchedAt, 14*24*time.Hour, 45*24*time.Hour)
 	}
+	result.EPSRevision = buildEPSRevisionSummary(result.EPSForecast)
 	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("alert_time DESC, id DESC").Limit(20).Find(&result.Anomalies).Error; err != nil {
 		return result, err
 	}
@@ -149,6 +178,52 @@ func GetCandidateMarketResearch(ctx context.Context, db *gorm.DB, ticker string)
 	}
 	result.Quality = researchQualityMetadata(DataLayerFact, longbridgeCandidateResearchProvider, version, latest, 30*24*time.Hour, 90*24*time.Hour)
 	return result, nil
+}
+
+func buildEPSRevisionSummary(view EPSForecastView) EPSRevisionSummary {
+	result := EPSRevisionSummary{Status: "insufficient", Direction: "unknown", Message: "至少需要两个相同预测期间的本地共识快照。", Quality: view.Quality}
+	if view.Latest == nil {
+		return result
+	}
+	latest := view.Latest
+	result.ForecastStartDate = latest.ForecastStartDate.Format(time.DateOnly)
+	result.ForecastEndDate = latest.ForecastEndDate.Format(time.DateOnly)
+	result.CurrentMedian = latest.Median
+	if latest.InstitutionTotal > 0 {
+		breadth := float64(latest.InstitutionUp-latest.InstitutionDown) / float64(latest.InstitutionTotal) * 100
+		result.RevisionBreadthPct = &breadth
+	}
+	var previous *EPSForecastSnapshot
+	for index := 1; index < len(view.History); index++ {
+		candidate := &view.History[index]
+		if candidate.ForecastStartDate.Equal(latest.ForecastStartDate) && candidate.ForecastEndDate.Equal(latest.ForecastEndDate) && candidate.FetchedAt.Before(latest.FetchedAt) {
+			previous = candidate
+			break
+		}
+	}
+	if previous == nil || latest.Median == nil || previous.Median == nil {
+		return result
+	}
+	result.PreviousMedian = previous.Median
+	result.ComparedSnapshots = 2
+	result.Status = "available"
+	change := *latest.Median - *previous.Median
+	if *previous.Median != 0 {
+		pct := change / math.Abs(*previous.Median) * 100
+		result.MedianChangePct = &pct
+	}
+	switch {
+	case change > 0:
+		result.Direction = "up"
+		result.Message = "同一预测期间的 EPS 共识中位数上修。"
+	case change < 0:
+		result.Direction = "down"
+		result.Message = "同一预测期间的 EPS 共识中位数下修。"
+	default:
+		result.Direction = "flat"
+		result.Message = "同一预测期间的 EPS 共识中位数未变化。"
+	}
+	return result
 }
 
 // GetTickerInstitutionalHoldingHistory reads every locally retained disclosure

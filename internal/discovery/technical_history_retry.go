@@ -13,9 +13,11 @@ import (
 )
 
 const (
-	TechnicalHistoryRetryBackoff  = "backoff"
-	TechnicalHistoryRetryDeferred = "deferred"
-	TechnicalHistoryRetryResolved = "resolved"
+	TechnicalHistoryRetryBackoff         = "backoff"
+	TechnicalHistoryRetryDeferred        = "deferred"
+	TechnicalHistoryRetryManual          = "manual_review"
+	TechnicalHistoryRetryResolved        = "resolved"
+	technicalHistoryMaxAutomaticFailures = 5
 )
 
 // TechnicalHistoryRetryState is the durable, per-symbol recovery checkpoint
@@ -73,6 +75,10 @@ func filterTechnicalHistoryRetries(ctx context.Context, db *gorm.DB, batchID str
 	deferred := 0
 	for _, listing := range listings {
 		state, ok := stateByTicker[strings.ToUpper(strings.TrimSpace(listing.Ticker))]
+		if ok && state.Status == TechnicalHistoryRetryManual {
+			deferred++
+			continue
+		}
 		if ok && state.NextRetryAt != nil && state.NextRetryAt.After(now.UTC()) {
 			deferred++
 			continue
@@ -166,13 +172,16 @@ func recordTechnicalHistoryRetry(ctx context.Context, db *gorm.DB, batchID, tick
 	delay := technicalHistoryRetryDelay(reason, failures)
 	nextRetry := attemptedAt.Add(delay)
 	status := TechnicalHistoryRetryBackoff
-	if failures >= 5 {
-		status = TechnicalHistoryRetryDeferred
+	if failures >= technicalHistoryMaxAutomaticFailures {
+		status = TechnicalHistoryRetryManual
 	}
 	state := TechnicalHistoryRetryState{
 		Ticker: ticker, BatchID: batchID, Status: status, Reason: reason, FailureCount: failures,
 		SampleDays: coverage.SampleDays, RequiredDays: required, LatestTradeDate: coverage.LatestDate,
 		LastAttemptAt: attemptedAt, NextRetryAt: &nextRetry,
+	}
+	if status == TechnicalHistoryRetryManual {
+		state.NextRetryAt = nil
 	}
 	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.OnConflict{
@@ -246,17 +255,21 @@ func resolveTechnicalHistoryIncidents(tx *gorm.DB, ticker, currentReason string,
 func upsertTechnicalHistoryIncident(tx *gorm.DB, state TechnicalHistoryRetryState, observedAt time.Time) error {
 	payload := strings.Join([]string{"technical_history", state.Ticker, state.Reason}, "\x00")
 	fingerprint := sha256.Sum256([]byte(payload))
-	detail := fmt.Sprintf("%s：有效 OHLC 日线 %d/%d，连续失败 %d 次，下次重试 %s", state.Reason, state.SampleDays, state.RequiredDays, state.FailureCount, state.NextRetryAt.Format(time.RFC3339))
+	nextAction := "等待人工检查数据源映射后重试"
+	if state.NextRetryAt != nil {
+		nextAction = "下次重试 " + state.NextRetryAt.Format(time.RFC3339)
+	}
+	detail := fmt.Sprintf("%s：有效 OHLC 日线 %d/%d，连续失败 %d 次，%s", state.Reason, state.SampleDays, state.RequiredDays, state.FailureCount, nextAction)
 	incident := DataQualityIncident{
 		Fingerprint: hex.EncodeToString(fingerprint[:]), Layer: DataLayerFact, Domain: "technical_history", EntityKey: state.Ticker,
 		Reason: state.Reason, Source: "historical_price_provider", SourceVersion: state.BatchID,
-		Status: DataQualityIncidentOpen, Retryable: true, OccurrenceCount: 1, Detail: detail,
+		Status: DataQualityIncidentOpen, Retryable: state.Status != TechnicalHistoryRetryManual, OccurrenceCount: 1, Detail: detail,
 		FirstObservedAt: observedAt, LastObservedAt: observedAt,
 	}
 	return tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "fingerprint"}},
 		DoUpdates: clause.Assignments(map[string]interface{}{
-			"status": DataQualityIncidentOpen, "retryable": true, "detail": detail, "source_version": state.BatchID,
+			"status": DataQualityIncidentOpen, "retryable": state.Status != TechnicalHistoryRetryManual, "detail": detail, "source_version": state.BatchID,
 			"last_observed_at": observedAt, "resolved_at": nil,
 			"occurrence_count": gorm.Expr("occurrence_count + 1"), "updated_at": observedAt,
 		}),
@@ -271,12 +284,34 @@ func technicalHistoryRetryCounts(ctx context.Context, db *gorm.DB, batchID strin
 	}
 	for _, state := range states {
 		pending++
-		if state.Status == TechnicalHistoryRetryDeferred {
+		if state.Status == TechnicalHistoryRetryDeferred || state.Status == TechnicalHistoryRetryManual {
 			deferred++
 		}
-		if state.NextRetryAt == nil || !state.NextRetryAt.After(now.UTC()) {
+		if state.Status != TechnicalHistoryRetryManual && (state.NextRetryAt == nil || !state.NextRetryAt.After(now.UTC())) {
 			due++
 		}
 	}
 	return
+}
+
+type TechnicalHistoryRecoveryQueue struct {
+	Items []TechnicalHistoryRetryState `json:"items"`
+}
+
+func ListTechnicalHistoryRecoveryQueue(ctx context.Context, db *gorm.DB) (TechnicalHistoryRecoveryQueue, error) {
+	result := TechnicalHistoryRecoveryQueue{Items: []TechnicalHistoryRetryState{}}
+	if db == nil {
+		return result, fmt.Errorf("database is required")
+	}
+	query := db.WithContext(ctx).Where("status <> ?", TechnicalHistoryRetryResolved)
+	var pointer CurrentBatchPointer
+	if err := db.WithContext(ctx).Where("kind = ?", BatchKindPrescreen).First(&pointer).Error; err == nil {
+		query = query.Where("batch_id = ?", pointer.BatchID)
+	} else if err != gorm.ErrRecordNotFound {
+		return result, err
+	}
+	if err := query.Order("CASE WHEN status = 'manual_review' THEN 0 ELSE 1 END, failure_count DESC, ticker ASC").Find(&result.Items).Error; err != nil {
+		return result, err
+	}
+	return result, nil
 }

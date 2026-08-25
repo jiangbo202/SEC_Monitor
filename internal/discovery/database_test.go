@@ -85,6 +85,7 @@ func TestMigrateCreatesDiscoveryTables(t *testing.T) {
 		{name: "candidate_score_snapshots", model: &CandidateScoreSnapshot{}},
 		{name: "candidate_report_snapshots", model: &CandidateReportSnapshot{}},
 		{name: "small_cap_eligibility_check_histories", model: &SmallCapEligibilityCheckHistory{}},
+		{name: "candidate_signal_outcomes", model: &CandidateSignalOutcome{}},
 		{name: "candidate_recalc_events", model: &CandidateRecalcEvent{}},
 		{name: "candidate_watches", model: &CandidateWatch{}},
 		{name: "candidate_research_memo_versions", model: &CandidateResearchMemoVersion{}},

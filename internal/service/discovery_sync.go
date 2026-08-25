@@ -1196,6 +1196,7 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 		s.finishDiscoverySyncStep(technicalStep.ID, result.TechnicalHistoryWarmup.Status, result.TechnicalHistoryWarmup.Result.PersistedCount, nil)
 	}
 	s.recordCurrentCandidateTradeSetupHistory(ctx)
+	s.refreshCandidateSignalOutcomes(ctx, run.ID, securityBatch.BatchID, marketBatch.BatchID)
 	s.createInAppCandidateEarningsReleases(ctx)
 	s.updateDiscoverySyncRun(run.ID, "company_profiles", securityBatch.BatchID, marketBatch.BatchID)
 	profileStep := s.startDiscoverySyncStep(run.ID, "company_profiles", "增量补充 Longbridge 公司资料（非阻断）")
@@ -1496,6 +1497,7 @@ func (s *DiscoverySyncService) runMarketOnly(ctx context.Context, kind string, f
 		s.finishDiscoverySyncStep(technicalStep.ID, result.TechnicalHistoryWarmup.Status, result.TechnicalHistoryWarmup.Result.PersistedCount, nil)
 	}
 	s.recordCurrentCandidateTradeSetupHistory(taskCtx)
+	s.refreshCandidateSignalOutcomes(taskCtx, run.ID, "", marketBatch.BatchID)
 	s.createInAppCandidateEarningsReleases(taskCtx)
 	s.updateDiscoverySyncRun(run.ID, "company_profiles", "", marketBatch.BatchID)
 	profileStep := s.startDiscoverySyncStep(run.ID, "company_profiles", "增量补充 Longbridge 公司资料（非阻断）")
@@ -2134,6 +2136,24 @@ func (s *DiscoverySyncService) recordCurrentCandidateTradeSetupHistory(ctx conte
 	} else if created > 0 {
 		s.createInAppCandidateTechnicalSignals(ctx, tickers, recordedAt)
 	}
+}
+
+// refreshCandidateSignalOutcomes is a non-blocking feature-layer checkpoint.
+// Market publication remains available if SQLite is briefly busy; the next
+// daily run deterministically retries every signal/horizon row.
+func (s *DiscoverySyncService) refreshCandidateSignalOutcomes(ctx context.Context, runID uint, securityBatchID, marketBatchID string) {
+	if s == nil || s.db == nil {
+		return
+	}
+	s.updateDiscoverySyncRun(runID, "signal_outcomes", securityBatchID, marketBatchID)
+	step := s.startDiscoverySyncStep(runID, "signal_outcomes", "推进候选信号持有期结果与 IWM 配对验证（非阻断）")
+	result, err := discovery.RefreshCandidateSignalOutcomes(ctx, s.db, time.Now().UTC())
+	if err != nil {
+		s.finishDiscoverySyncStep(step.ID, "warning", result.TrackedCount, err)
+		log.Printf("refresh candidate signal outcomes: %v", err)
+		return
+	}
+	s.finishDiscoverySyncStep(step.ID, "completed", result.TrackedCount, nil)
 }
 
 func (s *DiscoverySyncService) createInAppCandidateTechnicalSignals(ctx context.Context, tickers []string, recordedAt time.Time) {

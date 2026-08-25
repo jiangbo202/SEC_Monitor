@@ -78,9 +78,15 @@ func TestGetProviderObservabilityUsesRecordedDataWithoutCredentials(t *testing.T
 	if tiingo.Provider != "tiingo" || tiingo.TokenCount != 2 || tiingo.LocalRequestBudget != 90 || tiingo.Health == nil || tiingo.Health.Status != ProviderStatusActive || tiingo.LatestAttempt == nil || tiingo.LatestAttempt.Status != "partial" {
 		t.Fatalf("tiingo observability = %+v", tiingo)
 	}
+	if tiingo.RecentAttemptCount != 1 || tiingo.RecentUsableCount != 1 || tiingo.RecentCompleteCount != 0 || tiingo.UsableRatePct != 100 {
+		t.Fatalf("tiingo recent SLA = %+v", tiingo)
+	}
 	twelve := result.Providers[1]
 	if twelve.Provider != "twelvedata" || !twelve.ConfiguredCredential || twelve.LocalRequestBudget != 700 || twelve.LatestSourceRecordCount != 1 || twelve.LatestAttempt == nil || twelve.LatestAttempt.Status != "success" {
 		t.Fatalf("twelve observability = %+v", twelve)
+	}
+	if twelve.RecentAttemptCount != 1 || twelve.RecentCompleteCount != 1 || twelve.CompleteRatePct != 100 {
+		t.Fatalf("twelve recent SLA = %+v", twelve)
 	}
 	if !strings.Contains(result.BudgetNotice, "不代表") {
 		t.Fatalf("budget notice must clarify it is not account quota: %q", result.BudgetNotice)

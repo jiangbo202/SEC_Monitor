@@ -59,6 +59,49 @@ the incident automatically.
   readiness. Validation requires at least 30 mature paired observations and at
   least 5 distinct signal dates; many securities entering on one day are not
   treated as independent market-regime evidence.
+- Every immutable signal owns durable 1/5/20/60-day outcome rows. Daily market
+  refreshes advance them from pending to mature, preserve the first maturity
+  timestamp and pair candidate returns with IWM without mutating the signal.
+- Effectiveness reports isolate the current scoring version, so results from a
+  superseded rule set cannot silently validate the active decision rule.
+- Historical replay reads only published score snapshots and the exact price
+  snapshot referenced by that batch. Missing completion timestamps, scores
+  written after completion and prices after the batch effective date are
+  rejected instead of being repaired with today's facts.
+- Reports disclose a 0.5% assumed round-trip cost and add median, P25/P75 and
+  95% confidence intervals. Market-cap, sector, trailing dollar-liquidity, IWM
+  regime and signal-type segments use only facts available on the signal date.
+
+## Daily decision gate
+
+- The dashboard independently reports whether local snapshots are usable for
+  research and whether they are sufficient to form a new trade plan.
+- Fresh market data, a published candidate batch, decision-critical fact
+  coverage, a complete outcome tracker and validated effectiveness are required
+  for the green gate. Unverified effectiveness deliberately limits the system
+  to research even when every current price is present.
+- Entity-level gaps remain isolated: a ticker waiting for technical history is
+  excluded from actionability without blocking complete tickers. Expired market
+  data, a missing candidate batch or a critical operational issue blocks the
+  global gate.
+- The same gate is enforced on the research-position write API. New or larger
+  allocations are rejected when blocked; reductions and notes-only changes are
+  still accepted. A deliberate override requires a meaningful reason and emits
+  an immutable audit event.
+
+## Provider and portfolio observability
+
+- Provider health includes last-20-attempt usable and complete rates plus
+  trading-day freshness. A partial response with usable records is separated
+  from a complete run instead of being counted as an all-or-nothing success.
+- Research-position aggregation reports largest-name and top-three weights,
+  normalized concentration, reference-return coverage, estimated daily
+  liquidity capacity and weights exposed to liquidity, capital, event and data
+  gaps. Market beta and style-factor coverage are explicitly marked missing
+  until a point-in-time factor dataset is available.
+- EPS revision compares only snapshots with identical forecast periods. An
+  earnings surprise remains unavailable until actual EPS and the pre-release
+  consensus can be aligned without look-ahead.
 
 ## Historical-price recovery
 
@@ -68,7 +111,8 @@ the incident automatically.
   backoff window.
 - Provider errors, empty responses, insufficient history and stale history are
   separate conditions with bounded exponential backoff. Five consecutive
-  failures move a ticker to a visible deferred state, but do not discard it.
+  failures move a ticker to the visible `manual_review` queue and remove it
+  from automatic scheduling until an operator retries it.
 - A failed ticker opens a fact-layer `DataQualityIncident`; a later complete,
   current OHLCV series resolves both the retry checkpoint and incident.
 - Health metrics are scoped to the current published candidate batch. A retry

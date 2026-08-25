@@ -116,3 +116,74 @@ func TestBuildCandidateEffectivenessRequiresIndependentSignalDates(t *testing.T)
 		t.Fatalf("same-day cohort should remain validating: report=%+v window=%+v", report, window20)
 	}
 }
+
+func TestRefreshCandidateSignalOutcomesPersistsDailyMaturity(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	batch := UniverseBatch{BatchID: "outcome-batch", Kind: BatchKindPrescreen, Status: BatchStatusPublished, EffectiveDate: base.Format(time.DateOnly), StartedAt: base}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: batch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	security := Security{CIK: "0000007177", CompanyName: "Loop", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CandidateScoreSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "LOOP", Grade: CandidateGradeA, ScoringVersion: "score-v3"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	event := CandidateSignalEvent{
+		BatchID: batch.BatchID, SecurityID: security.ID, Ticker: "LOOP", Grade: CandidateGradeA,
+		EventType: CandidateSignalEnteredA, ScoringVersion: "score-v3", SignalDate: base,
+		BaselineTradeDate: base, BaselineCloseMicros: 10_000_000,
+	}
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	prices := []PriceSnapshot{{Source: "test", SourceVersion: "iwm", Symbol: "IWM", TradeDate: base, CloseMicros: 20_000_000, QualityStatus: QualityStatusValid}}
+	for day := 1; day <= 20; day++ {
+		date := base.AddDate(0, 0, day)
+		prices = append(prices,
+			PriceSnapshot{Source: "test", SourceVersion: "loop", Symbol: "LOOP", TradeDate: date, CloseMicros: int64(10_000_000 + day*100_000), QualityStatus: QualityStatusValid},
+			PriceSnapshot{Source: "test", SourceVersion: "iwm", Symbol: "IWM", TradeDate: date, CloseMicros: int64(20_000_000 + day*50_000), QualityStatus: QualityStatusValid},
+		)
+	}
+	if err := db.Create(&prices).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := base.AddDate(0, 1, 0)
+	result, err := RefreshCandidateSignalOutcomes(context.Background(), db, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SignalCount != 1 || result.TrackedCount != 4 || result.MatureCount != 3 || result.PendingCount != 1 || result.BenchmarkMissing != 0 {
+		t.Fatalf("refresh result = %+v", result)
+	}
+	var outcomes []CandidateSignalOutcome
+	if err := db.Order("horizon_days ASC").Find(&outcomes).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(outcomes) != 4 || outcomes[2].HorizonDays != 20 || outcomes[2].Status != CandidateSignalOutcomeMature || outcomes[2].ReturnPct == nil || outcomes[2].ExcessReturnPct == nil || outcomes[3].Status != CandidateSignalOutcomePending {
+		t.Fatalf("outcomes = %+v", outcomes)
+	}
+	firstMaturedAt := outcomes[0].MaturedAt
+	if _, err := RefreshCandidateSignalOutcomes(context.Background(), db, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var repeated CandidateSignalOutcome
+	if err := db.Where("signal_event_id = ? AND horizon_days = ?", event.ID, 1).First(&repeated).Error; err != nil {
+		t.Fatal(err)
+	}
+	if firstMaturedAt == nil || repeated.MaturedAt == nil || !repeated.MaturedAt.Equal(*firstMaturedAt) {
+		t.Fatalf("matured_at changed across idempotent refresh: first=%v repeated=%v", firstMaturedAt, repeated.MaturedAt)
+	}
+	report, err := BuildCandidateEffectiveness(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ScoringVersion != "score-v3" || report.OutcomeTrackingStatus != "current" || report.TrackedOutcomeCount != 4 || report.MatureOutcomeCount != 3 || report.PendingOutcomeCount != 1 {
+		t.Fatalf("persisted outcome report = %+v", report)
+	}
+}

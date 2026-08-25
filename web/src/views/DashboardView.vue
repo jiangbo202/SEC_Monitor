@@ -41,6 +41,27 @@
       <template #default>{{ summary.warnings.join('；') }}</template>
     </el-alert>
 
+    <el-card v-if="summary?.decision.readiness" shadow="never" class="decision-readiness" :class="`is-${summary.decision.readiness.status}`">
+      <div class="decision-readiness-main">
+        <div class="decision-readiness-title">
+          <span class="status-dot" />
+          <div><strong>{{ summary.decision.readiness.label }}</strong><small>截至 {{ summary.decision.readiness.as_of || '-' }} · 预期交易日 {{ summary.decision.readiness.expected_trade_date || '-' }}</small></div>
+        </div>
+        <div class="decision-readiness-tags">
+          <el-tag :type="summary.decision.readiness.research_usable ? 'success' : 'danger'" effect="plain">研究{{ summary.decision.readiness.research_usable ? '可用' : '暂停' }}</el-tag>
+          <el-tag :type="summary.decision.readiness.new_trade_plan_allowed ? 'success' : 'warning'" effect="plain">新交易计划{{ summary.decision.readiness.new_trade_plan_allowed ? '可形成' : '受限' }}</el-tag>
+          <el-tag effect="plain">效果验证 {{ effectivenessStatusLabel(summary.decision.readiness.effectiveness_status) }}</el-tag>
+        </div>
+      </div>
+      <div v-if="summary.decision.readiness.reasons.length" class="decision-readiness-reasons">
+        <div v-for="reason in summary.decision.readiness.reasons" :key="reason.key" class="decision-readiness-reason">
+          <el-tag size="small" :type="readinessReasonType(reason.severity)" effect="plain">{{ reason.severity === 'critical' ? '阻断' : reason.severity === 'warning' ? '限制' : '提示' }}</el-tag>
+          <span><b>{{ reason.title }}</b> {{ reason.detail }}</span>
+          <el-button v-if="reason.action" link type="primary" @click="openOperationalAction(reason.action)">处理</el-button>
+        </div>
+      </div>
+    </el-card>
+
     <el-tabs v-model="activeView" class="dashboard-tabs">
       <el-tab-pane label="决策" name="decision">
         <div v-if="isVisible('market')" class="dashboard-grid decision-grid">
@@ -204,11 +225,13 @@ interface FilingItem { id: number; ticker: string; company_name: string; filing_
 interface IPOCompany { company_name: string; status: string; final_ticker?: string; latest_filing_type?: string; latest_accepted_at?: string; latest_filing_date?: string }
 interface OperationalIssue { key: string; severity: string; title: string; detail: string; action?: string }
 interface OperationalTask { task_name: string; enabled: boolean; last_status: string; last_run_at?: string; next_run_at?: string; consecutive_failures: number }
+interface DecisionReadinessReason { key: string; severity: string; title: string; detail: string; action?: string }
+interface DecisionReadiness { status: 'ready' | 'research_only' | 'blocked' | string; label: string; research_usable: boolean; new_trade_plan_allowed: boolean; as_of?: string; expected_trade_date?: string; effectiveness_status: string; effectiveness_version?: string; reasons: DecisionReadinessReason[] }
 interface DashboardSummary {
   generated_at: string
   warnings: string[]
   preferences: { hidden_modules: string[] }
-  decision: { market: { market: MarketSeries[]; sectors: MarketSeries[]; futures: MarketSeries[]; temperature?: { temperature: number; description?: string }; freshness: { status: string; detail: string } }; actions: CandidateAction[]; calendar: CalendarItem[]; review_due: { overdue: number; due_today: number; upcoming: number } }
+  decision: { market: { market: MarketSeries[]; sectors: MarketSeries[]; futures: MarketSeries[]; temperature?: { temperature: number; description?: string }; freshness: { status: string; detail: string } }; readiness: DecisionReadiness; actions: CandidateAction[]; calendar: CalendarItem[]; review_due: { overdue: number; due_today: number; upcoming: number } }
   monitoring: { watch_targets: number; enabled_targets: number; upcoming_earnings: number; recent_filings: FilingItem[]; ipo: { in_progress: number; followed_total: number; followed: IPOCompany[] } }
   operations: { status: string; critical_issues: OperationalIssue[]; issues: OperationalIssue[]; tasks: OperationalTask[]; failed_notification_batches: number; dead_letter_batches: number }
 }
@@ -272,7 +295,7 @@ async function refreshIpoFilings() {
   finally { refreshingIpo.value = false }
 }
 function openCandidate(ticker: string) { router.push({ path: '/discovery-candidates', query: { ticker } }) }
-function openOperationalAction(action: string) { const routes: Record<string, string> = { notification_logs: '/notification-logs', scheduler: '/scheduler', system_health: '/system-health', refresh: '/ipo-radar', targets: '/targets' }; router.push(routes[action] || '/system-health') }
+function openOperationalAction(action: string) { const routes: Record<string, string> = { notification_logs: '/notification-logs', scheduler: '/scheduler', system_health: '/system-health', refresh: '/ipo-radar', targets: '/targets', 'market-trend': '/market-trend', 'discovery-logs': '/discovery-logs', 'discovery-candidates': '/discovery-candidates' }; router.push(routes[action] || '/system-health') }
 function formatNumber(value?: number | null) { return value == null ? '-' : new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value) }
 function formatChange(value?: number | null) { return value == null ? '-' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` }
 function formatDateTime(value?: string | null) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString() }
@@ -286,12 +309,29 @@ function issueTagType(severity: string) { return severity === 'critical' || seve
 function marketFreshnessType(value?: string) { return value === 'fresh' ? 'success' : value === 'stale' ? 'warning' : value === 'expired' || value === 'unavailable' ? 'danger' : 'info' }
 function marketFreshnessLabel(value?: string) { return ({ fresh: '数据新鲜', stale: '数据偏旧', expired: '数据过期', unavailable: '暂无快照' } as Record<string, string>)[value || ''] || '状态未知' }
 function taskStatusType(status: string) { return status === 'success' ? 'success' : status === 'failed' ? 'danger' : status === 'partial' ? 'warning' : 'info' }
+function readinessReasonType(severity: string) { return severity === 'critical' || severity === 'danger' ? 'danger' : severity === 'warning' ? 'warning' : 'info' }
+function effectivenessStatusLabel(status?: string) { return ({ validated: '已验证', validating: '验证中', unverified: '未验证', unavailable: '不可读' } as Record<string, string>)[status || ''] || '未知' }
 </script>
 
 <style scoped>
 .dashboard-actions { display: flex; gap: 10px; align-items: center; }
 .dashboard-alert { margin-bottom: 12px; }
 .dashboard-alert-content { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.decision-readiness { margin-bottom: 12px; border-left: 4px solid var(--el-color-success); }
+.decision-readiness.is-research_only { border-left-color: var(--el-color-warning); }
+.decision-readiness.is-blocked { border-left-color: var(--el-color-danger); }
+.decision-readiness-main { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.decision-readiness-title { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.decision-readiness-title .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--el-color-success); flex: 0 0 auto; }
+.decision-readiness.is-research_only .status-dot { background: var(--el-color-warning); }
+.decision-readiness.is-blocked .status-dot { background: var(--el-color-danger); }
+.decision-readiness-title div { display: grid; gap: 3px; }
+.decision-readiness-title strong { font-size: 16px; }
+.decision-readiness-title small { color: var(--el-text-color-secondary); }
+.decision-readiness-tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.decision-readiness-reasons { display: grid; gap: 6px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--el-border-color-lighter); }
+.decision-readiness-reason { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; color: var(--el-text-color-regular); font-size: 12px; }
+.decision-readiness-reason b { margin-right: 5px; color: var(--el-text-color-primary); }
 .dashboard-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
 .dashboard-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .decision-grid, .monitoring-grid { grid-template-columns: 1fr; }
@@ -311,5 +351,5 @@ function taskStatusType(status: string) { return status === 'success' ? 'success
 .market-subsection { margin-top: 10px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .subsection-label { color: var(--el-text-color-secondary); min-width: 70px; }
 .dashboard-module-selector { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
-@media (max-width: 900px) { .dashboard-grid { grid-template-columns: 1fr; }.page-header, .dashboard-actions { align-items: flex-start; flex-wrap: wrap; }.dashboard-alert-content { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 900px) { .dashboard-grid { grid-template-columns: 1fr; }.page-header, .dashboard-actions, .decision-readiness-main { align-items: flex-start; flex-wrap: wrap; }.dashboard-alert-content { align-items: flex-start; flex-direction: column; }.decision-readiness-tags { justify-content: flex-start; }.decision-readiness-reason { grid-template-columns: auto minmax(0, 1fr); }.decision-readiness-reason .el-button { grid-column: 2; justify-self: start; } }
 </style>

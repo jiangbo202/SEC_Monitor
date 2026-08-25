@@ -69,6 +69,13 @@ type OperationalReport struct {
 	TechnicalHistoryPending   int64                   `json:"technical_history_pending"`
 	TechnicalHistoryRetryDue  int64                   `json:"technical_history_retry_due"`
 	TechnicalHistoryDeferred  int64                   `json:"technical_history_deferred"`
+	TechnicalHistoryManual    int64                   `json:"technical_history_manual_review"`
+	OutcomeTrackingStatus     string                  `json:"outcome_tracking_status,omitempty"`
+	OutcomeTracked            int                     `json:"outcome_tracked"`
+	OutcomeMature             int                     `json:"outcome_mature"`
+	OutcomePending            int                     `json:"outcome_pending"`
+	OutcomeBenchmarkMissing   int                     `json:"outcome_benchmark_missing"`
+	OutcomeLastEvaluatedAt    *time.Time              `json:"outcome_last_evaluated_at,omitempty"`
 	FailedNotificationBatches int64                   `json:"failed_notification_batches"`
 	DeadLetterBatches         int64                   `json:"dead_letter_batches"`
 	Summary                   string                  `json:"summary"`
@@ -196,6 +203,27 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	}
 
 	if s.discoveryDB != nil {
+		if s.discoveryDB.Migrator().HasTable(&discovery.CandidateSignalOutcome{}) {
+			effectiveness, effectivenessErr := discovery.BuildCandidateEffectiveness(ctx, s.discoveryDB)
+			if effectivenessErr != nil {
+				report.addIssue("strategy_outcome_unavailable", "strategy_validation", "warning", "策略结果闭环不可读", SanitizeSensitiveError(effectivenessErr.Error()), "discovery-candidates", now)
+			} else if len(effectiveness.Cohorts) > 0 && effectiveness.Cohorts[0].CandidateCount > 0 {
+				report.OutcomeTrackingStatus = effectiveness.OutcomeTrackingStatus
+				report.OutcomeTracked = effectiveness.TrackedOutcomeCount
+				report.OutcomeMature = effectiveness.MatureOutcomeCount
+				report.OutcomePending = effectiveness.PendingOutcomeCount
+				report.OutcomeBenchmarkMissing = effectiveness.BenchmarkMissingOutcomeCount
+				report.OutcomeLastEvaluatedAt = effectiveness.OutcomeLastEvaluatedAt
+				if effectiveness.OutcomeTrackingStatus != "current" {
+					report.addIssue("strategy_outcome_tracking:"+effectiveness.OutcomeTrackingStatus, "strategy_validation", "critical", "策略结果闭环未完整推进", fmt.Sprintf("当前版本应跟踪的结果尚未齐全：已跟踪 %d、成熟 %d、待成熟 %d、缺基准 %d", effectiveness.TrackedOutcomeCount, effectiveness.MatureOutcomeCount, effectiveness.PendingOutcomeCount, effectiveness.BenchmarkMissingOutcomeCount), "discovery-candidates", now)
+				} else if effectiveness.OutcomeLastEvaluatedAt == nil || (effectiveness.BenchmarkLatestTradeDate != "" && effectiveness.OutcomeLastEvaluatedAt.UTC().Format(time.DateOnly) < effectiveness.BenchmarkLatestTradeDate) {
+					report.addIssue("strategy_outcome_stale", "strategy_validation", "critical", "策略结果闭环未覆盖最近交易日", fmt.Sprintf("最近推进 %s，IWM 最近交易日 %s", formatOperationalTime(effectiveness.OutcomeLastEvaluatedAt), effectiveness.BenchmarkLatestTradeDate), "discovery-candidates", now)
+				}
+				if effectiveness.BenchmarkMissingOutcomeCount > 0 {
+					report.addIssue("strategy_outcome_benchmark_missing", "strategy_validation", "warning", "部分成熟样本缺少 IWM 配对", fmt.Sprintf("%d 个持有期结果无法计算基准超额收益", effectiveness.BenchmarkMissingOutcomeCount), "discovery-candidates", now)
+				}
+			}
+		}
 		if s.discoveryDB.Migrator().HasTable(&discovery.TechnicalHistoryRetryState{}) {
 			var pointer discovery.CurrentBatchPointer
 			pointerErr := s.discoveryDB.WithContext(ctx).Where("kind = ?", discovery.BatchKindPrescreen).First(&pointer).Error
@@ -216,15 +244,18 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 				if err := retryQuery().Where("status = ?", discovery.TechnicalHistoryRetryDeferred).Count(&report.TechnicalHistoryDeferred).Error; err != nil {
 					return report, err
 				}
+				if err := retryQuery().Where("status = ?", discovery.TechnicalHistoryRetryManual).Count(&report.TechnicalHistoryManual).Error; err != nil {
+					return report, err
+				}
 			}
 			if report.TechnicalHistoryPending > 0 {
 				severity := "warning"
 				title := "候选技术历史正在自动补齐"
-				if report.TechnicalHistoryDeferred > 0 {
+				if report.TechnicalHistoryDeferred > 0 || report.TechnicalHistoryManual > 0 {
 					severity = "critical"
 					title = "部分候选技术历史连续失败"
 				}
-				detail := fmt.Sprintf("待补齐 %d 个，到期可重试 %d 个，连续失败暂缓 %d 个；单个标的失败不会重跑已完成标的", report.TechnicalHistoryPending, report.TechnicalHistoryRetryDue, report.TechnicalHistoryDeferred)
+				detail := fmt.Sprintf("待补齐 %d 个，到期可重试 %d 个，退避 %d 个，需人工处理 %d 个；单个标的失败不会重跑已完成标的", report.TechnicalHistoryPending, report.TechnicalHistoryRetryDue, report.TechnicalHistoryDeferred, report.TechnicalHistoryManual)
 				report.addIssue("technical_history_retry_queue", "data_quality", severity, title, detail, "discovery-logs", now)
 			}
 		}
@@ -665,6 +696,13 @@ func formatOperationalDuration(value time.Duration) string {
 		return fmt.Sprintf("%dm", int(value.Round(time.Minute).Minutes()))
 	}
 	return fmt.Sprintf("%.1fh", value.Hours())
+}
+
+func formatOperationalTime(value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return "尚未执行"
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func truncateOperationalText(value string, limit int) string {

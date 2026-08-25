@@ -76,6 +76,12 @@ func TestRefreshLongbridgeCandidateMarketResearchPersistsEvidenceAndEPSRevision(
 	if view.EPSForecast.Latest.ChangeSummary == "" {
 		t.Fatalf("latest EPS snapshot should retain change summary: %+v", view.EPSForecast.Latest)
 	}
+	if view.EPSRevision.Status != "available" || view.EPSRevision.Direction != "down" || view.EPSRevision.PreviousMedian == nil || view.EPSRevision.CurrentMedian == nil {
+		t.Fatalf("EPS revision summary = %+v", view.EPSRevision)
+	}
+	if view.EarningsSurprise.Status != "unavailable" {
+		t.Fatalf("earnings surprise must remain gated without point-in-time actual EPS: %+v", view.EarningsSurprise)
+	}
 }
 
 func TestCandidateReviewPriorityIncludesRecentAnomaly(t *testing.T) {

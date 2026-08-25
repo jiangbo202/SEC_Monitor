@@ -734,6 +734,7 @@ func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
 	r.POST("/discovery/candidates/market-refresh-force", h.ForceRefreshDiscoveryMarketPrices)
 	r.GET("/discovery/candidates/report", h.GetDiscoveryCandidateReport)
 	r.GET("/discovery/candidates/effectiveness", h.GetDiscoveryCandidateEffectiveness)
+	r.POST("/discovery/candidates/effectiveness/refresh", h.RefreshDiscoveryCandidateEffectiveness)
 	r.GET("/exports/candidates.csv", h.ExportDiscoveryCandidatesCSV)
 
 	for _, tc := range []struct {
@@ -746,6 +747,7 @@ func TestAppHandlerDiscoveryCandidateOperations(t *testing.T) {
 		{method: http.MethodPost, path: "/discovery/candidates/market-refresh-force", want: `"status":"published"`},
 		{method: http.MethodGet, path: "/discovery/candidates/report?date=2026-06-30", want: `"ticker":"OPS"`},
 		{method: http.MethodGet, path: "/discovery/candidates/effectiveness", want: `"benchmark_ticker":"IWM"`},
+		{method: http.MethodPost, path: "/discovery/candidates/effectiveness/refresh", want: `"tracking"`},
 		{method: http.MethodGet, path: "/exports/candidates.csv?grade=A", want: "ticker,grade,total_score"},
 	} {
 		rec := httptest.NewRecorder()

@@ -3,6 +3,8 @@ package discovery
 import (
 	"context"
 	"errors"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,22 +15,39 @@ var candidateEffectivenessHorizons = []int{1, 5, 20, 60}
 
 const candidateEffectivenessMinimumSamples = 30
 const candidateEffectivenessMinimumSignalDates = 5
+const candidateEffectivenessRoundTripCostPct = 0.5
 
 type CandidateEffectivenessReport struct {
-	GeneratedAt                  time.Time                      `json:"generated_at"`
-	Status                       string                         `json:"status"`
-	StatusDetail                 string                         `json:"status_detail"`
-	MinimumSampleCount           int                            `json:"minimum_sample_count"`
-	BenchmarkTicker              string                         `json:"benchmark_ticker"`
-	BenchmarkAvailable           bool                           `json:"benchmark_available"`
-	BenchmarkHistoryStatus       string                         `json:"benchmark_history_status"`
-	BenchmarkHistorySampleDays   int                            `json:"benchmark_history_sample_days"`
-	BenchmarkHistoryRequiredDays int                            `json:"benchmark_history_required_days"`
-	BenchmarkLatestTradeDate     string                         `json:"benchmark_latest_trade_date"`
-	DistinctSignalDates          int                            `json:"distinct_signal_dates"`
-	MinimumDistinctSignalDates   int                            `json:"minimum_distinct_signal_dates"`
-	CohortSource                 string                         `json:"cohort_source"`
-	Cohorts                      []CandidateEffectivenessCohort `json:"cohorts"`
+	GeneratedAt                  time.Time                       `json:"generated_at"`
+	Status                       string                          `json:"status"`
+	StatusDetail                 string                          `json:"status_detail"`
+	ScoringVersion               string                          `json:"scoring_version"`
+	MinimumSampleCount           int                             `json:"minimum_sample_count"`
+	BenchmarkTicker              string                          `json:"benchmark_ticker"`
+	BenchmarkAvailable           bool                            `json:"benchmark_available"`
+	BenchmarkHistoryStatus       string                          `json:"benchmark_history_status"`
+	BenchmarkHistorySampleDays   int                             `json:"benchmark_history_sample_days"`
+	BenchmarkHistoryRequiredDays int                             `json:"benchmark_history_required_days"`
+	BenchmarkLatestTradeDate     string                          `json:"benchmark_latest_trade_date"`
+	DistinctSignalDates          int                             `json:"distinct_signal_dates"`
+	MinimumDistinctSignalDates   int                             `json:"minimum_distinct_signal_dates"`
+	CohortSource                 string                          `json:"cohort_source"`
+	OutcomeTrackingStatus        string                          `json:"outcome_tracking_status"`
+	TrackedOutcomeCount          int                             `json:"tracked_outcome_count"`
+	MatureOutcomeCount           int                             `json:"mature_outcome_count"`
+	PendingOutcomeCount          int                             `json:"pending_outcome_count"`
+	BenchmarkMissingOutcomeCount int                             `json:"benchmark_missing_outcome_count"`
+	OutcomeLastEvaluatedAt       *time.Time                      `json:"outcome_last_evaluated_at,omitempty"`
+	AssumedRoundTripCostPct      float64                         `json:"assumed_round_trip_cost_pct"`
+	Cohorts                      []CandidateEffectivenessCohort  `json:"cohorts"`
+	Segments                     []CandidateEffectivenessSegment `json:"segments"`
+}
+
+type CandidateEffectivenessSegment struct {
+	Dimension      string                       `json:"dimension"`
+	Bucket         string                       `json:"bucket"`
+	CandidateCount int                          `json:"candidate_count"`
+	Window20       CandidateEffectivenessWindow `json:"window_20"`
 }
 
 type CandidateEffectivenessCohort struct {
@@ -49,13 +68,24 @@ type CandidateEffectivenessWindow struct {
 	MaxDrawdownPct       *float64 `json:"max_drawdown_pct"`
 	BenchmarkReturnPct   *float64 `json:"benchmark_return_pct"`
 	ExcessReturnPct      *float64 `json:"excess_return_pct"`
+	MedianReturnPct      *float64 `json:"median_return_pct"`
+	P25ReturnPct         *float64 `json:"p25_return_pct"`
+	P75ReturnPct         *float64 `json:"p75_return_pct"`
+	NetAverageReturnPct  *float64 `json:"net_average_return_pct"`
+	ConfidenceLowPct     *float64 `json:"confidence_low_pct"`
+	ConfidenceHighPct    *float64 `json:"confidence_high_pct"`
 }
 
 type candidateCohortSeed struct {
 	CandidateScoreSnapshot
-	EventType     string
-	BaselineDate  time.Time
-	BaselineClose float64
+	SignalEventID   uint
+	EventType       string
+	BaselineDate    time.Time
+	BaselineClose   float64
+	SectorCategory  string
+	LiquidityBucket string
+	MarketCapBucket string
+	MarketRegime    string
 }
 
 func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEffectivenessReport, error) {
@@ -63,7 +93,8 @@ func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEff
 		GeneratedAt: time.Now().UTC(), BenchmarkTicker: "IWM", Status: "unverified",
 		StatusDetail: "尚无达到持有期的有效样本，评分仅用于研究排序", MinimumSampleCount: candidateEffectivenessMinimumSamples,
 		BenchmarkHistoryStatus: "missing", BenchmarkHistoryRequiredDays: technicalMA200LookbackDays,
-		MinimumDistinctSignalDates: candidateEffectivenessMinimumSignalDates,
+		MinimumDistinctSignalDates: candidateEffectivenessMinimumSignalDates, AssumedRoundTripCostPct: candidateEffectivenessRoundTripCostPct,
+		Segments: []CandidateEffectivenessSegment{},
 		Cohorts: []CandidateEffectivenessCohort{
 			{Grade: "all", Windows: emptyCandidateEffectivenessWindows()},
 			{Grade: CandidateGradeA, Windows: emptyCandidateEffectivenessWindows()},
@@ -95,6 +126,30 @@ func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEff
 		return report, err
 	}
 	report.CohortSource = source
+	report.ScoringVersion, err = currentCandidateScoringVersion(ctx, db)
+	if err != nil {
+		return report, err
+	}
+	if report.ScoringVersion != "" {
+		filtered := make([]candidateCohortSeed, 0, len(seeds))
+		for _, seed := range seeds {
+			if seed.ScoringVersion == report.ScoringVersion {
+				filtered = append(filtered, seed)
+			}
+		}
+		seeds = filtered
+	}
+	if err := hydrateCandidateEffectivenessDimensions(ctx, db, seeds); err != nil {
+		return report, err
+	}
+	if err := attachCandidateOutcomeTracking(ctx, db, seeds, &report); err != nil {
+		return report, err
+	}
+	segments, err := buildCandidateEffectivenessSegments(ctx, db, seeds, report.BenchmarkTicker)
+	if err != nil {
+		return report, err
+	}
+	report.Segments = segments
 	signalDates := map[string]struct{}{}
 	for _, seed := range seeds {
 		date := seed.BaselineDate.Format(time.DateOnly)
@@ -176,9 +231,10 @@ func signalEventCohortSeeds(ctx context.Context, db *gorm.DB) ([]candidateCohort
 		seeds = append(seeds, candidateCohortSeed{
 			CandidateScoreSnapshot: CandidateScoreSnapshot{
 				BatchID: event.BatchID, SecurityID: event.SecurityID, Ticker: event.Ticker, Grade: event.Grade,
-				TotalScore: event.TotalScore, EligibleA: event.Grade == CandidateGradeA, EligibleB: event.Grade == CandidateGradeB,
+				TotalScore: event.TotalScore, ScoringVersion: event.ScoringVersion,
+				EligibleA: event.Grade == CandidateGradeA, EligibleB: event.Grade == CandidateGradeB,
 			},
-			EventType: event.EventType, BaselineDate: event.BaselineTradeDate,
+			SignalEventID: event.ID, EventType: event.EventType, BaselineDate: event.BaselineTradeDate,
 			BaselineClose: float64(event.BaselineCloseMicros) / 1_000_000,
 		})
 	}
@@ -212,12 +268,47 @@ func legacyFirstCandidateCohortSeeds(ctx context.Context, db *gorm.DB) ([]candid
 func buildCandidateCohortWindows(ctx context.Context, db *gorm.DB, seeds []candidateCohortSeed, benchmarkTicker string) ([]CandidateEffectivenessWindow, bool, error) {
 	result := emptyCandidateEffectivenessWindows()
 	benchmarkAvailable := false
+	outcomes := map[uint]map[int]CandidateSignalOutcome{}
+	signalIDs := make([]uint, 0, len(seeds))
+	for _, seed := range seeds {
+		if seed.SignalEventID > 0 {
+			signalIDs = append(signalIDs, seed.SignalEventID)
+		}
+	}
+	if len(signalIDs) > 0 {
+		var rows []CandidateSignalOutcome
+		if err := db.WithContext(ctx).Where("signal_event_id IN ?", signalIDs).Find(&rows).Error; err != nil {
+			return result, false, err
+		}
+		for _, row := range rows {
+			if outcomes[row.SignalEventID] == nil {
+				outcomes[row.SignalEventID] = map[int]CandidateSignalOutcome{}
+			}
+			outcomes[row.SignalEventID][row.HorizonDays] = row
+		}
+	}
 	for index, horizon := range candidateEffectivenessHorizons {
 		returns := []float64{}
 		benchmarkReturns := []float64{}
 		matureSignalDates := map[string]struct{}{}
 		maxDrawdown := 0.0
 		for _, seed := range seeds {
+			if outcome, ok := outcomes[seed.SignalEventID][horizon]; ok {
+				if outcome.Status == CandidateSignalOutcomePending || outcome.ReturnPct == nil {
+					result[index].PendingCount++
+					continue
+				}
+				returns = append(returns, *outcome.ReturnPct)
+				matureSignalDates[seed.BaselineDate.Format(time.DateOnly)] = struct{}{}
+				if outcome.MaxDrawdownPct != nil && *outcome.MaxDrawdownPct < maxDrawdown {
+					maxDrawdown = *outcome.MaxDrawdownPct
+				}
+				if outcome.BenchmarkReturnPct != nil {
+					benchmarkAvailable = true
+					benchmarkReturns = append(benchmarkReturns, *outcome.BenchmarkReturnPct)
+				}
+				continue
+			}
 			baseDate, baseClose, ok := seed.BaselineDate, seed.BaselineClose, !seed.BaselineDate.IsZero() && seed.BaselineClose > 0
 			if !ok {
 				var err error
@@ -260,6 +351,19 @@ func buildCandidateCohortWindows(ctx context.Context, db *gorm.DB, seeds []candi
 		result[index].AverageReturnPct = &averageReturn
 		result[index].WinRatePct = &winRate
 		result[index].MaxDrawdownPct = &maxDrawdown
+		median := percentileFloat64(returns, 0.5)
+		p25 := percentileFloat64(returns, 0.25)
+		p75 := percentileFloat64(returns, 0.75)
+		netAverage := averageReturn - candidateEffectivenessRoundTripCostPct
+		confidenceLow, confidenceHigh := meanConfidenceInterval95(returns)
+		confidenceLow -= candidateEffectivenessRoundTripCostPct
+		confidenceHigh -= candidateEffectivenessRoundTripCostPct
+		result[index].MedianReturnPct = &median
+		result[index].P25ReturnPct = &p25
+		result[index].P75ReturnPct = &p75
+		result[index].NetAverageReturnPct = &netAverage
+		result[index].ConfidenceLowPct = &confidenceLow
+		result[index].ConfidenceHighPct = &confidenceHigh
 		result[index].BenchmarkSampleCount = len(benchmarkReturns)
 		result[index].DistinctSignalDates = len(matureSignalDates)
 		result[index].VerificationStatus = "validating"
@@ -274,6 +378,64 @@ func buildCandidateCohortWindows(ctx context.Context, db *gorm.DB, seeds []candi
 		}
 	}
 	return result, benchmarkAvailable, nil
+}
+
+func currentCandidateScoringVersion(ctx context.Context, db *gorm.DB) (string, error) {
+	var pointer CurrentBatchPointer
+	if err := db.WithContext(ctx).Where("kind = ?", BatchKindPrescreen).First(&pointer).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	var score CandidateScoreSnapshot
+	if err := db.WithContext(ctx).Where("batch_id = ? AND scoring_version <> ''", pointer.BatchID).Order("id DESC").First(&score).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	return score.ScoringVersion, nil
+}
+
+func attachCandidateOutcomeTracking(ctx context.Context, db *gorm.DB, seeds []candidateCohortSeed, report *CandidateEffectivenessReport) error {
+	report.OutcomeTrackingStatus = "not_started"
+	ids := make([]uint, 0, len(seeds))
+	for _, seed := range seeds {
+		if seed.SignalEventID > 0 {
+			ids = append(ids, seed.SignalEventID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var outcomes []CandidateSignalOutcome
+	if err := db.WithContext(ctx).Where("signal_event_id IN ?", ids).Find(&outcomes).Error; err != nil {
+		return err
+	}
+	if len(outcomes) == 0 {
+		return nil
+	}
+	report.TrackedOutcomeCount = len(outcomes)
+	for _, outcome := range outcomes {
+		switch outcome.Status {
+		case CandidateSignalOutcomeMature:
+			report.MatureOutcomeCount++
+		case CandidateSignalOutcomeBenchmarkMissing:
+			report.BenchmarkMissingOutcomeCount++
+		default:
+			report.PendingOutcomeCount++
+		}
+		if report.OutcomeLastEvaluatedAt == nil || outcome.EvaluatedAt.After(*report.OutcomeLastEvaluatedAt) {
+			value := outcome.EvaluatedAt
+			report.OutcomeLastEvaluatedAt = &value
+		}
+	}
+	report.OutcomeTrackingStatus = "tracking"
+	if len(outcomes) == len(ids)*len(candidateEffectivenessHorizons) {
+		report.OutcomeTrackingStatus = "current"
+	}
+	return nil
 }
 
 func candidateHorizonReturn(ctx context.Context, db *gorm.DB, ticker string, baseDate time.Time, baseClose float64, horizon int) (float64, float64, bool, error) {
@@ -338,4 +500,37 @@ func countPositiveReturns(values []float64) int {
 		}
 	}
 	return count
+}
+
+func percentileFloat64(values []float64, percentile float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	ordered := append([]float64{}, values...)
+	sort.Float64s(ordered)
+	if len(ordered) == 1 {
+		return ordered[0]
+	}
+	position := percentile * float64(len(ordered)-1)
+	lower := int(math.Floor(position))
+	upper := int(math.Ceil(position))
+	if lower == upper {
+		return ordered[lower]
+	}
+	weight := position - float64(lower)
+	return ordered[lower]*(1-weight) + ordered[upper]*weight
+}
+
+func meanConfidenceInterval95(values []float64) (float64, float64) {
+	mean := averageFloat64(values)
+	if len(values) < 2 {
+		return mean, mean
+	}
+	variance := 0.0
+	for _, value := range values {
+		variance += (value - mean) * (value - mean)
+	}
+	standardError := math.Sqrt(variance/float64(len(values)-1)) / math.Sqrt(float64(len(values)))
+	margin := 1.96 * standardError
+	return mean - margin, mean + margin
 }

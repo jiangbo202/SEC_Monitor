@@ -81,11 +81,47 @@ func parseAIAnalysisStructuredResult(content string) (model.AIAnalysisStructured
 	if raw == "" {
 		return model.AIAnalysisStructuredResult{}, "", errors.New("AI 结果不是 JSON 对象")
 	}
-	var result model.AIAnalysisStructuredResult
+	var wire struct {
+		SchemaVersion       string                     `json:"schema_version"`
+		Stance              string                     `json:"stance"`
+		Conclusion          string                     `json:"conclusion"`
+		Evidence            []model.AIAnalysisEvidence `json:"evidence"`
+		CounterEvidence     []model.AIAnalysisEvidence `json:"counter_evidence"`
+		Invalidation        json.RawMessage            `json:"invalidation_conditions"`
+		Catalysts           json.RawMessage            `json:"catalysts"`
+		DataGaps            json.RawMessage            `json:"data_gaps"`
+		RiskNotes           json.RawMessage            `json:"risk_notes"`
+		EvidenceSufficiency string                     `json:"evidence_sufficiency"`
+	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&result); err != nil {
-		return result, "", fmt.Errorf("解析 AI 结构结果: %w", err)
+	if err := decoder.Decode(&wire); err != nil {
+		return model.AIAnalysisStructuredResult{}, "", fmt.Errorf("解析 AI 结构结果: %w", err)
+	}
+	stringLists := make(map[string][]string, 4)
+	for field, value := range map[string]json.RawMessage{
+		"invalidation_conditions": wire.Invalidation,
+		"catalysts":               wire.Catalysts,
+		"data_gaps":               wire.DataGaps,
+		"risk_notes":              wire.RiskNotes,
+	} {
+		items, err := decodeAIAnalysisStringList(value, field)
+		if err != nil {
+			return model.AIAnalysisStructuredResult{}, "", fmt.Errorf("解析 AI 结构结果: %w", err)
+		}
+		stringLists[field] = items
+	}
+	result := model.AIAnalysisStructuredResult{
+		SchemaVersion:       wire.SchemaVersion,
+		Stance:              wire.Stance,
+		Conclusion:          wire.Conclusion,
+		Evidence:            wire.Evidence,
+		CounterEvidence:     wire.CounterEvidence,
+		Invalidation:        stringLists["invalidation_conditions"],
+		Catalysts:           stringLists["catalysts"],
+		DataGaps:            stringLists["data_gaps"],
+		RiskNotes:           stringLists["risk_notes"],
+		EvidenceSufficiency: wire.EvidenceSufficiency,
 	}
 	if err := validateAIAnalysisStructuredResult(result); err != nil {
 		return result, "", err
@@ -95,6 +131,89 @@ func parseAIAnalysisStructuredResult(content string) (model.AIAnalysisStructured
 		return result, "", err
 	}
 	return result, string(canonical), nil
+}
+
+// decodeAIAnalysisStringList accepts the documented string-array shape and a
+// narrow compatibility shape used by some OpenAI-compatible models: a single
+// string/object or an array containing strings and objects. Objects are only
+// accepted when they contain a recognised textual field; arbitrary JSON is
+// never stringified into a seemingly valid research result.
+func decodeAIAnalysisStringList(raw json.RawMessage, field string) ([]string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	values := []json.RawMessage{trimmed}
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &values); err != nil {
+			return nil, fmt.Errorf("字段 %s 不是有效数组: %w", field, err)
+		}
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		var text string
+		if err := json.Unmarshal(value, &text); err == nil {
+			text = strings.TrimSpace(text)
+			if text == "" {
+				return nil, fmt.Errorf("字段 %s 包含空白条目", field)
+			}
+			result = append(result, text)
+			continue
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(value, &object); err != nil || object == nil {
+			return nil, fmt.Errorf("字段 %s 只能包含字符串或可识别的文本对象", field)
+		}
+		text, err := normalizeAIAnalysisStringObject(field, object)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, text)
+	}
+	return result, nil
+}
+
+func normalizeAIAnalysisStringObject(field string, object map[string]json.RawMessage) (string, error) {
+	primaryKeys := map[string][]string{
+		"invalidation_conditions": {"condition", "invalidation_condition", "trigger", "title", "description", "content", "text"},
+		"catalysts":               {"catalyst", "event", "observation", "title", "description", "content", "text"},
+		"data_gaps":               {"gap", "data_gap", "missing_data", "title", "description", "content", "text"},
+		"risk_notes":              {"risk", "risk_note", "title", "description", "content", "text"},
+	}[field]
+	parts := make([]string, 0, 4)
+	seen := map[string]struct{}{}
+	appendText := func(key, prefix string) {
+		raw, ok := object[key]
+		if !ok {
+			return
+		}
+		var value string
+		if json.Unmarshal(raw, &value) != nil {
+			return
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		parts = append(parts, prefix+value)
+	}
+	for _, key := range primaryKeys {
+		appendText(key, "")
+	}
+	primaryCount := len(parts)
+	for _, item := range []struct{ key, prefix string }{
+		{"timing", "时间："}, {"timeframe", "时间："}, {"date", "日期："}, {"impact", "影响："},
+	} {
+		appendText(item.key, item.prefix)
+	}
+	if primaryCount == 0 {
+		return "", fmt.Errorf("字段 %s 的对象缺少可识别文本字段", field)
+	}
+	return strings.Join(parts, "；"), nil
 }
 
 func extractAIJSONObject(content string) string {

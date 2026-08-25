@@ -453,6 +453,57 @@ func TestAIAnalysisRepairsInvalidStructuredResponseOnce(t *testing.T) {
 	}
 }
 
+func TestParseAIAnalysisStructuredResultNormalizesTextObjects(t *testing.T) {
+	content := `{
+		"schema_version":"ai-research-v1",
+		"stance":"watch",
+		"conclusion":"继续核验催化剂",
+		"evidence":[{"fact":"存在公开事件","inference":"需要跟踪","impact":"可能改变研究判断","source_paths":["$.events"]}],
+		"counter_evidence":[],
+		"invalidation_conditions":{"condition":"核心假设不再成立"},
+		"catalysts":[{"event":"FDA 里程碑","timing":"未来两个季度","impact":"可能影响商业化节奏"},"下一次财报"],
+		"data_gaps":[{"gap":"缺少管理层最新指引"}],
+		"risk_notes":[{"risk":"潜在稀释","description":"需结合后续公告核验"}],
+		"evidence_sufficiency":"medium"
+	}`
+	result, canonical, err := parseAIAnalysisStructuredResult(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Catalysts) != 2 || result.Catalysts[0] != "FDA 里程碑；时间：未来两个季度；影响：可能影响商业化节奏" || result.Catalysts[1] != "下一次财报" {
+		t.Fatalf("catalysts=%+v", result.Catalysts)
+	}
+	if len(result.Invalidation) != 1 || len(result.DataGaps) != 1 || len(result.RiskNotes) != 1 || !strings.Contains(canonical, `"catalysts":["FDA 里程碑`) {
+		t.Fatalf("result=%+v canonical=%s", result, canonical)
+	}
+}
+
+func TestParseAIAnalysisStructuredResultRejectsUnknownTextObject(t *testing.T) {
+	content := `{"schema_version":"ai-research-v1","stance":"watch","conclusion":"继续观察","evidence":[{"fact":"事实","inference":"推断","impact":"影响","source_paths":["$.ticker"]}],"counter_evidence":[],"invalidation_conditions":[],"catalysts":[{"unexpected":"不能静默接纳"}],"data_gaps":[],"risk_notes":[],"evidence_sufficiency":"medium"}`
+	if _, _, err := parseAIAnalysisStructuredResult(content); err == nil || !strings.Contains(err.Error(), "缺少可识别文本字段") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestAIAnalysisAcceptsCompatibleCatalystObjectsWithoutRepair(t *testing.T) {
+	_, configs, analyses := newAIAnalysisTestServices(t)
+	ctx := context.Background()
+	if err := configs.SaveAIProviders(ctx, []AIProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://example.test/v1", APIKey: "secret", Model: "deepseek-v4-pro", Enabled: true}}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	analyses.WithHTTPClient(&http.Client{Transport: aiRoundTripper(func(*http.Request) (*http.Response, error) {
+		calls++
+		content := `{"schema_version":"ai-research-v1","stance":"watch","conclusion":"兼容对象数组","evidence":[{"fact":"本地事实","inference":"继续观察","impact":"影响判断","source_paths":["$.ticker"]}],"counter_evidence":[],"invalidation_conditions":[],"catalysts":[{"event":"临床数据更新","timing":"未来季度"}],"data_gaps":[],"risk_notes":[],"evidence_sufficiency":"medium"}`
+		payload, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}}}})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(payload)))}, nil
+	})})
+	result, err := analyses.GenerateTickerAnalysis(ctx, AIAnalysisInput{ProviderID: "deepseek", Evaluation: discovery.TickerEvaluationResult{Ticker: "OBJECTS", Status: "ready"}}, "tester")
+	if err != nil || result.Status != "success" || result.RequestAttempts != 1 || calls != 1 || result.StructuredResult == nil || result.StructuredResult.Catalysts[0] != "临床数据更新；时间：未来季度" {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
 func TestAIAnalysisDoesNotRetryFailedStructureRepair(t *testing.T) {
 	_, configs, analyses := newAIAnalysisTestServices(t)
 	ctx := context.Background()

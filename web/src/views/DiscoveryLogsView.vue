@@ -85,6 +85,9 @@
             <template #default="{ row }">{{ formatLocalBudget(row.local_request_budget, row.budget_scope) }}</template>
           </el-table-column>
           <el-table-column prop="latest_source_record_count" label="最近写入记录" width="130" align="right" />
+		  <el-table-column label="近20次可用率" width="135" align="right"><template #default="{ row }">{{ row.recent_attempt_count ? formatPct(row.usable_rate_pct) : '-' }}</template></el-table-column>
+		  <el-table-column label="完整率" width="105" align="right"><template #default="{ row }">{{ row.recent_attempt_count ? formatPct(row.complete_rate_pct) : '-' }}</template></el-table-column>
+		  <el-table-column label="时效" width="120"><template #default="{ row }"><el-tag :type="providerFreshnessType(row.freshness_status)" effect="plain">{{ providerFreshnessLabel(row.freshness_status, row.freshness_trading_days) }}</el-tag></template></el-table-column>
           <el-table-column label="最近尝试" width="120">
             <template #default="{ row }"><el-tag :type="providerAttemptType(row.latest_attempt?.status)" effect="plain">{{ providerAttemptLabel(row.latest_attempt?.status) }}</el-tag></template>
           </el-table-column>
@@ -193,6 +196,34 @@
         <el-table-column prop="error_message" label="错误" min-width="260" show-overflow-tooltip />
       </el-table>
       <el-pagination class="pagination" layout="total, prev, pager, next" :total="syncTotal" :page-size="pageSize" v-model:current-page="syncPage" @current-change="loadSyncRuns" />
+    </el-card>
+
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-header">
+          <span>技术历史补偿队列</span>
+          <el-space>
+            <el-tag type="info" effect="plain">仅当前候选 · 失败自动退避</el-tag>
+            <el-button link type="primary" :loading="technicalRecoveryLoading" @click="loadTechnicalRecoveryQueue">刷新</el-button>
+          </el-space>
+        </div>
+      </template>
+      <el-alert type="info" :closable="false" show-icon title="技术历史同步失败会自动退避重试；连续失败达到上限后转入人工处理，不再占用自动任务预算。人工重试仅补该标的日线并重新计算技术指标。" class="profile-recovery-notice" />
+      <el-empty v-if="!technicalRecoveryLoading && technicalRecoveryQueue.items.length === 0" description="当前候选没有待补偿的技术历史" :image-size="48" />
+      <el-table v-else :data="technicalRecoveryQueue.items" v-loading="technicalRecoveryLoading" border>
+        <el-table-column prop="ticker" label="Ticker" width="105" />
+        <el-table-column label="状态" width="120">
+          <template #default="{ row }"><el-tag :type="row.status === 'manual_review' ? 'danger' : technicalRetryDue(row) ? 'warning' : 'info'" effect="plain">{{ technicalRetryStatusLabel(row) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="历史覆盖" width="145" align="right"><template #default="{ row }">{{ row.sample_days || 0 }} / {{ row.required_days || 0 }} 日</template></el-table-column>
+        <el-table-column prop="failure_count" label="失败次数" width="100" align="right" />
+        <el-table-column label="最近尝试" width="180"><template #default="{ row }">{{ formatDateTime(row.last_attempt_at) }}</template></el-table-column>
+        <el-table-column label="下次自动重试" width="180"><template #default="{ row }">{{ row.status === 'manual_review' ? '已停止自动重试' : technicalRetryDue(row) ? '下次同步执行' : formatDateTime(row.next_retry_at) }}</template></el-table-column>
+        <el-table-column prop="reason" label="失败原因" min-width="220" show-overflow-tooltip />
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }"><el-button link type="primary" :loading="technicalRetryTicker === row.ticker" @click="retryTechnicalHistory(row)">人工重试</el-button></template>
+        </el-table-column>
+      </el-table>
     </el-card>
 
     <el-card shadow="never" class="section-card">
@@ -357,7 +388,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
-import type { ApiResponse, CompanyProfileBulkRetryResult, CompanyProfileRecoveryItem, CompanyProfileRecoveryQueue, DiscoveryBatch, DiscoverySyncRun, DiscoverySyncRunPage, DiscoverySyncStep, MarketPriceRecoveryItem, MarketPriceRecoveryQueue, PageResult, ProviderAttempt, ProviderHealth, ProviderHealthPage, ProviderObservability, ProviderRun } from '@/api/types'
+import type { ApiResponse, CompanyProfileBulkRetryResult, CompanyProfileRecoveryItem, CompanyProfileRecoveryQueue, DiscoveryBatch, DiscoverySyncRun, DiscoverySyncRunPage, DiscoverySyncStep, MarketPriceRecoveryItem, MarketPriceRecoveryQueue, PageResult, ProviderAttempt, ProviderHealth, ProviderHealthPage, ProviderObservability, ProviderRun, TechnicalHistoryRecoveryQueue, TechnicalHistoryRetryState } from '@/api/types'
 
 const pageSize = 20
 const route = useRoute()
@@ -377,6 +408,10 @@ const profileBulkRetrying = ref(false)
 const marketRecoveryLoading = ref(false)
 const marketRecoveryQueue = ref<MarketPriceRecoveryQueue>({ batch_id: '', effective_date: '', items: [] })
 const marketRetryTicker = ref('')
+
+const technicalRecoveryLoading = ref(false)
+const technicalRecoveryQueue = ref<TechnicalHistoryRecoveryQueue>({ items: [] })
+const technicalRetryTicker = ref('')
 
 const batchLoading = ref(false)
 const batchRows = ref<DiscoveryBatch[]>([])
@@ -490,6 +525,38 @@ async function refreshCandidateMarketHistory(row: MarketPriceRecoveryItem) {
   }
 }
 
+async function loadTechnicalRecoveryQueue() {
+  technicalRecoveryLoading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<TechnicalHistoryRecoveryQueue>>('/discovery/candidates/technical-history-recovery-queue')
+    technicalRecoveryQueue.value = res.data.data
+  } finally {
+    technicalRecoveryLoading.value = false
+  }
+}
+
+async function retryTechnicalHistory(row: TechnicalHistoryRetryState) {
+  try {
+    await ElMessageBox.confirm(
+      `将立即重新获取 ${row.ticker} 的日线历史并计算技术指标。该操作不会重跑全量候选工作流。`,
+      '人工重试技术历史',
+      { confirmButtonText: '开始重试', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  technicalRetryTicker.value = row.ticker
+  try {
+    await apiClient.post(`/discovery/candidates/${encodeURIComponent(row.ticker)}/technical-history-retry`)
+    ElMessage.success(`${row.ticker} 技术历史已补齐`)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || `${row.ticker} 技术历史重试失败`)
+  } finally {
+    technicalRetryTicker.value = ''
+    await loadTechnicalRecoveryQueue()
+  }
+}
+
 async function loadLatestMarketBatch() {
   const res = await apiClient.get<ApiResponse<PageResult<DiscoveryBatch>>>('/discovery/batches', {
     params: { kind: 'market-prescreen', page: 1, page_size: 1 }
@@ -545,7 +612,7 @@ async function loadSyncSteps(row: DiscoverySyncRun, expandedRows: DiscoverySyncR
 async function loadAll() {
   loading.value = true
   try {
-    await Promise.all([loadHealth(), loadProviderObservability(), loadProfileRecoveryQueue(), loadMarketRecoveryQueue(), loadLatestMarketBatch(), loadSyncRuns(), loadBatches(), loadRuns()])
+    await Promise.all([loadHealth(), loadProviderObservability(), loadProfileRecoveryQueue(), loadMarketRecoveryQueue(), loadTechnicalRecoveryQueue(), loadLatestMarketBatch(), loadSyncRuns(), loadBatches(), loadRuns()])
   } finally {
     loading.value = false
   }
@@ -586,6 +653,16 @@ function formatPct(value?: number) {
   return `${value.toFixed(1)}%`
 }
 
+function technicalRetryStatusLabel(row: TechnicalHistoryRetryState) {
+  if (row.status === 'manual_review') return '人工处理'
+  return technicalRetryDue(row) ? '可自动补偿' : '等待退避'
+}
+
+function technicalRetryDue(row: TechnicalHistoryRetryState) {
+  if (!row.next_retry_at) return true
+  return new Date(row.next_retry_at).getTime() <= Date.now()
+}
+
 function formatProviderProgress(row?: DiscoveryBatch | null) {
   const summary = row?.provider_summary
   if (!summary) return '-'
@@ -617,6 +694,20 @@ function providerAttemptType(status?: string) {
 function providerAttemptLabel(status?: string) {
   const labels: Record<string, string> = { success: '完成', partial: '部分完成', empty: '无可用数据', failed: '失败' }
   return labels[status || ''] || status || '未运行'
+}
+
+function providerFreshnessType(status?: string) {
+	if (status === 'current') return 'success'
+	if (status === 'attention') return 'warning'
+	if (status === 'stale') return 'danger'
+	return 'info'
+}
+
+function providerFreshnessLabel(status?: string, tradingDays?: number | null) {
+	if (status === 'current') return '当前交易日'
+	if (status === 'attention') return '落后1交易日'
+	if (status === 'stale') return `落后${tradingDays ?? '-'}交易日`
+	return '待验证'
 }
 
 function formatAttemptProgress(attempt?: ProviderAttempt | null) {
