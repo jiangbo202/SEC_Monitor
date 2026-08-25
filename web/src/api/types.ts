@@ -947,6 +947,7 @@ export interface CandidateResearchPositionView extends CandidateResearchPosition
   research_readiness: string
   investability_status: string
   average_dollar_volume_usd: number
+	estimated_daily_capacity_usd: number
   next_catalyst_at?: string | null
   risk_flags: string[]
   quality: DataQualityMetadata
@@ -958,13 +959,37 @@ export interface CandidateResearchPortfolio {
   sector_weights: Record<string, number>
   largest_sector: string
   largest_sector_weight_pct: number
+	largest_position: string
+	largest_position_weight_pct: number
+	top_three_weight_pct: number
+	concentration_index: number
+	reference_weight_pct: number
+	weighted_reference_return_pct?: number | null
+	estimated_daily_capacity_usd: number
   constrained_count: number
   blocked_count: number
   data_gap_count: number
   event_risk_count: number
   upcoming_catalyst_count: number
+	constrained_weight_pct: number
+	blocked_weight_pct: number
+	data_gap_weight_pct: number
+	event_risk_weight_pct: number
+	upcoming_catalyst_weight_pct: number
+	risk_coverage: Record<string, string>
   warnings: string[]
   items: CandidateResearchPositionView[]
+}
+
+export interface ResearchActionGate {
+  status: 'ready' | 'blocked' | string
+  allowed: boolean
+  scoring_version?: string
+  effectiveness_status?: string
+  outcome_tracking_status?: string
+  as_of?: string
+  reasons: string[]
+  evaluated_at: string
 }
 
 export interface CandidateOverview {
@@ -1324,6 +1349,8 @@ export interface FundHolderSnapshot {
 
 export interface CandidateMarketResearch {
   eps_forecast: { latest?: EPSForecastSnapshot | null; history: EPSForecastSnapshot[]; message: string; quality?: DataQualityMetadata }
+	eps_revision: { status: string; direction: string; forecast_start_date?: string; forecast_end_date?: string; current_median?: number | null; previous_median?: number | null; median_change_pct?: number | null; revision_breadth_pct?: number | null; compared_snapshots: number; message: string; quality?: DataQualityMetadata }
+	earnings_surprise: { status: string; message: string }
   anomalies: MarketAnomalySnapshot[]
   institutional_holders: InstitutionalHolderSnapshot[]
   fund_holders: FundHolderSnapshot[]
@@ -1642,6 +1669,15 @@ export interface ProviderObservabilityItem {
   local_request_budget: number
   budget_scope: string
   latest_source_record_count: number
+	recent_attempt_count: number
+	recent_usable_count: number
+	recent_complete_count: number
+	usable_rate_pct: number
+	complete_rate_pct: number
+	last_attempt_at?: string | null
+	last_usable_at?: string | null
+	freshness_status: string
+	freshness_trading_days?: number | null
   health?: ProviderHealth | null
   latest_attempt?: ProviderAttempt | null
 }
@@ -1693,6 +1729,12 @@ export interface CandidateEffectivenessWindow {
   max_drawdown_pct?: number | null
   benchmark_return_pct?: number | null
   excess_return_pct?: number | null
+  median_return_pct?: number | null
+  p25_return_pct?: number | null
+  p75_return_pct?: number | null
+  net_average_return_pct?: number | null
+  confidence_low_pct?: number | null
+  confidence_high_pct?: number | null
 }
 
 export interface CandidateEffectivenessCohort {
@@ -1705,6 +1747,7 @@ export interface CandidateEffectivenessReport {
   generated_at: string
   status: 'unverified' | 'validating' | 'validated' | string
   status_detail: string
+  scoring_version: string
   minimum_sample_count: number
   benchmark_ticker: string
   benchmark_available: boolean
@@ -1715,8 +1758,48 @@ export interface CandidateEffectivenessReport {
   distinct_signal_dates: number
   minimum_distinct_signal_dates: number
   cohort_source: 'signal_events' | 'legacy_first_entry' | string
+  outcome_tracking_status: 'not_started' | 'tracking' | 'current' | string
+  tracked_outcome_count: number
+  mature_outcome_count: number
+  pending_outcome_count: number
+  benchmark_missing_outcome_count: number
+  outcome_last_evaluated_at?: string | null
+  assumed_round_trip_cost_pct: number
   cohorts: CandidateEffectivenessCohort[]
+  segments: CandidateEffectivenessSegment[]
 }
+
+export interface CandidateEffectivenessSegment {
+  dimension: string
+  bucket: string
+  candidate_count: number
+  window_20: CandidateEffectivenessWindow
+}
+
+export interface CandidateEffectivenessReplayResult {
+  scoring_version: string
+  confirm: boolean
+  batch_count: number
+  eligible_batches: number
+  signal_count: number
+  inserted_count: number
+  skipped: Record<string, number>
+}
+
+export interface TechnicalHistoryRetryState {
+  ticker: string
+  batch_id: string
+  status: 'backoff' | 'deferred' | 'manual_review' | 'resolved' | string
+  reason: string
+  failure_count: number
+  sample_days: number
+  required_days: number
+  latest_trade_date: string
+  last_attempt_at: string
+  next_retry_at?: string | null
+}
+
+export interface TechnicalHistoryRecoveryQueue { items: TechnicalHistoryRetryState[] }
 
 export interface TradePlanSimulation {
   id: number

@@ -114,6 +114,7 @@ func Migrate(db *gorm.DB) error {
 			&SmallCapEligibilityCheckHistory{},
 			&CandidateBusinessModelOverride{},
 			&CandidateSignalEvent{},
+			&CandidateSignalOutcome{},
 			&CandidateRecalcEvent{},
 			&CandidateWatch{},
 			&CandidateResearchMemoVersion{},

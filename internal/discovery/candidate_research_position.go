@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +22,8 @@ type CandidateResearchPositionInput struct {
 	EventRiskNote               string   `json:"event_risk_note"`
 	LiquidityNote               string   `json:"liquidity_note"`
 	Note                        string   `json:"note"`
+	GateOverride                bool     `json:"gate_override"`
+	GateOverrideReason          string   `json:"gate_override_reason"`
 }
 
 type CandidateResearchPortfolio struct {
@@ -29,11 +32,24 @@ type CandidateResearchPortfolio struct {
 	SectorWeights          map[string]float64              `json:"sector_weights"`
 	LargestSector          string                          `json:"largest_sector"`
 	LargestSectorWeightPct float64                         `json:"largest_sector_weight_pct"`
+	LargestPosition        string                          `json:"largest_position"`
+	LargestPositionWeight  float64                         `json:"largest_position_weight_pct"`
+	TopThreeWeightPct      float64                         `json:"top_three_weight_pct"`
+	ConcentrationIndex     float64                         `json:"concentration_index"`
+	ReferenceWeightPct     float64                         `json:"reference_weight_pct"`
+	WeightedReferencePnL   *float64                        `json:"weighted_reference_return_pct,omitempty"`
+	EstimatedDailyCapacity float64                         `json:"estimated_daily_capacity_usd"`
 	ConstrainedCount       int                             `json:"constrained_count"`
 	BlockedCount           int                             `json:"blocked_count"`
 	DataGapCount           int                             `json:"data_gap_count"`
 	EventRiskCount         int                             `json:"event_risk_count"`
 	UpcomingCatalystCount  int                             `json:"upcoming_catalyst_count"`
+	ConstrainedWeightPct   float64                         `json:"constrained_weight_pct"`
+	BlockedWeightPct       float64                         `json:"blocked_weight_pct"`
+	DataGapWeightPct       float64                         `json:"data_gap_weight_pct"`
+	EventRiskWeightPct     float64                         `json:"event_risk_weight_pct"`
+	CatalystWeightPct      float64                         `json:"upcoming_catalyst_weight_pct"`
+	RiskCoverage           map[string]string               `json:"risk_coverage"`
 	Warnings               []string                        `json:"warnings"`
 	Items                  []CandidateResearchPositionView `json:"items"`
 }
@@ -46,13 +62,19 @@ type CandidateResearchPositionView struct {
 	ResearchReadiness       string              `json:"research_readiness"`
 	InvestabilityStatus     string              `json:"investability_status"`
 	AverageDollarVolumeUSD  float64             `json:"average_dollar_volume_usd"`
+	EstimatedDailyCapacity  float64             `json:"estimated_daily_capacity_usd"`
 	NextCatalystAt          *time.Time          `json:"next_catalyst_at,omitempty"`
 	RiskFlags               []string            `json:"risk_flags"`
 	Quality                 DataQualityMetadata `json:"quality"`
 }
 
 func ListCandidateResearchPositions(ctx context.Context, db *gorm.DB) (CandidateResearchPortfolio, error) {
-	result := CandidateResearchPortfolio{SectorWeights: map[string]float64{}, Items: []CandidateResearchPositionView{}, Warnings: []string{}}
+	result := CandidateResearchPortfolio{
+		SectorWeights: map[string]float64{}, RiskCoverage: map[string]string{
+			"sector": "available", "liquidity": "missing", "reference_pnl": "missing",
+			"market_beta": "missing", "style_factors": "missing",
+		}, Items: []CandidateResearchPositionView{}, Warnings: []string{},
+	}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -85,8 +107,15 @@ func ListCandidateResearchPositions(ctx context.Context, db *gorm.DB) (Candidate
 		}
 	}
 	now := time.Now().UTC()
+	weights := make([]float64, 0, len(positions))
+	weightedReferenceReturn := 0.0
+	liquidityCovered := 0
 	for index, position := range positions {
 		result.TotalMaxWeightPct += position.MaxWeightPct
+		weights = append(weights, position.MaxWeightPct)
+		if position.MaxWeightPct > result.LargestPositionWeight {
+			result.LargestPosition, result.LargestPositionWeight = position.Ticker, position.MaxWeightPct
+		}
 		sector := "未分类赛道"
 		view := CandidateResearchPositionView{CandidateResearchPosition: position, SectorCategory: sector, RiskFlags: []string{}, Quality: DataQualityMetadata{Layer: DataLayerDecision, Source: "local_user", AsOf: position.UpdatedAt.UTC().Format(time.RFC3339), QualityStatus: QualityStatusValid}}
 		if watchItems[index].LatestScore != nil {
@@ -95,25 +124,35 @@ func ListCandidateResearchPositions(ctx context.Context, db *gorm.DB) (Candidate
 			view.ResearchReadiness = score.ResearchReadiness.Status
 			view.InvestabilityStatus = score.Investability.Status
 			view.AverageDollarVolumeUSD = score.Investability.AverageDollarVolumeUSD
+			if view.AverageDollarVolumeUSD > 0 && position.MaxDailyVolumeParticipation > 0 {
+				view.EstimatedDailyCapacity = view.AverageDollarVolumeUSD * position.MaxDailyVolumeParticipation / 100
+				result.EstimatedDailyCapacity += view.EstimatedDailyCapacity
+				liquidityCovered++
+			}
 			if score.PriceCloseUSD > 0 {
 				price := score.PriceCloseUSD
 				view.CurrentPriceUSD = &price
 				if position.ReferenceCostUSD != nil && *position.ReferenceCostUSD > 0 {
 					value := (price / *position.ReferenceCostUSD - 1) * 100
 					view.ReturnSinceReferencePct = &value
+					result.ReferenceWeightPct += position.MaxWeightPct
+					weightedReferenceReturn += value * position.MaxWeightPct
 				}
 			}
 			if score.ResearchReadiness.Status != CandidateResearchReadinessReady {
 				view.RiskFlags = append(view.RiskFlags, "research_data_not_ready")
 				result.DataGapCount++
+				result.DataGapWeightPct += position.MaxWeightPct
 			}
 			switch score.Investability.Status {
 			case InvestabilityBlocked:
 				view.RiskFlags = append(view.RiskFlags, "investability_blocked")
 				result.BlockedCount++
+				result.BlockedWeightPct += position.MaxWeightPct
 			case InvestabilityConstrained:
 				view.RiskFlags = append(view.RiskFlags, "investability_constrained")
 				result.ConstrainedCount++
+				result.ConstrainedWeightPct += position.MaxWeightPct
 			}
 		} else if position.SecurityID > 0 {
 			var security Security
@@ -125,14 +164,17 @@ func ListCandidateResearchPositions(ctx context.Context, db *gorm.DB) (Candidate
 			view.RiskFlags = append(view.RiskFlags, "current_candidate_unavailable")
 			view.Quality.QualityStatus = QualityStatusMissing
 			result.DataGapCount++
+			result.DataGapWeightPct += position.MaxWeightPct
 		} else {
 			view.RiskFlags = append(view.RiskFlags, "current_candidate_unavailable")
 			view.Quality.QualityStatus = QualityStatusMissing
 			result.DataGapCount++
+			result.DataGapWeightPct += position.MaxWeightPct
 		}
 		if strings.TrimSpace(position.EventRiskNote) != "" {
 			view.RiskFlags = append(view.RiskFlags, "manual_event_risk")
 			result.EventRiskCount++
+			result.EventRiskWeightPct += position.MaxWeightPct
 		}
 		if watch, ok := watchByTicker[position.Ticker]; ok && watch.CatalystDate != nil {
 			date := watch.CatalystDate.UTC()
@@ -140,6 +182,7 @@ func ListCandidateResearchPositions(ctx context.Context, db *gorm.DB) (Candidate
 			if !date.Before(now) && date.Before(now.AddDate(0, 0, 15)) {
 				view.RiskFlags = append(view.RiskFlags, "catalyst_within_14_days")
 				result.UpcomingCatalystCount++
+				result.CatalystWeightPct += position.MaxWeightPct
 			}
 		}
 		if position.MaxWeightPct > 10 {
@@ -148,6 +191,29 @@ func ListCandidateResearchPositions(ctx context.Context, db *gorm.DB) (Candidate
 		view.SectorCategory = sector
 		result.SectorWeights[sector] += position.MaxWeightPct
 		result.Items = append(result.Items, view)
+	}
+	sort.Slice(weights, func(i, j int) bool { return weights[i] > weights[j] })
+	for index := 0; index < len(weights) && index < 3; index++ {
+		result.TopThreeWeightPct += weights[index]
+	}
+	if result.TotalMaxWeightPct > 0 {
+		for _, weight := range weights {
+			share := weight / result.TotalMaxWeightPct
+			result.ConcentrationIndex += share * share * 100
+		}
+	}
+	if result.ReferenceWeightPct > 0 {
+		value := weightedReferenceReturn / result.ReferenceWeightPct
+		result.WeightedReferencePnL = &value
+		result.RiskCoverage["reference_pnl"] = "partial"
+	}
+	if len(positions) > 0 {
+		switch {
+		case liquidityCovered == len(positions):
+			result.RiskCoverage["liquidity"] = "available"
+		case liquidityCovered > 0:
+			result.RiskCoverage["liquidity"] = "partial"
+		}
 	}
 	for sector, weight := range result.SectorWeights {
 		if weight > result.LargestSectorWeightPct {
@@ -165,6 +231,12 @@ func ListCandidateResearchPositions(ctx context.Context, db *gorm.DB) (Candidate
 	}
 	if result.DataGapCount > 0 {
 		result.Warnings = append(result.Warnings, "position_data_gaps")
+	}
+	if result.LargestPositionWeight > 10 || result.TopThreeWeightPct > 50 {
+		result.Warnings = append(result.Warnings, "position_concentration_high")
+	}
+	if len(result.Items) > 0 {
+		result.Warnings = append(result.Warnings, "market_beta_and_style_factor_unavailable")
 	}
 	return result, nil
 }
@@ -226,6 +298,31 @@ func UpsertCandidateResearchPosition(ctx context.Context, db *gorm.DB, input Can
 		return CandidateResearchPosition{}, err
 	}
 	return existing, nil
+}
+
+func FindCandidateResearchPosition(ctx context.Context, db *gorm.DB, ticker string) (CandidateResearchPosition, bool, error) {
+	var result CandidateResearchPosition
+	if db == nil {
+		return result, false, errors.New("database is required")
+	}
+	err := db.WithContext(ctx).Where("ticker = ?", normalizeTicker(ticker)).First(&result).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return result, false, nil
+	}
+	return result, err == nil, err
+}
+
+// ResearchPositionIncreasesRisk distinguishes a new/action-increasing plan
+// from a reduction or a notes-only update. A blocked gate must never prevent
+// the user from reducing exposure or documenting risk.
+func ResearchPositionIncreasesRisk(before CandidateResearchPosition, found bool, input CandidateResearchPositionInput) bool {
+	if !found {
+		return input.MaxWeightPct > 0 || input.ReferenceCostUSD != nil
+	}
+	if input.MaxWeightPct > before.MaxWeightPct {
+		return true
+	}
+	return before.ReferenceCostUSD == nil && input.ReferenceCostUSD != nil
 }
 
 func DeleteCandidateResearchPosition(ctx context.Context, db *gorm.DB, id uint) error {

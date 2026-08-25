@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -38,9 +39,30 @@ type DashboardPreferences struct {
 
 type DashboardDecisionSummary struct {
 	Market    DashboardMarketSummary     `json:"market"`
+	Readiness DashboardDecisionReadiness `json:"readiness"`
 	Actions   []DashboardCandidateAction `json:"actions"`
 	Calendar  []DashboardCalendarItem    `json:"calendar"`
 	ReviewDue DashboardReviewDueSummary  `json:"review_due"`
+}
+
+type DashboardDecisionReadiness struct {
+	Status               string                           `json:"status"`
+	Label                string                           `json:"label"`
+	ResearchUsable       bool                             `json:"research_usable"`
+	NewTradePlanAllowed  bool                             `json:"new_trade_plan_allowed"`
+	AsOf                 string                           `json:"as_of,omitempty"`
+	ExpectedTradeDate    string                           `json:"expected_trade_date,omitempty"`
+	EffectivenessStatus  string                           `json:"effectiveness_status"`
+	EffectivenessVersion string                           `json:"effectiveness_version,omitempty"`
+	Reasons              []DashboardDecisionReadinessItem `json:"reasons"`
+}
+
+type DashboardDecisionReadinessItem struct {
+	Key      string `json:"key"`
+	Severity string `json:"severity"`
+	Title    string `json:"title"`
+	Detail   string `json:"detail"`
+	Action   string `json:"action,omitempty"`
 }
 
 type DashboardMarketSummary struct {
@@ -209,10 +231,12 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 	if err := h.loadDashboardMonitoring(ctx, now, &result); err != nil {
 		addWarning("监控概览", err)
 	}
+	var operationalReport *service.OperationalReport
 	if h.OperationalHealth != nil {
 		if report, err := h.OperationalHealth.Report(ctx); err != nil {
 			addWarning("运行健康", err)
 		} else {
+			operationalReport = &report
 			result.Operations.Status = report.Status
 			result.Operations.Issues = report.Issues
 			result.Operations.Tasks = report.Tasks
@@ -228,7 +252,89 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 			}
 		}
 	}
+	result.Decision.Readiness = buildDashboardDecisionReadiness(ctx, h.DiscoveryDB, result.Decision.Market.Freshness, operationalReport)
 	OK(c, result)
+}
+
+func buildDashboardDecisionReadiness(ctx context.Context, db *gorm.DB, freshness DashboardDataFreshness, operations *service.OperationalReport) DashboardDecisionReadiness {
+	result := DashboardDecisionReadiness{
+		Status: "ready", Label: "今日数据可用", ResearchUsable: true, NewTradePlanAllowed: true,
+		AsOf: freshness.AsOf, ExpectedTradeDate: freshness.ExpectedTradeDate, Reasons: []DashboardDecisionReadinessItem{},
+	}
+	add := func(key, severity, title, detail, action string) {
+		result.Reasons = append(result.Reasons, DashboardDecisionReadinessItem{Key: key, Severity: severity, Title: title, Detail: detail, Action: action})
+	}
+	researchOnly := func() {
+		if result.Status == "ready" {
+			result.Status, result.Label = "research_only", "研究可用，暂不形成新交易计划"
+		}
+		result.NewTradePlanAllowed = false
+	}
+	block := func() {
+		result.Status, result.Label = "blocked", "当日数据不可用于交易判断"
+		result.ResearchUsable, result.NewTradePlanAllowed = false, false
+	}
+	switch freshness.Status {
+	case "fresh":
+	case "stale":
+		researchOnly()
+		add("market_stale", "warning", "市场快照落后", freshness.Detail, "market-trend")
+	default:
+		block()
+		add("market_unavailable", "critical", "市场快照不可用", freshness.Detail, "market-trend")
+	}
+	if db == nil {
+		block()
+		add("discovery_db_unavailable", "critical", "研究数据库不可用", "无法核对当前候选批次、价格覆盖与策略验证状态", "system-health")
+		return result
+	}
+	health, err := discovery.BuildCandidateHealth(ctx, db)
+	if err != nil {
+		block()
+		add("candidate_health_unavailable", "critical", "候选健康不可读", service.SanitizeSensitiveError(err.Error()), "system-health")
+	} else if health.Status == discovery.CandidateHealthMissing || health.TotalCandidates == 0 {
+		block()
+		add("candidate_batch_missing", "critical", "没有可用候选批次", "请先完成小盘候选同步并发布当前批次", "discovery-logs")
+	} else {
+		if health.MissingPriceCandidates > 0 || health.StalePriceCandidates > 0 || health.FallbackPriceCandidates > 0 || health.MissingMarketCap > 0 {
+			researchOnly()
+			add("candidate_market_gaps", "warning", "部分候选行情不可用于新计划", fmt.Sprintf("缺价 %d、过期 %d、回退 %d、缺市值 %d；受影响标的必须单独排除", health.MissingPriceCandidates, health.StalePriceCandidates, health.FallbackPriceCandidates, health.MissingMarketCap), "discovery-logs")
+		}
+		if health.OpenDataQualityIncidents > 0 {
+			researchOnly()
+			add("candidate_quality_incidents", "warning", "候选事实存在隔离事件", fmt.Sprintf("%d 条数据质量事件尚未关闭", health.OpenDataQualityIncidents), "discovery-logs")
+		}
+		if health.TechnicalHistoryRetryPending > 0 {
+			add("technical_history_pending", "info", "部分标的技术历史待补齐", fmt.Sprintf("%d 只标的仍在独立重试；不影响历史完整的其他标的", health.TechnicalHistoryRetryPending), "discovery-logs")
+		}
+	}
+	effectiveness, err := discovery.BuildCandidateEffectiveness(ctx, db)
+	if err != nil {
+		researchOnly()
+		result.EffectivenessStatus = "unavailable"
+		add("effectiveness_unavailable", "warning", "策略效果验证不可读", service.SanitizeSensitiveError(err.Error()), "discovery-candidates")
+	} else {
+		result.EffectivenessStatus = effectiveness.Status
+		result.EffectivenessVersion = effectiveness.ScoringVersion
+		if effectiveness.Status != "validated" {
+			researchOnly()
+			add("effectiveness_"+effectiveness.Status, "warning", "策略效果尚未达到验证门槛", effectiveness.StatusDetail, "discovery-candidates")
+		}
+		if effectiveness.OutcomeTrackingStatus != "current" {
+			researchOnly()
+			add("effectiveness_tracking_"+effectiveness.OutcomeTrackingStatus, "warning", "信号结果闭环尚未完整运行", fmt.Sprintf("已跟踪 %d 个结果，成熟 %d，待成熟 %d，缺基准 %d", effectiveness.TrackedOutcomeCount, effectiveness.MatureOutcomeCount, effectiveness.PendingOutcomeCount, effectiveness.BenchmarkMissingOutcomeCount), "discovery-candidates")
+		}
+	}
+	if operations != nil {
+		for _, issue := range operations.Issues {
+			if issue.Severity != "critical" && issue.Severity != "danger" {
+				continue
+			}
+			block()
+			add("operational:"+issue.Key, "critical", issue.Title, issue.Detail, issue.Action)
+		}
+	}
+	return result
 }
 
 func dashboardDataFreshness(ctx context.Context, discoveryDB *gorm.DB, tradeDate, source string, lastFetched *time.Time, now time.Time) DashboardDataFreshness {

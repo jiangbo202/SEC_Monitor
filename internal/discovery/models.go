@@ -670,6 +670,33 @@ type CandidateSignalEvent struct {
 	CreatedAt           time.Time `json:"created_at"`
 }
 
+// CandidateSignalOutcome is the durable feature-layer result for one
+// immutable signal and one holding horizon. Daily market refreshes advance a
+// row from pending to mature; dashboard reads never need to mutate history.
+type CandidateSignalOutcome struct {
+	ID                  uint       `json:"id"`
+	SignalEventID       uint       `json:"signal_event_id" gorm:"uniqueIndex:idx_candidate_signal_outcome,priority:1;index"`
+	Ticker              string     `json:"ticker" gorm:"size:32;index"`
+	Grade               string     `json:"grade" gorm:"size:16;index"`
+	ScoringVersion      string     `json:"scoring_version" gorm:"size:64;index"`
+	HorizonDays         int        `json:"horizon_days" gorm:"uniqueIndex:idx_candidate_signal_outcome,priority:2;index"`
+	Status              string     `json:"status" gorm:"size:32;index"`
+	BaselineTradeDate   time.Time  `json:"baseline_trade_date" gorm:"index"`
+	BaselineCloseMicros int64      `json:"baseline_close_micros"`
+	OutcomeTradeDate    *time.Time `json:"outcome_trade_date,omitempty" gorm:"index"`
+	OutcomeCloseMicros  int64      `json:"outcome_close_micros"`
+	ReturnPct           *float64   `json:"return_pct,omitempty"`
+	MaxDrawdownPct      *float64   `json:"max_drawdown_pct,omitempty"`
+	BenchmarkTicker     string     `json:"benchmark_ticker" gorm:"size:32"`
+	BenchmarkReturnPct  *float64   `json:"benchmark_return_pct,omitempty"`
+	ExcessReturnPct     *float64   `json:"excess_return_pct,omitempty"`
+	QualityStatus       string     `json:"quality_status" gorm:"size:24;index"`
+	EvaluatedAt         time.Time  `json:"evaluated_at" gorm:"index"`
+	MaturedAt           *time.Time `json:"matured_at,omitempty" gorm:"index"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
 type CandidateRecalcEvent struct {
 	ID              uint      `json:"id"`
 	BatchID         string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_candidate_recalc_filing_batch,priority:2;index"`

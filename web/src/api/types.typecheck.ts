@@ -126,7 +126,7 @@ export const candidateDetailTypecheck: CandidateDetail = {
   security: { id: 1, cik: '0001', company_name: 'Acme', sic: 1000, catalog_status: 'published' },
 	company_profile: { ticker: 'ACME', company_name: 'Acme', cik: '0001', sic: 1000, business_summary: 'SEC 行业概览。', summary_source: 'SEC submissions / SIC（赛道回退）', status: 'partial' },
 	analyst_rating: { history: [], message: '尚未同步分析师共识' },
-	market_research: { eps_forecast: { history: [], message: '尚未同步 EPS 预期' }, anomalies: [], institutional_holders: [], fund_holders: [] },
+	market_research: { eps_forecast: { history: [], message: '尚未同步 EPS 预期' }, eps_revision: { status: 'insufficient', direction: 'unknown', compared_snapshots: 0, message: '样本不足' }, earnings_surprise: { status: 'unavailable', message: '尚缺时点一致数据' }, anomalies: [], institutional_holders: [], fund_holders: [] },
   score: candidate,
 	scoring_rubric: candidateSelectionCriteriaTypecheck.scoring_rubric,
   score_history: [],

@@ -246,3 +246,41 @@ func TestBackfillTickerTechnicalHistoryPersistsAndReadsWatchTargetSeries(t *test
 		t.Fatalf("OHLC history = %+v", history.History[0])
 	}
 }
+
+func TestTechnicalHistoryRetryEscalatesToManualReview(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC)
+	if err := db.Create(&UniverseBatch{BatchID: "manual-batch", Kind: BatchKindPrescreen, Status: BatchStatusPublished, StartedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: "manual-batch"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var state TechnicalHistoryRetryState
+	var err error
+	for attempt := 0; attempt < technicalHistoryMaxAutomaticFailures; attempt++ {
+		state, err = recordTechnicalHistoryRetry(ctx, db, "manual-batch", "manual", "no_usable_records", technicalHistoryCoverage{SampleDays: 3}, 220, now.Add(time.Duration(attempt)*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if state.Status != TechnicalHistoryRetryManual || state.NextRetryAt != nil || state.FailureCount != technicalHistoryMaxAutomaticFailures {
+		t.Fatalf("manual retry state = %+v", state)
+	}
+	var incident DataQualityIncident
+	if err := db.Where("domain = ? AND entity_key = ? AND status = ?", "technical_history", "MANUAL", DataQualityIncidentOpen).First(&incident).Error; err != nil {
+		t.Fatal(err)
+	}
+	if incident.Retryable {
+		t.Fatalf("manual incident must not be automatically retryable: %+v", incident)
+	}
+	eligible, deferred, err := filterTechnicalHistoryRetries(ctx, db, "manual-batch", []Listing{{Ticker: "MANUAL"}}, now.AddDate(0, 0, 30), false)
+	if err != nil || len(eligible) != 0 || deferred != 1 {
+		t.Fatalf("manual retry must be excluded from scheduler: eligible=%+v deferred=%d err=%v", eligible, deferred, err)
+	}
+	queue, err := ListTechnicalHistoryRecoveryQueue(ctx, db)
+	if err != nil || len(queue.Items) != 1 || queue.Items[0].Status != TechnicalHistoryRetryManual {
+		t.Fatalf("manual recovery queue = %+v err=%v", queue, err)
+	}
+}

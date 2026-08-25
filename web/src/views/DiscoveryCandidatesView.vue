@@ -1152,9 +1152,13 @@
               <el-descriptions-item label="上修 / 下修机构">{{ candidateDetail.market_research.eps_forecast.latest.institution_up }} / {{ candidateDetail.market_research.eps_forecast.latest.institution_down }}（共 {{ candidateDetail.market_research.eps_forecast.latest.institution_total }}）</el-descriptions-item>
               <el-descriptions-item label="快照时间">{{ formatDateTime(candidateDetail.market_research.eps_forecast.latest.fetched_at) }}</el-descriptions-item>
               <el-descriptions-item label="预期变化" :span="2">{{ candidateDetail.market_research.eps_forecast.latest.change_summary || '与上一快照无有效变化，或尚无可比较历史。' }}</el-descriptions-item>
+			  <el-descriptions-item label="同周期修正方向"><el-tag :type="epsRevisionTagType(candidateDetail.market_research.eps_revision?.direction)" effect="plain">{{ epsRevisionLabel(candidateDetail.market_research.eps_revision?.direction) }}</el-tag></el-descriptions-item>
+			  <el-descriptions-item label="中位数修正幅度">{{ formatPerformance(candidateDetail.market_research.eps_revision?.median_change_pct) }}</el-descriptions-item>
+			  <el-descriptions-item label="修正广度">{{ formatPerformance(candidateDetail.market_research.eps_revision?.revision_breadth_pct) }}</el-descriptions-item>
             </el-descriptions>
           </template>
           <el-alert v-else type="info" :closable="false" show-icon style="margin-top: 12px" :title="candidateDetail.market_research?.eps_forecast?.message || '尚未同步 EPS 市场预期'" />
+		  <el-alert v-if="candidateDetail.market_research?.earnings_surprise?.status !== 'available'" type="info" :closable="false" show-icon style="margin-top: 12px" title="业绩预期差暂不计算" :description="candidateDetail.market_research?.earnings_surprise?.message" />
 
           <div class="analyst-rating-provenance-title">近期市场异动（最多 20 条）</div>
           <el-table :data="candidateDetail.market_research?.anomalies || []" size="small" border empty-text="暂无 Longbridge 异动记录">
@@ -1723,6 +1727,7 @@
 
     <el-dialog v-model="researchPortfolioVisible" title="手工研究组合（不连接券商、不生成交易指令）" width="980px">
       <el-alert type="info" :closable="false" show-icon title="仅记录研究上限、参考成本和流动性/事件风险约束；不读取真实账户，也不会触发交易。" class="summary-alert" />
+      <el-alert v-if="researchActionGate && !researchActionGate.allowed" type="warning" :closable="false" show-icon :title="`新增或提高研究仓位受限：${researchActionGate.reasons.join('；')}`" class="summary-alert" />
       <el-alert v-if="(researchPortfolio?.total_max_weight_pct || 0) > 100" type="warning" :closable="false" show-icon :title="`研究上限合计 ${formatPct(researchPortfolio?.total_max_weight_pct)}，超过 100%；请检查集中度。`" class="summary-alert" />
       <el-alert v-if="researchPortfolio?.warnings?.length" type="warning" :closable="false" show-icon :title="portfolioWarningText(researchPortfolio.warnings)" class="summary-alert" />
       <el-descriptions :column="4" border size="small" class="research-portfolio-summary">
@@ -1730,6 +1735,13 @@
         <el-descriptions-item label="上限权重合计">{{ formatPct(researchPortfolio?.total_max_weight_pct) }}</el-descriptions-item>
         <el-descriptions-item label="最大赛道">{{ researchPortfolio?.largest_sector || '-' }} {{ formatPct(researchPortfolio?.largest_sector_weight_pct) }}</el-descriptions-item>
         <el-descriptions-item label="风险摘要">受限 {{ researchPortfolio?.constrained_count || 0 }} · 阻断 {{ researchPortfolio?.blocked_count || 0 }} · 数据缺口 {{ researchPortfolio?.data_gap_count || 0 }} · 14日催化 {{ researchPortfolio?.upcoming_catalyst_count || 0 }}</el-descriptions-item>
+		<el-descriptions-item label="最大标的">{{ researchPortfolio?.largest_position || '-' }} {{ formatPct(researchPortfolio?.largest_position_weight_pct) }}</el-descriptions-item>
+		<el-descriptions-item label="前三集中度">{{ formatPct(researchPortfolio?.top_three_weight_pct) }} · HHI {{ formatForecastNumber(researchPortfolio?.concentration_index) }}</el-descriptions-item>
+		<el-descriptions-item label="参考收益">{{ formatPerformance(researchPortfolio?.weighted_reference_return_pct) }} <small>覆盖 {{ formatPct(researchPortfolio?.reference_weight_pct) }}</small></el-descriptions-item>
+		<el-descriptions-item label="日流动性容量">{{ formatUSD(researchPortfolio?.estimated_daily_capacity_usd || 0) }}</el-descriptions-item>
+		<el-descriptions-item label="风险权重" :span="2">受限 {{ formatPct(researchPortfolio?.constrained_weight_pct) }} · 阻断 {{ formatPct(researchPortfolio?.blocked_weight_pct) }} · 数据缺口 {{ formatPct(researchPortfolio?.data_gap_weight_pct) }}</el-descriptions-item>
+		<el-descriptions-item label="事件权重" :span="2">人工事件 {{ formatPct(researchPortfolio?.event_risk_weight_pct) }} · 14日催化 {{ formatPct(researchPortfolio?.upcoming_catalyst_weight_pct) }}</el-descriptions-item>
+		<el-descriptions-item label="覆盖边界" :span="4">行业 {{ portfolioCoverageLabel(researchPortfolio?.risk_coverage?.sector) }} · 流动性 {{ portfolioCoverageLabel(researchPortfolio?.risk_coverage?.liquidity) }} · 参考收益 {{ portfolioCoverageLabel(researchPortfolio?.risk_coverage?.reference_pnl) }} · Beta/风格因子 {{ portfolioCoverageLabel(researchPortfolio?.risk_coverage?.market_beta) }}</el-descriptions-item>
       </el-descriptions>
       <div class="research-portfolio-toolbar"><el-button type="primary" plain @click="newResearchPosition()">新增研究仓位</el-button></div>
       <el-table :data="researchPortfolio?.items || []" v-loading="researchPortfolioLoading" size="small" border empty-text="尚未设置手工研究仓位">
@@ -1737,7 +1749,7 @@
         <el-table-column label="最大权重" width="110" align="right"><template #default="{ row }">{{ formatPct(row.max_weight_pct) }}</template></el-table-column>
         <el-table-column label="参考成本" width="125" align="right"><template #default="{ row }">{{ formatPrice(row.reference_cost_usd, 'USD') }}</template></el-table-column>
         <el-table-column label="当前价 / 参考变化" width="155" align="right"><template #default="{ row }">{{ formatPrice(row.current_price_usd, 'USD') }}<small v-if="row.return_since_reference_pct != null" class="cell-note">{{ formatPerformance(row.return_since_reference_pct) }}</small></template></el-table-column>
-        <el-table-column label="数据 / 流动性" width="150"><template #default="{ row }"><el-tag :type="row.research_readiness === 'ready' ? 'success' : 'warning'" effect="plain">{{ row.research_readiness || '无候选数据' }}</el-tag><small class="cell-note">{{ investabilityLabel(row.investability_status) }}</small></template></el-table-column>
+        <el-table-column label="数据 / 流动性" width="165"><template #default="{ row }"><el-tag :type="row.research_readiness === 'ready' ? 'success' : 'warning'" effect="plain">{{ row.research_readiness || '无候选数据' }}</el-tag><small class="cell-note">{{ investabilityLabel(row.investability_status) }} · 容量 {{ formatUSD(row.estimated_daily_capacity_usd || 0) }}</small></template></el-table-column>
         <el-table-column label="风险标记" min-width="190"><template #default="{ row }"><span v-if="!row.risk_flags?.length">-</span><el-tag v-for="flag in row.risk_flags" :key="flag" type="warning" effect="plain" class="portfolio-sector">{{ portfolioRiskFlagLabel(flag) }}</el-tag></template></el-table-column>
         <el-table-column prop="event_risk_note" label="事件风险" min-width="170" show-overflow-tooltip />
         <el-table-column prop="liquidity_note" label="流动性约束" min-width="170" show-overflow-tooltip />
@@ -1753,6 +1765,10 @@
         <el-form-item label="事件风险约束"><el-input v-model="researchPositionEditor.event_risk_note" type="textarea" :rows="2" placeholder="例如：财报前不提高研究上限" /></el-form-item>
         <el-form-item label="流动性约束"><el-input v-model="researchPositionEditor.liquidity_note" type="textarea" :rows="2" placeholder="例如：避免低于日均成交量上限" /></el-form-item>
         <el-form-item label="备注"><el-input v-model="researchPositionEditor.note" type="textarea" :rows="2" /></el-form-item>
+        <template v-if="researchActionGate && !researchActionGate.allowed">
+          <el-checkbox v-model="researchPositionEditor.gate_override">人工覆盖当日研究门控</el-checkbox>
+          <el-form-item v-if="researchPositionEditor.gate_override" label="覆盖原因（至少10个字符，将写入审计日志）"><el-input v-model="researchPositionEditor.gate_override_reason" type="textarea" :rows="2" /></el-form-item>
+        </template>
       </el-form>
       <template #footer><el-button @click="researchPositionEditorVisible = false">取消</el-button><el-button type="primary" :loading="researchPositionSaving" @click="saveResearchPosition">保存</el-button></template>
     </el-dialog>
@@ -1760,6 +1776,10 @@
     <el-dialog v-model="effectivenessVisible" title="候选效果评估" width="920px">
       <el-alert :type="effectiveness?.status === 'validated' ? 'success' : 'warning'" :closable="false" show-icon class="summary-alert"
         :title="effectivenessNotice" />
+      <div class="effectiveness-toolbar">
+        <span>只读取本地日线；净收益按往返成本 {{ formatPct(effectiveness?.assumed_round_trip_cost_pct) }} 估算。</span>
+        <el-space><el-button size="small" :loading="effectivenessReplayLoading" @click="replayEffectiveness">历史回放</el-button><el-button size="small" type="primary" plain :loading="effectivenessRefreshing" @click="refreshEffectiveness">推进验证</el-button></el-space>
+      </div>
       <el-descriptions :column="3" border size="small" class="effectiveness-readiness">
         <el-descriptions-item label="IWM 历史">
           <el-tag size="small" :type="benchmarkHistoryTagType(effectiveness?.benchmark_history_status)">{{ benchmarkHistoryLabel(effectiveness?.benchmark_history_status) }}</el-tag>
@@ -1770,6 +1790,17 @@
         </el-descriptions-item>
         <el-descriptions-item label="独立信号日期">
           {{ effectiveness?.distinct_signal_dates || 0 }} / {{ effectiveness?.minimum_distinct_signal_dates || 5 }}
+        </el-descriptions-item>
+        <el-descriptions-item label="结果闭环">
+          <el-tag size="small" :type="effectiveness?.outcome_tracking_status === 'current' ? 'success' : 'warning'">{{ outcomeTrackingLabel(effectiveness?.outcome_tracking_status) }}</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="成熟 / 待成熟">
+          {{ effectiveness?.mature_outcome_count || 0 }} / {{ effectiveness?.pending_outcome_count || 0 }}
+          <small v-if="effectiveness?.benchmark_missing_outcome_count">｜缺基准 {{ effectiveness.benchmark_missing_outcome_count }}</small>
+        </el-descriptions-item>
+        <el-descriptions-item label="规则版本">
+          {{ effectiveness?.scoring_version || '历史兼容规则' }}
+          <small v-if="effectiveness?.outcome_last_evaluated_at">｜更新 {{ formatDate(effectiveness.outcome_last_evaluated_at) }}</small>
         </el-descriptions-item>
       </el-descriptions>
       <el-table :data="effectiveness?.cohorts || []" border empty-text="暂无可评估候选">
@@ -1785,6 +1816,12 @@
             <span v-else>未验证（待成熟 {{ effectivenessWindow(row, horizon)?.pending_count || 0 }}）</span>
           </template>
         </el-table-column>
+      </el-table>
+      <el-table v-if="effectiveness?.segments?.length" :data="effectiveness.segments" border size="small" class="effectiveness-segments" max-height="300">
+        <el-table-column label="维度" width="110"><template #default="{ row }">{{ effectivenessDimensionLabel(row.dimension) }}</template></el-table-column>
+        <el-table-column prop="bucket" label="分组" min-width="150" />
+        <el-table-column prop="candidate_count" label="信号" width="75" align="right" />
+        <el-table-column label="20日净收益 / 区间" min-width="260"><template #default="{ row }"><span v-if="row.window_20.sample_count">{{ formatPerformance(row.window_20.net_average_return_pct) }} · 中位 {{ formatPerformance(row.window_20.median_return_pct) }}<small>｜P25–P75 {{ formatPerformance(row.window_20.p25_return_pct) }} 至 {{ formatPerformance(row.window_20.p75_return_pct) }}｜95%CI {{ formatPerformance(row.window_20.confidence_low_pct) }} 至 {{ formatPerformance(row.window_20.confidence_high_pct) }}</small></span><span v-else>待成熟 {{ row.window_20.pending_count }}</span></template></el-table-column>
       </el-table>
     </el-dialog>
 
@@ -1828,6 +1865,8 @@ import type {
   CandidateReport,
   CandidateResearchPortfolio,
   CandidateResearchPosition,
+  ResearchActionGate,
+  CandidateEffectivenessReplayResult,
   CandidateReviewQueue,
   CandidateChangeReason,
   CandidateScore,
@@ -1868,9 +1907,10 @@ const reviewQueue = ref<CandidateReviewQueue | null>(null)
 const researchPortfolioVisible = ref(false)
 const researchPortfolioLoading = ref(false)
 const researchPortfolio = ref<CandidateResearchPortfolio | null>(null)
+const researchActionGate = ref<ResearchActionGate | null>(null)
 const researchPositionEditorVisible = ref(false)
 const researchPositionSaving = ref(false)
-const researchPositionEditor = reactive({ ticker: '', existing: false, max_weight_pct: 0, reference_cost_usd: undefined as number | undefined, max_daily_volume_participation_pct: 0, event_risk_note: '', liquidity_note: '', note: '' })
+const researchPositionEditor = reactive({ ticker: '', existing: false, max_weight_pct: 0, reference_cost_usd: undefined as number | undefined, max_daily_volume_participation_pct: 0, event_risk_note: '', liquidity_note: '', note: '', gate_override: false, gate_override_reason: '' })
 const watchEditor = reactive({
   ticker: '',
   note: '',
@@ -1893,6 +1933,8 @@ const watchEditor = reactive({
 })
 const showArchivedWatches = ref(false)
 const effectivenessLoading = ref(false)
+const effectivenessRefreshing = ref(false)
+const effectivenessReplayLoading = ref(false)
 const effectivenessVisible = ref(false)
 const effectiveness = ref<CandidateEffectivenessReport | null>(null)
 const effectivenessNotice = computed(() => {
@@ -1905,7 +1947,10 @@ const effectivenessNotice = computed(() => {
   const benchmarkState = effectiveness.value?.benchmark_history_status === 'ready'
     ? (effectiveness.value?.benchmark_available ? `收益相对 ${benchmark} 计算。` : `${benchmark} 历史已就绪，正在等待候选持有期成熟。`)
     : `${benchmark} 历史${benchmarkHistoryLabel(effectiveness.value?.benchmark_history_status)}，当前不计算相对收益。`
-  return `${status} ${benchmarkState}${baseline}`
+  const tracking = effectiveness.value?.outcome_tracking_status === 'current'
+    ? '每个信号与持有期结果已进入每日持久化闭环。'
+    : '信号结果闭环尚未完整运行，下一次候选行情同步会继续推进。'
+  return `${status} ${benchmarkState}${tracking}${baseline}`
 })
 const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
@@ -2438,6 +2483,48 @@ async function openEffectiveness() {
   }
 }
 
+async function refreshEffectiveness() {
+  effectivenessRefreshing.value = true
+  try {
+    const res = await apiClient.post<ApiResponse<{ report: CandidateEffectivenessReport }>>('/discovery/candidates/effectiveness/refresh')
+    effectiveness.value = res.data.data.report
+    ElMessage.success('已使用本地日线推进信号结果闭环')
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || error?.message || '推进效果验证失败')
+  } finally {
+    effectivenessRefreshing.value = false
+  }
+}
+
+async function replayEffectiveness() {
+  effectivenessReplayLoading.value = true
+  try {
+    const preview = await apiClient.post<ApiResponse<CandidateEffectivenessReplayResult>>('/discovery/candidates/effectiveness/replay', { confirm: false })
+    const result = preview.data.data
+    if (!result.signal_count) {
+      ElMessage.info(`没有可回放的新信号；符合防未来数据校验的批次 ${result.eligible_batches}/${result.batch_count}`)
+      return
+    }
+    await ElMessageBox.confirm(
+      `检测到 ${result.signal_count} 个可回放信号，来自 ${result.eligible_batches}/${result.batch_count} 个合格批次。仅使用不可变历史快照，确认后写入事件并推进本地结果。`,
+      '确认历史回放',
+      { confirmButtonText: '确认回放', cancelButtonText: '取消', type: 'warning' },
+    )
+    const confirmed = await apiClient.post<ApiResponse<CandidateEffectivenessReplayResult>>('/discovery/candidates/effectiveness/replay', { confirm: true })
+    ElMessage.success(`历史回放完成，新增 ${confirmed.data.data.inserted_count} 个不可变信号`)
+    await openEffectiveness()
+  } catch (error: any) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error?.response?.data?.message || error?.message || '历史回放失败')
+  } finally {
+    effectivenessReplayLoading.value = false
+  }
+}
+
+function effectivenessDimensionLabel(value: string) {
+  return ({ market_cap: '市值', sector: '赛道', liquidity: '流动性', market_regime: '市场环境', signal_type: '信号类型' } as Record<string, string>)[value] || value
+}
+
 function exportCandidates() {
   const query = new URLSearchParams()
   Object.entries(requestParams()).forEach(([key, value]) => query.set(key, String(value)))
@@ -2589,6 +2676,17 @@ function formatForecastRange(value?: CandidateDetail['market_research']['eps_for
   return `${formatForecastNumber(value.low)} – ${formatForecastNumber(value.high)}`
 }
 
+function epsRevisionLabel(direction?: string) {
+	return ({ up: '上修', down: '下修', flat: '持平', unknown: '样本不足' } as Record<string, string>)[direction || ''] || '样本不足'
+}
+
+function epsRevisionTagType(direction?: string) {
+	if (direction === 'up') return 'success'
+	if (direction === 'down') return 'danger'
+	if (direction === 'flat') return 'info'
+	return 'warning'
+}
+
 function anomalyValues(value: string) {
   try {
     const parsed = JSON.parse(value)
@@ -2718,8 +2816,12 @@ async function openResearchPortfolio(ticker = '') {
 async function loadResearchPortfolio() {
   researchPortfolioLoading.value = true
   try {
-    const res = await apiClient.get<ApiResponse<CandidateResearchPortfolio>>('/discovery/research-positions')
+    const [res, gateRes] = await Promise.all([
+      apiClient.get<ApiResponse<CandidateResearchPortfolio>>('/discovery/research-positions'),
+      apiClient.get<ApiResponse<ResearchActionGate>>('/discovery/research-action-gate'),
+    ])
     researchPortfolio.value = res.data.data
+    researchActionGate.value = gateRes.data.data
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '加载研究组合失败')
   } finally {
@@ -2736,6 +2838,8 @@ function newResearchPosition(ticker = '') {
   researchPositionEditor.event_risk_note = ''
   researchPositionEditor.liquidity_note = ''
   researchPositionEditor.note = ''
+  researchPositionEditor.gate_override = false
+  researchPositionEditor.gate_override_reason = ''
   researchPositionEditorVisible.value = true
 }
 
@@ -2748,6 +2852,8 @@ function editResearchPosition(row: CandidateResearchPosition) {
   researchPositionEditor.event_risk_note = row.event_risk_note || ''
   researchPositionEditor.liquidity_note = row.liquidity_note || ''
   researchPositionEditor.note = row.note || ''
+  researchPositionEditor.gate_override = false
+  researchPositionEditor.gate_override_reason = ''
   researchPositionEditorVisible.value = true
 }
 
@@ -2767,6 +2873,8 @@ async function saveResearchPosition() {
       event_risk_note: researchPositionEditor.event_risk_note,
       liquidity_note: researchPositionEditor.liquidity_note,
       note: researchPositionEditor.note,
+      gate_override: researchPositionEditor.gate_override,
+      gate_override_reason: researchPositionEditor.gate_override_reason,
     })
     ElMessage.success('研究仓位已保存')
     researchPositionEditorVisible.value = false
@@ -3168,8 +3276,12 @@ function portfolioRiskFlagLabel(flag: string) {
 }
 
 function portfolioWarningText(warnings: string[]) {
-  const labels: Record<string, string> = { total_research_weight_above_100pct: '研究权重上限合计超过 100%', sector_concentration_above_40pct: '单一赛道研究上限超过 40%', blocked_investability_positions: '存在流动性阻断标的', position_data_gaps: '存在当前候选或数据质量缺口' }
-  return warnings.map((item) => labels[item] || item).join('；')
+	const labels: Record<string, string> = { total_research_weight_above_100pct: '研究权重上限合计超过 100%', sector_concentration_above_40pct: '单一赛道研究上限超过 40%', blocked_investability_positions: '存在流动性阻断标的', position_data_gaps: '存在当前候选或数据质量缺口', position_concentration_high: '单标的或前三标的集中度偏高', market_beta_and_style_factor_unavailable: '尚无 Beta 与风格因子数据，当前仅展示行业、流动性和参考收益风险' }
+	return warnings.map((item) => labels[item] || item).join('；')
+}
+
+function portfolioCoverageLabel(status?: string) {
+	return ({ available: '完整', partial: '部分', missing: '未覆盖' } as Record<string, string>)[status || ''] || '未覆盖'
 }
 
 function researchQualityLabel(status?: string) {
@@ -3205,6 +3317,10 @@ function effectivenessCohortLabel(grade: string) {
 
 function effectivenessWindow(cohort: CandidateEffectivenessCohort, horizon: number) {
   return cohort.windows.find((item) => item.horizon_days === horizon)
+}
+
+function outcomeTrackingLabel(status?: string) {
+  return ({ current: '跟踪完整', tracking: '跟踪中', not_started: '尚未运行' } as Record<string, string>)[status || ''] || '状态未知'
 }
 
 function benchmarkHistoryLabel(status?: string) {
@@ -4618,6 +4734,7 @@ onUnmounted(() => {
 .effectiveness-readiness {
   margin-bottom: 12px;
 }
+.effectiveness-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; color: var(--el-text-color-secondary); font-size: 12px; }
 
 .summary-dialog {
   display: flex;
