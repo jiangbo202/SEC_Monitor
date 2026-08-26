@@ -1453,6 +1453,17 @@ func providerWindowDayPasses(day providerWindowDay) bool {
 	return day.CoveragePct >= DefaultPriceCoveragePct && day.Timely && day.ValidationOK && day.GoldReady
 }
 
+// ProviderRunOperationallyUsable separates current research-data usability
+// from the stricter production-provider certification window. Independent
+// gold evidence is required for certification, but its absence must not make a
+// timely, high-coverage, internally valid market snapshot look like an outage.
+func ProviderRunOperationallyUsable(run ProviderRun) bool {
+	return run.RecordCount > 0 && run.ExpectedCount > 0 &&
+		run.CoveragePct >= DefaultPriceCoveragePct && run.Timely &&
+		run.ValidationErrorPct <= DefaultValidationErrorPct &&
+		strings.TrimSpace(run.ErrorMessage) == ""
+}
+
 func trailingProviderFailures(window []providerWindowDay) int {
 	failures := 0
 	for index := len(window) - 1; index >= 0; index-- {

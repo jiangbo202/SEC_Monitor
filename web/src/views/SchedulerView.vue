@@ -262,7 +262,7 @@ function taskDescription(value: string) {
     notification_retry_sync: '重试到期但此前发送失败的通知，不重新拉取市场或 SEC 数据。',
     sqlite_backup: '备份主库与小盘研究库；安排在日常数据任务完成后，避免影响数据更新。',
     operation_history_cleanup: '清理过期运行、诊断和通知历史，不删除行情、候选或 SEC 数据。',
-    operational_health_notification_sync: '在启用 Telegram 后发送去重的运行健康告警；默认关闭以避免无配置空跑。'
+    operational_health_notification_sync: '每日生成运行健康摘要；仅在启用 Telegram 后发送去重告警，未配置时会安全跳过外发。'
   }
   return descriptions[value] || '系统后台任务。'
 }

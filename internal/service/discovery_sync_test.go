@@ -36,6 +36,23 @@ type fakeWatchTargetPriceProvider struct {
 	calls    int
 }
 
+func TestFixedTickerEvaluationMetadataSupportsForm4CheckpointIdentity(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	record := discovery.SecuritySourceRecord{CIK: "0001646188", Ticker: "ONDS", CompanyName: "Ondas Inc."}
+	version := discovery.SourceVersion{Source: "sec-individual-new-listings", Version: "issuer-v1", SHA256: strings.Repeat("a", 64), EffectiveAt: now}
+	metadata := fixedSecurityMetadataSource{records: []discovery.SecuritySourceRecord{record}, version: version}
+	loaded, loadedVersion, err := metadata.Load(context.Background())
+	if err != nil || len(loaded) != 1 || loadedVersion.SHA256 != version.SHA256 {
+		t.Fatalf("loaded=%+v version=%+v err=%v", loaded, loadedVersion, err)
+	}
+	transactions, coverages, _, err := (discovery.SECForm4InsiderSource{
+		Metadata: metadata, Downloader: &discovery.Downloader{CacheDir: t.TempDir()}, LookbackDays: discovery.CandidateInsiderLookbackDays,
+	}).LoadInsiderTransactionsWithCoverage(context.Background(), map[string]struct{}{record.CIK: {}}, now)
+	if err != nil || len(transactions) != 0 || len(coverages) != 1 || coverages[0].Status != discovery.InsiderCoverageCoveredNoFilings {
+		t.Fatalf("transactions=%+v coverages=%+v err=%v", transactions, coverages, err)
+	}
+}
+
 func (f *fakeWatchTargetPriceProvider) Load(context.Context, []discovery.Listing) ([]discovery.PriceRecord, discovery.ProviderResult, error) {
 	return f.records, discovery.ProviderResult{}, nil
 }

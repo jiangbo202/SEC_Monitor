@@ -24,7 +24,7 @@
       <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
     </el-form>
     <el-table class="target-list-table" :data="rows" v-loading="loading" border size="small" :empty-text="t('pages.targets.empty')">
-      <el-table-column label="标的" min-width="230">
+      <el-table-column label="标的" width="210">
         <template #default="{ row }">
           <div class="target-identity">
             <el-link class="target-ticker" type="primary" @click="openDetail(row)">{{ row.ticker }}</el-link>
@@ -55,7 +55,7 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="技术信号" min-width="290">
+      <el-table-column label="技术信号" width="200">
         <template #default="{ row }">
           <el-tooltip placement="top" effect="dark">
             <template #content>
@@ -68,16 +68,17 @@
                 <div>当日估算成交额：{{ formatNotional(row.technical.dollar_volume_usd) }}</div>
                 <div>20 日均成交额：{{ formatNotional(row.technical.average_dollar_volume_20) }}（{{ formatRatio(row.technical.dollar_volume_ratio_20) }}）</div>
                 <div>流动性：{{ liquidityLabel(row.technical.liquidity_status) }}</div>
+                <div>全部技术信号：{{ technicalSignalsTooltip(row.technical) }}</div>
               </template>
               <span v-else>{{ targetTechnicalStatusDescription(row) }}</span>
             </template>
             <div class="target-signals">
-              <el-tag v-for="signal in (row.technical?.signals || []).slice(0, 2)" :key="signal.kind" size="small" type="success" effect="plain">{{ signal.label }}</el-tag>
-              <el-tag v-if="(row.technical?.signals || []).length > 2" size="small" type="info" effect="plain">+{{ (row.technical?.signals || []).length - 2 }}</el-tag>
               <el-tag v-if="row.technical?.status === 'ready'" size="small" :type="liquidityTagType(row.technical.liquidity_status)" effect="plain">流动性{{ liquidityShortLabel(row.technical.liquidity_status) }}</el-tag>
+              <el-tag v-for="signal in (row.technical?.signals || []).slice(0, 1)" :key="signal.kind" class="target-primary-signal" size="small" type="success" effect="plain">{{ signal.label }}</el-tag>
               <el-tag v-if="!(row.technical?.signals || []).length" size="small" :type="row.technical?.status === 'ready' ? 'info' : 'warning'" effect="plain">
                 {{ row.technical?.status === 'ready' ? '暂无突破' : targetTechnicalStatusLabel(row) }}
               </el-tag>
+              <span v-if="(row.technical?.signals || []).length > 1" class="target-signal-more" aria-label="还有更多技术信号">••</span>
             </div>
           </el-tooltip>
         </template>
@@ -91,7 +92,7 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="财报预告" min-width="150">
+      <el-table-column label="财报预告" width="120">
         <template #default="{ row }">
           <el-tooltip :content="earningsPreviewTooltip(earningsPreviewFor(row))" placement="top" effect="dark">
             <el-tag size="small" :type="earningsPreviewTagType(earningsPreviewFor(row))" effect="plain">
@@ -206,7 +207,7 @@
       <el-table :data="simulationReport?.items || []" border max-height="480" empty-text="暂无可复盘的日线模拟记录">
         <el-table-column prop="ticker" label="Ticker" width="100" />
         <el-table-column label="信号 / 入场" width="190">
-          <template #default="{ row }">{{ formatDate(row.signal_date) }}<br><small>{{ formatDate(row.entry_date) }} · {{ formatPrice(row.entry_price_usd) }}</small></template>
+          <template #default="{ row }">{{ formatDate(row.signal_date) }}<br><small>{{ formatDate(row.entry_date) }} · {{ formatPrice(row.entry_price_usd) }} · {{ row.entry_price_source === 'next_open' ? '次日开盘' : '收盘回退' }}</small></template>
         </el-table-column>
         <el-table-column label="计划" min-width="190">
           <template #default="{ row }"><div>{{ row.entry_trigger || '-' }}</div><small>止损 {{ formatPrice(row.stop_loss_usd) }} · 目标 {{ formatPrice(row.take_profit_usd) }}</small></template>
@@ -215,7 +216,7 @@
           <template #default="{ row }"><el-tag :type="simulationStatusType(row.status)" effect="plain">{{ simulationStatusLabel(row.status) }}</el-tag><div><small>{{ row.exit_reason || `标记价 ${formatPrice(row.last_mark_price_usd)}` }}</small></div></template>
         </el-table-column>
         <el-table-column label="收益 / R" width="125" align="right">
-          <template #default="{ row }">{{ formatSignedPct(row.return_pct) }}<br><small>{{ formatRMultiple(row.r_multiple) }}</small></template>
+          <template #default="{ row }">{{ formatSignedPct(row.return_pct) }}<br><small>毛 {{ formatSignedPct(row.gross_return_pct) }} · 成本 {{ formatPct(row.execution_cost_pct) }} · {{ formatRMultiple(row.r_multiple) }}</small></template>
         </el-table-column>
         <el-table-column label="最大回撤" width="115" align="right"><template #default="{ row }">{{ formatSignedPct(row.max_drawdown_pct) }}</template></el-table-column>
         <el-table-column label="持仓天数" width="100" align="right"><template #default="{ row }">{{ row.holding_days }}</template></el-table-column>
@@ -274,7 +275,7 @@
             <el-space><el-select fit-input-width v-model="targetAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="targetAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!targetAIProvider || !targetAIPromptTemplate" :loading="targetAIGenerating" @click="generateTargetAI">生成研判</el-button></el-space>
           </div>
           <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
-          <template v-else-if="targetAIAnalyses.length"><el-select fit-input-width v-model="targetAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in targetAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeTargetAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeTargetAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeTargetAIAnalysis?.system_prompt" :user-prompt="activeTargetAIAnalysis?.user_prompt" /><div style="padding:12px;background:var(--el-fill-color-light);border-radius:4px"><AIAnalysisResult :result="activeTargetAIAnalysis?.structured_result" :content="activeTargetAIAnalysis?.content" /></div></template></template>
+          <template v-else-if="targetAIAnalyses.length"><el-select fit-input-width v-model="targetAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in targetAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeTargetAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeTargetAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><el-alert v-if="activeTargetAIAnalysis?.validation_warning" type="warning" :closable="false" show-icon title="模型输出未通过结构校验，系统已安全降级为证据不足。" style="margin-bottom:12px" /><AIRequestPrompt :system-prompt="activeTargetAIAnalysis?.system_prompt" :user-prompt="activeTargetAIAnalysis?.user_prompt" /><div style="padding:12px;background:var(--el-fill-color-light);border-radius:4px"><AIAnalysisResult :result="activeTargetAIAnalysis?.structured_result" :content="activeTargetAIAnalysis?.content" /></div></template></template>
           <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
           <el-alert v-show="activeTargetAIAnalysis?.status === 'queued' || activeTargetAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
         </div>
@@ -556,7 +557,7 @@ const detailEarningsRefreshing = ref(false)
 const detailTechnicalBackfilling = ref(false)
 type AIProvider = { id: string; name: string; model: string }
 type AIPromptTemplate = { id: string; name: string }
-type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; system_prompt?: string; user_prompt?: string; requested_at: string; structured_result?: AIAnalysisStructuredResult }
+type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; validation_warning?: string; system_prompt?: string; user_prompt?: string; requested_at: string; structured_result?: AIAnalysisStructuredResult }
 const aiProviders = ref<AIProvider[]>([])
 const aiPromptTemplates = ref<AIPromptTemplate[]>([])
 const targetAIProvider = ref('')
@@ -1272,6 +1273,10 @@ function liquidityShortLabel(status?: string) {
   return '未知'
 }
 
+function technicalSignalsTooltip(technical?: CandidateTechnicalAnalysis | null) {
+  return technical?.signals?.map((signal) => signal.label).join('、') || '暂无突破'
+}
+
 function liquidityTagType(status?: string) {
   if (status === 'low') return 'danger'
   if (status === 'limited') return 'warning'
@@ -1440,6 +1445,24 @@ onUnmounted(() => { if (targetAIPollingTimer !== undefined) window.clearTimeout(
 
 .target-signals :deep(.el-tag) {
   flex: 0 0 auto;
+}
+
+.target-signals :deep(.target-primary-signal) {
+  min-width: 0;
+  max-width: 78px;
+}
+
+.target-signals :deep(.target-primary-signal .el-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.target-signal-more {
+  flex: 0 0 auto;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
 }
 
 .target-sync-time {

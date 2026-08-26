@@ -55,16 +55,17 @@ type EarningsPreviewRefreshResult struct {
 }
 
 type EarningsPreviewSyncResult struct {
-	TargetCount int      `json:"target_count"`
-	Matched     int      `json:"matched"`
-	Fetched     int      `json:"fetched"`
-	Changed     int      `json:"changed"`
-	NoCoverage  int      `json:"no_coverage"`
-	Failed      int      `json:"failed"`
-	Notified    int      `json:"notified"`
-	Warnings    []string `json:"warnings"`
-	Skipped     bool     `json:"skipped"`
-	Message     string   `json:"message"`
+	TargetCount      int      `json:"target_count"`
+	CoverageComplete bool     `json:"coverage_complete"`
+	Matched          int      `json:"matched"`
+	Fetched          int      `json:"fetched"`
+	Changed          int      `json:"changed"`
+	NoCoverage       int      `json:"no_coverage"`
+	Failed           int      `json:"failed"`
+	Notified         int      `json:"notified"`
+	Warnings         []string `json:"warnings"`
+	Skipped          bool     `json:"skipped"`
+	Message          string   `json:"message"`
 }
 
 type longbridgeEarningsClient interface {
@@ -352,6 +353,7 @@ func (s *EarningsPreviewService) syncTargets(ctx context.Context, targets []mode
 	if !complete {
 		result.Warnings = append(result.Warnings, "Longbridge 财报日历分页达到本次上限；未匹配标的保留原有缓存，下一次同步会继续刷新。")
 	}
+	result.CoverageComplete = complete
 	byTicker := nearestEarningsEvents(events, now)
 	changedPreviews := make([]model.EarningsPreview, 0)
 	for _, target := range targets {

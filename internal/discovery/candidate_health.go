@@ -24,6 +24,7 @@ type CandidateHealth struct {
 	MissingFinancials              int      `json:"missing_financials"`
 	MissingInsiders                int      `json:"missing_insiders"`
 	InsiderDataStatus              string   `json:"insider_data_status"`
+	InsiderLineageStatus           string   `json:"insider_lineage_status"`
 	CandidatesWithInsiderRecords   int      `json:"candidates_with_insider_records"`
 	InsiderRecordCoveragePct       float64  `json:"insider_record_coverage_pct"`
 	CandidatesWithInsiderCoverage  int      `json:"candidates_with_insider_coverage"`
@@ -89,8 +90,10 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 		return result, err
 	}
 	result.InsiderDataStatus = "missing"
+	result.InsiderLineageStatus = "missing"
 	if insiderDataAvailable {
 		result.InsiderDataStatus = "available"
+		result.InsiderLineageStatus = "source_version"
 	}
 	insiderCoverageExpected, err := candidateInsiderCoverageExpected(ctx, db, batch)
 	if err != nil {
@@ -128,6 +131,28 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 	if err != nil {
 		return result, err
 	}
+	// Older published batches can predate the explicit insiders:* source-version
+	// marker while still containing immutable, batch-scoped Form 4 coverage
+	// snapshots. Those snapshots are sufficient to distinguish "reviewed with
+	// no qualifying purchase" from "not reviewed". Treat complete snapshot
+	// coverage as available evidence, but keep a separate lineage warning so the
+	// next publish can repair the missing source-version marker.
+	coverageEvidenceCount := 0
+	for _, coverage := range insiderCoverageBySecurity {
+		if strings.TrimSpace(coverage.coverageStatus) != "" {
+			coverageEvidenceCount++
+		}
+	}
+	if !insiderDataAvailable && result.TotalCandidates > 0 {
+		switch {
+		case coverageEvidenceCount == result.TotalCandidates:
+			result.InsiderDataStatus = "available"
+			result.InsiderLineageStatus = "coverage_snapshot"
+		case coverageEvidenceCount > 0:
+			result.InsiderDataStatus = "partial"
+			result.InsiderLineageStatus = "partial_coverage_snapshot"
+		}
+	}
 	filingCoverageBySecurity, err := candidateRecentFilingCoverageBySecurity(ctx, db, scores)
 	if err != nil {
 		return result, err
@@ -161,7 +186,7 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 				result.InsiderCoverageNoFilings++
 			}
 		}
-		if !insiderDataAvailable || coverage.coverageStatus == InsiderCoverageUnavailable || coverage.coverageStatus == InsiderCoveragePartial {
+		if (!insiderDataAvailable && coverage.coverageStatus == "") || coverage.coverageStatus == InsiderCoverageUnavailable || coverage.coverageStatus == InsiderCoveragePartial {
 			result.MissingInsiders++
 		} else if !coverage.qualified {
 			result.NoQualifiedInsiderCandidates++
@@ -237,6 +262,11 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 	if result.MissingInsiders > 0 {
 		result.Issues = append(result.Issues, fmt.Sprintf("missing_insider_data:%d", result.MissingInsiders))
 	}
+	if result.InsiderLineageStatus == "coverage_snapshot" {
+		result.Issues = append(result.Issues, "insider_source_lineage_recovered_from_coverage")
+	} else if result.InsiderLineageStatus == "partial_coverage_snapshot" {
+		result.Issues = append(result.Issues, fmt.Sprintf("insider_source_lineage_partial:%d/%d", coverageEvidenceCount, result.TotalCandidates))
+	}
 	if insiderDataAvailable && !insiderCoverageExpected && result.TotalCandidates > 0 && result.CandidatesWithInsiderRecords == 0 {
 		result.Issues = append(result.Issues, fmt.Sprintf("candidate_insider_records:0/%d", result.TotalCandidates))
 	}
@@ -277,6 +307,7 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 		result.ResearchOnlyCandidates > 0 || result.BlockedCandidates > 0 || result.OpenDataQualityIncidents > 0 || result.TechnicalHistoryRetryPending > 0 ||
 		(result.TotalCandidates > 0 && insiderDataAvailable && !insiderCoverageExpected && result.CandidatesWithInsiderRecords == 0) ||
 		result.InsiderCoveragePartial > 0 || result.InsiderCoverageUnavailable > 0 ||
+		result.InsiderLineageStatus == "coverage_snapshot" || result.InsiderLineageStatus == "partial_coverage_snapshot" ||
 		(result.TotalCandidates > 0 && result.CandidatesWithRecentFilings == 0) {
 		result.Status = CandidateHealthDegraded
 	}

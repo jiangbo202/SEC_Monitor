@@ -445,11 +445,61 @@ func TestAIAnalysisRepairsInvalidStructuredResponseOnce(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || len(payload.Messages) != 4 {
 			t.Fatalf("repair payload=%+v err=%v", payload, err)
 		}
+		if !strings.Contains(payload.Messages[3].Content, "AI 结果不是 JSON 对象") || !strings.Contains(payload.Messages[3].Content, `stance="insufficient_evidence"`) {
+			t.Fatalf("repair prompt did not include the exact validation error and safe schema fallback: %q", payload.Messages[3].Content)
+		}
 		return structuredAIHTTPResponse("格式修复完成"), nil
 	})})
 	result, err := analyses.GenerateTickerAnalysis(ctx, AIAnalysisInput{ProviderID: "deepseek", Evaluation: discovery.TickerEvaluationResult{Ticker: "REPAIR", Status: "ready"}}, "tester")
 	if err != nil || result.RequestAttempts != 2 || calls != 2 || result.StructuredResult == nil || result.StructuredResult.Conclusion != "格式修复完成" {
 		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestParseAIAnalysisStructuredResultNormalizesSourcePathShapes(t *testing.T) {
+	content := `{"schema_version":"ai-research-v1","stance":"watch","conclusion":"继续观察","evidence":[{"fact":"事实一","inference":"推断一","impact":"影响一","source_path":"$.facts.one"},{"fact":"事实二","inference":"推断二","impact":"影响二","source_paths":"$.facts.two"}],"counter_evidence":[],"invalidation_conditions":[],"catalysts":[],"data_gaps":[],"risk_notes":[],"evidence_sufficiency":"medium"}`
+	result, canonical, err := parseAIAnalysisStructuredResult(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Evidence) != 2 || result.Evidence[0].SourcePaths[0] != "$.facts.one" || result.Evidence[1].SourcePaths[0] != "$.facts.two" {
+		t.Fatalf("evidence=%+v", result.Evidence)
+	}
+	if strings.Contains(canonical, "source_path\"") || !strings.Contains(canonical, `"source_paths":["$.facts.one"]`) {
+		t.Fatalf("canonical=%s", canonical)
+	}
+}
+
+func TestAIAnalysisSafelyFallsBackAfterInvalidRepair(t *testing.T) {
+	db, configs, analyses := newAIAnalysisTestServices(t)
+	ctx := context.Background()
+	if err := configs.SaveAIProviders(ctx, []AIProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://example.test/v1", APIKey: "secret", Model: "deepseek-v4-pro", Enabled: true}}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	analyses.WithHTTPClient(&http.Client{Transport: aiRoundTripper(func(*http.Request) (*http.Response, error) {
+		calls++
+		content := `{"schema_version":"ai-research-v1","stance":"watch","conclusion":"缺少可回溯字段","evidence":[{"fact":"事实"}],"counter_evidence":[],"invalidation_conditions":[],"catalysts":[],"data_gaps":[],"risk_notes":[],"evidence_sufficiency":"medium"}`
+		payload, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}}}})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(payload)))}, nil
+	})})
+	result, err := analyses.GenerateTickerAnalysis(ctx, AIAnalysisInput{ProviderID: "deepseek", Evaluation: discovery.TickerEvaluationResult{Ticker: "SAFE", Status: "ready"}}, "tester")
+	if err != nil || result.Status != "success" || calls != 2 || result.RequestAttempts != 2 || result.ResponseMode != "validation_fallback" {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+	if result.StructuredResult == nil || result.StructuredResult.Stance != "insufficient_evidence" || result.StructuredResult.EvidenceSufficiency != "low" || len(result.StructuredResult.Evidence) != 0 {
+		t.Fatalf("fallback=%+v", result.StructuredResult)
+	}
+	if !strings.Contains(result.ValidationWarning, "事实、推断、影响和事实包路径") || !strings.Contains(result.Content, "本次不形成研究判断") {
+		t.Fatalf("warning=%q content=%q", result.ValidationWarning, result.Content)
+	}
+	var stored model.AIAnalysis
+	if err := db.First(&stored, result.ID).Error; err != nil || stored.ValidationWarning == "" {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+	second, err := analyses.GenerateTickerAnalysis(ctx, AIAnalysisInput{ProviderID: "deepseek", Evaluation: discovery.TickerEvaluationResult{Ticker: "SAFE", Status: "ready"}}, "tester")
+	if err != nil || calls != 4 || second.ReusedFromID != nil || second.ResponseMode != "validation_fallback" {
+		t.Fatalf("safe fallback must not be reused: second=%+v calls=%d err=%v", second, calls, err)
 	}
 }
 

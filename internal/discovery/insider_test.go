@@ -453,7 +453,7 @@ func TestForm4DocumentLocationAllowsSafeSECXSLSubdirectory(t *testing.T) {
 	}
 }
 
-func TestForm4DocumentLocationUsesAccessionFilerCIK(t *testing.T) {
+func TestForm4DocumentLocationsPreferIssuerCIKWithAccessionFallback(t *testing.T) {
 	filing := FilingMetadata{
 		CIK:             "0001070423",
 		Accession:       "0001581990-26-000045",
@@ -463,10 +463,17 @@ func TestForm4DocumentLocationUsesAccessionFilerCIK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("form4DocumentLocation() error = %v", err)
 	}
-	if want := "https://www.sec.gov/Archives/edgar/data/1581990/000158199026000045/form4.xml"; url != want {
+	if want := "https://www.sec.gov/Archives/edgar/data/1070423/000158199026000045/form4.xml"; url != want {
 		t.Fatalf("url = %q, want %q", url, want)
 	}
-	if want := "form4-0001581990-000158199026000045-form4.xml"; cacheKey != want {
+	if want := "form4-0001070423-000158199026000045-form4.xml"; cacheKey != want {
 		t.Fatalf("cache key = %q, want %q", cacheKey, want)
+	}
+	locations, err := preferredForm4DocumentLocations("https://www.sec.gov/Archives/edgar/data", filing)
+	if err != nil || len(locations) != 2 {
+		t.Fatalf("locations=%+v err=%v", locations, err)
+	}
+	if want := "https://www.sec.gov/Archives/edgar/data/1581990/000158199026000045/form4.xml"; locations[1].URL != want {
+		t.Fatalf("fallback url = %q, want %q", locations[1].URL, want)
 	}
 }

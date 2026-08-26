@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestTradePlanSimulationUsesNextCloseAndTakeProfit(t *testing.T) {
+func TestTradePlanSimulationUsesNextAvailableEntryAndTakeProfit(t *testing.T) {
 	rows := tradePlanSimulationFixture("PLAN", 126_000_000)
 	simulations := buildTradePlanSimulations(rows)
 	if len(simulations) != 1 {
@@ -16,11 +16,29 @@ func TestTradePlanSimulationUsesNextCloseAndTakeProfit(t *testing.T) {
 	if simulation.Status != TradePlanSimulationTarget || simulation.EntryDate == nil || simulation.ExitDate == nil {
 		t.Fatalf("simulation = %#v", simulation)
 	}
-	if simulation.EntryDate.Format(time.DateOnly) != rows[200].TradeDate.Format(time.DateOnly) || simulation.EntryPriceUSD != 100 {
-		t.Fatalf("entry = %#v, want next day close $100", simulation)
+	if simulation.EntryDate.Format(time.DateOnly) != rows[200].TradeDate.Format(time.DateOnly) || simulation.EntryPriceUSD != 100 || simulation.EntryPriceSource != "next_close_fallback" {
+		t.Fatalf("entry = %#v, want next day fallback close $100", simulation)
 	}
-	if simulation.ExitDate.Format(time.DateOnly) != rows[201].TradeDate.Format(time.DateOnly) || simulation.ExitPriceUSD != 126 || simulation.ReturnPct <= 0 || simulation.RMultiple <= 0 || simulation.HoldingDays != 1 {
+	if simulation.ExitDate.Format(time.DateOnly) != rows[201].TradeDate.Format(time.DateOnly) || simulation.ExitPriceUSD != 126 || simulation.GrossReturnPct <= simulation.ReturnPct || simulation.ExecutionCostPct <= 0 || simulation.ReturnPct <= 0 || simulation.RMultiple <= 0 || simulation.HoldingDays != 1 {
 		t.Fatalf("exit = %#v, want take-profit close", simulation)
+	}
+}
+
+func TestTradePlanSimulationUsesNextOpenAndConservativeSameDayTrigger(t *testing.T) {
+	base := time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC)
+	rows := []PriceSnapshot{
+		{Symbol: "RISK", TradeDate: base, CloseMicros: 100_000_000, QualityStatus: QualityStatusValid},
+		{Symbol: "RISK", TradeDate: base.AddDate(0, 0, 1), OpenMicros: 100_000_000, HighMicros: 115_000_000, LowMicros: 90_000_000, CloseMicros: 108_000_000, Volume: 100_000, QualityStatus: QualityStatusValid},
+	}
+	simulation, terminal := simulateTradePlanLifecycle(rows, 0, CandidateTradeSetup{EntryTrigger: "test", StopLossUSD: 95, TakeProfitZoneLowUSD: 110, RiskPct: 5})
+	if terminal != 1 || simulation.EntryPriceSource != "next_open" || simulation.EntryPriceUSD != 100 {
+		t.Fatalf("entry = %#v terminal=%d", simulation, terminal)
+	}
+	if simulation.Status != TradePlanSimulationStopLoss || simulation.ExitPriceUSD != 95 || simulation.HoldingDays != 0 || simulation.GrossReturnPct > -4.999 || simulation.GrossReturnPct < -5.001 || simulation.ReturnPct >= simulation.GrossReturnPct {
+		t.Fatalf("conservative result = %#v", simulation)
+	}
+	if simulation.ExitReason != "同一日止损与目标均触发，按保守规则优先计入止损" {
+		t.Fatalf("exit reason = %q", simulation.ExitReason)
 	}
 }
 

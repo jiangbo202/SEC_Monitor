@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	InsiderParserVersion        = "form4-parser-v2"
+	InsiderParserVersion        = "form4-parser-v3"
 	InsiderCoverageVersion      = "form4-coverage-v1"
 	form4DocumentRequestTimeout = 30 * time.Second
 )
@@ -452,9 +452,10 @@ type form4DocumentCandidate struct {
 	CacheKey string
 }
 
-// preferredForm4DocumentLocations requests the accession-root ownership XML
-// before SEC's rendered xslF345 wrapper. Most filings expose both, so this
-// avoids downloading and parsing an HTML wrapper for every document.
+// preferredForm4DocumentLocations requests the issuer-root ownership XML
+// before SEC's rendered xslF345 wrapper. Some older or duplicated filings are
+// also exposed below the CIK encoded in the accession, so that location remains
+// a compatibility fallback rather than being treated as the canonical root.
 func preferredForm4DocumentLocations(baseURL string, filing FilingMetadata) ([]form4DocumentCandidate, error) {
 	originalURL, originalCacheKey, err := form4DocumentLocation(baseURL, filing)
 	if err != nil {
@@ -465,6 +466,15 @@ func preferredForm4DocumentLocations(baseURL string, filing FilingMetadata) ([]f
 		locations = append(locations, form4DocumentCandidate{URL: rawURL, CacheKey: rawCacheKey})
 	}
 	locations = append(locations, form4DocumentCandidate{URL: originalURL, CacheKey: originalCacheKey})
+	if accessionCIK, ok := form4AccessionCIK(filing.Accession); ok && accessionCIK != normalizeCIKString(filing.CIK) {
+		accessionURL, accessionCacheKey, accessionErr := form4DocumentLocationForArchiveCIK(baseURL, filing, accessionCIK)
+		if accessionErr == nil {
+			if rawURL, rawCacheKey, rawOK := form4RawOwnershipFallbackLocationForArchiveCIK(baseURL, filing, accessionCIK); rawOK {
+				locations = append(locations, form4DocumentCandidate{URL: rawURL, CacheKey: rawCacheKey})
+			}
+			locations = append(locations, form4DocumentCandidate{URL: accessionURL, CacheKey: accessionCacheKey})
+		}
+	}
 	return locations, nil
 }
 
@@ -570,9 +580,15 @@ func form4DocumentLocation(baseURL string, filing FilingMetadata) (string, strin
 	if !validCIK(filing.CIK) {
 		return "", "", fmt.Errorf("invalid Form 4 CIK")
 	}
+	return form4DocumentLocationForArchiveCIK(baseURL, filing, normalizeCIKString(filing.CIK))
+}
+
+func form4DocumentLocationForArchiveCIK(baseURL string, filing FilingMetadata, archiveCIK string) (string, string, error) {
+	if !validCIK(archiveCIK) {
+		return "", "", fmt.Errorf("invalid Form 4 archive CIK")
+	}
 	accession := strings.TrimSpace(filing.Accession)
-	archiveCIK, ok := form4AccessionCIK(accession)
-	if !ok {
+	if _, ok := form4AccessionCIK(accession); !ok {
 		return "", "", fmt.Errorf("invalid Form 4 accession")
 	}
 	primary, ok := safeForm4PrimaryDocument(filing.PrimaryDocument)
@@ -583,9 +599,9 @@ func form4DocumentLocation(baseURL string, filing FilingMetadata) (string, strin
 	if noDash == "" || strings.ContainsAny(noDash, `/\`) {
 		return "", "", fmt.Errorf("invalid Form 4 accession")
 	}
-	// A Form 4 can be listed under both the issuer and a reporting owner. SEC's
-	// archive path always belongs to the filer encoded in the accession number,
-	// which is not necessarily filing.CIK (the issuer CIK from submissions data).
+	// EDGAR's data directory is canonically keyed by the issuer CIK. The first
+	// accession segment is not reliable for this purpose because filing agents
+	// can submit on behalf of the issuer.
 	cikPath := strings.TrimLeft(archiveCIK, "0")
 	sourceURL := strings.TrimRight(baseURL, "/") + "/" + cikPath + "/" + noDash + "/" + escapeForm4DocumentPath(primary)
 	cacheKey := "form4-" + archiveCIK + "-" + noDash + "-" + sanitizeForm4CachePart(primary)
@@ -615,6 +631,10 @@ func form4AccessionCIK(accession string) (string, bool) {
 // raw XML filename at the accession root. It never accepts an arbitrary path:
 // only a two-or-more segment xslF345*/filename primary document qualifies.
 func form4RawOwnershipFallbackLocation(baseURL string, filing FilingMetadata) (string, string, bool) {
+	return form4RawOwnershipFallbackLocationForArchiveCIK(baseURL, filing, normalizeCIKString(filing.CIK))
+}
+
+func form4RawOwnershipFallbackLocationForArchiveCIK(baseURL string, filing FilingMetadata, archiveCIK string) (string, string, bool) {
 	primary, ok := safeForm4PrimaryDocument(filing.PrimaryDocument)
 	if !ok {
 		return "", "", false
@@ -626,7 +646,7 @@ func form4RawOwnershipFallbackLocation(baseURL string, filing FilingMetadata) (s
 	fallback := parts[len(parts)-1]
 	copy := filing
 	copy.PrimaryDocument = fallback
-	sourceURL, cacheKey, err := form4DocumentLocation(baseURL, copy)
+	sourceURL, cacheKey, err := form4DocumentLocationForArchiveCIK(baseURL, copy, archiveCIK)
 	if err != nil {
 		return "", "", false
 	}

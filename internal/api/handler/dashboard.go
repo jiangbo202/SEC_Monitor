@@ -127,11 +127,15 @@ type DashboardReviewDueSummary struct {
 }
 
 type DashboardMonitoringSummary struct {
-	WatchTargets     int64               `json:"watch_targets"`
-	EnabledTargets   int64               `json:"enabled_targets"`
-	RecentFilings    []DashboardFiling   `json:"recent_filings"`
-	IPO              DashboardIPOSummary `json:"ipo"`
-	UpcomingEarnings int                 `json:"upcoming_earnings"`
+	WatchTargets           int64               `json:"watch_targets"`
+	EnabledTargets         int64               `json:"enabled_targets"`
+	RecentFilings          []DashboardFiling   `json:"recent_filings"`
+	IPO                    DashboardIPOSummary `json:"ipo"`
+	UpcomingEarnings       int                 `json:"upcoming_earnings"`
+	EarningsCoverageStatus string              `json:"earnings_coverage_status"`
+	EarningsCoveredTargets int                 `json:"earnings_covered_targets"`
+	EarningsUnavailable    int                 `json:"earnings_unavailable"`
+	EarningsLastFetchedAt  *time.Time          `json:"earnings_last_fetched_at,omitempty"`
 }
 
 type DashboardFiling struct {
@@ -638,6 +642,40 @@ func (h *AppHandler) loadDashboardMonitoring(ctx context.Context, now time.Time,
 		return err
 	}
 	result.Monitoring.UpcomingEarnings = int(upcomingEarnings)
+	var enabledTargets []model.WatchTarget
+	if err := h.DB.WithContext(ctx).Where("status = ?", "enabled").Find(&enabledTargets).Error; err != nil {
+		return err
+	}
+	result.Monitoring.EarningsCoverageStatus = "not_started"
+	if len(enabledTargets) > 0 {
+		targetIDs := make([]uint, 0, len(enabledTargets))
+		for _, target := range enabledTargets {
+			targetIDs = append(targetIDs, target.ID)
+		}
+		var previews []model.EarningsPreview
+		if err := h.DB.WithContext(ctx).Where("target_id IN ?", targetIDs).Find(&previews).Error; err != nil {
+			return err
+		}
+		for _, preview := range previews {
+			if preview.Status == "unavailable" {
+				result.Monitoring.EarningsUnavailable++
+			} else if preview.FetchedAt != nil {
+				result.Monitoring.EarningsCoveredTargets++
+			}
+			if preview.FetchedAt != nil && (result.Monitoring.EarningsLastFetchedAt == nil || preview.FetchedAt.After(*result.Monitoring.EarningsLastFetchedAt)) {
+				fetchedAt := preview.FetchedAt.UTC()
+				result.Monitoring.EarningsLastFetchedAt = &fetchedAt
+			}
+		}
+		switch {
+		case result.Monitoring.EarningsCoveredTargets == len(enabledTargets):
+			result.Monitoring.EarningsCoverageStatus = "complete"
+		case result.Monitoring.EarningsCoveredTargets > 0:
+			result.Monitoring.EarningsCoverageStatus = "partial"
+		case result.Monitoring.EarningsUnavailable > 0:
+			result.Monitoring.EarningsCoverageStatus = "unavailable"
+		}
+	}
 	importantForms := []string{"8-K", "6-K", "13D", "13G", "3", "4", "5"}
 	var filings []model.Filing
 	if err := h.DB.WithContext(ctx).Where("filing_type IN ?", importantForms).Order("pulled_at DESC, id DESC").Limit(8).Find(&filings).Error; err != nil {

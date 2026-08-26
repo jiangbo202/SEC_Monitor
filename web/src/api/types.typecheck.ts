@@ -164,6 +164,7 @@ export const candidateHealthTypecheck: CandidateHealth = {
   missing_financials: 0,
   missing_insiders: 0,
   insider_data_status: 'available',
+  insider_lineage_status: 'source_version',
   candidates_with_insider_records: 1,
   insider_record_coverage_pct: 100,
   qualified_insider_candidates: 1,

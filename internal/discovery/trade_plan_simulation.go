@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const TradePlanSimulationRuleVersion = "daily_close_v1"
+const TradePlanSimulationRuleVersion = "daily_ohlc_v2"
 
 const (
 	TradePlanSimulationOpen      = "open"
@@ -80,6 +80,7 @@ func RebuildTradePlanSimulations(ctx context.Context, db *gorm.DB, tickers []str
 			if err := db.WithContext(ctx).Model(&existing).Updates(map[string]any{
 				"status": simulation.Status, "exit_date": simulation.ExitDate, "exit_price_usd": simulation.ExitPriceUSD,
 				"exit_reason": simulation.ExitReason, "last_mark_price_usd": simulation.LastMarkPriceUSD,
+				"gross_return_pct": simulation.GrossReturnPct, "execution_cost_pct": simulation.ExecutionCostPct,
 				"return_pct": simulation.ReturnPct, "r_multiple": simulation.RMultiple,
 				"max_drawdown_pct": simulation.MaxDrawdownPct, "holding_days": simulation.HoldingDays,
 			}).Error; err != nil {
@@ -151,7 +152,7 @@ func ListTradePlanSimulations(ctx context.Context, db *gorm.DB, tickers []string
 func newTradePlanSimulationReport() TradePlanSimulationReport {
 	return TradePlanSimulationReport{
 		GeneratedAt: time.Now().UTC(), RuleVersion: TradePlanSimulationRuleVersion,
-		ExecutionConvention: "信号日收盘确认，下一交易日收盘模拟入场；仅按日线收盘价判断止损、目标和趋势退出。",
+		ExecutionConvention: "信号日收盘确认，下一交易日开盘模拟入场；用日线 OHLC 判断止损和目标，同日双触发按止损优先，并按流动性计入往返成本。",
 		StatusCounts:        map[string]int{}, Items: []TradePlanSimulation{},
 	}
 }
@@ -207,32 +208,49 @@ func buildTradePlanSimulations(rows []PriceSnapshot) []TradePlanSimulation {
 
 func simulateTradePlanLifecycle(rows []PriceSnapshot, signalIndex int, setup CandidateTradeSetup) (TradePlanSimulation, int) {
 	entryIndex := signalIndex + 1
-	entryPrice := priceSnapshotClose(rows[entryIndex])
+	entryPrice, entryPriceSource := tradePlanEntryPrice(rows[entryIndex])
 	signalDate := rows[signalIndex].TradeDate
 	entryDate := rows[entryIndex].TradeDate
 	simulation := TradePlanSimulation{
 		Ticker: rows[signalIndex].Symbol, RuleVersion: TradePlanSimulationRuleVersion, SignalDate: signalDate,
-		EntryDate: &entryDate, EntryTrigger: setup.EntryTrigger, EntryPriceUSD: entryPrice,
+		EntryDate: &entryDate, EntryTrigger: setup.EntryTrigger, EntryPriceSource: entryPriceSource, EntryPriceUSD: entryPrice,
 		StopLossUSD: setup.StopLossUSD, TakeProfitUSD: setup.TakeProfitZoneLowUSD, InitialRiskPct: setup.RiskPct,
-		Status: TradePlanSimulationOpen, LastMarkPriceUSD: entryPrice,
+		Status: TradePlanSimulationOpen, LastMarkPriceUSD: entryPrice, ExecutionCostPct: tradePlanExecutionCostPct(rows[entryIndex], entryPrice),
+	}
+	if entryPrice > 0 && simulation.StopLossUSD > 0 && simulation.StopLossUSD < entryPrice {
+		simulation.InitialRiskPct = (entryPrice - simulation.StopLossUSD) * 100 / entryPrice
 	}
 	peak := entryPrice
-	for index := entryIndex + 1; index < len(rows); index++ {
-		close := priceSnapshotClose(rows[index])
-		if close > peak {
-			peak = close
+	for index := entryIndex; index < len(rows); index++ {
+		open, high, low, close := tradePlanBarPrices(rows[index])
+		if high > peak {
+			peak = high
 		}
 		if peak > 0 {
-			drawdown := (close/peak - 1) * 100
+			drawdown := (low/peak - 1) * 100
 			if drawdown < simulation.MaxDrawdownPct {
 				simulation.MaxDrawdownPct = drawdown
 			}
 		}
-		if simulation.StopLossUSD > 0 && close <= simulation.StopLossUSD {
-			return closeTradePlanSimulation(simulation, rows[index].TradeDate, close, TradePlanSimulationStopLoss, "收盘触发计划止损", index-entryIndex), index
+		// The opening print happens before the day's range. A gap through a
+		// threshold therefore fills at the open rather than the planned level.
+		if simulation.StopLossUSD > 0 && open <= simulation.StopLossUSD {
+			return closeTradePlanSimulation(simulation, rows[index].TradeDate, open, TradePlanSimulationStopLoss, "开盘跳空跌破计划止损", index-entryIndex), index
 		}
-		if simulation.TakeProfitUSD > 0 && close >= simulation.TakeProfitUSD {
-			return closeTradePlanSimulation(simulation, rows[index].TradeDate, close, TradePlanSimulationTarget, "收盘达到第一目标区间", index-entryIndex), index
+		if simulation.TakeProfitUSD > 0 && open >= simulation.TakeProfitUSD {
+			return closeTradePlanSimulation(simulation, rows[index].TradeDate, open, TradePlanSimulationTarget, "开盘跳空达到第一目标区间", index-entryIndex), index
+		}
+		stopHit := simulation.StopLossUSD > 0 && low <= simulation.StopLossUSD
+		targetHit := simulation.TakeProfitUSD > 0 && high >= simulation.TakeProfitUSD
+		if stopHit {
+			reason := "日内触发计划止损"
+			if targetHit {
+				reason = "同一日止损与目标均触发，按保守规则优先计入止损"
+			}
+			return closeTradePlanSimulation(simulation, rows[index].TradeDate, simulation.StopLossUSD, TradePlanSimulationStopLoss, reason, index-entryIndex), index
+		}
+		if targetHit {
+			return closeTradePlanSimulation(simulation, rows[index].TradeDate, simulation.TakeProfitUSD, TradePlanSimulationTarget, "日内达到第一目标区间", index-entryIndex), index
 		}
 		status := buildCandidateTechnicalAnalysis(rows[:index+1]).TradeSetup
 		if status.Status == TradeSetupExitWarning || status.Status == TradeSetupInvalidated {
@@ -241,8 +259,7 @@ func simulateTradePlanLifecycle(rows []PriceSnapshot, signalIndex int, setup Can
 	}
 	lastIndex := len(rows) - 1
 	simulation.LastMarkPriceUSD = priceSnapshotClose(rows[lastIndex])
-	simulation.ReturnPct = tradePlanSimulationReturnPct(simulation.EntryPriceUSD, simulation.LastMarkPriceUSD)
-	simulation.RMultiple = tradePlanSimulationRMultiple(simulation.EntryPriceUSD, simulation.StopLossUSD, simulation.LastMarkPriceUSD)
+	applyTradePlanSimulationReturns(&simulation, simulation.LastMarkPriceUSD)
 	simulation.HoldingDays = lastIndex - entryIndex
 	return simulation, lastIndex
 }
@@ -253,10 +270,75 @@ func closeTradePlanSimulation(simulation TradePlanSimulation, exitDate time.Time
 	simulation.ExitPriceUSD = exitPrice
 	simulation.LastMarkPriceUSD = exitPrice
 	simulation.ExitReason = reason
-	simulation.ReturnPct = tradePlanSimulationReturnPct(simulation.EntryPriceUSD, exitPrice)
-	simulation.RMultiple = tradePlanSimulationRMultiple(simulation.EntryPriceUSD, simulation.StopLossUSD, exitPrice)
+	applyTradePlanSimulationReturns(&simulation, exitPrice)
 	simulation.HoldingDays = holdingDays
 	return simulation
+}
+
+func applyTradePlanSimulationReturns(simulation *TradePlanSimulation, mark float64) {
+	if simulation == nil {
+		return
+	}
+	simulation.GrossReturnPct = tradePlanSimulationReturnPct(simulation.EntryPriceUSD, mark)
+	simulation.ReturnPct = simulation.GrossReturnPct - simulation.ExecutionCostPct
+	if simulation.EntryPriceUSD <= 0 || simulation.InitialRiskPct <= 0 {
+		simulation.RMultiple = 0
+		return
+	}
+	simulation.RMultiple = simulation.ReturnPct / simulation.InitialRiskPct
+}
+
+func tradePlanEntryPrice(row PriceSnapshot) (float64, string) {
+	if row.OpenMicros > 0 {
+		return float64(row.OpenMicros) / 1_000_000, "next_open"
+	}
+	return priceSnapshotClose(row), "next_close_fallback"
+}
+
+func tradePlanBarPrices(row PriceSnapshot) (float64, float64, float64, float64) {
+	close := priceSnapshotClose(row)
+	open := close
+	high := close
+	low := close
+	if row.OpenMicros > 0 {
+		open = float64(row.OpenMicros) / 1_000_000
+	}
+	if row.HighMicros > 0 {
+		high = float64(row.HighMicros) / 1_000_000
+	}
+	if row.LowMicros > 0 {
+		low = float64(row.LowMicros) / 1_000_000
+	}
+	if high < open {
+		high = open
+	}
+	if high < close {
+		high = close
+	}
+	if low > open || low <= 0 {
+		low = open
+	}
+	if low > close {
+		low = close
+	}
+	return open, high, low, close
+}
+
+// tradePlanExecutionCostPct is an explicitly conservative round-trip model.
+// It uses only point-in-time entry-day dollar volume and therefore remains
+// reproducible without pretending to know an intraday order book.
+func tradePlanExecutionCostPct(row PriceSnapshot, price float64) float64 {
+	dollarVolume := price * float64(row.Volume)
+	switch {
+	case dollarVolume >= 5_000_000:
+		return 0.35
+	case dollarVolume >= 1_000_000:
+		return 0.60
+	case dollarVolume >= 250_000:
+		return 1.00
+	default:
+		return 1.50
+	}
 }
 
 func tradePlanSimulationReturnPct(entry, mark float64) float64 {
@@ -264,12 +346,4 @@ func tradePlanSimulationReturnPct(entry, mark float64) float64 {
 		return 0
 	}
 	return (mark/entry - 1) * 100
-}
-
-func tradePlanSimulationRMultiple(entry, stop, mark float64) float64 {
-	risk := entry - stop
-	if risk <= 0 || mark <= 0 {
-		return 0
-	}
-	return (mark - entry) / risk
 }

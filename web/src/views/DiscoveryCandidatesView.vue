@@ -113,7 +113,7 @@
           </div>
           <div v-if="health" class="operations-detail-group">
             <strong>证据覆盖</strong>
-            <span>财务缺失 {{ health.missing_financials }} · 内幕源 {{ healthInsiderDataLabel(health.insider_data_status) }} · 内幕覆盖 {{ health.candidates_with_insider_coverage ?? 0 }}/{{ health.total_candidates }} · 内幕记录 {{ health.candidates_with_insider_records }}/{{ health.total_candidates }} · SEC 公告 {{ health.candidates_with_recent_filings }}/{{ health.total_candidates }} · 合格买入 {{ health.qualified_insider_candidates }}</span>
+            <span>财务缺失 {{ health.missing_financials }} · 内幕源 {{ healthInsiderDataLabel(health.insider_data_status, health.insider_lineage_status) }} · 内幕覆盖 {{ health.candidates_with_insider_coverage ?? 0 }}/{{ health.total_candidates }} · 内幕记录 {{ health.candidates_with_insider_records }}/{{ health.total_candidates }} · SEC 公告 {{ health.candidates_with_recent_filings }}/{{ health.total_candidates }} · 合格买入 {{ health.qualified_insider_candidates }}</span>
           </div>
           <div v-if="health" class="operations-detail-group">
             <strong>行情与风险</strong>
@@ -1051,7 +1051,7 @@
         <el-card shadow="never" class="candidate-ai-card">
           <template #header><div class="card-header-actions"><span>AI 研判（手动）</span><el-space><el-select fit-input-width v-model="candidateAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="candidateAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!candidateAIProvider || !candidateAIPromptTemplate" :loading="candidateAIGenerating" @click="generateCandidateAI">生成研判</el-button></el-space></div></template>
           <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
-          <template v-else-if="candidateAIAnalyses.length"><el-select fit-input-width v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><AIAnalysisResult :result="activeCandidateAIAnalysis?.structured_result" :content="activeCandidateAIAnalysis?.content" /></div></template></template>
+          <template v-else-if="candidateAIAnalyses.length"><el-select fit-input-width v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><el-alert v-if="activeCandidateAIAnalysis?.validation_warning" type="warning" :closable="false" show-icon title="模型输出未通过结构校验，系统已安全降级为证据不足。" style="margin-bottom:12px" /><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><AIAnalysisResult :result="activeCandidateAIAnalysis?.structured_result" :content="activeCandidateAIAnalysis?.content" /></div></template></template>
           <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
           <el-alert v-show="activeCandidateAIAnalysis?.status === 'queued' || activeCandidateAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
         </el-card>
@@ -1788,8 +1788,8 @@
           {{ effectiveness?.benchmark_history_sample_days || 0 }} / {{ effectiveness?.benchmark_history_required_days || 200 }}
           <small v-if="effectiveness?.benchmark_latest_trade_date">｜截至 {{ effectiveness.benchmark_latest_trade_date }}</small>
         </el-descriptions-item>
-        <el-descriptions-item label="独立信号日期">
-          {{ effectiveness?.distinct_signal_dates || 0 }} / {{ effectiveness?.minimum_distinct_signal_dates || 5 }}
+        <el-descriptions-item label="20日独立日期">
+          {{ effectiveness?.validation_signal_dates || 0 }} / {{ effectiveness?.minimum_distinct_signal_dates || 5 }}
         </el-descriptions-item>
         <el-descriptions-item label="结果闭环">
           <el-tag size="small" :type="effectiveness?.outcome_tracking_status === 'current' ? 'success' : 'warning'">{{ outcomeTrackingLabel(effectiveness?.outcome_tracking_status) }}</el-tag>
@@ -1801,6 +1801,9 @@
         <el-descriptions-item label="规则版本">
           {{ effectiveness?.scoring_version || '历史兼容规则' }}
           <small v-if="effectiveness?.outcome_last_evaluated_at">｜更新 {{ formatDate(effectiveness.outcome_last_evaluated_at) }}</small>
+        </el-descriptions-item>
+        <el-descriptions-item label="距离验证门槛" :span="3">
+          还差 {{ effectiveness?.remaining_sample_count || 0 }} 个20日样本 · {{ effectiveness?.remaining_signal_dates || 0 }} 个独立信号日 · {{ effectiveness?.remaining_benchmark_count || 0 }} 个 IWM 配对
         </el-descriptions-item>
       </el-descriptions>
       <el-table :data="effectiveness?.cohorts || []" border empty-text="暂无可评估候选">
@@ -1956,7 +1959,7 @@ const sectorDialogVisible = ref(false)
 const candidateDetail = ref<CandidateDetail | null>(null)
 type AIProvider = { id: string; name: string; model: string }
 type AIPromptTemplate = { id: string; name: string }
-type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; system_prompt?: string; user_prompt?: string; requested_at: string; structured_result?: AIAnalysisStructuredResult }
+type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; validation_warning?: string; system_prompt?: string; user_prompt?: string; requested_at: string; structured_result?: AIAnalysisStructuredResult }
 const aiProviders = ref<AIProvider[]>([])
 const aiPromptTemplates = ref<AIPromptTemplate[]>([])
 const candidateAIProvider = ref('')
@@ -3719,6 +3722,8 @@ function formatHealthIssue(issue: string) {
   if (code === 'candidate_insider_records') return `候选内幕记录覆盖：${count || 0}`
   if (code === 'insider_coverage_partial') return `内幕交易部分覆盖：${count || 0}`
   if (code === 'insider_coverage_unavailable') return `内幕交易覆盖不可用：${count || 0}`
+  if (code === 'insider_source_lineage_recovered_from_coverage') return '旧批次缺少内幕来源版本，已按逐标的覆盖快照安全恢复判定；下次发布会修复血缘'
+  if (code === 'insider_source_lineage_partial') return `内幕来源血缘仅部分可恢复：${count || 0}`
   if (code === 'pending_financial_recalculations') return `待财务重算：${count || 0}`
   if (code === 'candidate_recent_filings') return `候选近期 SEC 公告覆盖：${count || 0}`
 	if (code === 'technical_history_retry_pending') return `技术历史待自动补齐：${count || 0}`
@@ -3727,8 +3732,10 @@ function formatHealthIssue(issue: string) {
   return issue
 }
 
-function healthInsiderDataLabel(status?: string) {
+function healthInsiderDataLabel(status?: string, lineage?: string) {
+  if (status === 'available' && lineage === 'coverage_snapshot') return '已同步（旧批次快照）'
   if (status === 'available') return '已同步'
+  if (status === 'partial') return '部分覆盖'
   if (status === 'missing') return '缺失'
   return status || '-'
 }

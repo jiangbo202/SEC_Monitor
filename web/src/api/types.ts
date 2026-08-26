@@ -1471,6 +1471,7 @@ export interface CandidateHealth {
   missing_financials: number
   missing_insiders: number
   insider_data_status: 'available' | 'missing' | string
+  insider_lineage_status?: 'source_version' | 'coverage_snapshot' | 'partial_coverage_snapshot' | 'missing' | string
   candidates_with_insider_records: number
   insider_record_coverage_pct: number
   candidates_with_insider_coverage?: number
@@ -1757,6 +1758,13 @@ export interface CandidateEffectivenessReport {
   benchmark_latest_trade_date: string
   distinct_signal_dates: number
   minimum_distinct_signal_dates: number
+  validation_horizon_days: number
+  validation_sample_count: number
+  validation_benchmark_count: number
+  validation_signal_dates: number
+  remaining_sample_count: number
+  remaining_benchmark_count: number
+  remaining_signal_dates: number
   cohort_source: 'signal_events' | 'legacy_first_entry' | string
   outcome_tracking_status: 'not_started' | 'tracking' | 'current' | string
   tracked_outcome_count: number
@@ -1808,6 +1816,7 @@ export interface TradePlanSimulation {
   signal_date: string
   entry_date?: string | null
   entry_trigger: string
+  entry_price_source: string
   entry_price_usd: number
   stop_loss_usd: number
   take_profit_usd: number
@@ -1817,6 +1826,8 @@ export interface TradePlanSimulation {
   exit_price_usd: number
   exit_reason: string
   last_mark_price_usd: number
+  gross_return_pct: number
+  execution_cost_pct: number
   return_pct: number
   r_multiple: number
   max_drawdown_pct: number
@@ -2086,7 +2097,7 @@ export interface StorageHealth {
 export interface DataSourceHealth {
   source: string
   kind: 'sec' | 'market' | string
-  status: 'ok' | 'warning' | 'critical' | 'unknown' | string
+  status: 'ok' | 'info' | 'warning' | 'critical' | 'unknown' | string
   last_checked_at?: string | null
   failure_streak: number
   coverage_pct?: number | null

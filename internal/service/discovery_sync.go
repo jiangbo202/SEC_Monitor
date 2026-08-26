@@ -91,10 +91,11 @@ type TickerEvaluationRequest struct {
 
 type fixedSecurityMetadataSource struct {
 	records []discovery.SecuritySourceRecord
+	version discovery.SourceVersion
 }
 
 func (s fixedSecurityMetadataSource) Load(_ context.Context) ([]discovery.SecuritySourceRecord, discovery.SourceVersion, error) {
-	return append([]discovery.SecuritySourceRecord(nil), s.records...), discovery.SourceVersion{Source: "ticker-evaluation"}, nil
+	return append([]discovery.SecuritySourceRecord(nil), s.records...), s.version, nil
 }
 
 // EvaluateTicker reuses the SEC fundamental and candidate-review primitives
@@ -162,7 +163,10 @@ func (s *DiscoverySyncService) EvaluateTicker(ctx context.Context, request Ticke
 		warnings = append(warnings, "未取得足够的 SEC Company Facts，基本面分数不完整。")
 	}
 	allowed := map[string]struct{}{record.CIK: {}}
-	metadata := fixedSecurityMetadataSource{records: []discovery.SecuritySourceRecord{record}}
+	// Preserve the version of the exact SEC submissions/companyfacts payload
+	// used for this evaluation. Form 4 checkpoints require a stable SHA-256
+	// identity; a source label without that identity cannot be safely resumed.
+	metadata := fixedSecurityMetadataSource{records: []discovery.SecuritySourceRecord{record}, version: issuer.Version}
 	events, _, eventErr := (discovery.SECSubmissionsCapitalEventSource{Metadata: metadata}).Load(ctx, allowed, now)
 	if eventErr != nil {
 		warnings = append(warnings, "资本风险解析不可用："+eventErr.Error())
@@ -182,6 +186,8 @@ func (s *DiscoverySyncService) EvaluateTicker(ctx context.Context, request Ticke
 		}
 		if len(coverages) > 0 {
 			coverage = &coverages[0]
+		} else {
+			warnings = append(warnings, "Form 4 覆盖结果缺失，内幕买入项不可判定。")
 		}
 	}
 	shares := discovery.SelectShareSnapshot(issuer.Shares, events, now)
@@ -198,6 +204,15 @@ func (s *DiscoverySyncService) EvaluateTicker(ctx context.Context, request Ticke
 	snapshot := discovery.CandidateScoreToSnapshot("", scored, now)
 	result := discovery.BuildTickerEvaluationResult(ticker, record.CIK, record.CompanyName, targetType, snapshot, metric, risks, prices, now, fundamentalStatus, warnings)
 	result.InsiderCoverage = coverage
+	if coverage == nil {
+		result.Status = discovery.TickerEvaluationStatusPartial
+	} else if coverage.Status == discovery.InsiderCoverageUnavailable {
+		result.Status = discovery.TickerEvaluationStatusPartial
+		result.Warnings = append(result.Warnings, fmt.Sprintf("Form 4 覆盖不可用：%d 份符合条件文件均未成功解析，内幕买入项不可判定。", coverage.EligibleFilings))
+	} else if coverage.Status == discovery.InsiderCoveragePartial {
+		result.Status = discovery.TickerEvaluationStatusPartial
+		result.Warnings = append(result.Warnings, "Form 4 仅部分覆盖，内幕买入项需要结合缺失文件谨慎解释。")
+	}
 	result.Research.Profile = tickerEvaluationProfileFromRecord(record, result)
 	s.enrichTickerEvaluationResearch(ctx, cfg, &result, true)
 	return discovery.SaveTickerEvaluation(ctx, s.db, result)

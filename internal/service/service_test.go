@@ -549,6 +549,11 @@ func TestIPORadarHealthCountsOperatorAttention(t *testing.T) {
 	if !reflect.DeepEqual(actionKeys, wantActions) {
 		t.Fatalf("IPO health actions = %v, want %v", actionKeys, wantActions)
 	}
+	for _, action := range health.Actions {
+		if action.Key == "verify_listing" && (action.Severity != "info" || action.Disposition != "automatic") {
+			t.Fatalf("listing verification action = %+v, want informational automation", action)
+		}
+	}
 }
 
 func TestIPOCompanyAttentionFilterReturnsPendingListing(t *testing.T) {
@@ -1755,6 +1760,29 @@ func TestIPORadarTickerWithoutExchangeIsListingPending(t *testing.T) {
 	}
 }
 
+func TestIPORadarPausesOldUnverifiedListingUntilNewFiling(t *testing.T) {
+	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	db := testDB(t)
+	if err := db.Create(&model.IPOFiling{FilingID: "old-pending-s1", CIK: "0002112498", CompanyName: "Dormant IPO Inc.", FilingType: "S-1", FilingDate: now.AddDate(0, 0, -181)}).Error; err != nil {
+		t.Fatalf("seed old filing: %v", err)
+	}
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0002112498", Ticker: "DORM", TickerSource: "sec"}).Error; err != nil {
+		t.Fatalf("seed ticker mapping: %v", err)
+	}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, NewConfigService(db, NewAuditService(db)))
+	page, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{IncludeEnded: true, Page: 1, PageSize: 10}, now)
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("ListCompanies page=%+v err=%v", page, err)
+	}
+	if item := page.Items[0]; item.Status != "stale" || !strings.Contains(item.StatusReason, "automatic review paused") {
+		t.Fatalf("company = %+v, want automatically paused stale status", item)
+	}
+	active, err := svc.ListCompanies(context.Background(), IPOCompanyFilter{Page: 1, PageSize: 10}, now)
+	if err != nil || active.Total != 0 {
+		t.Fatalf("active companies = %+v err=%v, want paused company hidden", active, err)
+	}
+}
+
 func TestIPORadarAutomaticallyConfirmsTickerOnlyListingWithLongbridge(t *testing.T) {
 	now := time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC)
 	db := testDB(t)
@@ -1911,6 +1939,9 @@ func TestIPORadarRefreshSkipsRegistrationAfterLongbridgeListingConfirmation(t *t
 
 func TestIPORadarLongbridgeListingFailureUsesRecheckWindow(t *testing.T) {
 	db := testDB(t)
+	if err := db.Create(&model.IPOFiling{FilingID: "wait-s1", CIK: "0002112466", CompanyName: "Waiting IPO", FilingType: "S-1", FilingDate: time.Now().UTC()}).Error; err != nil {
+		t.Fatalf("seed IPO filing: %v", err)
+	}
 	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0002112466", Ticker: "WAIT", TickerSource: "sec", TickerConfidence: "high"}).Error; err != nil {
 		t.Fatalf("seed ticker-only mapping: %v", err)
 	}
@@ -1941,6 +1972,9 @@ func TestIPORadarLongbridgeListingFailureUsesRecheckWindow(t *testing.T) {
 func TestIPORadarLongbridgeListingEscalatesPersistentMissToWeeklyReview(t *testing.T) {
 	db := testDB(t)
 	past := time.Now().UTC().Add(-48 * time.Hour)
+	if err := db.Create(&model.IPOFiling{FilingID: "persist-s1", CIK: "0002112497", CompanyName: "Persistent IPO", FilingType: "S-1", FilingDate: time.Now().UTC()}).Error; err != nil {
+		t.Fatalf("seed IPO filing: %v", err)
+	}
 	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0002112497", Ticker: "PERSIST", TickerSource: "sec", TickerConfidence: "high", ListingCheckedAt: &past, LongbridgeListingCheckCount: longbridgeIPOListingEscalationCount - 1}).Error; err != nil {
 		t.Fatalf("seed ticker-only mapping: %v", err)
 	}
@@ -1962,6 +1996,30 @@ func TestIPORadarLongbridgeListingEscalatesPersistentMissToWeeklyReview(t *testi
 	}
 	if row.LongbridgeListingCheckCount != longbridgeIPOListingEscalationCount || row.LongbridgeListingLastResult != "no_data_review" || row.LongbridgeListingNextRetryAt == nil || row.LongbridgeListingNextRetryAt.Before(time.Now().UTC().Add(6*24*time.Hour)) {
 		t.Fatalf("persistent review row=%+v", row)
+	}
+}
+
+func TestIPORadarLongbridgeListingSkipsAutomaticallyPausedCompany(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create(&model.IPOFiling{FilingID: "paused-s1", CIK: "0002112499", CompanyName: "Paused IPO", FilingType: "S-1", FilingDate: time.Now().UTC().Add(-ipoListingAutomaticPauseAfter - time.Hour)}).Error; err != nil {
+		t.Fatalf("seed old IPO filing: %v", err)
+	}
+	if err := db.Create(&model.IPOCompanyMarketData{CIK: "0002112499", Ticker: "PAUSE", TickerSource: "sec"}).Error; err != nil {
+		t.Fatalf("seed paused market row: %v", err)
+	}
+	configs := NewConfigService(db, NewAuditService(db))
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatalf("EnsureDefaults: %v", err)
+	}
+	client := &fakeLongbridgeIPOListingClient{}
+	svc := NewIPORadarService(db, &fakeSECClient{}, &fakeNotifier{}, configs).
+		WithLongbridgeListingRuntime(config.DiscoveryConfig{LongbridgeAppKey: "key", LongbridgeAppSecret: "secret", LongbridgeAccessToken: "token"})
+	svc.newLongbridgeListingClient = func(string, string, string) (longbridgeIPOListingClient, error) { return client, nil }
+	if _, warning := svc.confirmListedCompaniesWithLongbridge(context.Background(), IPORadarSettings{LongbridgeListingVerificationEnabled: true, LongbridgeListingRequestBudget: 20, LongbridgeListingRecheckHours: 24}); warning != "" {
+		t.Fatalf("paused company warning=%q", warning)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("paused company Longbridge calls=%v, want none", client.calls)
 	}
 }
 
@@ -3592,18 +3650,23 @@ func TestTaskConfigServiceUpgradesOnlyHistoricalScheduleDefaults(t *testing.T) {
 		t.Fatalf("EnsureDefault: %v", err)
 	}
 	got := map[string]string{}
+	enabled := map[string]bool{}
 	var tasks []model.TaskConfig
 	if err := db.Where("task_name IN ?", []string{"sqlite_backup", "institutional_holdings_sync", "operational_health_notification_sync", "sec_filing_sync"}).Find(&tasks).Error; err != nil {
 		t.Fatal(err)
 	}
 	for _, task := range tasks {
 		got[task.TaskName] = task.CronExpr
+		enabled[task.TaskName] = task.Enabled
 	}
 	if got["sqlite_backup"] != "15 3 * * *" || got["institutional_holdings_sync"] != "15 10 * * 1-5" || got["operational_health_notification_sync"] != "0 11 * * *" {
 		t.Fatalf("upgraded cron expressions = %#v", got)
 	}
 	if got["sec_filing_sync"] != "7 * * * *" {
 		t.Fatalf("custom cron was overwritten: %#v", got)
+	}
+	if !enabled["operational_health_notification_sync"] {
+		t.Fatal("untouched historical operational health task should be enabled")
 	}
 }
 
@@ -3784,11 +3847,16 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 				t.Fatalf("tasks = %d, want 25", len(tasks))
 			}
 			names := map[string]bool{}
+			enabled := map[string]bool{}
 			for _, task := range tasks {
 				names[task.TaskName] = true
+				enabled[task.TaskName] = task.Enabled
 			}
 			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] || !names["ipo_lifecycle_reconcile_sync"] || !names["ipo_offering_reconcile_sync"] || !names["ipo_listing_reconcile_sync"] || !names["candidate_notification_sync"] || !names["trade_setup_notification_sync"] || !names["small_cap_discovery_sync"] || !names["small_cap_discovery_full_sync"] || !names["watch_target_market_sync"] || !names["watch_target_earnings_sync"] || !names["notification_retry_sync"] || !names["sqlite_backup"] || !names["operation_history_cleanup"] || !names["operational_health_notification_sync"] || !names["macro_calendar_sync"] || !names["market_trend_sync"] || !names["us_futures_sync"] || !names["institutional_holdings_sync"] || !names["longbridge_candidate_research_sync"] || !names["longbridge_candidate_valuation_sync"] || !names["longbridge_watch_target_valuation_sync"] || !names["longbridge_watch_target_research_sync"] || !names["longbridge_candidate_option_research_sync"] || !names["longbridge_watch_target_option_research_sync"] {
 				t.Fatalf("task names = %+v, want SEC, IPO, candidate/trade-plan notification, small-cap discovery, watch-target market/earnings, macro calendar, market trend, US futures, retry, backup, history cleanup, and operational alert tasks", names)
+			}
+			if !enabled["operational_health_notification_sync"] {
+				t.Fatal("operational health evaluation should run by default; Telegram delivery remains independently gated")
 			}
 		}},
 		{name: "update task", run: func(t *testing.T, svc *TaskConfigService) {

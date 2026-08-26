@@ -1531,8 +1531,8 @@ func TestNormalizeInsiderTransactionsMergesDuplicateSECArchiveAliases(t *testing
 	if len(rows) != 1 {
 		t.Fatalf("rows=%#v, want one merged transaction", rows)
 	}
-	if rows[0].SourceURL != alias.SourceURL {
-		t.Fatalf("source URL = %q, want canonical %q", rows[0].SourceURL, alias.SourceURL)
+	if rows[0].SourceURL != row.SourceURL {
+		t.Fatalf("source URL = %q, want canonical issuer path %q", rows[0].SourceURL, row.SourceURL)
 	}
 }
 

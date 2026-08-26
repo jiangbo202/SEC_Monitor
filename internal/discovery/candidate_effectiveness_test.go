@@ -64,6 +64,9 @@ func TestBuildCandidateEffectivenessCalculatesCohortsAndOptionalBenchmark(t *tes
 	if report.Status != "validating" || window20.VerificationStatus != "validating" || window20.BenchmarkSampleCount != 2 || report.MinimumSampleCount != candidateEffectivenessMinimumSamples {
 		t.Fatalf("verification state = report:%+v window:%+v", report, window20)
 	}
+	if report.ValidationHorizonDays != 20 || report.ValidationSampleCount != 2 || report.RemainingSampleCount != 28 || report.RemainingSignalDates != 4 || report.RemainingBenchmarkCount != 0 {
+		t.Fatalf("validation progress = %+v", report)
+	}
 }
 
 func TestBuildCandidateEffectivenessMarksBenchmarkUnavailableWithoutIWM(t *testing.T) {
