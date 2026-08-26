@@ -353,9 +353,10 @@ func (s *AIAnalysisService) finishAIAnalysis(ctx context.Context, record model.A
 	if record.DurationMS < 0 {
 		record.DurationMS = 0
 	}
-	updates := map[string]any{"completed_at": &completed, "duration_ms": record.DurationMS, "request_attempts": result.Attempts, "schema_version": model.AIAnalysisSchemaV1}
+	updates := map[string]any{"completed_at": &completed, "duration_ms": record.DurationMS, "request_attempts": result.Attempts, "schema_version": model.AIAnalysisSchemaV1, "validation_warning": result.ValidationWarning}
 	record.RequestAttempts = result.Attempts
 	record.SchemaVersion = model.AIAnalysisSchemaV1
+	record.ValidationWarning = result.ValidationWarning
 	if result.ResponseMode != "" {
 		record.ResponseMode = result.ResponseMode
 		updates["response_mode"] = result.ResponseMode
@@ -381,7 +382,7 @@ func (s *AIAnalysisService) finishAIAnalysis(ctx context.Context, record model.A
 		if record.ReusedFromID != nil {
 			action = "reuse"
 		}
-		_ = s.audit.Record(ctx, operator, action, "ai_analysis", fmt.Sprintf("%d", record.ID), nil, map[string]any{"ticker": record.Ticker, "provider_id": record.ProviderID, "model": record.Model, "status": record.Status, "prompt_version": record.PromptVersion, "schema_version": record.SchemaVersion, "request_attempts": record.RequestAttempts, "reused_from_id": record.ReusedFromID, "duration_ms": record.DurationMS})
+		_ = s.audit.Record(ctx, operator, action, "ai_analysis", fmt.Sprintf("%d", record.ID), nil, map[string]any{"ticker": record.Ticker, "provider_id": record.ProviderID, "model": record.Model, "status": record.Status, "prompt_version": record.PromptVersion, "schema_version": record.SchemaVersion, "request_attempts": record.RequestAttempts, "response_mode": record.ResponseMode, "validation_warning": record.ValidationWarning, "reused_from_id": record.ReusedFromID, "duration_ms": record.DurationMS})
 	}
 	if s.inApp != nil {
 		severity, title := "success", fmt.Sprintf("%s | AI 研判已完成", record.Ticker)
@@ -389,6 +390,9 @@ func (s *AIAnalysisService) finishAIAnalysis(ctx context.Context, record model.A
 		if record.Status != "success" {
 			severity, title = "warning", fmt.Sprintf("%s | AI 研判失败", record.Ticker)
 			body = fmt.Sprintf("%s · %s · 耗时 %s。%s", record.ProviderName, record.Model, formatAIAnalysisDuration(record.DurationMS), record.ErrorMessage)
+		} else if record.ValidationWarning != "" {
+			severity, title = "warning", fmt.Sprintf("%s | AI 研判已降级为证据不足", record.Ticker)
+			body = fmt.Sprintf("%s · %s · 耗时 %s。模型输出未通过结构校验，本次不形成研究判断。", record.ProviderName, record.Model, formatAIAnalysisDuration(record.DurationMS))
 		}
 		link := "/ai-analyses"
 		if record.Scope == "sec_filing" {
@@ -400,6 +404,8 @@ func (s *AIAnalysisService) finishAIAnalysis(ctx context.Context, record model.A
 		statusText := "已完成"
 		if record.Status != "success" {
 			statusText = "失败"
+		} else if record.ValidationWarning != "" {
+			statusText = "已降级为证据不足"
 		}
 		_, _ = s.notificationCenter.DeliverMessage(ctx, NotificationMessageInput{Source: "ai_analysis", Trigger: "completion", EventKey: fmt.Sprintf("ai_analysis:%d:%s", record.ID, record.Status), EntityKind: "ai_analysis", Title: fmt.Sprintf("%s | AI 研判%s", record.Ticker, statusText), SummaryText: fmt.Sprintf("%s | AI 研判%s\n模型：%s · %s\n耗时：%s", record.Ticker, statusText, record.ProviderName, record.Model, formatAIAnalysisDuration(record.DurationMS)), EventAt: completed})
 	}

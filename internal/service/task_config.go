@@ -184,12 +184,13 @@ func (s *TaskConfigService) EnsureDefault(ctx context.Context) error {
 		// The public fallback can be rate limited. Keep this disabled until a
 		// licensed/approved US futures provider is configured.
 		{TaskName: "us_futures_sync", CronExpr: "5 6 * * 2-6", Enabled: false, Running: false},
-		// Disabled by default: when enabled it sends a deduplicated Telegram
-		// summary only if the locally recorded operational report has issues.
+		// Always run the local health evaluation. Delivery remains independently
+		// gated by Telegram configuration, so an installation without credentials
+		// records a skipped execution rather than silently losing observability.
 		// The scheduler's global timezone is authoritative; do not use a
 		// per-expression CRON_TZ prefix, which the task editor intentionally
 		// rejects to keep future timezone changes coherent.
-		{TaskName: "operational_health_notification_sync", CronExpr: "0 11 * * *", Enabled: false, Running: false},
+		{TaskName: "operational_health_notification_sync", CronExpr: "0 11 * * *", Enabled: true, Running: false},
 		{TaskName: "sec_filing_sync", CronExpr: "*/10 * * * *", Enabled: true, Running: false},
 	}
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&tasks).Error; err != nil {
@@ -213,6 +214,15 @@ func (s *TaskConfigService) reconcileDefaultScheduleUpgrades(ctx context.Context
 			Updates(map[string]any{"cron_expr": upgrade.newExpr}).Error; err != nil {
 			return err
 		}
+	}
+	// Earlier releases shipped the operational check disabled even though the
+	// delivery method has its own Telegram gate. Enable only untouched rows;
+	// a task that has ever run or carries an outcome is an operator-managed row
+	// and must keep its explicit enabled state.
+	if err := s.db.WithContext(ctx).Model(&model.TaskConfig{}).
+		Where("task_name = ? AND enabled = ? AND last_run_at IS NULL AND last_status = ? AND cron_expr = ?", "operational_health_notification_sync", false, "", "0 11 * * *").
+		Update("enabled", true).Error; err != nil {
+		return err
 	}
 	return nil
 }

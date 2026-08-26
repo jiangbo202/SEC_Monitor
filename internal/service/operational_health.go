@@ -275,11 +275,15 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 			return report, err
 		}
 		for _, provider := range providers {
-			if provider.Status == discovery.ProviderStatusActive && provider.FailureStreak == 0 {
+			var latest discovery.ProviderRun
+			latestErr := s.discoveryDB.WithContext(ctx).Where("provider = ?", provider.Provider).Order("created_at DESC, id DESC").First(&latest).Error
+			validationUsable := provider.Status == discovery.ProviderStatusValidation && latestErr == nil && discovery.ProviderRunOperationallyUsable(latest)
+			if (provider.Status == discovery.ProviderStatusActive && provider.FailureStreak == 0) || validationUsable {
 				// Active sources can still have a bad latest coverage result, so
 				// continue only after checking their persisted latest run below.
-				var latest discovery.ProviderRun
-				latestErr := s.discoveryDB.WithContext(ctx).Where("provider = ?", provider.Provider).Order("created_at DESC, id DESC").First(&latest).Error
+				// A validation source with an operationally usable run is research
+				// ready; missing independent gold evidence is certification
+				// information rather than an operational warning.
 				if latestErr == nil && latest.FallbackUsed {
 					report.ProviderWarnings++
 					report.addIssue("provider_fallback:"+provider.Provider, "market", "warning", "行情主源未独立完成", fmt.Sprintf("%s 最近一次运行启用了备用行情源；批次已完成，但应检查主源覆盖率、限流或上游错误", provider.Provider), "discovery-logs", now)

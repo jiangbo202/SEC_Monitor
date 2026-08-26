@@ -86,10 +86,16 @@ func (s *IPORadarService) confirmListedCompaniesWithLongbridge(ctx context.Conte
 
 	now := time.Now().UTC()
 	recheckBefore := now.Add(-time.Duration(settings.LongbridgeListingRecheckHours) * time.Hour)
+	activeFilingCutoff := now.Add(-ipoListingAutomaticPauseAfter)
+	activeCIKs := s.db.WithContext(ctx).Model(&model.IPOFiling{}).
+		Select("cik").
+		Where("filing_date >= ?", activeFilingCutoff).
+		Group("cik")
 	var candidates []model.IPOCompanyMarketData
 	if err := s.db.WithContext(ctx).
 		Where("TRIM(ticker) <> '' AND TRIM(exchange) = '' AND (listing_checked_at IS NULL OR listing_checked_at < ?)", recheckBefore).
 		Where("longbridge_listing_next_retry_at IS NULL OR longbridge_listing_next_retry_at <= ?", now).
+		Where("cik IN (?)", activeCIKs).
 		Order("listing_checked_at ASC, cik ASC").
 		Limit(settings.LongbridgeListingRequestBudget).
 		Find(&candidates).Error; err != nil {

@@ -109,10 +109,12 @@
           <span v-else class="muted-text">{{ t('status.unnotified') }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="AI 研判" width="165" fixed="right" align="center">
+      <el-table-column label="AI 研判" width="132" fixed="right" align="center">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openAIAnalysis(row)">AI 分析</el-button>
-          <el-button link @click="viewAIHistory(row)">记录</el-button>
+          <div class="ai-action-cell">
+            <el-button link type="primary" @click="openAIAnalysis(row)">AI 分析</el-button>
+            <el-button link @click="viewAIHistory(row)">记录</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -437,6 +439,18 @@ watch(() => store.locale, () => {
 .filings-toolbar {
   display: grid;
   gap: 10px;
+}
+
+.ai-action-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.ai-action-cell :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 
 .filings-toolbar-top {

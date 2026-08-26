@@ -547,6 +547,9 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 		if result.Failed > 0 {
 			return service.PartialTask(fmt.Sprintf("财报预告已更新 %d/%d 个标的，%d 个失败", result.Fetched, result.TargetCount, result.Failed))
 		}
+		if !result.CoverageComplete {
+			return service.PartialTask("财报日历分页未完整覆盖；未匹配标的不会被误判为未来无财报，下一次任务将继续刷新")
+		}
 		if _, candidateErr := s.earningsPreview.SyncCurrentCandidates(ctx); candidateErr != nil {
 			return service.PartialTask("监控标的财报预告已更新；小盘候选财报日历待下次重试：" + candidateErr.Error())
 		}

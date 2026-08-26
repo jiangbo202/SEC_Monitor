@@ -139,7 +139,7 @@
       <el-tab-pane label="监控" name="monitoring">
         <div v-if="isVisible('monitoring')" class="dashboard-grid">
           <el-card shadow="never" class="dashboard-panel metric-card"><span>监控标的</span><strong>{{ summary?.monitoring.enabled_targets || 0 }}</strong><small>共 {{ summary?.monitoring.watch_targets || 0 }} 个标的</small></el-card>
-          <el-card shadow="never" class="dashboard-panel metric-card"><span>近期财报预告</span><strong>{{ summary?.monitoring.upcoming_earnings || 0 }}</strong><small>已同步的未来事件</small></el-card>
+          <el-card shadow="never" class="dashboard-panel metric-card"><span>近期财报预告</span><strong>{{ summary?.monitoring.upcoming_earnings || 0 }}</strong><small>{{ earningsCoverageLabel }}</small></el-card>
           <el-card shadow="never" class="dashboard-panel metric-card"><span>进行中 IPO</span><strong>{{ summary?.monitoring.ipo.in_progress || 0 }}</strong><small>关注 {{ summary?.monitoring.ipo.followed_total || 0 }} 家</small></el-card>
         </div>
         <div v-if="isVisible('monitoring')" class="dashboard-grid monitoring-grid">
@@ -232,7 +232,7 @@ interface DashboardSummary {
   warnings: string[]
   preferences: { hidden_modules: string[] }
   decision: { market: { market: MarketSeries[]; sectors: MarketSeries[]; futures: MarketSeries[]; temperature?: { temperature: number; description?: string }; freshness: { status: string; detail: string } }; readiness: DecisionReadiness; actions: CandidateAction[]; calendar: CalendarItem[]; review_due: { overdue: number; due_today: number; upcoming: number } }
-  monitoring: { watch_targets: number; enabled_targets: number; upcoming_earnings: number; recent_filings: FilingItem[]; ipo: { in_progress: number; followed_total: number; followed: IPOCompany[] } }
+  monitoring: { watch_targets: number; enabled_targets: number; upcoming_earnings: number; earnings_coverage_status: string; earnings_covered_targets: number; earnings_unavailable: number; earnings_last_fetched_at?: string; recent_filings: FilingItem[]; ipo: { in_progress: number; followed_total: number; followed: IPOCompany[] } }
   operations: { status: string; critical_issues: OperationalIssue[]; issues: OperationalIssue[]; tasks: OperationalTask[]; failed_notification_batches: number; dead_letter_batches: number }
 }
 
@@ -252,6 +252,15 @@ const moduleOptions = [
 ]
 
 const criticalIssues = computed(() => summary.value?.operations.critical_issues || [])
+const earningsCoverageLabel = computed(() => {
+  const monitoring = summary.value?.monitoring
+  if (!monitoring) return '财报日历尚未载入'
+  const coverage = `${monitoring.earnings_covered_targets || 0}/${monitoring.enabled_targets || 0}`
+  if (monitoring.earnings_coverage_status === 'complete') return `日历覆盖 ${coverage}；0 表示未来暂无已知事件`
+  if (monitoring.earnings_coverage_status === 'partial') return `日历仅部分覆盖 ${coverage}`
+  if (monitoring.earnings_coverage_status === 'unavailable') return `财报来源不可用 ${monitoring.earnings_unavailable || 0} 项`
+  return `日历尚未同步 · 覆盖 ${coverage}`
+})
 const isVisible = (key: string) => visibleModules.value.includes(key)
 
 onMounted(load)

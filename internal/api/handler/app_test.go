@@ -1189,7 +1189,7 @@ func TestAppHandlerDataSourceHealthSummarizesSECAndMarketProviders(t *testing.T)
 		t.Fatalf("seed provider run: %v", err)
 	}
 
-	items, issues := (&AppHandler{DB: mainDB, DiscoveryDB: discoveryDB}).dataSourceHealth(context.Background())
+	items, issues := (&AppHandler{Runtime: config.Config{SEC: config.SECConfig{UserAgent: "sec-monitor-test test@example.com"}}, DB: mainDB, DiscoveryDB: discoveryDB}).dataSourceHealth(context.Background())
 	if len(items) != 2 {
 		t.Fatalf("data source items = %+v, want SEC and market provider", items)
 	}
@@ -1201,6 +1201,38 @@ func TestAppHandlerDataSourceHealthSummarizesSECAndMarketProviders(t *testing.T)
 	}
 	if len(issues) != 2 {
 		t.Fatalf("source issues = %+v, want two", issues)
+	}
+}
+
+func TestAppHandlerDataSourceHealthTreatsUsableValidationAsInformation(t *testing.T) {
+	mainDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open main db: %v", err)
+	}
+	if err := mainDB.AutoMigrate(&model.TaskConfig{}); err != nil {
+		t.Fatalf("migrate task config: %v", err)
+	}
+	discoveryDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open discovery db: %v", err)
+	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatalf("migrate discovery: %v", err)
+	}
+	now := time.Date(2026, time.August, 25, 1, 0, 0, 0, time.UTC)
+	if err := discoveryDB.Create(&discovery.ProviderHealth{Provider: "longbridge", Status: discovery.ProviderStatusValidation, QualifiedTradingDays: 2, FailureStreak: 2, LastTradeDate: "2026-08-24", UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.ProviderRun{BatchID: "market-current", Provider: "longbridge", Status: discovery.ProviderStatusValidation, ExpectedCount: 904, RecordCount: 902, CoveragePct: 99.78, Timely: true, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	items, issues := (&AppHandler{Runtime: config.Config{SEC: config.SECConfig{UserAgent: "sec-monitor-test test@example.com"}}, DB: mainDB, DiscoveryDB: discoveryDB}).dataSourceHealth(context.Background())
+	if len(items) != 2 || items[1].Status != "info" || items[1].FailureStreak != 0 || !strings.Contains(items[1].Detail, "行情可用，生产认证待完成") || !strings.Contains(items[1].Detail, "2/20") {
+		t.Fatalf("items=%+v", items)
+	}
+	if len(issues) != 0 {
+		t.Fatalf("validation certification should not create health issue: %+v", issues)
 	}
 }
 

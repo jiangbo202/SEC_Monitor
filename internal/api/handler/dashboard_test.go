@@ -31,8 +31,13 @@ func TestDashboardSummaryReadsLocalSnapshotsOnly(t *testing.T) {
 	if err := discoveryDB.AutoMigrate(&discovery.TradeSetupStatusEvent{}, &discovery.CurrentBatchPointer{}, &discovery.CandidateScoreSnapshot{}, &discovery.CandidateWatch{}); err != nil {
 		t.Fatalf("migrate discovery database: %v", err)
 	}
-	if err := mainDB.Create(&model.WatchTarget{Ticker: "RKLB", CompanyName: "Rocket Lab", Status: "enabled", TargetType: "stock"}).Error; err != nil {
+	target := model.WatchTarget{Ticker: "RKLB", CompanyName: "Rocket Lab", Status: "enabled", TargetType: "stock"}
+	if err := mainDB.Create(&target).Error; err != nil {
 		t.Fatalf("seed target: %v", err)
+	}
+	fetchedAt := time.Now().UTC()
+	if err := mainDB.Create(&model.EarningsPreview{TargetID: target.ID, Ticker: target.Ticker, Provider: "longbridge", Status: "no_coverage", FetchedAt: &fetchedAt}).Error; err != nil {
+		t.Fatalf("seed earnings coverage: %v", err)
 	}
 	if err := mainDB.Create(&model.Filing{FilingID: "dashboard-filing", Ticker: "RKLB", CompanyName: "Rocket Lab", FilingType: "8-K", FilingDate: time.Now().UTC(), PulledAt: time.Now().UTC()}).Error; err != nil {
 		t.Fatalf("seed filing: %v", err)
@@ -55,6 +60,9 @@ func TestDashboardSummaryReadsLocalSnapshotsOnly(t *testing.T) {
 	}
 	if response.Code != 0 || response.Data.Monitoring.EnabledTargets != 1 {
 		t.Fatalf("unexpected summary: %+v", response)
+	}
+	if response.Data.Monitoring.EarningsCoverageStatus != "complete" || response.Data.Monitoring.EarningsCoveredTargets != 1 || response.Data.Monitoring.UpcomingEarnings != 0 {
+		t.Fatalf("earnings coverage=%+v", response.Data.Monitoring)
 	}
 	if len(response.Data.Monitoring.RecentFilings) != 1 || response.Data.Monitoring.RecentFilings[0].Ticker != "RKLB" {
 		t.Fatalf("recent filings=%+v", response.Data.Monitoring.RecentFilings)

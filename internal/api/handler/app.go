@@ -2710,22 +2710,38 @@ func (h *AppHandler) dataSourceHealth(ctx context.Context) ([]dataSourceHealthIt
 		return items, issues
 	}
 	for _, health := range providerHealth {
+		var latest discovery.ProviderRun
+		latestErr := h.DiscoveryDB.WithContext(ctx).Where("provider = ?", health.Provider).Order("created_at DESC, id DESC").First(&latest).Error
+		if latestErr != nil && !errors.Is(latestErr, gorm.ErrRecordNotFound) {
+			issues = append(issues, gin.H{"level": "warning", "message": "无法读取行情数据源最近运行：" + service.SanitizeSensitiveError(latestErr.Error())})
+		}
+		var latestPtr *discovery.ProviderRun
+		if latestErr == nil {
+			latestPtr = &latest
+		}
+		failureStreak := health.FailureStreak
+		if health.Status == discovery.ProviderStatusValidation && latestPtr != nil && discovery.ProviderRunOperationallyUsable(*latestPtr) {
+			// The provider-health failure counter includes days that lack frozen
+			// independent gold evidence. That is a certification gap, not an
+			// operational request failure, so do not label it as consecutive
+			// failure on the system-health page.
+			failureStreak = 0
+		}
 		item := dataSourceHealthItem{
 			Source:            health.Provider,
 			Kind:              "market",
-			Status:            marketSourceStatus(health),
+			Status:            marketSourceStatus(health, latestPtr),
 			LastCheckedAt:     &health.UpdatedAt,
-			FailureStreak:     health.FailureStreak,
-			Detail:            marketSourceDetail(health),
+			FailureStreak:     failureStreak,
+			Detail:            marketSourceDetail(health, latestPtr),
 			RecommendedAction: "discovery_logs",
 		}
-		var latest discovery.ProviderRun
-		if err := h.DiscoveryDB.WithContext(ctx).Where("provider = ?", health.Provider).Order("created_at DESC, id DESC").First(&latest).Error; err == nil {
+		if latestPtr != nil {
 			item.LastCheckedAt = &latest.CreatedAt
 			coverage := latest.CoveragePct
 			item.CoveragePct = &coverage
 			item.ErrorMessage = service.SanitizeSensitiveError(latest.ErrorMessage)
-			if item.ErrorMessage != "" && item.Status == "ok" {
+			if item.ErrorMessage != "" && item.Status != "critical" {
 				item.Status = "warning"
 				item.Detail = "最近行情 Provider 运行存在错误"
 			}
@@ -2736,8 +2752,12 @@ func (h *AppHandler) dataSourceHealth(ctx context.Context) ([]dataSourceHealthIt
 	return items, issues
 }
 
-func marketSourceStatus(health discovery.ProviderHealth) string {
-	if health.FailureStreak >= 3 || health.Status == discovery.ProviderStatusFailed {
+func marketSourceStatus(health discovery.ProviderHealth, latest *discovery.ProviderRun) string {
+	usable := latest != nil && discovery.ProviderRunOperationallyUsable(*latest)
+	if health.Status == discovery.ProviderStatusValidation && usable {
+		return "info"
+	}
+	if health.Status == discovery.ProviderStatusFailed || (!usable && health.FailureStreak >= 3) {
 		return "critical"
 	}
 	if health.FailureStreak > 0 || health.Status == discovery.ProviderStatusDegraded || health.Status == discovery.ProviderStatusValidation {
@@ -2749,7 +2769,7 @@ func marketSourceStatus(health discovery.ProviderHealth) string {
 	return "unknown"
 }
 
-func marketSourceDetail(health discovery.ProviderHealth) string {
+func marketSourceDetail(health discovery.ProviderHealth, latest *discovery.ProviderRun) string {
 	switch health.Status {
 	case discovery.ProviderStatusActive:
 		return "行情 Provider 已验证并处于正常状态"
@@ -2758,7 +2778,14 @@ func marketSourceDetail(health discovery.ProviderHealth) string {
 	case discovery.ProviderStatusFailed:
 		return "行情 Provider 最近运行失败"
 	case discovery.ProviderStatusValidation:
-		return "行情 Provider 尚在验证窗口，尚未进入稳定状态"
+		if latest != nil && discovery.ProviderRunOperationallyUsable(*latest) {
+			gold := "独立金标待补"
+			if health.GoldEvidenceReady {
+				gold = "独立金标已就绪"
+			}
+			return fmt.Sprintf("行情可用，生产认证待完成（%d/%d 个交易日；%s）", health.QualifiedTradingDays, discovery.ProviderActivationTradingDays, gold)
+		}
+		return "行情当前未通过可用性检查，生产认证同时尚未完成"
 	default:
 		return "行情 Provider 尚无可用健康状态"
 	}

@@ -54,7 +54,7 @@ func TestEarningsPreviewSyncCachesCalendarAndConsensus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncEnabled: %v", err)
 	}
-	if result.Fetched != 1 || result.Matched != 1 || result.Failed != 0 {
+	if result.Fetched != 1 || result.Matched != 1 || result.Failed != 0 || !result.CoverageComplete {
 		t.Fatalf("unexpected sync result: %+v", result)
 	}
 	view, err := svc.Get(context.Background(), target.ID)

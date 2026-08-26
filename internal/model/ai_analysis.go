@@ -56,6 +56,7 @@ type AIAnalysis struct {
 	StructuredResult  *AIAnalysisStructuredResult `gorm:"-" json:"structured_result,omitempty"`
 	RequestAttempts   int                         `json:"request_attempts"`
 	ResponseMode      string                      `gorm:"size:24" json:"response_mode,omitempty"`
+	ValidationWarning string                      `gorm:"type:text" json:"validation_warning,omitempty"`
 	ReusedFromID      *uint                       `gorm:"index" json:"reused_from_id,omitempty"`
 	Status            string                      `gorm:"size:16;not null;index" json:"status"`
 	DurationMS        int64                       `json:"duration_ms"`

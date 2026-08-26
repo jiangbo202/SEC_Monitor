@@ -17,7 +17,7 @@
     </div>
 
     <div v-if="health" class="ipo-health-tags">
-      <el-tag class="health-tag-action" type="warning" effect="plain" @click="applyAttention('listing_pending')">{{ t('pages.ipoRadar.attention.listingPending', { count: health.pending_listing }) }}</el-tag>
+      <el-tag class="health-tag-action" type="info" effect="plain" @click="applyAttention('listing_pending')">{{ t('pages.ipoRadar.attention.listingPending', { count: health.pending_listing }) }}</el-tag>
       <el-tag class="health-tag-action" type="warning" effect="plain" @click="applyAttention('parse_failed')">{{ t('pages.ipoRadar.attention.parseFailed', { count: health.unsupported_offering_events }) }}</el-tag>
       <el-tag class="health-tag-action" type="warning" effect="plain" @click="applyAttention('lifecycle_stale')">{{ t('pages.ipoRadar.attention.lifecycleStale', { count: health.stale_lifecycle_checks }) }}</el-tag>
       <el-tag class="health-tag-action" :type="health.failed_notification_batches || health.dead_letter_batches ? 'danger' : 'info'" effect="plain" @click="applyAttention('notification_failed')">{{ t('pages.ipoRadar.attention.notificationFailed', { count: health.failed_notification_batches + health.dead_letter_batches }) }}</el-tag>
@@ -26,10 +26,10 @@
     </div>
 
     <el-alert
-      v-if="health?.actions?.length"
+      v-if="visibleHealthActions.length"
       class="ipo-action-panel"
-      :title="t('pages.ipoRadar.operations.title', { count: health.actions.length })"
-      type="warning"
+      :title="t('pages.ipoRadar.operations.title', { count: visibleHealthActions.length })"
+      :type="healthActionPanelType"
       :closable="false"
       show-icon
     >
@@ -357,8 +357,12 @@ const companiesPage = ref(1)
 const calendarPage = ref(1)
 const pageSize = 20
 
-const automaticHealthActions = computed(() => health.value?.actions.filter((action) => action.disposition !== 'manual') || [])
-const manualHealthActions = computed(() => health.value?.actions.filter((action) => action.disposition === 'manual') || [])
+// Informational automation queues are summarized by the compact health tags.
+// Reserve the large panel for actual warnings and operator-facing exceptions.
+const visibleHealthActions = computed(() => health.value?.actions.filter((action) => action.severity !== 'info') || [])
+const automaticHealthActions = computed(() => visibleHealthActions.value.filter((action) => action.disposition !== 'manual'))
+const manualHealthActions = computed(() => visibleHealthActions.value.filter((action) => action.disposition === 'manual'))
+const healthActionPanelType = computed(() => health.value?.actions.some((action) => action.severity === 'danger' || action.disposition === 'manual') ? 'warning' : 'info')
 const filingFilters = reactive({ company_name: '', cik: '', filing_type: '', notified: '' })
 const companyFilters = reactive({ company_name: '', ticker: '', cik: '', status: '', attention: '', include_ended: false, followed: '' })
 const calendarFilters = reactive({ company_name: '', ticker: '' })
@@ -558,7 +562,7 @@ function ipoStatusType(status: string) {
   if (status === 'updating') return 'primary'
   if (status === 'effective') return 'warning'
   if (status === 'priced') return 'warning'
-  if (status === 'listing_pending') return 'warning'
+  if (status === 'listing_pending') return 'info'
   if (status === 'listed') return 'success'
   if (status === 'withdrawn') return 'danger'
   return 'info'

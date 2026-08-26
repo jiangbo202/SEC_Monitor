@@ -40,12 +40,13 @@ const aiAnalysisStructuredSystemPrompt = `你必须清楚区分事实、推断�
 不得把 evidence_sufficiency 解释为上涨概率；没有足够证据时使用 insufficient_evidence。`
 
 type aiAnalysisCallResult struct {
-	Structured   model.AIAnalysisStructuredResult
-	ResultJSON   string
-	Content      string
-	Attempts     int
-	ResponseMode string
-	ReusedFromID *uint
+	Structured        model.AIAnalysisStructuredResult
+	ResultJSON        string
+	Content           string
+	Attempts          int
+	ResponseMode      string
+	ValidationWarning string
+	ReusedFromID      *uint
 }
 
 type aiCompletionMessage struct {
@@ -82,20 +83,28 @@ func parseAIAnalysisStructuredResult(content string) (model.AIAnalysisStructured
 		return model.AIAnalysisStructuredResult{}, "", errors.New("AI 结果不是 JSON 对象")
 	}
 	var wire struct {
-		SchemaVersion       string                     `json:"schema_version"`
-		Stance              string                     `json:"stance"`
-		Conclusion          string                     `json:"conclusion"`
-		Evidence            []model.AIAnalysisEvidence `json:"evidence"`
-		CounterEvidence     []model.AIAnalysisEvidence `json:"counter_evidence"`
-		Invalidation        json.RawMessage            `json:"invalidation_conditions"`
-		Catalysts           json.RawMessage            `json:"catalysts"`
-		DataGaps            json.RawMessage            `json:"data_gaps"`
-		RiskNotes           json.RawMessage            `json:"risk_notes"`
-		EvidenceSufficiency string                     `json:"evidence_sufficiency"`
+		SchemaVersion       string          `json:"schema_version"`
+		Stance              string          `json:"stance"`
+		Conclusion          string          `json:"conclusion"`
+		Evidence            json.RawMessage `json:"evidence"`
+		CounterEvidence     json.RawMessage `json:"counter_evidence"`
+		Invalidation        json.RawMessage `json:"invalidation_conditions"`
+		Catalysts           json.RawMessage `json:"catalysts"`
+		DataGaps            json.RawMessage `json:"data_gaps"`
+		RiskNotes           json.RawMessage `json:"risk_notes"`
+		EvidenceSufficiency string          `json:"evidence_sufficiency"`
 	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&wire); err != nil {
+		return model.AIAnalysisStructuredResult{}, "", fmt.Errorf("解析 AI 结构结果: %w", err)
+	}
+	evidence, err := decodeAIAnalysisEvidenceList(wire.Evidence, "evidence")
+	if err != nil {
+		return model.AIAnalysisStructuredResult{}, "", fmt.Errorf("解析 AI 结构结果: %w", err)
+	}
+	counterEvidence, err := decodeAIAnalysisEvidenceList(wire.CounterEvidence, "counter_evidence")
+	if err != nil {
 		return model.AIAnalysisStructuredResult{}, "", fmt.Errorf("解析 AI 结构结果: %w", err)
 	}
 	stringLists := make(map[string][]string, 4)
@@ -115,8 +124,8 @@ func parseAIAnalysisStructuredResult(content string) (model.AIAnalysisStructured
 		SchemaVersion:       wire.SchemaVersion,
 		Stance:              wire.Stance,
 		Conclusion:          wire.Conclusion,
-		Evidence:            wire.Evidence,
-		CounterEvidence:     wire.CounterEvidence,
+		Evidence:            evidence,
+		CounterEvidence:     counterEvidence,
 		Invalidation:        stringLists["invalidation_conditions"],
 		Catalysts:           stringLists["catalysts"],
 		DataGaps:            stringLists["data_gaps"],
@@ -131,6 +140,77 @@ func parseAIAnalysisStructuredResult(content string) (model.AIAnalysisStructured
 		return result, "", err
 	}
 	return result, string(canonical), nil
+}
+
+// decodeAIAnalysisEvidenceList tolerates only harmless source-path shape
+// differences emitted by OpenAI-compatible providers. It never invents a
+// missing fact, inference or impact, so semantic validation remains strict.
+func decodeAIAnalysisEvidenceList(raw json.RawMessage, field string) ([]model.AIAnalysisEvidence, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	var rows []json.RawMessage
+	if err := json.Unmarshal(trimmed, &rows); err != nil {
+		return nil, fmt.Errorf("字段 %s 不是有效数组: %w", field, err)
+	}
+	result := make([]model.AIAnalysisEvidence, 0, len(rows))
+	for index, row := range rows {
+		var wire struct {
+			Fact             string          `json:"fact"`
+			Inference        string          `json:"inference"`
+			Impact           string          `json:"impact"`
+			SourcePaths      json.RawMessage `json:"source_paths"`
+			SourcePath       json.RawMessage `json:"source_path"`
+			SourcePathsCamel json.RawMessage `json:"sourcePaths"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(row))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&wire); err != nil {
+			return nil, fmt.Errorf("字段 %s 第 %d 项无效: %w", field, index+1, err)
+		}
+		pathRaw := wire.SourcePaths
+		if len(bytes.TrimSpace(pathRaw)) == 0 {
+			pathRaw = wire.SourcePath
+		}
+		if len(bytes.TrimSpace(pathRaw)) == 0 {
+			pathRaw = wire.SourcePathsCamel
+		}
+		paths, err := decodeAIAnalysisSourcePaths(pathRaw)
+		if err != nil {
+			return nil, fmt.Errorf("字段 %s 第 %d 项的事实包路径无效: %w", field, index+1, err)
+		}
+		result = append(result, model.AIAnalysisEvidence{
+			Fact: strings.TrimSpace(wire.Fact), Inference: strings.TrimSpace(wire.Inference), Impact: strings.TrimSpace(wire.Impact), SourcePaths: paths,
+		})
+	}
+	return result, nil
+}
+
+func decodeAIAnalysisSourcePaths(raw json.RawMessage) ([]string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	var single string
+	if err := json.Unmarshal(trimmed, &single); err == nil {
+		single = strings.TrimSpace(single)
+		if single == "" {
+			return nil, errors.New("路径不能为空")
+		}
+		return []string{single}, nil
+	}
+	var paths []string
+	if err := json.Unmarshal(trimmed, &paths); err != nil {
+		return nil, errors.New("路径必须是字符串或字符串数组")
+	}
+	for index := range paths {
+		paths[index] = strings.TrimSpace(paths[index])
+		if paths[index] == "" {
+			return nil, errors.New("路径不能为空")
+		}
+	}
+	return paths, nil
 }
 
 // decodeAIAnalysisStringList accepts the documented string-array shape and a
@@ -323,9 +403,10 @@ func (s *AIAnalysisService) callStructuredAIAnalysis(ctx context.Context, provid
 	}
 	result, canonical, parseErr := parseAIAnalysisStructuredResult(raw)
 	if parseErr != nil {
+		repairPrompt := buildAIAnalysisRepairPrompt(parseErr)
 		repairMessages := append(append([]aiCompletionMessage(nil), messages...),
 			aiCompletionMessage{Role: "assistant", Content: raw},
-			aiCompletionMessage{Role: "user", Content: "上一个回答未通过结构校验。只修复格式和字段完整性，不得新增事实；请重新输出符合 ai-research-v1 的单个 JSON 对象。"})
+			aiCompletionMessage{Role: "user", Content: repairPrompt})
 		// Structural repair is deliberately a single provider call. The original
 		// request already consumed its retry budget; an invalid payload must not
 		// open a second, unbounded retry cycle.
@@ -340,10 +421,39 @@ func (s *AIAnalysisService) callStructuredAIAnalysis(ctx context.Context, provid
 		}
 		result, canonical, parseErr = parseAIAnalysisStructuredResult(repaired)
 		if parseErr != nil {
-			return aiAnalysisCallResult{Attempts: attempts, ResponseMode: mode}, fmt.Errorf("AI 结构结果在一次修复后仍无效: %w", parseErr)
+			warning := SanitizeSensitiveError(fmt.Sprintf("AI 结构结果在一次修复后仍无效: %v", parseErr))
+			result = safeAIAnalysisFallback()
+			canonicalBytes, marshalErr := json.Marshal(result)
+			if marshalErr != nil {
+				return aiAnalysisCallResult{Attempts: attempts, ResponseMode: mode}, marshalErr
+			}
+			return aiAnalysisCallResult{
+				Structured: result, ResultJSON: string(canonicalBytes), Content: renderAIAnalysisStructuredMarkdown(result),
+				Attempts: attempts, ResponseMode: "validation_fallback", ValidationWarning: warning,
+			}, nil
 		}
 	}
 	return aiAnalysisCallResult{Structured: result, ResultJSON: canonical, Content: renderAIAnalysisStructuredMarkdown(result), Attempts: attempts, ResponseMode: mode}, nil
+}
+
+func buildAIAnalysisRepairPrompt(validationErr error) string {
+	return fmt.Sprintf(`上一个回答未通过结构校验：%s
+只修复格式和字段完整性，不得新增研究包中不存在的事实。请重新输出符合 ai-research-v1 的单个 JSON 对象。
+每个 evidence 和 counter_evidence 条目必须同时包含非空 fact、inference、impact，以及 source_paths 字符串数组；每条路径必须以 $ 开头。
+若无法提供可回溯的完整证据，请使用 stance="insufficient_evidence"、evidence=[]、counter_evidence=[]、evidence_sufficiency="low"，并在 data_gaps 中说明缺口。`, SanitizeSensitiveError(validationErr.Error()))
+}
+
+func safeAIAnalysisFallback() model.AIAnalysisStructuredResult {
+	return model.AIAnalysisStructuredResult{
+		SchemaVersion: model.AIAnalysisSchemaV1,
+		Stance:        "insufficient_evidence",
+		Conclusion:    "模型未返回可验证的完整结构化证据，本次不形成研究判断。",
+		Evidence:      []model.AIAnalysisEvidence{}, CounterEvidence: []model.AIAnalysisEvidence{},
+		Invalidation: []string{}, Catalysts: []string{},
+		DataGaps:            []string{"模型输出未通过结构校验，需重新生成包含事实包路径的完整证据后再判断。"},
+		RiskNotes:           []string{"本次结果为系统安全降级，不应作为研究结论或交易依据。"},
+		EvidenceSufficiency: "low",
+	}
 }
 
 func (s *AIAnalysisService) requestAICompletionWithRetry(ctx context.Context, provider AIProviderConfig, messages []aiCompletionMessage, structured bool) (string, int, string, error) {
@@ -497,7 +607,7 @@ func (s *AIAnalysisService) reusableAIAnalysis(ctx context.Context, record model
 	}
 	var reusable model.AIAnalysis
 	err := s.db.WithContext(ctx).
-		Where("id <> ? AND analysis_key_sha256 = ? AND schema_version = ? AND status = ? AND result_json <> ''", record.ID, record.AnalysisKeySHA256, model.AIAnalysisSchemaV1, "success").
+		Where("id <> ? AND analysis_key_sha256 = ? AND schema_version = ? AND status = ? AND result_json <> '' AND response_mode <> ?", record.ID, record.AnalysisKeySHA256, model.AIAnalysisSchemaV1, "success", "validation_fallback").
 		Order("completed_at DESC, id DESC").First(&reusable).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return model.AIAnalysis{}, false, nil

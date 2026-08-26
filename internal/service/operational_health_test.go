@@ -147,6 +147,25 @@ func TestOperationalHealthTreatsProviderValidationAsWarningAndReportsMissingMacr
 	}
 }
 
+func TestOperationalHealthDoesNotWarnForUsableProviderCertification(t *testing.T) {
+	db := testDB(t)
+	discoveryDB := testDiscoveryDB(t)
+	now := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	if err := discoveryDB.Create(&discovery.ProviderHealth{Provider: "longbridge", Status: discovery.ProviderStatusValidation, QualifiedTradingDays: 2, FailureStreak: 2, LastTradeDate: "2026-08-24", UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Create(&discovery.ProviderRun{BatchID: "market-current", Provider: "longbridge", Status: discovery.ProviderStatusValidation, ExpectedCount: 904, RecordCount: 902, CoveragePct: 99.78, Timely: true, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	report, err := NewOperationalHealthService(db, discoveryDB, nil, nil).ReportAt(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ProviderWarnings != 0 || hasOperationalIssue(report.Issues, "provider:longbridge") {
+		t.Fatalf("usable certification should be informational: %+v", report)
+	}
+}
+
 func TestOperationalHealthReportsSuccessfulProviderFallback(t *testing.T) {
 	db := testDB(t)
 	discoveryDB := testDiscoveryDB(t)

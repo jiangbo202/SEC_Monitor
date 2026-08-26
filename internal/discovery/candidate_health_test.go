@@ -144,3 +144,40 @@ func TestBuildCandidateHealthDistinguishesInsiderDataFromNoSignal(t *testing.T) 
 		})
 	}
 }
+
+func TestBuildCandidateHealthRecoversAvailabilityFromBatchCoverageSnapshots(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	security := Security{CIK: "0000009911", CompanyName: "Coverage Lineage Co", CatalogStatus: SecurityCatalogPublished}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	securityBatch := UniverseBatch{BatchID: "security-coverage-lineage", Kind: BatchKindSecurity, Status: BatchStatusPublished, SourceVersionsJSON: `[]`, StartedAt: now.Add(-time.Minute)}
+	marketBatch := UniverseBatch{BatchID: "market-coverage-lineage", Kind: BatchKindPrescreen, Status: BatchStatusPublished, UniverseSourceVersion: securityBatch.BatchID, EffectiveDate: "2026-08-25", StartedAt: now}
+	if err := db.Create(&[]UniverseBatch{securityBatch, marketBatch}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: marketBatch.BatchID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CandidateScoreSnapshot{BatchID: marketBatch.BatchID, SecurityID: security.ID, Ticker: "LINE", Grade: CandidateGradeB, EligibleB: true, MarketCapUSD: 120_000_000}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&FinancialMetricSnapshot{BatchID: securityBatch.BatchID, SecurityID: security.ID, RevenueGrowthAvailable: true, RunwayAvailable: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&InsiderCoverageSnapshot{BatchID: securityBatch.BatchID, SecurityID: security.ID, CIK: security.CIK, Status: InsiderCoverageCoveredNoFilings, CheckedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	health, err := BuildCandidateHealth(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.InsiderDataStatus != "available" || health.InsiderLineageStatus != "coverage_snapshot" || health.MissingInsiders != 0 || health.NoQualifiedInsiderCandidates != 1 {
+		t.Fatalf("health = %#v", health)
+	}
+	if health.Status != CandidateHealthDegraded || !containsString(health.Issues, "insider_source_lineage_recovered_from_coverage") {
+		t.Fatalf("health issues = %#v", health)
+	}
+}

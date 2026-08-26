@@ -826,6 +826,7 @@ type TradePlanSimulation struct {
 	SignalDate       time.Time  `json:"signal_date" gorm:"uniqueIndex:idx_trade_plan_simulation_signal,priority:3;index"`
 	EntryDate        *time.Time `json:"entry_date" gorm:"index"`
 	EntryTrigger     string     `json:"entry_trigger" gorm:"size:128"`
+	EntryPriceSource string     `json:"entry_price_source" gorm:"size:24"`
 	EntryPriceUSD    float64    `json:"entry_price_usd"`
 	StopLossUSD      float64    `json:"stop_loss_usd"`
 	TakeProfitUSD    float64    `json:"take_profit_usd"`
@@ -835,6 +836,8 @@ type TradePlanSimulation struct {
 	ExitPriceUSD     float64    `json:"exit_price_usd"`
 	ExitReason       string     `json:"exit_reason" gorm:"type:text"`
 	LastMarkPriceUSD float64    `json:"last_mark_price_usd"`
+	GrossReturnPct   float64    `json:"gross_return_pct"`
+	ExecutionCostPct float64    `json:"execution_cost_pct"`
 	ReturnPct        float64    `json:"return_pct"`
 	RMultiple        float64    `json:"r_multiple"`
 	MaxDrawdownPct   float64    `json:"max_drawdown_pct"`

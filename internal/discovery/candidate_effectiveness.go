@@ -31,6 +31,13 @@ type CandidateEffectivenessReport struct {
 	BenchmarkLatestTradeDate     string                          `json:"benchmark_latest_trade_date"`
 	DistinctSignalDates          int                             `json:"distinct_signal_dates"`
 	MinimumDistinctSignalDates   int                             `json:"minimum_distinct_signal_dates"`
+	ValidationHorizonDays        int                             `json:"validation_horizon_days"`
+	ValidationSampleCount        int                             `json:"validation_sample_count"`
+	ValidationBenchmarkCount     int                             `json:"validation_benchmark_count"`
+	ValidationSignalDates        int                             `json:"validation_signal_dates"`
+	RemainingSampleCount         int                             `json:"remaining_sample_count"`
+	RemainingBenchmarkCount      int                             `json:"remaining_benchmark_count"`
+	RemainingSignalDates         int                             `json:"remaining_signal_dates"`
 	CohortSource                 string                          `json:"cohort_source"`
 	OutcomeTrackingStatus        string                          `json:"outcome_tracking_status"`
 	TrackedOutcomeCount          int                             `json:"tracked_outcome_count"`
@@ -94,7 +101,8 @@ func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEff
 		StatusDetail: "尚无达到持有期的有效样本，评分仅用于研究排序", MinimumSampleCount: candidateEffectivenessMinimumSamples,
 		BenchmarkHistoryStatus: "missing", BenchmarkHistoryRequiredDays: technicalMA200LookbackDays,
 		MinimumDistinctSignalDates: candidateEffectivenessMinimumSignalDates, AssumedRoundTripCostPct: candidateEffectivenessRoundTripCostPct,
-		Segments: []CandidateEffectivenessSegment{},
+		ValidationHorizonDays: 20,
+		Segments:              []CandidateEffectivenessSegment{},
 		Cohorts: []CandidateEffectivenessCohort{
 			{Grade: "all", Windows: emptyCandidateEffectivenessWindows()},
 			{Grade: CandidateGradeA, Windows: emptyCandidateEffectivenessWindows()},
@@ -180,6 +188,12 @@ func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEff
 				continue
 			}
 			report.Status = window.VerificationStatus
+			report.ValidationSampleCount = window.SampleCount
+			report.ValidationBenchmarkCount = window.BenchmarkSampleCount
+			report.ValidationSignalDates = window.DistinctSignalDates
+			report.RemainingSampleCount = maxInt(0, candidateEffectivenessMinimumSamples-window.SampleCount)
+			report.RemainingBenchmarkCount = maxInt(0, window.SampleCount-window.BenchmarkSampleCount)
+			report.RemainingSignalDates = maxInt(0, candidateEffectivenessMinimumSignalDates-window.DistinctSignalDates)
 			switch {
 			case report.BenchmarkHistoryStatus != "ready":
 				report.StatusDetail = "IWM 基准历史未就绪；当前无法验证相对收益"
@@ -193,6 +207,13 @@ func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEff
 		}
 	}
 	return report, nil
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func emptyCandidateEffectivenessWindows() []CandidateEffectivenessWindow {

@@ -30,6 +30,8 @@ type IPORadarService struct {
 	newLongbridgeIPOCalendarClient func(string, string, string) (longbridgeIPOCalendarClient, error)
 }
 
+const ipoListingAutomaticPauseAfter = 180 * 24 * time.Hour
+
 type IPOFilingFilter struct {
 	CompanyName string
 	CIK         string
@@ -258,7 +260,9 @@ func buildIPORadarActions(health IPORadarHealth) []IPORadarAction {
 	// recover without an explicit operator action.
 	add("review_dead_letters", "danger", "manual", health.DeadLetterBatches, "", "notification_logs", "dead_letter")
 	add("retry_notifications", "danger", "automatic", health.DueRetryBatches, "", "notification_logs", "failed")
-	add("verify_listing", "warning", "automatic", health.PendingListing, "listing_pending", "", "")
+	// A pending listing is an observable automation queue, not an operator
+	// incident. Source failures and stalled sync tasks are surfaced separately.
+	add("verify_listing", "info", "automatic", health.PendingListing, "listing_pending", "", "")
 	add("complete_market_mapping", "warning", "automatic", health.MissingMarketMapping, "missing_market_mapping", "", "")
 	add("recheck_lifecycle", "warning", "automatic", health.StaleLifecycleChecks, "lifecycle_stale", "", "")
 	add("review_offering_parse", "warning", "automatic", health.UnsupportedOfferingEvents, "parse_failed", "", "")
@@ -1858,6 +1862,8 @@ func inferIPOCompanyStatus(filings []model.IPOFiling, matchedTicker string, pend
 		return "withdrawn", "detected RW withdrawal filing", "high"
 	case strings.TrimSpace(matchedTicker) != "":
 		return "listed", "matched ticker " + strings.TrimSpace(matchedTicker), "high"
+	case strings.TrimSpace(pendingTicker) != "" && !latestFilingDate.IsZero() && latestFilingDate.Before(now.UTC().Add(-ipoListingAutomaticPauseAfter)):
+		return "stale", "listing remained unverified and no IPO filing update was received for over 180 days; automatic review paused", "medium"
 	case strings.TrimSpace(pendingTicker) != "":
 		return "listing_pending", "SEC ticker " + strings.TrimSpace(pendingTicker) + " awaits exchange confirmation", "medium"
 	case hasPriced:

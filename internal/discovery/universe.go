@@ -1443,7 +1443,7 @@ func normalizeInsiderTransactions(input []InsiderTransaction) ([]InsiderTransact
 			if !equivalentInsiderTransactions(prior, row) {
 				return nil, fmt.Errorf("insider transaction identity has conflicting duplicates: %s", row.Accession)
 			}
-			prior.SourceURL = preferredInsiderSourceURL(row.Accession, prior.SourceURL, row.SourceURL)
+			prior.SourceURL = preferredInsiderSourceURL(row.CIK, row.Accession, prior.SourceURL, row.SourceURL)
 			seen[key] = prior
 			continue
 		}
@@ -1463,7 +1463,19 @@ func equivalentInsiderTransactions(left, right InsiderTransaction) bool {
 	return reflect.DeepEqual(left, right)
 }
 
-func preferredInsiderSourceURL(accession, left, right string) string {
+func preferredInsiderSourceURL(issuerCIK, accession, left, right string) string {
+	issuerCIK = normalizeCIKString(issuerCIK)
+	if validCIK(issuerCIK) {
+		archivePath := "/" + strings.TrimLeft(issuerCIK, "0") + "/" + strings.ReplaceAll(accession, "-", "") + "/"
+		leftCanonical := strings.Contains(left, archivePath)
+		rightCanonical := strings.Contains(right, archivePath)
+		if leftCanonical != rightCanonical {
+			if leftCanonical {
+				return left
+			}
+			return right
+		}
+	}
 	archiveCIK, ok := form4AccessionCIK(accession)
 	if ok {
 		archivePath := "/" + strings.TrimLeft(archiveCIK, "0") + "/" + strings.ReplaceAll(accession, "-", "") + "/"
