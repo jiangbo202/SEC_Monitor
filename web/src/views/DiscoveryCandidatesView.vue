@@ -1001,7 +1001,15 @@
 
     <el-drawer v-model="detailVisible" title="候选证据链" size="720px">
       <div v-if="candidateDetail" class="candidate-detail">
-        <el-card shadow="never">
+        <nav class="candidate-detail-nav" aria-label="候选详情快捷定位">
+          <span class="candidate-detail-nav-label">阅读顺序</span>
+          <el-button link type="primary" @click="scrollCandidateDetailSection('summary')">决策摘要</el-button>
+          <el-button link type="primary" @click="scrollCandidateDetailSection('latest')">最新变化</el-button>
+          <el-button link type="primary" @click="scrollCandidateDetailSection('fundamentals')">基本面与风险</el-button>
+          <el-button link type="primary" @click="scrollCandidateDetailSection('research')">深度研究</el-button>
+          <el-button link type="primary" @click="scrollCandidateDetailSection('audit')">数据审计</el-button>
+        </nav>
+        <el-card id="candidate-detail-summary" shadow="never" class="detail-order-10">
           <template #header>研究摘要</template>
           <div class="detail-summary-grid">
             <div>
@@ -1018,7 +1026,7 @@
             </div>
           </div>
         </el-card>
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-20">
           <template #header>
             <div class="card-header-actions">
               <span>建议下一步（研究工作流）</span>
@@ -1038,7 +1046,7 @@
             <el-tag v-for="reason in candidateDetail.research_next_step.reasons" :key="reason" size="small" type="info" effect="plain">{{ readinessReasonLabel(reason) }}</el-tag>
           </div>
         </el-card>
-        <el-descriptions :column="2" border>
+        <el-descriptions :column="2" border class="detail-order-30 candidate-detail-identity">
           <el-descriptions-item label="Ticker">{{ candidateDetail.score.ticker }}</el-descriptions-item>
           <el-descriptions-item label="公司">{{ candidateDetail.security.company_name }}</el-descriptions-item>
           <el-descriptions-item label="研究结论">{{ readinessLabel(candidateDetail.research_readiness?.status) }}</el-descriptions-item>
@@ -1048,7 +1056,7 @@
           <el-descriptions-item label="SIC" :span="2">{{ candidateDetail.security.sic || '-' }}</el-descriptions-item>
         </el-descriptions>
 
-        <el-card shadow="never" class="candidate-ai-card">
+        <el-card shadow="never" class="candidate-ai-card detail-order-220">
           <template #header><div class="card-header-actions"><span>AI 研判（手动）</span><el-space><el-select fit-input-width v-model="candidateAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="candidateAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!candidateAIProvider || !candidateAIPromptTemplate" :loading="candidateAIGenerating" @click="generateCandidateAI">生成研判</el-button></el-space></div></template>
           <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
           <template v-else-if="candidateAIAnalyses.length"><el-select fit-input-width v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><el-alert v-if="activeCandidateAIAnalysis?.validation_warning" type="warning" :closable="false" show-icon title="模型输出未通过结构校验，系统已安全降级为证据不足。" style="margin-bottom:12px" /><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><AIAnalysisResult :result="activeCandidateAIAnalysis?.structured_result" :content="activeCandidateAIAnalysis?.content" /></div></template></template>
@@ -1056,7 +1064,7 @@
           <el-alert v-show="activeCandidateAIAnalysis?.status === 'queued' || activeCandidateAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
         </el-card>
 
-        <el-card v-if="candidateDetail.company_profile" shadow="never">
+        <el-card v-if="candidateDetail.company_profile" shadow="never" class="detail-order-190">
           <template #header>
             <div class="card-header-actions">
               <span>公司概览（SEC + Longbridge）</span>
@@ -1086,7 +1094,7 @@
           </el-descriptions>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card id="candidate-detail-research" shadow="never" class="detail-order-160">
           <template #header>市场一致目标价与合理价值情景</template>
           <el-alert type="warning" :closable="false" show-icon title="不提供 Longbridge “公允价值”结论：市场一致目标价与本地历史估值情景必须分开阅读，均不构成投资建议。" />
           <template v-if="candidateDetail.fair_value?.status === 'available'">
@@ -1113,7 +1121,7 @@
           <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="candidateDetail.fair_value?.message || '尚缺机构目标价或可用估值倍数，无法计算本地历史估值情景。'" />
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-170">
           <template #header><div class="card-header-actions"><span>估值历史与同业比较（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.valuation_research?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.valuation_research?.quality?.quality_status) }}</el-tag></span><el-button size="small" :loading="valuationResearchRefreshing" @click="refreshCandidateValuationResearch">刷新估值研究</el-button></div></template>
           <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="小盘与亏损公司可能缺少 PE、同业或历史覆盖；此数据仅用于研究比较，绝不作为候选硬筛选。" />
           <template v-if="candidateDetail.valuation_research?.latest">
@@ -1137,7 +1145,7 @@
           <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="candidateDetail.valuation_research?.message || '尚未同步 Longbridge 估值研究'" />
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-60">
           <template #header>
             <div class="card-header-actions">
               <span>市场预期、异动与机构持仓（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.market_research?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.market_research?.quality?.quality_status) }}</el-tag></span>
@@ -1186,7 +1194,7 @@
           </el-table>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-180">
           <template #header>
             <div class="card-header-actions">
               <span>机构与分析师共识（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.analyst_rating?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.analyst_rating?.quality?.quality_status) }}</el-tag></span>
@@ -1225,17 +1233,17 @@
           <el-alert v-else type="info" :closable="false" show-icon :title="candidateDetail.analyst_rating?.message || '尚未同步分析师共识'" description="小盘股可能没有公开分析师覆盖；这不是 SEC、财务或行情数据缺失。可手动刷新当前标的，不会重跑候选工作流。" />
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-110">
           <template #header>流动性条件（研究用）</template>
           <el-alert :type="investabilityAlertType(candidateDetail.investability?.status)" :closable="false" show-icon :title="investabilityDetailTitle(candidateDetail.investability)" :description="investabilityDetailDescription(candidateDetail.investability)" />
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-130">
           <template #header>股本稀释趋势（SEC）</template>
           <el-alert :type="dilutionAlertType(candidateDetail.dilution_trend?.status)" :closable="false" show-icon :title="dilutionDetailTitle(candidateDetail.dilution_trend)" :description="dilutionTooltipLines(candidateDetail.dilution_trend).slice(1).join('；')" />
         </el-card>
 
-        <el-card shadow="never">
+        <el-card id="candidate-detail-audit" shadow="never" class="detail-order-230">
           <template #header>评分拆解</template>
           <el-alert type="info" :closable="false" show-icon :title="candidateDetail.scoring_rubric.disclaimer" class="business-model-alert" />
           <el-descriptions :column="3" border size="small" style="margin-bottom: 12px">
@@ -1254,7 +1262,7 @@
           <div class="criteria-note">{{ candidateDetail.scoring_rubric.grade_rule_note }}</div>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-240">
           <template #header>评分历史与入选事件</template>
           <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="仅比较已发布候选批次；分数变化不等于基本面变化，请结合下方的变化原因与证据溯源复核。" />
           <el-table :data="candidateDetail.score_history || []" size="small" border class="score-history-table" empty-text="仅有当前评分批次，暂无可比历史">
@@ -1277,7 +1285,7 @@
           </div>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-200">
           <template #header>赛道解释</template>
           <el-descriptions :column="2" border size="small">
             <el-descriptions-item label="分类">{{ candidateDetail.sector.category }}</el-descriptions-item>
@@ -1288,7 +1296,7 @@
           </el-descriptions>
         </el-card>
 
-        <el-card v-if="candidateDetail.sector.category === '生物医药'" shadow="never">
+        <el-card v-if="candidateDetail.sector.category === '生物医药'" shadow="never" class="detail-order-210">
           <template #header>
             <div class="detail-card-header-action">
               <span>生物医药业务模型</span>
@@ -1313,7 +1321,7 @@
           </el-descriptions>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-250">
           <template #header>数据质量</template>
           <el-space wrap>
             <el-tag v-for="(value, key) in candidateDetail.data_quality" :key="key" :type="value === 'valid' ? 'success' : 'warning'" effect="plain">
@@ -1322,7 +1330,7 @@
           </el-space>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-260">
           <template #header>证据溯源（当前候选批次）</template>
           <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="此处仅展示生成当前候选所使用的本地快照，不会在打开详情时请求 SEC 或行情接口。" />
           <el-descriptions :column="2" border size="small" class="lineage-batch-meta">
@@ -1339,7 +1347,7 @@
           </el-table>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card id="candidate-detail-fundamentals" shadow="never" class="detail-order-90">
           <template #header>财务证据</template>
           <el-descriptions v-if="candidateDetail.financial" :column="2" border size="small">
             <el-descriptions-item label="季度收入 YoY">{{ formatPct(candidateDetail.financial.quarterly_revenue_yoy_pct) }}</el-descriptions-item>
@@ -1353,7 +1361,7 @@
           <el-empty v-else description="暂无财务证据" />
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-100">
           <template #header>估值快照（SEC + 本地价格）</template>
           <el-alert v-if="candidateDetail.valuation.status !== 'ready'" type="info" :closable="false" show-icon :title="valuationReasonText(candidateDetail.valuation.reasons) || '部分估值证据不足，相关倍数已显示为 N/A。'" class="business-model-alert" />
           <el-descriptions :column="2" border size="small">
@@ -1372,11 +1380,11 @@
           </el-descriptions>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-150">
           <ProfitHistoryChart :history="candidateDetail.profit_history" />
         </el-card>
 
-        <el-card shadow="never">
+        <el-card id="candidate-detail-latest" shadow="never" class="detail-order-50">
           <template #header>技术分析（独立研究信号，不计入基本面总分）</template>
           <el-alert
             v-if="candidateDetail.technical.status !== 'ready'"
@@ -1446,7 +1454,7 @@
 						<TechnicalPriceHistoryChart :ticker="candidateDetail.score.ticker" :rows="candidateDetail.technical_history || []" :technical="candidateDetail.technical" />
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-70">
           <template #header>近期 SEC 公告</template>
           <el-table :data="candidateDetail.recent_filings || []" size="small" border empty-text="暂无近期公告">
             <el-table-column prop="filing_date" label="日期" width="120">
@@ -1463,7 +1471,7 @@
           </el-table>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-140">
           <template #header>内幕交易</template>
           <el-alert
             v-if="candidateDetail.insider_coverage"
@@ -1484,7 +1492,7 @@
           </el-table>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-120">
           <template #header>融资/稀释风险</template>
           <el-alert
             v-if="candidateDetail.capital_risk_summary?.total_events"
@@ -1504,7 +1512,7 @@
           </el-table>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-80">
           <template #header>研究事件与催化剂时间线</template>
           <el-alert type="info" :closable="false" show-icon title="绿色为 SEC 已发生事实；橙色为用户计划中的催化剂。用户判断必须同时填写日期和来源，才标记为资料完整。" class="business-model-alert" />
           <el-table :data="candidateDetail.catalysts || []" size="small" border empty-text="暂无研究事件或催化剂">
@@ -1517,7 +1525,7 @@
           </el-table>
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-40">
           <template #header>预期差研究卡（用户论点，不是系统事实）</template>
           <el-alert type="info" :closable="false" show-icon title="SEC 公告、财务和融资证据在上方独立展示；以下内容均由用户维护，需通过后续公告或数据验证。" class="business-model-alert" />
           <template v-if="candidateDetail.research">
@@ -1551,7 +1559,7 @@
           <el-empty v-else description="尚未建立研究卡；请先加入关注列表后填写。" :image-size="64" />
         </el-card>
 
-        <el-card shadow="never">
+        <el-card shadow="never" class="detail-order-270">
           <template #header>原始证据字段</template>
           <el-table :data="candidateDetail.evidence" size="small" border>
             <el-table-column prop="field" label="字段" width="170" />
@@ -1843,10 +1851,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { StarFilled, SuccessFilled } from '@element-plus/icons-vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { apiClient } from '@/api/client'
 import AIRequestPrompt from '@/components/AIRequestPrompt.vue'
 import AIAnalysisResult from '@/components/AIAnalysisResult.vue'
@@ -1978,6 +1986,7 @@ const businessModelSaving = ref(false)
 const businessModelEditor = reactive({ ticker: '', business_model: 'unknown', revenue_repeatable_confirmed: false, reason: '', source_url: '', operator: 'local_user', review_due_at: '' })
 const candidateTableView = ref<'compact' | 'full'>('compact')
 const route = useRoute()
+const router = useRouter()
 const advancedFiltersVisible = ref(false)
 const supplementalLoading = ref(false)
 const health = ref<CandidateHealth | null>(null)
@@ -2035,6 +2044,12 @@ const filters = reactive({
   followed: false,
 })
 const sortState = reactive({ sort_by: 'total_score', sort_order: 'desc' })
+let candidateLoadSequence = 0
+
+function normalizedTickerQuery(value: unknown) {
+  const raw = Array.isArray(value) ? value[0] : value
+  return typeof raw === 'string' ? raw.trim().toUpperCase() : ''
+}
 const topSectorLabel = computed(() => {
   const entries = Object.entries(overview.value?.sector_counts || {}).sort((a, b) => b[1] - a[1])
   return entries[0]?.[0] || '-'
@@ -2105,9 +2120,11 @@ function requestParams() {
 }
 
 async function load() {
+  const sequence = ++candidateLoadSequence
   loading.value = true
   try {
     const res = await apiClient.get<ApiResponse<PageResult<CandidateScore>>>('/discovery/candidates', { params: requestParams() })
+    if (sequence !== candidateLoadSequence) return
     rows.value = res.data.data.items || []
     total.value = res.data.data.total || 0
     // Let Vue paint the primary table before the diagnostic cards start their
@@ -2119,9 +2136,10 @@ async function load() {
       void refreshCandidateSupplementals()
     }, 120)
   } catch (err: any) {
+    if (sequence !== candidateLoadSequence) return
     ElMessage.error(err?.response?.data?.message || '加载候选失败')
   } finally {
-    loading.value = false
+    if (sequence === candidateLoadSequence) loading.value = false
   }
 }
 
@@ -2532,6 +2550,10 @@ function exportCandidates() {
   const query = new URLSearchParams()
   Object.entries(requestParams()).forEach(([key, value]) => query.set(key, String(value)))
   window.open(`/api/exports/candidates.csv?${query.toString()}`, '_blank', 'noopener')
+}
+
+function scrollCandidateDetailSection(section: 'summary' | 'latest' | 'fundamentals' | 'research' | 'audit') {
+  document.getElementById(`candidate-detail-${section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function openDetail(row: CandidateScore) {
@@ -3058,9 +3080,17 @@ async function sendNotification() {
   }
 }
 
-function search() {
+async function search() {
   page.value = 1
-  load()
+  filters.ticker = filters.ticker.trim().toUpperCase()
+  const routeTicker = normalizedTickerQuery(route.query.ticker)
+  if (routeTicker !== filters.ticker) {
+    const query = { ...route.query }
+    if (filters.ticker) query.ticker = filters.ticker
+    else delete query.ticker
+    await router.replace({ query })
+  }
+  await load()
 }
 
 function reset() {
@@ -4237,9 +4267,16 @@ function oscillatorTagType(signal?: string) {
 	return 'info'
 }
 
+watch(() => route.query.ticker, (ticker) => {
+  const nextTicker = normalizedTickerQuery(ticker)
+  if (nextTicker === filters.ticker.trim().toUpperCase()) return
+  filters.ticker = nextTicker
+  page.value = 1
+  void load()
+})
+
 onMounted(() => {
-	const ticker = route.query.ticker
-	if (typeof ticker === 'string') filters.ticker = ticker.toUpperCase()
+	filters.ticker = normalizedTickerQuery(route.query.ticker)
   load()
   loadCriteria()
   void loadAIProviders()
@@ -5044,7 +5081,70 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.candidate-ai-card { margin-top: 16px; }
+.candidate-detail-nav {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  order: 0;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--el-bg-color) 96%, transparent);
+  box-shadow: 0 4px 12px rgb(15 23 42 / 6%);
+  backdrop-filter: blur(8px);
+}
+
+.candidate-detail-nav-label {
+  margin-right: auto;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.candidate-detail-identity {
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+#candidate-detail-summary,
+#candidate-detail-latest,
+#candidate-detail-fundamentals,
+#candidate-detail-research,
+#candidate-detail-audit {
+  scroll-margin-top: 52px;
+}
+
+.detail-order-10 { order: 10; }
+.detail-order-20 { order: 20; }
+.detail-order-30 { order: 30; }
+.detail-order-40 { order: 40; }
+.detail-order-50 { order: 50; }
+.detail-order-60 { order: 60; }
+.detail-order-70 { order: 70; }
+.detail-order-80 { order: 80; }
+.detail-order-90 { order: 90; }
+.detail-order-100 { order: 100; }
+.detail-order-110 { order: 110; }
+.detail-order-120 { order: 120; }
+.detail-order-130 { order: 130; }
+.detail-order-140 { order: 140; }
+.detail-order-150 { order: 150; }
+.detail-order-160 { order: 160; }
+.detail-order-170 { order: 170; }
+.detail-order-180 { order: 180; }
+.detail-order-190 { order: 190; }
+.detail-order-200 { order: 200; }
+.detail-order-210 { order: 210; }
+.detail-order-220 { order: 220; }
+.detail-order-230 { order: 230; }
+.detail-order-240 { order: 240; }
+.detail-order-250 { order: 250; }
+.detail-order-260 { order: 260; }
+.detail-order-270 { order: 270; }
+
+.candidate-ai-card { margin-top: 0; }
 .ai-analysis-content { white-space: pre-wrap; line-height: 1.65; padding: 12px; border-radius: 4px; background: var(--el-fill-color-light); }
 
 .capital-risk-summary {
