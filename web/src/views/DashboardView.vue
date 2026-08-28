@@ -85,6 +85,7 @@
                 <span>市场温度</span><strong>{{ summary.decision.market.temperature.temperature }}</strong><em>{{ summary.decision.market.temperature.description || 'Longbridge' }}</em>
               </div>
             </div>
+			<el-empty v-if="!loading && !(summary?.decision.market.market || []).length" :image-size="48" description="市场快照未就绪；当前研究结论可能处于降级状态"><el-button type="primary" link @click="router.push('/market-trend')">查看数据状态并刷新</el-button></el-empty>
             <div class="market-subsection">
               <span class="subsection-label">板块强弱</span>
               <el-tag v-for="item in summary?.decision.market.sectors || []" :key="item.symbol" :type="changeTagType(item.change_1d_pct)" effect="plain">{{ item.label }} {{ formatChange(item.change_1d_pct) }}</el-tag>
@@ -119,6 +120,7 @@
               <el-table-column label="基本面" width="100" align="center"><template #default="{ row }"><el-tag v-if="row.score" effect="plain">{{ row.grade }} {{ row.score }}</el-tag><span v-else>-</span></template></el-table-column>
               <el-table-column label="状态开始" width="165"><template #default="{ row }">{{ formatDateTime(row.since) }}</template></el-table-column>
             </el-table>
+			<div v-if="!loading && !(summary?.decision.actions || []).length" class="empty-action"><span>没有行动项不代表系统异常；可前往策略观察池检查被阻断、待复核和观察中的候选。</span><el-button link type="primary" @click="router.push('/strategy-pool')">打开观察池</el-button></div>
           </el-card>
         </div>
 
@@ -359,6 +361,7 @@ function effectivenessStatusLabel(status?: string) { return ({ validated: '已�
 .temperature-item { background: var(--el-fill-color-light); }
 .market-subsection { margin-top: 10px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .subsection-label { color: var(--el-text-color-secondary); min-width: 70px; }
+.empty-action { display:flex; justify-content:center; align-items:center; gap:8px; margin-top:8px; color:var(--el-text-color-secondary); font-size:12px; }
 .dashboard-module-selector { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
 @media (max-width: 900px) { .dashboard-grid { grid-template-columns: 1fr; }.page-header, .dashboard-actions, .decision-readiness-main { align-items: flex-start; flex-wrap: wrap; }.dashboard-alert-content { align-items: flex-start; flex-direction: column; }.decision-readiness-tags { justify-content: flex-start; }.decision-readiness-reason { grid-template-columns: auto minmax(0, 1fr); }.decision-readiness-reason .el-button { grid-column: 2; justify-self: start; } }
 </style>

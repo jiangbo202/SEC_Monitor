@@ -129,6 +129,14 @@ func TestAIAnalysisIsExplicitAndAudited(t *testing.T) {
 	if err != nil || page.Total != 1 || page.Items[0].InputSnapshot != "" || page.Items[0].UserPrompt == "" || page.Items[0].StructuredResult == nil || page.Items[0].StructuredResult.SchemaVersion != model.AIAnalysisSchemaV1 {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
+	successPage, err := analyses.List(context.Background(), AIAnalysisListFilter{Ticker: "NVDA", Status: "success", Page: 1, PageSize: 20})
+	if err != nil || successPage.Total != 1 {
+		t.Fatalf("success page=%+v err=%v", successPage, err)
+	}
+	failedPage, err := analyses.List(context.Background(), AIAnalysisListFilter{Ticker: "NVDA", Status: "failed", Page: 1, PageSize: 20})
+	if err != nil || failedPage.Total != 0 {
+		t.Fatalf("failed page=%+v err=%v", failedPage, err)
+	}
 	var auditCount int64
 	if err := db.Model(&model.OperationLog{}).Where("object_type = ?", "ai_analysis").Count(&auditCount).Error; err != nil || auditCount != 2 {
 		t.Fatalf("audit=%d err=%v", auditCount, err)

@@ -59,6 +59,7 @@
           <el-table-column prop="sent_count" :label="t('pages.notificationLogs.sentCount')" width="85" align="right" />
           <el-table-column prop="suppressed_count" :label="t('pages.notificationLogs.suppressedCount')" width="90" align="right" />
           <el-table-column prop="status" :label="t('common.status')" width="120"><template #default="{ row }"><el-tag :type="batchStatusType(row.status)" effect="plain">{{ batchStatusLabel(row.status) }}</el-tag></template></el-table-column>
+		  <el-table-column label="为何未发送" min-width="210"><template #default="{ row }"><span v-if="row.status === 'suppressed'">{{ suppressionReason(row) }}</span><span v-else>-</span></template></el-table-column>
           <el-table-column prop="retry_count" :label="t('common.retryCount')" width="85" align="right" />
           <el-table-column prop="next_retry_at" :label="t('pages.notificationLogs.nextRetryAt')" width="170"><template #default="{ row }">{{ formatDateTime(row.next_retry_at) }}</template></el-table-column>
           <el-table-column prop="suppression_summary" :label="t('pages.notificationLogs.summary')" min-width="190" show-overflow-tooltip />
@@ -67,6 +68,7 @@
           <el-table-column :label="t('common.actions')" width="105" fixed="right">
             <template #default="{ row }">
               <el-button v-if="row.status === 'failed' || row.status === 'dead_letter'" type="primary" link @click="requeue(row)">{{ t('pages.notificationLogs.requeue') }}</el-button>
+			  <el-button v-else-if="row.status === 'suppressed'" type="primary" link @click="router.push('/telegram')">通知设置</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -91,7 +93,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, NotificationBatch, NotificationBatchItem, NotificationLog, PageResult } from '@/api/types'
@@ -99,6 +101,7 @@ import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
 const route = useRoute()
+const router = useRouter()
 const activeTab = ref('batches')
 const loading = ref(false)
 const batches = ref<NotificationBatch[]>([])
@@ -195,6 +198,18 @@ function notificationItemTypeLabel(item: NotificationBatchItem) {
     return t('pages.notificationLogs.candidateGrade', { grade: item.filing_type })
   }
   return item.filing_type || '-'
+}
+function suppressionReason(row: NotificationBatch) {
+  if (row.suppression_summary) {
+    const labels: Record<string, string> = {
+      notification_disabled: '通知总开关未启用', event_channel_disabled: '该事件类型的通知未启用', lifecycle_backfill: '历史回补数据不发送通知',
+      history_backfill: '历史回补数据不发送通知', duplicate: '相同事件已发送', cooldown: '仍在通知冷却期', below_threshold: '未达到通知阈值', stale: '事件已超过通知时效'
+    }
+    return row.suppression_summary.split(',').map((part) => { const [code, count] = part.trim().split(':'); return `${labels[code] || code}${count ? `（${count}）` : ''}` }).join('；')
+  }
+  if (!row.target) return '通知渠道或接收目标未配置'
+  if (row.sent_count === 0 && row.suppressed_count > 0) return '本批项目均未满足当前通知规则或已发送过'
+  return '部分项目被去重、冷却期或通知规则抑制'
 }
 function formatDateTime(value?: string | null) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString() }
 

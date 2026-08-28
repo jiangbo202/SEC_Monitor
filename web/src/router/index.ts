@@ -15,7 +15,6 @@ const IPORadarView = () => import('@/views/IPORadarView.vue')
 const InsiderTradingView = () => import('@/views/InsiderTradingView.vue')
 const SyncRunsView = () => import('@/views/SyncRunsView.vue')
 const SchedulerView = () => import('@/views/SchedulerView.vue')
-const TelegramView = () => import('@/views/TelegramView.vue')
 const ConfigsView = () => import('@/views/ConfigsView.vue')
 const SystemHealthView = () => import('@/views/SystemHealthView.vue')
 const AuditLogsView = () => import('@/views/AuditLogsView.vue')
@@ -29,6 +28,7 @@ const StrategyPoolView = () => import('@/views/StrategyPoolView.vue')
 const TickerEvaluationView = () => import('@/views/TickerEvaluationView.vue')
 const OptionResearchView = () => import('@/views/OptionResearchView.vue')
 const AIAnalysesView = () => import('@/views/AIAnalysesView.vue')
+const TickerWorkspaceView = () => import('@/views/TickerWorkspaceView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -42,6 +42,7 @@ const router = createRouter({
         { path: 'filings', name: 'filings', component: FilingsView },
         { path: 'discovery-candidates', name: 'discovery-candidates', component: DiscoveryCandidatesView },
         { path: 'strategy-pool', name: 'strategy-pool', component: StrategyPoolView },
+		{ path: 'ticker-workspace', name: 'ticker-workspace', component: TickerWorkspaceView },
 		{ path: 'ticker-evaluation', name: 'ticker-evaluation', component: TickerEvaluationView },
 		{ path: 'option-research', name: 'option-research', component: OptionResearchView },
         { path: 'ai-analyses', name: 'ai-analyses', component: AIAnalysesView },
@@ -56,7 +57,7 @@ const router = createRouter({
         { path: 'ipo-radar', name: 'ipo-radar', component: IPORadarView },
         { path: 'sync-runs', name: 'sync-runs', component: SyncRunsView },
         { path: 'scheduler', name: 'scheduler', component: SchedulerView },
-        { path: 'telegram', name: 'telegram', component: TelegramView },
+        { path: 'telegram', redirect: { path: '/configs', query: { section: 'notifications' } } },
         { path: 'configs', name: 'configs', component: ConfigsView },
         { path: 'system-health', name: 'system-health', component: SystemHealthView },
         { path: 'audit-logs', name: 'audit-logs', component: AuditLogsView },

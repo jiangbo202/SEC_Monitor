@@ -9,10 +9,13 @@
         <div class="nav-section-label">{{ t('nav.monitor') }}</div>
         <el-menu-item index="/"><el-icon><DataBoard /></el-icon><span>{{ t('nav.dashboard') }}</span></el-menu-item>
         <el-menu-item index="/strategy-pool"><el-icon><Compass /></el-icon><span>{{ t('nav.strategyPool') }}</span></el-menu-item>
+		<el-menu-item index="/ticker-workspace"><el-icon><Search /></el-icon><span>{{ t('nav.tickerWorkspace') }}</span></el-menu-item>
 		<el-menu-item index="/ticker-evaluation"><el-icon><MagicStick /></el-icon><span>{{ t('nav.tickerEvaluation') }}</span></el-menu-item>
-		<el-menu-item index="/option-research"><el-icon><DataAnalysis /></el-icon><span>期权与多空研究</span></el-menu-item>
-        <el-menu-item index="/ai-analyses"><el-icon><MagicStick /></el-icon><span>AI 分析记录</span></el-menu-item>
+		<el-menu-item index="/option-research"><el-icon><DataAnalysis /></el-icon><span>{{ t('nav.optionResearch') }}</span></el-menu-item>
+        <el-menu-item index="/ai-analyses"><el-icon><MagicStick /></el-icon><span>{{ t('nav.aiAnalyses') }}</span></el-menu-item>
         <el-menu-item index="/targets"><el-icon><Aim /></el-icon><span>{{ t('nav.targets') }}</span></el-menu-item>
+
+        <div class="nav-section-label">{{ t('nav.filingResearch') }}</div>
         <el-menu-item index="/filings"><el-icon><Document /></el-icon><span>{{ t('nav.filings') }}</span></el-menu-item>
         <el-menu-item index="/event-radar"><el-icon><Warning /></el-icon><span>{{ t('nav.eventRadar') }}</span></el-menu-item>
         <el-menu-item index="/insider-trading"><el-icon><UserFilled /></el-icon><span>{{ t('nav.insiderTrading') }}</span></el-menu-item>
@@ -24,23 +27,18 @@
 
         <div class="nav-section-label">{{ t('nav.macroResearch') }}</div>
         <el-menu-item index="/market-trend"><el-icon><DataLine /></el-icon><span>{{ t('nav.marketTrend') }}</span></el-menu-item>
-        <el-menu-item index="/us-futures"><el-icon><Odometer /></el-icon><span>{{ t('nav.usFutures') }}</span></el-menu-item>
         <el-menu-item index="/sector-breadth"><el-icon><Histogram /></el-icon><span>{{ t('nav.sectorBreadth') }}</span></el-menu-item>
-        <el-menu-item index="/institutional-holdings"><el-icon><Briefcase /></el-icon><span>机构持仓</span></el-menu-item>
+        <el-menu-item index="/us-futures"><el-icon><Odometer /></el-icon><span>{{ t('nav.usFutures') }}</span></el-menu-item>
+        <el-menu-item index="/institutional-holdings"><el-icon><Briefcase /></el-icon><span>{{ t('nav.institutionalHoldings') }}</span></el-menu-item>
         <el-menu-item index="/macro-calendar"><el-icon><Calendar /></el-icon><span>{{ t('nav.macroCalendar') }}</span></el-menu-item>
 
         <div class="nav-section-label">{{ t('nav.automation') }}</div>
         <el-menu-item index="/sync-runs"><el-icon><Collection /></el-icon><span>{{ t('nav.syncRuns') }}</span></el-menu-item>
         <el-menu-item index="/scheduler"><el-icon><Timer /></el-icon><span>{{ t('nav.scheduler') }}</span></el-menu-item>
-
-        <div class="nav-section-label">{{ t('nav.settings') }}</div>
-        <el-menu-item index="/telegram"><el-icon><Bell /></el-icon><span>Telegram</span></el-menu-item>
-        <el-menu-item index="/configs"><el-icon><Setting /></el-icon><span>{{ t('nav.configs') }}</span></el-menu-item>
         <el-menu-item index="/system-health"><el-icon><FirstAidKit /></el-icon><span>{{ t('nav.systemHealth') }}</span></el-menu-item>
-
-        <div class="nav-section-label">{{ t('nav.logs') }}</div>
-        <el-menu-item index="/audit-logs"><el-icon><Tickets /></el-icon><span>{{ t('nav.auditLogs') }}</span></el-menu-item>
         <el-menu-item index="/notification-logs"><el-icon><Notification /></el-icon><span>{{ t('nav.notificationLogs') }}</span></el-menu-item>
+        <el-menu-item index="/audit-logs"><el-icon><Tickets /></el-icon><span>{{ t('nav.auditLogs') }}</span></el-menu-item>
+        <el-menu-item index="/configs"><el-icon><Setting /></el-icon><span>{{ t('nav.configs') }}</span></el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
@@ -90,7 +88,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Aim, Bell, Briefcase, Calendar, Coin, Collection, Compass, DataAnalysis, DataBoard, DataLine, Document, DocumentCopy, FirstAidKit, Histogram, MagicStick, Monitor, Notification, Odometer, Setting, Tickets, Timer, TrendCharts, UserFilled, Warning } from '@element-plus/icons-vue'
+import { Aim, Bell, Briefcase, Calendar, Coin, Collection, Compass, DataAnalysis, DataBoard, DataLine, Document, DocumentCopy, FirstAidKit, Histogram, MagicStick, Monitor, Notification, Odometer, Search, Setting, Tickets, Timer, TrendCharts, UserFilled, Warning } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, InAppNotification, PageResult } from '@/api/types'
 import { useI18n } from '@/i18n'
@@ -148,9 +146,10 @@ async function openMessage(item: InAppNotification) {
     item.read_at = new Date().toISOString()
     unreadCount.value = Math.max(0, unreadCount.value - 1)
   }
-  if (item.link) {
+  const target = item.link || (item.ticker ? `/ticker-workspace?ticker=${encodeURIComponent(item.ticker)}` : '')
+  if (target) {
     inboxOpen.value = false
-    await router.push(item.link)
+    await router.push(target)
   }
 }
 

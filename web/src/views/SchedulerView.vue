@@ -12,14 +12,20 @@
       :title="t('pages.scheduler.timezoneTitle', { timezone: schedulerTimezone })"
       :description="t('pages.scheduler.timezoneDescription')"
     />
-    <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.scheduler.empty')">
+    <div class="domain-strip">
+      <button v-for="item in domainSummary" :key="item.name" :class="{active:domainFilter===item.name}" @click="domainFilter=item.name"><span>{{ item.name }}</span><strong>{{ item.enabled }}/{{ item.total }}</strong><small :class="item.failed?'failed':''">{{ item.failed ? `${item.failed} 项异常` : '运行正常' }}</small></button>
+    </div>
+    <el-table :data="filteredRows" v-loading="loading" border :empty-text="t('pages.scheduler.empty')">
+      <el-table-column label="业务域" width="110"><template #default="{row}"><el-tag effect="plain">{{ taskDomain(row.task_name) }}</el-tag></template></el-table-column>
       <el-table-column :label="t('common.task')" min-width="220" show-overflow-tooltip>
         <template #default="{ row }">
           <div>{{ taskLabel(row.task_name) }}</div>
           <div class="task-description">{{ taskDescription(row.task_name) }}</div>
           <div class="cron-hint">{{ row.task_name }}</div>
+          <div class="task-dependency">依赖：{{ taskDependency(row.task_name) }}</div>
         </template>
       </el-table-column>
+      <el-table-column label="数据影响" min-width="170" show-overflow-tooltip><template #default="{row}"><span :class="row.last_status==='failed'?'impact-warning':''">{{ taskImpact(row.task_name) }}</span></template></el-table-column>
       <el-table-column label="Cron" min-width="200">
         <template #default="{ row }">
           <div class="cron-editor">
@@ -89,6 +95,9 @@ const loading = ref(false)
 const running = ref(false)
 const rows = ref<TaskConfig[]>([])
 const schedulerTimezone = ref('UTC')
+const domainFilter = ref('全部')
+const domainSummary = computed(() => ['全部','SEC/标的','小盘研究','IPO','市场环境','通知','系统维护'].map((name) => { const items=name==='全部'?rows.value:rows.value.filter(row=>taskDomain(row.task_name)===name);return{name,total:items.length,enabled:items.filter(item=>item.enabled).length,failed:items.filter(item=>item.last_status==='failed'||item.consecutive_failures>0).length} }))
+const filteredRows = computed(() => domainFilter.value === '全部' ? rows.value : rows.value.filter((row) => taskDomain(row.task_name) === domainFilter.value))
 const cronPresets = computed(() => [
   { label: t('pages.scheduler.presets.every5'), value: '*/5 * * * *' },
   { label: t('pages.scheduler.presets.every30'), value: '*/30 * * * *' },
@@ -267,6 +276,34 @@ function taskDescription(value: string) {
   return descriptions[value] || '系统后台任务。'
 }
 
+function taskDomain(value: string) {
+  if (value.startsWith('ipo_')) return 'IPO'
+  if (value.includes('small_cap') || value.includes('candidate_research') || value.includes('candidate_valuation')) return '小盘研究'
+  if (value.includes('notification')) return '通知'
+  if (value.includes('market_trend') || value.includes('futures') || value.includes('macro_calendar')) return '市场环境'
+  if (value.includes('backup') || value.includes('cleanup')) return '系统维护'
+  return 'SEC/标的'
+}
+
+function taskDependency(value: string) {
+  if (value.includes('notification')) return '候选/行情/事件事实已更新'
+  if (value.includes('valuation') || value.includes('research')) return '候选或监控标的基础同步'
+  if (value.includes('ipo_') && value !== 'ipo_radar_sync') return 'IPO 新申报扫描'
+  if (value.includes('backup')) return '日常数据任务完成'
+  return '数据源配置与本地数据库'
+}
+
+function taskImpact(value: string) {
+  if (value.includes('notification')) return '提醒时效；不改变研究事实'
+  if (value.includes('small_cap')) return '候选池、评分与策略观察'
+  if (value.includes('ipo_')) return 'IPO 状态和自动复核队列'
+  if (value.includes('market_trend') || value.includes('futures') || value.includes('macro_calendar')) return '市场环境与交易门控'
+  if (value.includes('backup')) return '灾备恢复能力'
+  if (value.includes('cleanup')) return '运行库容量；不删研究事实'
+  if (value.includes('sec_filing')) return '公告、事件雷达与内幕解析'
+  return '监控标的行情与研究快照'
+}
+
 onMounted(load)
 </script>
 
@@ -274,6 +311,7 @@ onMounted(load)
 .scheduler-timezone {
   margin-bottom: 12px;
 }
+.domain-strip{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border:1px solid var(--el-border-color-light);border-radius:6px;margin-bottom:12px;overflow:hidden}.domain-strip button{border:0;border-right:1px solid var(--el-border-color-lighter);background:var(--el-bg-color);padding:9px 10px;text-align:left;cursor:pointer}.domain-strip button:last-child{border:0}.domain-strip button.active{background:var(--el-color-primary-light-9)}.domain-strip span,.domain-strip small{display:block;font-size:12px;color:var(--el-text-color-secondary)}.domain-strip strong{font-size:18px}.domain-strip .failed,.impact-warning{color:var(--el-color-danger)}.task-dependency{font-size:11px;color:var(--el-text-color-secondary);margin-top:3px}
 
 .task-description {
   margin-top: 4px;

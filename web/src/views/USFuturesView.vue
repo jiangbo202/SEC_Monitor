@@ -5,10 +5,11 @@
       <el-space>
         <el-select fit-input-width v-model="historyDays" style="width:130px" @change="load"><el-option label="近 3 个月" :value="60" /><el-option label="近 6 个月" :value="120" /><el-option label="近 1 年" :value="250" /></el-select>
         <el-button :loading="loading" @click="load">刷新视图</el-button>
-        <el-button type="primary" :loading="refreshing" @click="refresh">刷新期货日线</el-button>
+        <el-button type="primary" :loading="refreshing" @click="refresh(false)">刷新期货日线</el-button>
       </el-space>
     </div>
     <el-alert :title="`数据源：Yahoo Finance 连续合约；最近同步：${formatDateTime(data.last_fetched_at)}`" description="Longbridge 当前不提供期货市场代码，因此本页单独使用 Yahoo Finance 连续合约。连续合约会受换月拼接影响，适合趋势观察，不应用于精确结算或交易执行。" type="warning" :closable="false" show-icon class="futures-source-alert" />
+	<el-alert v-if="autoRefreshError && !data.futures.length" type="error" :closable="false" show-icon class="futures-source-alert" title="期货数据尚未就绪"><template #default><span>{{ autoRefreshError }}</span><el-button link type="primary" :loading="refreshing" @click="refresh(false)">立即重试</el-button></template></el-alert>
     <el-table :data="data.futures" v-loading="loading" border empty-text="暂无期货日线；请先刷新。" :default-sort="{ prop: 'change_20d_pct', order: 'descending' }">
       <el-table-column prop="label" label="连续合约" min-width="175"><template #default="{ row }"><div class="futures-contract"><strong>{{ row.label }}</strong><small>{{ row.symbol }}</small></div></template></el-table-column>
       <el-table-column prop="close" label="收盘" min-width="108" align="right" sortable><template #default="{ row }">{{ formatPrice(row.close) }}</template></el-table-column>
@@ -30,18 +31,19 @@ import type { ApiResponse, MarketTrendPoint, USFuturesRefreshResult, USFuturesRe
 
 const loading = ref(false)
 const refreshing = ref(false)
+const autoRefreshError = ref('')
 const historyDays = ref(120)
 const data = reactive<USFuturesResponse>({ source: 'yahoo_finance', futures: [] })
 
 async function load() { loading.value = true; try { const response = await apiClient.get<ApiResponse<USFuturesResponse>>('/us-futures', { params: { history_days: historyDays.value } }); Object.assign(data, response.data.data) } catch (err: any) { ElMessage.error(err?.response?.data?.message || '加载美股期货失败') } finally { loading.value = false } }
-async function refresh() { refreshing.value = true; try { const response = await apiClient.post<ApiResponse<USFuturesRefreshResult>>('/us-futures/refresh'); const result = response.data.data; ElMessage.success(`已更新 ${result.symbols_updated}/${result.symbols_requested} 个连续合约，保存 ${result.bars_saved} 条日线`); if (result.warnings.length) ElMessage.warning(`部分数据待重试：${result.warnings.join('；')}`); await load() } catch (err: any) { ElMessage.error(err?.response?.data?.message || '刷新美股期货失败') } finally { refreshing.value = false } }
+async function refresh(silent = false) { refreshing.value = true; autoRefreshError.value = ''; try { const response = await apiClient.post<ApiResponse<USFuturesRefreshResult>>('/us-futures/refresh'); const result = response.data.data; if (!silent) ElMessage.success(`已更新 ${result.symbols_updated}/${result.symbols_requested} 个连续合约，保存 ${result.bars_saved} 条日线`); if (result.warnings.length && !silent) ElMessage.warning(`部分数据待重试：${result.warnings.join('；')}`); await load(); if (!data.futures.length) autoRefreshError.value = result.warnings.join('；') || '自动同步没有取得可用日线，请检查网络与 Yahoo 数据源状态。' } catch (err: any) { autoRefreshError.value = err?.response?.data?.message || '自动同步失败，请检查网络与 Yahoo 数据源状态。'; if (!silent) ElMessage.error(autoRefreshError.value) } finally { refreshing.value = false } }
 function formatDateTime(value?: string | null) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未同步' }
 function formatPrice(value?: number | null) { return Number.isFinite(value) ? Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-' }
 function formatPct(value?: number | null) { return Number.isFinite(value) ? `${Number(value) > 0 ? '+' : ''}${Number(value).toFixed(2)}%` : '-' }
 function formatVolume(value?: number | null) { return Number.isFinite(value) ? Number(value).toLocaleString('en-US') : '-' }
 function changeClass(value?: number | null) { if (!Number.isFinite(value) || Number(value) === 0) return 'is-flat'; return Number(value) > 0 ? 'is-up' : 'is-down' }
 function sparklinePath(points: MarketTrendPoint[]) { if (!points.length) return ''; const values = points.map((point) => point.close); const min = Math.min(...values); const range = Math.max(...values) - min || 1; return points.map((point, index) => { const x = points.length === 1 ? 90 : (index / (points.length - 1)) * 180; const y = 35 - ((point.close - min) / range) * 30; return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}` }).join(' ') }
-onMounted(load)
+onMounted(async () => { await load(); if (!data.futures.length && sessionStorage.getItem('us-futures-auto-refresh') !== '1') { sessionStorage.setItem('us-futures-auto-refresh', '1'); await refresh(true) } })
 </script>
 
 <style scoped>

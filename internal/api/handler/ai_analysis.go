@@ -211,7 +211,7 @@ func (h *AppHandler) ListAIAnalyses(c *gin.Context) {
 		return
 	}
 	page, pageSize := pageParams(c)
-	result, err := h.AIAnalysis.List(c.Request.Context(), service.AIAnalysisListFilter{Ticker: c.Query("ticker"), Scope: c.Query("scope"), Page: page, PageSize: pageSize})
+	result, err := h.AIAnalysis.List(c.Request.Context(), service.AIAnalysisListFilter{Ticker: c.Query("ticker"), Scope: c.Query("scope"), Status: c.Query("status"), Page: page, PageSize: pageSize})
 	if err != nil {
 		Error(c, err)
 		return

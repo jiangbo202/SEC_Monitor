@@ -490,6 +490,7 @@ type submissionsResponse struct {
 			ReportDate      []string `json:"reportDate"`
 			PrimaryDocument []string `json:"primaryDocument"`
 			PrimaryDocDesc  []string `json:"primaryDocDescription"`
+			Items           []string `json:"items"`
 		} `json:"recent"`
 		Files []struct {
 			Name string `json:"name"`
@@ -505,6 +506,7 @@ type archivedSubmissionsResponse struct {
 	ReportDate      []string `json:"reportDate"`
 	PrimaryDocument []string `json:"primaryDocument"`
 	PrimaryDocDesc  []string `json:"primaryDocDescription"`
+	Items           []string `json:"items"`
 }
 
 type atomFeed struct {
@@ -619,6 +621,7 @@ func (r submissionsResponse) toFilings(ticker string, cik string) []FilingResult
 		ReportDate:      r.Filings.Recent.ReportDate,
 		PrimaryDocument: r.Filings.Recent.PrimaryDocument,
 		PrimaryDocDesc:  r.Filings.Recent.PrimaryDocDesc,
+		Items:           r.Filings.Recent.Items,
 	}.toFilings(ticker, cik, r.Name)
 }
 
@@ -631,6 +634,7 @@ func (r archivedSubmissionsResponse) toFilings(ticker string, cik string, compan
 		ReportDate:      r.ReportDate,
 		PrimaryDocument: r.PrimaryDocument,
 		PrimaryDocDesc:  r.PrimaryDocDesc,
+		Items:           r.Items,
 	}.toFilings(ticker, cik, companyName)
 }
 
@@ -642,6 +646,7 @@ type recentSubmissions struct {
 	ReportDate      []string
 	PrimaryDocument []string
 	PrimaryDocDesc  []string
+	Items           []string
 }
 
 func (r recentSubmissions) toFilings(ticker string, cik string, companyName string) []FilingResult {
@@ -666,9 +671,18 @@ func (r recentSubmissions) toFilings(ticker string, cik string, companyName stri
 			PublishedAt:     publishedAt,
 			FilingURL:       url,
 			Title:           valueAt(r.PrimaryDocDesc, i),
+			RawContent:      filingItemsRawContent(valueAt(r.Items, i)),
 		})
 	}
 	return results
+}
+
+func filingItemsRawContent(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return "SEC items: " + value
 }
 
 func parseAcceptanceDate(value string) *time.Time {

@@ -111,6 +111,7 @@
             <el-button size="small" :icon="MoreFilled" />
             <template #dropdown>
               <el-dropdown-menu>
+				<el-dropdown-item command="workspace">研究工作台</el-dropdown-item>
                 <el-dropdown-item command="detail">{{ t('common.details') }}</el-dropdown-item>
                 <el-dropdown-item command="edit">{{ t('common.edit') }}</el-dropdown-item>
                 <el-dropdown-item command="delete" divided>{{ t('common.delete') }}</el-dropdown-item>
@@ -511,7 +512,7 @@
 <script setup lang="ts">
 import axios from 'axios'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
@@ -529,6 +530,7 @@ const saving = ref(false)
 const lookingUp = ref(false)
 const syncingId = ref<number | null>(null)
 const route = useRoute()
+const router = useRouter()
 const rows = ref<WatchTarget[]>([])
 const earningsPreviews = ref<Record<number, EarningsPreview>>({})
 const total = ref(0)
@@ -844,6 +846,10 @@ async function setTargetEnabled(row: WatchTarget, enabled: boolean) {
 }
 
 async function handleTargetCommand(command: string, row: WatchTarget) {
+  if (command === 'workspace') {
+    await router.push({ path: '/ticker-workspace', query: { ticker: row.ticker } })
+    return
+  }
   if (command === 'detail') {
     await openDetail(row)
     return
