@@ -29,6 +29,43 @@ investment advice and does not place trades.
 > This project contains AI-assisted code. Review security, compliance and data
 > quality before using it with real capital or in a production environment.
 
+## Interface preview
+
+The screenshots below come from the current Docker build and local snapshots.
+Displayed securities, scores and states are examples, not investment advice.
+
+### Small-cap candidates and strategy context
+
+The candidate workspace keeps screening rules, evidence quality, capital risk,
+technical signals and research conclusions together. The strategy pool places
+those candidates back into index, sector and macro context.
+
+![Small-cap candidates](docs/screenshots/small-cap-candidates.jpg)
+
+![Strategy pool](docs/screenshots/strategy-pool.jpg)
+
+<table>
+  <tr>
+    <td width="50%"><strong>Ticker research workspace</strong></td>
+    <td width="50%"><strong>SEC filing research</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/ticker-workspace.jpg" alt="Ticker research workspace"></td>
+    <td><img src="docs/screenshots/sec-filings.jpg" alt="SEC filings"></td>
+  </tr>
+  <tr>
+    <td>Combines locally stored fundamentals, market data, filings, insider facts, holdings and AI research without page-load provider calls.</td>
+    <td>Filters local filings and links each record to original SEC evidence or an explicitly triggered AI review.</td>
+  </tr>
+</table>
+
+### Operations health
+
+Provider, database, scheduler, notification, synchronization and backup issues
+remain visible instead of being replaced with optimistic defaults.
+
+![System health](docs/screenshots/system-health.jpg)
+
 ## Capabilities
 
 - **Watch targets and SEC filings**: manage stocks/ETFs, incrementally ingest
@@ -48,6 +85,13 @@ investment advice and does not place trades.
   notifications. The application never calls third-party AI automatically.
 - **Operations**: in-app and Telegram notifications, deduplication, retries,
   dead letters, task logs, health checks, SQLite backups and restore drills.
+
+## Navigation
+
+The sidebar follows the research workflow: **Research**, **Filings**, **Small
+Caps**, **Markets**, and **Operations**. Telegram connection settings and
+per-event delivery controls now live together under **System Settings →
+Notifications**; the former standalone Telegram route redirects there.
 
 ## Data sources and boundaries
 
@@ -84,7 +128,8 @@ On first use, configure the following in **System Settings**:
 2. `CONFIG_ENCRYPTION_KEY`, used to encrypt Telegram, Longbridge, market-data
    and AI credentials.
 3. The providers you intend to use.
-4. Watch targets and scheduler settings.
+4. Telegram connection and event delivery rules under **System Settings → Notifications**.
+5. Watch targets and scheduler settings.
 
 Example `.env`:
 
