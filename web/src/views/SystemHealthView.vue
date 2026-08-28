@@ -151,6 +151,7 @@
           <div v-if="operational.issues.length" class="health-alert-grid">
             <el-alert v-for="issue in operational.issues" :key="issue.key" :title="issue.title" :description="issue.detail" :type="healthAlertType(issue.severity)" :closable="false" show-icon>
               <template #default>
+				<el-tag size="small" type="info" effect="plain">影响：{{ issueImpact(issue.category) }}</el-tag>
                 <el-button v-if="issue.action" type="primary" link @click="openSourceAction(issue.action)">{{ t('pages.systemHealth.viewAction') }}</el-button>
               </template>
             </el-alert>
@@ -347,6 +348,11 @@ function sourceStatusType(status: string) {
 
 function sourceStatusLabel(status: string) {
   return t(`pages.systemHealth.sourceStatuses.${status || 'unknown'}`)
+}
+
+function issueImpact(category: string) {
+  const labels: Record<string, string> = { data: '研究数据可用性', provider: '外部数据更新', notification: '消息送达', scheduler: '自动运行', task: '自动运行', backup: '数据恢复', discovery: '候选研究完整性', technical_history: '技术指标完整性' }
+  return labels[category] || '运行稳定性'
 }
 
 function formatPct(value?: number | null) {

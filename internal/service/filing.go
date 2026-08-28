@@ -43,8 +43,19 @@ type FilingFilter struct {
 
 type FilingItem struct {
 	model.Filing
-	NotificationStatus string `json:"notification_status"`
-	NotificationLogID  uint   `json:"notification_log_id"`
+	NotificationStatus string             `json:"notification_status"`
+	NotificationLogID  uint               `json:"notification_log_id"`
+	Event              FilingEventSummary `json:"event"`
+}
+
+type FilingEventSummary struct {
+	ItemCodes []string `json:"item_codes"`
+	Category  string   `json:"category"`
+	Fact      string   `json:"fact"`
+	Impact    string   `json:"impact"`
+	Action    string   `json:"action"`
+	Priority  string   `json:"priority"`
+	Status    string   `json:"status"`
 }
 
 type RefreshResult struct {
@@ -505,6 +516,92 @@ func isEarningsReleaseFiling(filing model.Filing) bool {
 	}
 }
 
+func deriveFilingEvent(filing model.Filing) FilingEventSummary {
+	form := strings.ToUpper(strings.TrimSpace(filing.FilingType))
+	items := filingItemCodes(filing.RawContent)
+	if form == "8-K" || form == "8-K/A" {
+		var selected FilingEventSummary
+		for _, item := range items {
+			if event, ok := filing8KItemEvents[item]; ok {
+				if selected.Fact == "" || filingEventPriorityRank(event.Priority) > filingEventPriorityRank(selected.Priority) {
+					selected = event
+				}
+			}
+		}
+		if selected.Fact != "" {
+			selected.ItemCodes = items
+			selected.Status = "identified"
+			if form == "8-K/A" {
+				selected.Fact += "（修订文件）"
+			}
+			return selected
+		}
+		return FilingEventSummary{ItemCodes: items, Category: "待解析", Fact: "8-K 具体事项尚未识别", Impact: "当前仅确认公司提交了即时报告，不能据此判断事件方向或严重程度。", Action: "打开 SEC 原文，确认 Item 编号、事实发生日和附件内容", Priority: "待定", Status: "pending"}
+	}
+	if strings.HasPrefix(form, "S-1") || strings.HasPrefix(form, "S-3") || strings.HasPrefix(form, "424B") {
+		return FilingEventSummary{Category: "融资与股本", Fact: "证券发行或注册文件已提交", Impact: "可能涉及融资和股本稀释；注册或招股文件不等于已经完成发行。", Action: "核对证券类型、发行规模、价格、生效状态及承销安排", Priority: "高", Status: "identified"}
+	}
+	if strings.Contains(form, "13D") {
+		return FilingEventSummary{Category: "股东与治理", Fact: "重要股东持仓或意图披露发生变化", Impact: "可能影响公司治理、资本配置或控制权。", Action: "核对持股比例、资金来源、Item 4 意图及后续修订", Priority: "中", Status: "identified"}
+	}
+	return FilingEventSummary{Category: "其他公告", Fact: valueOrDefault(strings.TrimSpace(filing.Title), form+" 文件已提交"), Impact: "尚未建立该文件类型的事件规则。", Action: "阅读原文并记录可核验事实与影响路径", Priority: "待定", Status: "pending"}
+}
+
+func filingEventPriorityRank(value string) int {
+	switch value {
+	case "高":
+		return 3
+	case "中":
+		return 2
+	case "低":
+		return 1
+	default:
+		return 0
+	}
+}
+
+var filing8KItemEvents = map[string]FilingEventSummary{
+	"1.01": {Category: "重大合同", Fact: "签订重大实质性协议", Impact: "可能改变收入、成本、资本承诺或重要合作关系。", Action: "核对交易对手、金额、期限、终止条件和履约义务", Priority: "中"},
+	"1.02": {Category: "合同终止", Fact: "重大实质性协议终止", Impact: "可能影响收入来源、供应关系或经营连续性。", Action: "核对终止原因、财务影响、赔偿责任和替代安排", Priority: "高"},
+	"1.03": {Category: "财务困境", Fact: "破产或接管程序相关事项", Impact: "可能显著影响持续经营能力和证券价值。", Action: "核对程序状态、债权顺位、流动性和持续经营披露", Priority: "高"},
+	"2.01": {Category: "并购与资产", Fact: "完成资产收购或处置", Impact: "可能改变业务结构、现金流、负债或股本。", Action: "核对交易规模、对价、融资方式和备考财务影响", Priority: "高"},
+	"2.02": {Category: "业绩与指引", Fact: "披露经营业绩或财务状况", Impact: "可能包含季度业绩、关键指标或管理层指引变化。", Action: "阅读附件并对比收入、利润率、现金流和前瞻指引", Priority: "高"},
+	"2.05": {Category: "重组", Fact: "决定退出或处置活动并预计发生相关成本", Impact: "可能反映业务收缩、重组费用或资源重新配置。", Action: "核对涉及业务、预计费用、现金支出和完成时间", Priority: "高"},
+	"2.06": {Category: "资产减值", Fact: "确认重大资产减值", Impact: "可能反映资产价值下降及未来盈利能力变化。", Action: "核对减值对象、金额、现金影响和触发原因", Priority: "高"},
+	"3.01": {Category: "上市资格", Fact: "收到退市或不符合持续上市标准通知", Impact: "可能影响交易资格、流动性及融资能力。", Action: "核对不合规项目、整改期限、听证或反向拆股计划", Priority: "高"},
+	"3.02": {Category: "融资与稀释", Fact: "未注册证券销售", Impact: "可能增加流通股本、形成稀释或引入融资约束。", Action: "核对发行数量、价格、投资者、用途和登记权安排", Priority: "高"},
+	"3.03": {Category: "股东权利", Fact: "证券持有人权利发生重大修改", Impact: "可能改变投票权、转换条款、分红或其他经济权利。", Action: "核对修改前后条款及受影响证券类别", Priority: "高"},
+	"4.01": {Category: "审计机构", Fact: "注册会计师发生变更", Impact: "可能涉及审计意见分歧、财务报告质量或治理变化。", Action: "核对离任原因、意见分歧及新审计师聘任情况", Priority: "高"},
+	"4.02": {Category: "财务重述", Fact: "历史财务报表或审计意见不再可依赖", Impact: "可能需要重述财务数据并削弱当前估值依据。", Action: "暂停使用受影响数据，核对期间、原因、预计调整和整改进展", Priority: "高"},
+	"5.02": {Category: "管理层与董事会", Fact: "董事或高级管理人员发生任免或薪酬事项", Impact: "可能影响公司治理、战略执行或关键人员稳定性。", Action: "核对人员、职务、生效日、离任原因和薪酬安排", Priority: "中"},
+	"5.03": {Category: "公司治理", Fact: "章程或公司细则发生修订", Impact: "可能改变治理机制、股东权利或资本结构安排。", Action: "对比修订条款并确认对投票权和融资的影响", Priority: "中"},
+	"7.01": {Category: "选择性披露", Fact: "依据 Regulation FD 披露信息", Impact: "可能包含投资者材料、经营更新或公开沟通。", Action: "阅读附件并区分新事实、管理层观点与历史信息", Priority: "中"},
+	"8.01": {Category: "其他重大事项", Fact: "公司主动披露其他重要事件", Impact: "Item 8.01 范围较宽，必须依赖正文和附件确认具体影响。", Action: "阅读正文及附件，提取事实、发生日、金额和影响路径", Priority: "中"},
+	"9.01": {Category: "财务报表与附件", Fact: "提交财务报表或附件", Impact: "通常是其他 Item 的证据附件，单独出现时需核对附件内容。", Action: "打开 Exhibit 索引并确认与其他 Item 的关联", Priority: "待定"},
+}
+
+func filingItemCodes(raw string) []string {
+	raw = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "SEC items:"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ';' || r == '|' || r == ' ' })
+	result := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		part = strings.TrimSpace(strings.TrimSuffix(part, "."))
+		if part == "" {
+			continue
+		}
+		if _, exists := seen[part]; exists {
+			continue
+		}
+		seen[part] = struct{}{}
+		result = append(result, part)
+	}
+	return result
+}
+
 func (s *FilingService) recordCandidateRecalcEvent(ctx context.Context, filing model.Filing) error {
 	if s == nil || s.discoveryDB == nil {
 		return nil
@@ -563,7 +660,7 @@ func (s *FilingService) withNotificationStatus(ctx context.Context, filings []mo
 	}
 	filingIDs := make([]string, 0, len(filings))
 	for _, filing := range filings {
-		items = append(items, FilingItem{Filing: filing})
+		items = append(items, FilingItem{Filing: filing, Event: deriveFilingEvent(filing)})
 		filingIDs = append(filingIDs, filing.FilingID)
 	}
 	targetSpecific := map[string]bool{}
@@ -1096,6 +1193,17 @@ func (s *FilingService) createFilingIfNew(ctx context.Context, filing model.Fili
 	res := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&filing)
 	if res.Error != nil {
 		return false, res.Error
+	}
+	if res.RowsAffected == 0 && strings.TrimSpace(filing.RawContent) != "" {
+		if err := s.db.WithContext(ctx).Model(&model.Filing{}).Where("filing_id = ?", filing.FilingID).Updates(map[string]any{
+			"raw_content":  filing.RawContent,
+			"title":        filing.Title,
+			"filing_url":   filing.FilingURL,
+			"published_at": filing.PublishedAt,
+			"pulled_at":    filing.PulledAt,
+		}).Error; err != nil {
+			return false, err
+		}
 	}
 	return res.RowsAffected == 1, nil
 }

@@ -140,6 +140,15 @@ export interface Filing {
   pulled_at: string
   notification_status?: string
   notification_log_id?: number
+  event?: {
+    item_codes: string[]
+    category: string
+    fact: string
+    impact: string
+    action: string
+    priority: string
+    status: string
+  }
 }
 
 export interface IPOFiling {

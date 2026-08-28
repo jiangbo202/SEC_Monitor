@@ -1,7 +1,13 @@
 <template>
   <div class="page-container">
     <div class="page-header"><div><h2>期权与多空研究</h2><p>保存 Longbridge 的 Call/Put 汇总成交量与空头持仓快照，用于观察多空指标，不代表真实全市场净仓位。</p></div></div>
-    <el-alert type="info" :closable="false" show-icon title="P0 为日级汇总快照：不保存完整期权链或逐合约报价；异常标签依据本地历史成交量与阈值生成，不参与基本面总分。" />
+	<div class="availability-strip">
+		<div><span>数据能力</span><strong>{{ research?.latest ? statusLabel(research.latest.status) : '等待查询' }}</strong><small>Longbridge 日级快照</small></div>
+		<div><span>期权覆盖</span><strong>{{ research?.latest?.call_volume != null || research?.latest?.put_volume != null ? '可用' : '未覆盖' }}</strong><small>{{ research?.latest?.option_volume_as_of || '-' }}</small></div>
+		<div><span>空头覆盖</span><strong>{{ research?.latest?.short_ratio_pct != null || research?.latest?.current_shares_short != null ? '可用' : '未覆盖' }}</strong><small>{{ research?.latest?.short_reported_at || '-' }}</small></div>
+		<div><span>历史深度</span><strong>{{ research?.history?.length || 0 }}</strong><small>最多保留 30 个日级快照</small></div>
+	</div>
+    <el-alert type="info" :closable="false" show-icon title="日级研究快照：不保存完整期权链或逐合约报价；“未覆盖”表示供应商当前未返回该类数据，不等同于数值为零。" />
     <el-card shadow="never" class="query-card"><el-form inline @submit.prevent="load"><el-form-item label="标的"><el-input v-model="ticker" placeholder="例如 NVDA / SPY" clearable @keyup.enter="load" /></el-form-item><el-button @click="load">查询本地快照</el-button><el-button type="primary" :loading="refreshing" @click="refresh">刷新 Longbridge 数据</el-button></el-form></el-card>
     <template v-if="research">
       <el-alert v-if="research.message" type="info" :closable="false" class="message" :title="research.message" />
@@ -15,10 +21,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
 const ticker = ref('')
+const route = useRoute()
 const research = ref<any>(null)
 const refreshing = ref(false)
 function symbol() { return ticker.value.trim().toUpperCase() }
@@ -28,8 +36,10 @@ function integer(value?: number) { return Number.isFinite(value) ? Number(value)
 function decimal(value?: number) { return Number.isFinite(value) ? Number(value).toFixed(2) : '-' }
 function pct(value?: number) { return Number.isFinite(value) ? `${Number(value).toFixed(2)}%` : '-' }
 function formatDate(value?: string) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '-' }
+function statusLabel(value?: string) { if (value === 'available') return '完整可用'; if (value === 'partial') return '部分可用'; if (value === 'unavailable') return '暂不可用'; return value || '未知' }
+onMounted(() => { const value = route.query.ticker; if (typeof value === 'string' && value.trim()) { ticker.value = value.toUpperCase(); load() } })
 </script>
 
 <style scoped>
-.query-card,.message,.summary,.history{margin-top:12px}.anomalies{display:flex;flex-direction:column;align-items:flex-start;gap:6px}.anomalies p{font-size:12px;color:var(--el-text-color-secondary);margin:0}
+.availability-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-bg-color);margin-bottom:12px}.availability-strip>div{padding:10px 14px;display:grid;gap:2px;border-right:1px solid var(--el-border-color-lighter)}.availability-strip>div:last-child{border-right:0}.availability-strip span,.availability-strip small{font-size:12px;color:var(--el-text-color-secondary)}.availability-strip strong{font-size:18px}.query-card,.message,.summary,.history{margin-top:12px}.anomalies{display:flex;flex-direction:column;align-items:flex-start;gap:6px}.anomalies p{font-size:12px;color:var(--el-text-color-secondary);margin:0}@media(max-width:760px){.availability-strip{grid-template-columns:repeat(2,1fr)}}
 </style>

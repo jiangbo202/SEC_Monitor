@@ -48,10 +48,38 @@
       <div v-show="activeConfigSection === 'notifications'" class="config-section">
         <div class="config-section-heading">
           <div>
-            <h2>通知规则</h2>
-            <p>统一由通知中心投递和记录；这里仅配置不同业务事件的筛选条件与发送边界。</p>
+            <h2>通知与 Telegram</h2>
+            <p>统一配置 Telegram 通道、业务事件筛选条件与发送边界，投递结果可在通知记录中追踪。</p>
           </div>
         </div>
+
+      <el-card shadow="never">
+        <template #header>
+          <div class="panel-header">
+            <span>Telegram 通道</span>
+            <el-tag :type="telegramForm.enabled ? 'success' : 'info'" effect="plain">{{ telegramForm.enabled ? '已启用' : '未启用' }}</el-tag>
+          </div>
+        </template>
+        <el-form :model="telegramForm" label-width="150px" class="telegram-config-form">
+          <el-form-item label="Bot Token">
+            <el-input v-model="telegramForm.bot_token" show-password :placeholder="t('pages.telegram.tokenPlaceholder')" />
+          </el-form-item>
+          <el-form-item label="Chat ID">
+            <el-input v-model="telegramForm.chat_id" />
+          </el-form-item>
+          <el-form-item label="API 地址">
+            <el-input v-model="telegramForm.api_base_url" placeholder="https://api.telegram.org" />
+            <span class="form-help">Docker 无法直连 Telegram 时，可填写可信代理的兼容 API 地址。</span>
+          </el-form-item>
+          <el-form-item label="启用通道">
+            <el-switch v-model="telegramForm.enabled" />
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" :loading="telegramSaving" @click="saveTelegram">保存通道</el-button>
+            <el-button :loading="telegramTesting" @click="testTelegram">发送测试</el-button>
+          </el-form-item>
+        </el-form>
+      </el-card>
 
       <el-card shadow="never">
         <template #header>
@@ -695,15 +723,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRoute } from 'vue-router'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, CleanupPreview, LifecycleCleanupPreview, LongbridgeQuoteProbeResult, SystemConfig } from '@/api/types'
 import { type Locale, useI18n } from '@/i18n'
 
 const { store, t } = useI18n()
+const route = useRoute()
 const loading = ref(false)
 const saving = ref(false)
+const telegramSaving = ref(false)
+const telegramTesting = ref(false)
 const previewing = ref(false)
 const cleaning = ref(false)
 const cleanupPreview = ref<CleanupPreview | null>(null)
@@ -716,12 +748,18 @@ const activeConfigSection = ref<'general' | 'notifications' | 'data' | 'ai' | 'm
 const dataAdvancedPanels = ref<string[]>([])
 const configSections = [
   { key: 'general', label: '基础与调度', hint: '界面语言与调度时区' },
-  { key: 'notifications', label: '通知规则', hint: '公告、候选与交易计划的通知边界' },
+  { key: 'notifications', label: '通知配置', hint: 'Telegram 通道与各类业务通知边界' },
   { key: 'data', label: '数据源与同步', hint: '行情、研究、IPO 与 SEC 数据策略' },
   { key: 'ai', label: 'AI 分析', hint: '手动调用的模型供应商与密钥' },
   { key: 'maintenance', label: '存储与维护', hint: '保留策略、清理预览与备份导出' }
 ] as const
 const activeConfigSectionHint = computed(() => configSections.find((item) => item.key === activeConfigSection.value)?.hint || '')
+
+function applyRequestedSection(value: unknown) {
+  if (typeof value === 'string' && configSections.some((item) => item.key === value)) {
+    activeConfigSection.value = value as typeof activeConfigSection.value
+  }
+}
 
 const secForm = reactive({ user_agent: '', initial_fetch_days: 30, sync_window_days: 30, max_fetch_count: 300, fetch_full_history: false })
 const systemForm = reactive({ data_retention_days: 30, storage_by_day: false, backup_retention_days: 7, operation_history_retention_days: 90, backup_dir: '', storage_warning_pct: 80 })
@@ -734,6 +772,7 @@ const notificationForm = reactive({
   quiet_hours_start: '22:00',
   quiet_hours_end: '08:00'
 })
+const telegramForm = reactive({ bot_token: '', chat_id: '', api_base_url: 'https://api.telegram.org', enabled: false })
 const inAppNotificationForm = reactive({
   watch_target_earnings_preview_enabled: true,
   watch_target_earnings_release_enabled: true,
@@ -769,8 +808,8 @@ const notificationChannelRows = [
   { menu: '小盘候选', key: 'candidate_earnings_preview_enabled', legacyKey: 'earnings_preview_enabled', label: '财报预告', description: '小盘候选的财报日期新增、变更或进入提醒窗口' },
   { menu: '小盘候选', key: 'candidate_earnings_release_enabled', legacyKey: 'earnings_release_enabled', label: '财报已发布', description: '小盘候选对应的 SEC 定期财报或业绩公告' },
   { menu: '小盘候选', key: 'candidate_technical_signal_enabled', legacyKey: 'technical_signal_enabled', label: '技术信号变化', description: '小盘候选出现入场候选、离场预警或趋势失效' },
-  { menu: 'IPO 监控', key: 'ipo_progress_enabled', legacyKey: 'ipo_progress_enabled', label: '关注 IPO 进展', description: '仅已关注 IPO 公司出现新文件或关键状态、代码、交易所、定价变化时通知' },
-  { menu: 'AI 分析', key: 'ai_analysis_enabled', legacyKey: 'ai_analysis_enabled', label: 'AI 任务完成', description: '手动提交的 AI 研判在后台成功或失败后通知；可跳转查看结果' },
+  { menu: 'IPO监控', key: 'ipo_progress_enabled', legacyKey: 'ipo_progress_enabled', label: '关注 IPO 进展', description: '仅已关注 IPO 公司出现新文件或关键状态、代码、交易所、定价变化时通知' },
+  { menu: 'AI研判', key: 'ai_analysis_enabled', legacyKey: 'ai_analysis_enabled', label: 'AI 任务完成', description: '手动提交的 AI 研判在后台成功或失败后通知；可跳转查看结果' },
 ] as const
 type NotificationChannelKey = typeof notificationChannelRows[number]['key']
 
@@ -1024,10 +1063,11 @@ function openProviderSettings() {
 async function load() {
   loading.value = true
   try {
-    const [res, aiRes, templateRes] = await Promise.all([
+    const [res, aiRes, templateRes, telegramRes] = await Promise.all([
       apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs'),
       apiClient.get<ApiResponse<AIProvider[]>>('/ai/providers/config'),
-      apiClient.get<ApiResponse<AIPromptTemplate[]>>('/ai/prompt-templates')
+      apiClient.get<ApiResponse<AIPromptTemplate[]>>('/ai/prompt-templates'),
+      apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config')
     ])
     const configs = res.data.data
     aiProviders.value = (aiRes.data.data || []).map((item) => ({ ...item, timeout_seconds: item.timeout_seconds || 120 }))
@@ -1050,6 +1090,12 @@ async function load() {
     notificationForm.quiet_hours_enabled = configValue(configs, 'notification.quiet_hours_enabled', 'false') === 'true'
     notificationForm.quiet_hours_start = configValue(configs, 'notification.quiet_hours_start', '22:00')
     notificationForm.quiet_hours_end = configValue(configs, 'notification.quiet_hours_end', '08:00')
+    for (const cfg of telegramRes.data.data || []) {
+      if (cfg.config_key === 'telegram.bot_token') telegramForm.bot_token = cfg.config_value
+      if (cfg.config_key === 'telegram.chat_id') telegramForm.chat_id = cfg.config_value
+      if (cfg.config_key === 'telegram.api_base_url') telegramForm.api_base_url = cfg.config_value || 'https://api.telegram.org'
+      if (cfg.config_key === 'telegram.enabled') telegramForm.enabled = cfg.config_value === 'true'
+    }
     for (const row of notificationChannelRows) {
       inAppNotificationForm[row.key] = configValue(configs, `in_app_notification.${row.key}`, configValue(configs, `in_app_notification.${row.legacyKey}`, 'true')) === 'true'
       telegramNotificationForm[row.key] = configValue(configs, `telegram_notification.${row.key}`, configValue(configs, `telegram_notification.${row.legacyKey}`, 'true')) === 'true'
@@ -1230,6 +1276,7 @@ async function save() {
       { key: 'ipo.longbridge_calendar_lookahead_days', value: String(ipoForm.longbridge_calendar_lookahead_days), value_type: 'int', category: 'ipo', encrypted: false },
       { key: 'ipo.longbridge_calendar_max_pages', value: String(ipoForm.longbridge_calendar_max_pages), value_type: 'int', category: 'ipo', encrypted: false }
     ])
+    await apiClient.put('/telegram/config', telegramForm)
     await apiClient.put('/ai/providers/config', aiProviders.value)
     await apiClient.put('/ai/prompt-templates', aiPromptTemplates.value)
     store.applyDefaultLocale(uiForm.default_locale)
@@ -1238,6 +1285,35 @@ async function save() {
     await load()
   } finally {
     saving.value = false
+  }
+}
+
+async function saveTelegram() {
+  telegramSaving.value = true
+  try {
+    await apiClient.put('/telegram/config', telegramForm)
+    ElMessage.success(t('messages.telegramSaved'))
+    const res = await apiClient.get<ApiResponse<SystemConfig[]>>('/telegram/config')
+    for (const cfg of res.data.data || []) {
+      if (cfg.config_key === 'telegram.bot_token') telegramForm.bot_token = cfg.config_value
+      if (cfg.config_key === 'telegram.chat_id') telegramForm.chat_id = cfg.config_value
+      if (cfg.config_key === 'telegram.api_base_url') telegramForm.api_base_url = cfg.config_value || 'https://api.telegram.org'
+      if (cfg.config_key === 'telegram.enabled') telegramForm.enabled = cfg.config_value === 'true'
+    }
+  } finally {
+    telegramSaving.value = false
+  }
+}
+
+async function testTelegram() {
+  telegramTesting.value = true
+  try {
+    await apiClient.post('/telegram/test')
+    ElMessage.success(t('messages.telegramTestSent'))
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || t('messages.telegramTestFailed'))
+  } finally {
+    telegramTesting.value = false
   }
 }
 
@@ -1320,7 +1396,12 @@ function formatDateTime(value?: string | null) {
   return date.toLocaleString()
 }
 
-onMounted(load)
+watch(() => route.query.section, applyRequestedSection)
+
+onMounted(() => {
+  applyRequestedSection(route.query.section)
+  void load()
+})
 </script>
 
 <style scoped>

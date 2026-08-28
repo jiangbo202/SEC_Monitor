@@ -757,10 +757,11 @@
         </template>
       </el-table-column>
       <el-table-column v-if="candidateTableView === 'full'" prop="reason_code" label="原因" min-width="140" />
-      <el-table-column label="操作" :width="candidateTableView === 'compact' ? 104 : 180" fixed="right">
+      <el-table-column label="操作" :width="candidateTableView === 'compact' ? 148 : 210" fixed="right">
         <template #default="{ row }">
           <div class="candidate-actions">
             <el-button link type="primary" :loading="detailLoadingTicker === row.ticker" @click="openDetail(row)">详情</el-button>
+            <el-button link type="primary" @click="router.push({ path: '/ticker-workspace', query: { ticker: row.ticker } })">研究台</el-button>
             <span v-if="row.followed" class="candidate-followed-text">已关注</span>
             <el-button v-else link type="primary" :loading="watchingTicker === row.ticker" @click="addToCandidateWatches(row)">关注</el-button>
           </div>

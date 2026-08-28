@@ -67,6 +67,7 @@ type AIAnalysisInput struct {
 type AIAnalysisListFilter struct {
 	Ticker   string
 	Scope    string
+	Status   string
 	Page     int
 	PageSize int
 }
@@ -444,6 +445,9 @@ func (s *AIAnalysisService) List(ctx context.Context, filter AIAnalysisListFilte
 	}
 	if scope := strings.TrimSpace(filter.Scope); scope != "" {
 		query = query.Where("scope = ?", scope)
+	}
+	if status := strings.TrimSpace(filter.Status); status != "" {
+		query = query.Where("status = ?", status)
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {

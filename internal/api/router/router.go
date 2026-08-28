@@ -247,6 +247,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.GET("/watch-targets/:id/sync-details", app.ListWatchTargetSyncDetails)
 
 		api.GET("/filings", app.ListFilings)
+		api.GET("/insider-transactions", app.ListInsiderTransactions)
 		api.POST("/filings/refresh", app.RefreshFilings)
 		api.GET("/ipo-health", app.GetIPORadarHealth)
 		api.GET("/ipo-companies", app.ListIPOCompanies)

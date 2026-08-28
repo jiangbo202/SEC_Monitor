@@ -73,7 +73,19 @@
           <div class="history-filters"><el-input v-model="historyTicker" placeholder="按标的筛选" clearable @change="applyHistoryFilters" @clear="applyHistoryFilters" /><el-select fit-input-width v-model="historyEntryTrigger" filterable clearable placeholder="选择入场触发" @change="applyHistoryFilters"><el-option v-for="option in historyEntryTriggerOptions" :key="option" :label="option" :value="option" /></el-select></div>
         </div>
       </template>
-      <el-table :data="history" v-loading="historyLoading" border empty-text="暂无评估记录" :default-sort="{ prop: historySortBy, order: historySortOrder === 'asc' ? 'ascending' : 'descending' }" @sort-change="handleHistorySort">
+      <el-alert v-if="comparisonRows.length === 2" type="info" :closable="false" class="comparison-panel">
+        <template #title>{{ comparisonRows[0].ticker }} 两次评估差异</template>
+        <div class="comparison-grid">
+          <span>评估时间 <b>{{ formatDate(comparisonRows[1].evaluated_at) }} → {{ formatDate(comparisonRows[0].evaluated_at) }}</b></span>
+          <span>基本面 <b>{{ metricDelta(comparisonRows, 'total_score') }}</b></span>
+          <span>短线复核 <b>{{ metricDelta(comparisonRows, 'review_priority_score') }}</b></span>
+          <span>收盘价 <b>{{ metricDelta(comparisonRows, 'price_close_usd', 2) }}</b></span>
+          <span>距 MA20 <b>{{ technicalDelta(comparisonRows, 'distance_to_ma20_pct') }}</b></span>
+          <span>技术状态 <b>{{ comparisonRows[1].candidate_score?.technical?.status || '-' }} → {{ comparisonRows[0].candidate_score?.technical?.status || '-' }}</b></span>
+        </div>
+      </el-alert>
+      <el-table :data="history" v-loading="historyLoading" border empty-text="暂无评估记录" :default-sort="{ prop: historySortBy, order: historySortOrder === 'asc' ? 'ascending' : 'descending' }" @sort-change="handleHistorySort" @selection-change="handleComparisonSelection">
+        <el-table-column type="selection" width="42" :selectable="comparisonSelectable" fixed="left" />
         <el-table-column type="expand" width="48" fixed="left">
           <template #default="{ row }">
             <div class="research-details">
@@ -116,6 +128,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
 import AIRequestPrompt from '@/components/AIRequestPrompt.vue'
@@ -123,6 +136,8 @@ import AIAnalysisResult from '@/components/AIAnalysisResult.vue'
 import type { AIAnalysisStructuredResult } from '@/api/types'
 
 type Evaluation = any
+const route = useRoute()
+const router = useRouter()
 const ticker = ref('')
 const targetType = ref('')
 const evaluating = ref(false)
@@ -137,6 +152,7 @@ const historyPageSize = ref(20)
 const historyTotal = ref(0)
 const historySortBy = ref('evaluated_at')
 const historySortOrder = ref<'asc' | 'desc'>('desc')
+const comparisonRows = ref<Evaluation[]>([])
 type AIProvider = { id: string; name: string; model: string }
 type AIPromptTemplate = { id: string; name: string }
 type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; validation_warning?: string; system_prompt?: string; user_prompt?: string; requested_at: string; structured_result?: AIAnalysisStructuredResult }
@@ -159,6 +175,7 @@ async function evaluate() {
     selected.value = response.data.data
     ticker.value = symbol
     historyTicker.value = symbol
+    await router.replace({ query: { ...route.query, ticker: symbol } })
     historyPage.value = 1
     await Promise.all([loadHistory(), loadHistoryEntryTriggerOptions(), loadAIAnalyses()])
   } catch (err: any) {
@@ -211,6 +228,10 @@ async function loadHistoryEntryTriggerOptions() {
 }
 function applyHistoryFilters() { historyPage.value = 1; void loadHistory(); void loadHistoryEntryTriggerOptions() }
 function handleHistorySort({ prop, order }: { prop?: string, order?: 'ascending' | 'descending' | null }) { historySortBy.value = prop || 'evaluated_at'; historySortOrder.value = order === 'ascending' ? 'asc' : 'desc'; historyPage.value = 1; void loadHistory() }
+function handleComparisonSelection(rows: Evaluation[]) { comparisonRows.value = rows.slice(-2).sort((a,b) => new Date(b.evaluated_at).getTime() - new Date(a.evaluated_at).getTime()) }
+function comparisonSelectable(row: Evaluation) { return comparisonRows.value.length < 2 || comparisonRows.value.some((item) => item.id === row.id) }
+function metricDelta(rows: Evaluation[], key: string, digits = 0) { const current=Number(rows[0]?.candidate_score?.[key]); const previous=Number(rows[1]?.candidate_score?.[key]); if(!Number.isFinite(current)||!Number.isFinite(previous))return '-'; const delta=current-previous; return `${previous.toFixed(digits)} → ${current.toFixed(digits)}（${delta>=0?'+':''}${delta.toFixed(digits)}）` }
+function technicalDelta(rows: Evaluation[], key: string) { const current=Number(rows[0]?.candidate_score?.technical?.[key]); const previous=Number(rows[1]?.candidate_score?.technical?.[key]); if(!Number.isFinite(current)||!Number.isFinite(previous))return '-'; const delta=current-previous; return `${previous.toFixed(2)}% → ${current.toFixed(2)}%（${delta>=0?'+':''}${delta.toFixed(2)}）` }
 function formatDate(value?: string) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '-' }
 function price(value?: number) { return Number.isFinite(value) ? Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-' }
 function microsPrice(value?: number, currency?: string) { return Number.isFinite(value) && Number(value) !== 0 ? `${price(Number(value) / 1_000_000)} ${currency || 'USD'}` : '-' }
@@ -231,9 +252,10 @@ function insiderCoverageUsable(row: Evaluation) { return Boolean(row.insider_cov
 function fundamentalTooltip(row: Evaluation) { const score = row.candidate_score || {}; if (row.fundamental_status === 'not_applicable') return 'ETF：不适用 SEC 发行人基本面与 Form 4 规则。'; const insider = insiderCoverageUsable(row) ? `${score.insider_score ?? '-'} / 20${score.recent_qualified_insider ? '（近期合格）' : ''}${row.insider_coverage?.status === 'partial' ? '（仅部分覆盖）' : ''}` : '不可用（不能解释为无内幕买入）'; return [`总分：${score.total_score ?? '-'} / 100 · ${score.grade || '未分级'}`, `收入增长：${score.revenue_growth_score ?? '-'} / 30（${pct(score.revenue_growth_pct)}）`, `现金储备：${score.cash_runway_score ?? '-'} / 20（${Number.isFinite(score.cash_runway_months) ? `${Number(score.cash_runway_months).toFixed(1)} 个月` : '-'}）`, `内幕买入：${insider}`, `毛利率：${score.gross_margin_score ?? '-'} / 10`, `稀释风险：${score.dilution_risk_score ?? '-'} / 10`, `赛道：${score.sector_score ?? '-'} / 10`, score.reason_code ? `评分说明：${score.reason_code}` : ''].filter(Boolean).join('\n') }
 function reviewTooltip(row: Evaluation) { const score = row.candidate_score || {}; const reasons = (score.review_priority_reasons || []).map((reason: { label?: string, points?: number }) => `${reason.label || '未命名项'}：${Number(reason.points) > 0 ? '+' : ''}${reason.points ?? 0}`).join('\n'); return [`短线复核：${score.review_priority_score ?? '-'} / 100`, reasons || '本次无可用的短线复核构成。', score.recent_anomaly_labels?.length ? `异动：${score.recent_anomaly_labels.join('、')}` : ''].filter(Boolean).join('\n') }
 function sourceLabel(value?: string) { return ({ candidate_cache: '小盘候选缓存', watch_target_cache: '监控标的缓存', ad_hoc_evaluation: '即时评估快照', ad_hoc_evaluation_cooldown_cache: '即时评估缓存' } as Record<string, string>)[value || ''] || '本地数据' }
-onMounted(() => { void loadHistory(); void loadHistoryEntryTriggerOptions(); void loadAIProviders() })
+onMounted(() => { const queryTicker=typeof route.query.ticker==='string'?route.query.ticker.toUpperCase():''; if(queryTicker){ticker.value=queryTicker;historyTicker.value=queryTicker} void loadHistory(); void loadHistoryEntryTriggerOptions(); void loadAIProviders() })
 </script>
 
 <style scoped>
+.comparison-panel{margin-bottom:10px}.comparison-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 14px;font-size:12px}.comparison-grid span{display:grid;gap:2px}.comparison-grid b{color:var(--el-text-color-primary);font-weight:500}
 .query-card,.discipline,.history,.warnings{margin-top:12px}.result-heading,.history-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.result-heading h3{margin:12px 0 3px}.result-heading small{font-weight:normal;color:var(--el-text-color-secondary)}.result-heading p{margin:0 0 10px;color:var(--el-text-color-secondary);font-size:12px}.score{display:flex;align-items:baseline;gap:7px;margin-bottom:10px}.score strong{font-size:28px}.score span{color:var(--el-text-color-secondary)}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:7px;font-size:12px}.metrics span{display:flex;justify-content:space-between;gap:8px;color:var(--el-text-color-secondary)}.metrics b{color:var(--el-text-color-primary)}.positive{color:var(--el-color-success)!important}.negative{color:var(--el-color-danger)!important}.history-filters,.ai-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.history-filters .el-input,.history-filters .el-select{width:190px}.history-hint{margin-left:10px;color:var(--el-text-color-secondary);font-size:12px;font-weight:normal}.pagination{margin-top:12px;justify-content:flex-end}.research-details{padding:4px 10px 12px;background:var(--el-fill-color-lighter)}.research-title{font-weight:600;margin:7px 0 10px}.research-title span,.research-note,.ai-analysis-heading span{font-size:12px;font-weight:normal;color:var(--el-text-color-secondary);margin-left:8px}.research-section{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:4px;padding:10px;height:100%;box-sizing:border-box}.research-section h4{margin:0 0 8px;font-size:13px}.business-summary,.ai-analysis-content{white-space:pre-wrap;line-height:1.55}.holding-row,.option-summary{margin-top:10px}.research-foot{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:10px;color:var(--el-text-color-secondary);font-size:12px}.research-foot span{max-width:100%;word-break:break-word}.ai-analysis-select{width:min(100%,460px);margin-bottom:10px}.ai-analysis-content{padding:10px;background:var(--el-fill-color-light);border-radius:4px}@media(max-width:768px){.result-heading,.history-heading{align-items:flex-start;flex-direction:column}.metrics{grid-template-columns:1fr}.history-hint{display:block;margin:6px 0 0}.history-filters{width:100%;flex-direction:column}.history-filters .el-input,.history-filters .el-select{width:100%}.research-details{padding:4px}}
 </style>
