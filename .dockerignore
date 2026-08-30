@@ -5,6 +5,7 @@
 data
 dist
 logs
+backups
 node_modules
 web/node_modules
 web/dist

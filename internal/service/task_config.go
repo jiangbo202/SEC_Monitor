@@ -78,7 +78,9 @@ func SkipTask(reason string) error {
 // individual records pending. It is distinct from a hard failure: the next
 // scheduled execution can continue from the recorded per-record state.
 type TaskPartialError struct {
-	Reason string
+	Reason       string
+	PendingCount *int
+	Retryable    bool
 }
 
 func (e *TaskPartialError) Error() string {
@@ -90,6 +92,24 @@ func (e *TaskPartialError) Error() string {
 
 func PartialTask(reason string) error {
 	return &TaskPartialError{Reason: strings.TrimSpace(reason)}
+}
+
+// PendingTask is used only by resumable, idempotent data jobs. A nil count
+// means coverage is incomplete but the source cannot quantify the gap yet.
+func PendingTask(reason string, count *int) error {
+	return &TaskPartialError{Reason: strings.TrimSpace(reason), PendingCount: count, Retryable: true}
+}
+
+const MaxTaskAutoRetries = 3
+
+type taskRetryContextKey struct{}
+
+func WithTaskRetry(ctx context.Context) context.Context {
+	return context.WithValue(ctx, taskRetryContextKey{}, true)
+}
+func IsTaskRetry(ctx context.Context) bool {
+	value, _ := ctx.Value(taskRetryContextKey{}).(bool)
+	return value
 }
 
 type TaskConfigService struct {
@@ -224,6 +244,15 @@ func (s *TaskConfigService) reconcileDefaultScheduleUpgrades(ctx context.Context
 		Update("enabled", true).Error; err != nil {
 		return err
 	}
+	// Releases before the task-level circuit breaker counted every partial
+	// outcome as a hard consecutive failure. Preserve the visible partial state
+	// and message, but clear that legacy failure streak once so the scheduler
+	// page no longer labels successfully bounded per-record retries as crashes.
+	if err := s.db.WithContext(ctx).Model(&model.TaskConfig{}).
+		Where("last_status = ? AND consecutive_failures > 0", "partial").
+		Updates(map[string]any{"consecutive_failures": 0, "retry_not_before": gorm.Expr("NULL")}).Error; err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -306,7 +335,7 @@ func (s *TaskConfigService) MarkRunStarted(ctx context.Context, taskName string)
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Model(&model.TaskConfig{}).
 		Where("task_name = ?", taskName).
-		Updates(map[string]any{"running": true, "running_since": &now, "last_status": "running"}).Error
+		Updates(map[string]any{"running": true, "running_since": &now, "last_status": "running", "auto_retry_attempts": 0, "retry_not_before": gorm.Expr("NULL")}).Error
 }
 
 // StartExecution creates an immutable execution-history row before task work
@@ -394,6 +423,9 @@ func (s *TaskConfigService) RecoverInterruptedExecutions(ctx context.Context, fi
 }
 
 func normalizedTaskTrigger(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "retry") {
+		return "retry"
+	}
 	if strings.EqualFold(strings.TrimSpace(value), "scheduled") {
 		return "scheduled"
 	}
@@ -432,10 +464,18 @@ func (s *TaskConfigService) MarkRunFinished(ctx context.Context, taskName string
 // deliberately separate from scheduler process logs so an operator can see a
 // repeated failure after a container restart.
 func (s *TaskConfigService) MarkRunOutcome(ctx context.Context, taskName string, ranAt time.Time, runErr error) error {
+	var task model.TaskConfig
+	if err := s.db.WithContext(ctx).Where("task_name = ?", taskName).First(&task).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
 	updates := map[string]any{
 		"last_run_at":   ranAt,
 		"running":       false,
 		"running_since": nil,
+		"pending_count": gorm.Expr("NULL"),
 	}
 	var skipped *TaskSkippedError
 	var partial *TaskPartialError
@@ -443,22 +483,87 @@ func (s *TaskConfigService) MarkRunOutcome(ctx context.Context, taskName string,
 		updates["last_status"] = "skipped"
 		updates["last_error_message"] = strings.TrimSpace(skipped.Reason)
 		updates["consecutive_failures"] = 0
+		updates["retry_not_before"] = gorm.Expr("NULL")
+		updates["auto_retry_attempts"] = 0
 	} else if errors.As(runErr, &partial) {
 		updates["last_status"] = "partial"
 		updates["last_error_message"] = SanitizeSensitiveError(partial.Reason)
-		updates["consecutive_failures"] = gorm.Expr("consecutive_failures + 1")
+		// Partial means the task completed its safe unit of work and left
+		// record-level retries behind. It remains visible as a warning, but must
+		// not trip the task-level circuit breaker.
+		updates["consecutive_failures"] = 0
+		updates["retry_not_before"] = gorm.Expr("NULL")
+		updates["pending_count"] = partial.PendingCount
+		if partial.Retryable && task.AutoRetryAttempts < MaxTaskAutoRetries && (partial.PendingCount == nil || *partial.PendingCount > 0) {
+			retryAt := ranAt.UTC().Add(taskFailureBackoff(task.AutoRetryAttempts + 1))
+			updates["retry_not_before"] = &retryAt
+		}
 	} else if runErr == nil {
 		updates["last_status"] = "success"
 		updates["last_error_message"] = ""
 		updates["consecutive_failures"] = 0
+		updates["retry_not_before"] = gorm.Expr("NULL")
+		updates["auto_retry_attempts"] = 0
 	} else {
+		failures := task.ConsecutiveFailures + 1
+		retryAt := ranAt.UTC().Add(taskFailureBackoff(failures))
 		updates["last_status"] = "failed"
 		updates["last_error_message"] = SanitizeSensitiveError(runErr.Error())
-		updates["consecutive_failures"] = gorm.Expr("consecutive_failures + 1")
+		updates["consecutive_failures"] = failures
+		updates["retry_not_before"] = &retryAt
+		if task.AutoRetryAttempts >= MaxTaskAutoRetries {
+			updates["retry_not_before"] = gorm.Expr("NULL")
+		}
 	}
 	return s.db.WithContext(ctx).Model(&model.TaskConfig{}).
 		Where("task_name = ?", taskName).
 		Updates(updates).Error
+}
+
+// DueRetries is a persistent queue: restarts and cron reloads cannot lose a
+// pending retry. The scheduler claims each row before dispatching it.
+func (s *TaskConfigService) DueRetries(ctx context.Context, now time.Time) ([]model.TaskConfig, error) {
+	var tasks []model.TaskConfig
+	err := s.db.WithContext(ctx).Where("enabled = ? AND running = ? AND retry_not_before <= ? AND auto_retry_attempts < ?", true, false, now.UTC(), MaxTaskAutoRetries).
+		Where("last_status IN ?", []string{"failed", "partial", "interrupted"}).Order("retry_not_before ASC, id ASC").Limit(4).Find(&tasks).Error
+	return tasks, err
+}
+
+func (s *TaskConfigService) ClaimRetry(ctx context.Context, taskName string, now time.Time) (bool, error) {
+	result := s.db.WithContext(ctx).Model(&model.TaskConfig{}).
+		Where("task_name = ? AND enabled = ? AND running = ? AND retry_not_before <= ? AND auto_retry_attempts < ?", taskName, true, false, now.UTC(), MaxTaskAutoRetries).
+		Where("last_status IN ?", []string{"failed", "partial", "interrupted"}).
+		Updates(map[string]any{"running": true, "running_since": now.UTC(), "last_status": "running", "auto_retry_attempts": gorm.Expr("auto_retry_attempts + 1")})
+	return result.RowsAffected == 1, result.Error
+}
+
+// ScheduledRunAllowed implements one bounded circuit breaker shared by every
+// cron task. Manual runs intentionally bypass it so an operator can verify a
+// fix immediately. Successful, skipped and partial outcomes close the circuit.
+func (s *TaskConfigService) ScheduledRunAllowed(ctx context.Context, taskName string, now time.Time) (bool, *time.Time, error) {
+	var task model.TaskConfig
+	if err := s.db.WithContext(ctx).Where("task_name = ?", strings.TrimSpace(taskName)).First(&task).Error; err != nil {
+		return false, nil, err
+	}
+	if task.RetryNotBefore == nil || !now.UTC().Before(task.RetryNotBefore.UTC()) {
+		return true, task.RetryNotBefore, nil
+	}
+	return false, task.RetryNotBefore, nil
+}
+
+func taskFailureBackoff(failures int) time.Duration {
+	switch {
+	case failures <= 1:
+		return 5 * time.Minute
+	case failures == 2:
+		return 15 * time.Minute
+	case failures == 3:
+		return time.Hour
+	case failures == 4:
+		return 6 * time.Hour
+	default:
+		return 24 * time.Hour
+	}
 }
 
 // RecoverInterrupted clears the presentation-only running flag after a
@@ -470,6 +575,7 @@ func (s *TaskConfigService) RecoverInterrupted(ctx context.Context) (int64, erro
 		"running_since":      nil,
 		"last_status":        "interrupted",
 		"last_error_message": "服务在任务执行期间重启；任务未在本进程中继续运行",
+		"retry_not_before":   time.Now().UTC().Add(5 * time.Minute),
 	})
 	return result.RowsAffected, result.Error
 }

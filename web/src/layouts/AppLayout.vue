@@ -80,6 +80,12 @@
         </div>
         <strong>{{ item.ticker ? `${item.ticker}｜` : '' }}{{ item.title }}</strong>
         <p v-if="item.body">{{ item.body }}</p>
+        <div class="inbox-decision-context">
+          <el-tag size="small" :type="priorityTagType(item.priority)" effect="plain">{{ priorityLabel(item.priority) }}</el-tag>
+          <span>{{ thesisImpactLabel(item.thesis_impact) }} · {{ actionLabel(item.suggested_action) }}</span>
+        </div>
+        <p v-if="item.why_now && item.why_now !== item.body" class="inbox-why-now">为何现在：{{ item.why_now }}</p>
+        <small v-if="item.next_review_at">建议复查：{{ formatMessageTime(item.next_review_at) }} · 已按事件键去重</small>
       </button>
     </div>
   </el-drawer>
@@ -160,6 +166,11 @@ function sourceLabel(source: string) {
 function sourceTagType(source: string) {
   return ({ earnings_preview: 'info', earnings_preview_watch_target: 'info', earnings_preview_candidate: 'info', earnings_release: 'success', earnings_release_watch_target: 'success', earnings_release_candidate: 'success', technical_signal: 'warning', technical_signal_watch_target: 'warning', technical_signal_candidate: 'warning', major_event: 'danger', major_event_watch_target: 'danger', insider_trading: 'warning', insider_trading_watch_target: 'warning', ipo_progress: 'primary', ai_analysis: 'primary' } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[source] || 'info'
 }
+
+function priorityLabel(value: string) { return ({ urgent: '立即', high: '今日', normal: '常规', low: '记录' } as Record<string, string>)[value] || value || '记录' }
+function priorityTagType(value: string): 'danger' | 'warning' | 'primary' | 'info' { return value === 'urgent' ? 'danger' : value === 'high' ? 'warning' : value === 'normal' ? 'primary' : 'info' }
+function thesisImpactLabel(value: string) { return ({ review: '需复核研究结论', context: '补充研究语境', none: '暂不改变结论' } as Record<string, string>)[value] || '影响待确认' }
+function actionLabel(value: string) { return ({ review_now: '立即复核', review_today: '今日复核', record_only: '仅记录' } as Record<string, string>)[value] || '仅记录' }
 
 function formatMessageTime(value: string) {
   const date = new Date(value)

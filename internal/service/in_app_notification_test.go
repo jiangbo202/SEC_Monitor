@@ -22,6 +22,9 @@ func TestInAppNotificationCreateDeduplicatesAndTracksReadState(t *testing.T) {
 	if err != nil || !inserted || created.Ticker != "ACME" {
 		t.Fatalf("first Create = (%+v, %v, %v)", created, inserted, err)
 	}
+	if created.Priority != "low" || created.ThesisImpact != "review" || created.SuggestedAction != "record_only" || created.DedupKey != input.EventKey || created.WhyNow == "" {
+		t.Fatalf("normalized decision context = %+v", created)
+	}
 	duplicated, inserted, err := service.Create(context.Background(), input)
 	if err != nil || inserted || duplicated.ID != created.ID {
 		t.Fatalf("duplicate Create = (%+v, %v, %v)", duplicated, inserted, err)
@@ -121,5 +124,12 @@ func TestInAppNotificationRespectsSourceConfiguration(t *testing.T) {
 	_, inserted, err = service.Create(context.Background(), InAppNotificationInput{EventKey: "insider:enabled", Source: "insider_trading", Title: "应入站"})
 	if err != nil || !inserted {
 		t.Fatalf("enabled insider Create = (_, %v, %v), want (_, true, nil)", inserted, err)
+	}
+	if err := configs.UpsertMany(context.Background(), []ConfigInput{{Key: "in_app_notification.ten_b5_one_plan_discovered_enabled", Value: "false", ValueType: "bool", Category: "in_app_notification"}}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	_, inserted, err = service.Create(context.Background(), InAppNotificationInput{EventKey: "plan:disabled", Source: "ten_b5_one_plan_discovered", Title: "不应入站"})
+	if err != nil || inserted {
+		t.Fatalf("disabled 10b5-1 Create = (_, %v, %v), want (_, false, nil)", inserted, err)
 	}
 }

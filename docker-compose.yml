@@ -22,11 +22,16 @@ services:
       TIINGO_API_TOKEN: "${TIINGO_API_TOKEN:-}"
       TIINGO_API_TOKENS: "${TIINGO_API_TOKENS:-}"
       CONFIG_ENCRYPTION_KEY: "${CONFIG_ENCRYPTION_KEY:-}"
+      # The application database stays in the named volume. A verified second
+      # copy is written to a host bind mount so deleting/recreating that volume
+      # does not remove every recovery point.
+      SEC_MONITOR_BACKUP_REPLICA_DIR: /app/backup-replica
       SEC_BASE_URL: https://data.sec.gov
       SEC_USER_AGENT: "${SEC_USER_AGENT:-sec-monitor/0.1 your-email@example.com}"
       SEC_TIMEOUT_MS: "10000"
     volumes:
       - sec-monitor-data:/app/data
+      - "${SEC_MONITOR_BACKUP_REPLICA_HOST_DIR:-./backups}:/app/backup-replica"
     logging:
       driver: json-file
       options:

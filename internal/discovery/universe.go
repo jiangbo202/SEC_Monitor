@@ -125,6 +125,10 @@ type prefetchedInsiderLoader interface {
 	LoadInsiderTransactionsWithMetadata(context.Context, []SecuritySourceRecord, SourceVersion, map[string]struct{}, time.Time) ([]InsiderTransaction, []InsiderCoverage, SourceVersion, error)
 }
 
+type prefetchedInsiderPlanDisclosureLoader interface {
+	LoadInsiderPlanDisclosuresWithMetadata(context.Context, []SecuritySourceRecord, []InsiderTransaction, map[string]struct{}, time.Time) ([]InsiderPlanDisclosure, error)
+}
+
 type form4ProgressSource interface {
 	SetProgressCallback(func(Form4IngestionProgress))
 }
@@ -150,6 +154,7 @@ type securityFundamentalsArtifact struct {
 type securityInsiderArtifact struct {
 	Transactions []InsiderTransaction
 	Coverage     []InsiderCoverage
+	Disclosures  []InsiderPlanDisclosure
 	Version      SourceVersion
 }
 
@@ -382,6 +387,7 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	}
 	var insiderTransactions []InsiderTransaction
 	var insiderCoverage []InsiderCoverage
+	var insiderPlanDisclosures []InsiderPlanDisclosure
 	var insiderVersion SourceVersion
 	if c.Insiders != nil {
 		if source, ok := c.Insiders.(form4ProgressSource); ok {
@@ -417,12 +423,18 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 			} else {
 				transactions, version, stageErr = c.Insiders.LoadInsiderTransactions(stageCtx, insiderAllowed, now)
 			}
-			return securityInsiderArtifact{Transactions: transactions, Coverage: coverage, Version: version}, len(coverage), stageErr
+			var disclosures []InsiderPlanDisclosure
+			if stageErr == nil {
+				if source, ok := c.Insiders.(prefetchedInsiderPlanDisclosureLoader); ok {
+					disclosures, stageErr = source.LoadInsiderPlanDisclosuresWithMetadata(stageCtx, records, transactions, insiderAllowed, now)
+				}
+			}
+			return securityInsiderArtifact{Transactions: transactions, Coverage: coverage, Disclosures: disclosures, Version: version}, len(coverage), stageErr
 		})
 		if loadErr != nil {
 			return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "insiders", fmt.Errorf("load insider transactions: %w", loadErr))
 		}
-		insiderTransactions, insiderCoverage, insiderVersion = artifact.Transactions, artifact.Coverage, artifact.Version
+		insiderTransactions, insiderCoverage, insiderPlanDisclosures, insiderVersion = artifact.Transactions, artifact.Coverage, artifact.Disclosures, artifact.Version
 	}
 	eventScope, hashErr := securitySourceScopeSHA(struct {
 		MetadataSHA string
@@ -501,9 +513,9 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 	if err != nil {
 		return c.recordEarlyFailure(ctx, BatchKindSecurity, now, "source-versions", err)
 	}
-	hashTotal := len(records) + len(facts) + len(financialFacts) + len(insiderTransactions) + len(insiderCoverage) + len(events) + len(overrides)
+	hashTotal := len(records) + len(facts) + len(financialFacts) + len(insiderTransactions) + len(insiderCoverage) + len(insiderPlanDisclosures) + len(events) + len(overrides)
 	c.emitSecurityStageProgress("security-content-hash", securityCheckpointRunning, 0, hashTotal, fmt.Sprintf("正在计算 %d 条归一化输入的内容指纹", hashTotal))
-	contentSHA, err := hashSecurityInputs(records, facts, financialFacts, insiderTransactions, insiderCoverage, events, overrides)
+	contentSHA, err := hashSecurityInputs(records, facts, financialFacts, insiderTransactions, insiderCoverage, insiderPlanDisclosures, events, overrides)
 	if err != nil {
 		c.emitSecurityStageProgress("security-content-hash", securityCheckpointFailed, 0, hashTotal, err.Error())
 		return UniverseBatch{}, err
@@ -514,7 +526,7 @@ func (c *Coordinator) SyncSecurityUniverse(ctx context.Context) (UniverseBatch, 
 		return batch, err
 	}
 
-	classifications, selections, stageErr := c.stageSecurity(ctx, batch, records, facts, financialFacts, insiderTransactions, insiderCoverage, events, overrides, now)
+	classifications, selections, stageErr := c.stageSecurity(ctx, batch, records, facts, financialFacts, insiderTransactions, insiderCoverage, insiderPlanDisclosures, events, overrides, now)
 	if stageErr == nil {
 		stageErr = c.runSecurityStageChunk(ctx, batch.BatchID, "security-validation", 0, classifications, func(tx *gorm.DB) error {
 			return validateSecurityStage(tx, batch.BatchID, classifications, selections)
@@ -1307,7 +1319,7 @@ func (c *Coordinator) resumeRetryableBatch(ctx context.Context, batch UniverseBa
 	})
 }
 
-func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, financials []FinancialFact, insiders []InsiderTransaction, insiderCoverage []InsiderCoverage, events []CapitalEvent, overrides []ManualSecurityOverride) (string, error) {
+func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, financials []FinancialFact, insiders []InsiderTransaction, insiderCoverage []InsiderCoverage, insiderPlanDisclosures []InsiderPlanDisclosure, events []CapitalEvent, overrides []ManualSecurityOverride) (string, error) {
 	recordCopy := append([]SecuritySourceRecord(nil), records...)
 	sort.Slice(recordCopy, func(i, j int) bool { return canonicalLess(recordCopy[i], recordCopy[j]) })
 	factCopy := append([]ShareFact(nil), facts...)
@@ -1318,6 +1330,8 @@ func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, finan
 	sort.Slice(insiderCopy, func(i, j int) bool { return canonicalLess(insiderCopy[i], insiderCopy[j]) })
 	coverageCopy := append([]InsiderCoverage(nil), insiderCoverage...)
 	sort.Slice(coverageCopy, func(i, j int) bool { return canonicalLess(coverageCopy[i], coverageCopy[j]) })
+	disclosureCopy := append([]InsiderPlanDisclosure(nil), insiderPlanDisclosures...)
+	sort.Slice(disclosureCopy, func(i, j int) bool { return canonicalLess(disclosureCopy[i], disclosureCopy[j]) })
 	eventCopy := append([]CapitalEvent(nil), events...)
 	sort.Slice(eventCopy, func(i, j int) bool { return canonicalLess(eventCopy[i], eventCopy[j]) })
 	overrideCopy := canonicalManualOverrides(overrides)
@@ -1327,9 +1341,10 @@ func hashSecurityInputs(records []SecuritySourceRecord, facts []ShareFact, finan
 		Financials []FinancialFact           `json:"financials"`
 		Insiders   []InsiderTransaction      `json:"insiders"`
 		Coverage   []InsiderCoverage         `json:"insider_coverage"`
+		Plans      []InsiderPlanDisclosure   `json:"insider_plan_disclosures"`
 		Events     []CapitalEvent            `json:"events"`
 		Overrides  []canonicalManualOverride `json:"overrides"`
-	}{recordCopy, factCopy, financialCopy, insiderCopy, coverageCopy, eventCopy, overrideCopy})
+	}{recordCopy, factCopy, financialCopy, insiderCopy, coverageCopy, disclosureCopy, eventCopy, overrideCopy})
 }
 
 func sourceVersionForOverrides(rows []ManualSecurityOverride, at time.Time) (SourceVersion, error) {
@@ -1532,7 +1547,7 @@ func hashCanonicalContent(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, records []SecuritySourceRecord, facts []ShareFact, financialFacts []FinancialFact, insiderTransactions []InsiderTransaction, insiderCoverage []InsiderCoverage, events []CapitalEvent, overrides []ManualSecurityOverride, now time.Time) (int, int, error) {
+func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, records []SecuritySourceRecord, facts []ShareFact, financialFacts []FinancialFact, insiderTransactions []InsiderTransaction, insiderCoverage []InsiderCoverage, insiderPlanDisclosures []InsiderPlanDisclosure, events []CapitalEvent, overrides []ManualSecurityOverride, now time.Time) (int, int, error) {
 	listingRows := make([]ListingIdentitySnapshot, 0, len(records))
 	mapped := make([]SecuritySourceRecord, 0, len(records))
 	for _, record := range records {
@@ -1715,6 +1730,16 @@ func (c *Coordinator) stageSecurity(ctx context.Context, batch UniverseBatch, re
 		}
 	} else if err := c.runSecurityStageChunk(ctx, batch.BatchID, "insider-transactions", 0, 0, func(*gorm.DB) error { return nil }); err != nil {
 		return len(groups), len(groups), err
+	}
+	if err := UpsertInsiderPlanDisclosures(c.DB.WithContext(ctx), securityIDByCIK, insiderPlanDisclosures, now); err != nil {
+		return len(groups), len(groups), fmt.Errorf("persist Form 144 10b5-1 disclosures: %w", err)
+	}
+	planSecurityIDs := make([]uint, 0, len(securityIDByCIK))
+	for _, securityID := range securityIDByCIK {
+		planSecurityIDs = append(planSecurityIDs, securityID)
+	}
+	if err := ReconcileInsiderTradingPlans(c.DB.WithContext(ctx), planSecurityIDs, now); err != nil {
+		return len(groups), len(groups), fmt.Errorf("reconcile 10b5-1 plan registry: %w", err)
 	}
 	if len(insiderCoverage) > 0 {
 		if err := c.persistInsiderCoverageSnapshots(ctx, batch.BatchID, securityIDByCIK, insiderCoverage, now); err != nil {
@@ -2006,7 +2031,14 @@ func (c *Coordinator) persistInsiderSnapshots(ctx context.Context, batchID strin
 			if len(chunk) == 0 {
 				return nil
 			}
-			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
+			return tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "security_id"}, {Name: "identity_sha256"}},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"reporting_owner_cik",
+					"is_ten_b5_one", "ten_b5_one_status", "ten_b5_one_plan_adoption_date",
+					"ten_b5_one_evidence_source", "ten_b5_one_evidence", "parser_version", "source_url",
+				}),
+			}).Create(&chunk).Error
 		}); err != nil {
 			return err
 		}

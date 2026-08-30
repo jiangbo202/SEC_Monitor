@@ -33,6 +33,50 @@ func (f *fakeEarningsClient) Consensus(context.Context, string) (*lbfundamental.
 	return f.consensus, nil
 }
 
+type pagedEarningsClient struct {
+	fakeEarningsClient
+	starts []string
+	repeat bool
+}
+
+func (c *pagedEarningsClient) FinanceCalendar(_ context.Context, _ lbcalendar.CalendarCategory, start, _ string, _ *string) (*lbcalendar.CalendarEventsResponse, error) {
+	c.starts = append(c.starts, start)
+	next := ""
+	if start == "2026-08-01" {
+		next = "2026-08-02"
+	}
+	if c.repeat {
+		next = start
+	}
+	return &lbcalendar.CalendarEventsResponse{NextDate: next, List: []lbcalendar.CalendarDateGroup{{Date: start, Infos: []lbcalendar.CalendarEventInfo{{ID: start, Symbol: "TEST.US", Date: start}}}}}, nil
+}
+
+func TestEarningsCalendarResumesAcrossServiceRestart(t *testing.T) {
+	db := testDB(t)
+	svc := NewEarningsPreviewService(db, config.DiscoveryConfig{}, nil, nil)
+	client := &pagedEarningsClient{}
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	settings := EarningsPreviewSettings{LookaheadDays: 90, MaxCalendarPages: 1}
+	events, complete, err := svc.loadResumableEarningsEvents(context.Background(), client, now, settings, "watch")
+	if err != nil || complete || len(events) != 1 {
+		t.Fatalf("first page: %+v %v %v", events, complete, err)
+	}
+	svc = NewEarningsPreviewService(db, config.DiscoveryConfig{}, nil, nil)
+	events, complete, err = svc.loadResumableEarningsEvents(WithTaskRetry(context.Background()), client, now, settings, "watch")
+	if err != nil || !complete || len(events) != 2 || len(client.starts) != 2 || client.starts[1] != "2026-08-02" {
+		t.Fatalf("resume: %+v %v %v %v", events, complete, err, client.starts)
+	}
+	_, _, err = svc.loadResumableEarningsEvents(WithTaskRetry(context.Background()), client, now, settings, "watch")
+	if err != nil || len(client.starts) != 2 {
+		t.Fatal("complete retry refetched calendar")
+	}
+	client.repeat = true
+	_, complete, err = svc.loadResumableEarningsEvents(context.Background(), client, now, settings, "watch")
+	if err == nil || complete {
+		t.Fatal("stalled cursor falsely marked full coverage")
+	}
+}
+
 func TestEarningsPreviewSyncCachesCalendarAndConsensus(t *testing.T) {
 	db := testDB(t)
 	target := model.WatchTarget{Ticker: "TEST", CompanyName: "Test Inc.", TargetType: "stock", Status: "enabled"}
@@ -63,6 +107,9 @@ func TestEarningsPreviewSyncCachesCalendarAndConsensus(t *testing.T) {
 	}
 	if view.Preview.Status != earningsPreviewStatusScheduled || view.Preview.ReportAt.Format(time.DateOnly) != "2026-08-13" || view.Preview.EPSEstimate == nil || *view.Preview.EPSEstimate != 1.25 || view.Preview.RevenueEstimate == nil || *view.Preview.RevenueEstimate != 2_000_000 {
 		t.Fatalf("stored preview = %+v", view.Preview)
+	}
+	if view.Cycle == nil || view.Cycle.Status != "pre_earnings" || len(view.Cycle.Timeline) != 1 || view.Cycle.FrozenConsensus == nil {
+		t.Fatalf("expectation cycle = %+v", view.Cycle)
 	}
 }
 

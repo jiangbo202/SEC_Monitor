@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,7 +20,7 @@ import (
 )
 
 const (
-	InsiderParserVersion        = "form4-parser-v3"
+	InsiderParserVersion        = "form4-parser-v5"
 	InsiderCoverageVersion      = "form4-coverage-v1"
 	form4DocumentRequestTimeout = 30 * time.Second
 )
@@ -30,6 +31,18 @@ const (
 	InsiderCoverageCoveredTransactions   = "covered_transactions"
 	InsiderCoveragePartial               = "partial"
 	InsiderCoverageUnavailable           = "unavailable"
+)
+
+const (
+	TenB5OneStatusConfirmed    = "confirmed"
+	TenB5OneStatusPossible     = "possible"
+	TenB5OneStatusNotDisclosed = "not_disclosed"
+)
+
+var (
+	tenB5OneMentionPattern   = regexp.MustCompile(`(?i)\b10b5[\s-]*1(?:\(c\))?\b`)
+	tenB5OneExecutionPattern = regexp.MustCompile(`(?i)\b(?:pursuant\s+to|in\s+accordance\s+with|under)\b.{0,80}\b10b5[\s-]*1(?:\(c\))?\b|\b10b5[\s-]*1(?:\(c\))?\b.{0,80}\b(?:trading\s+)?plan\b`)
+	tenB5OneAdoptionPattern  = regexp.MustCompile(`(?i)\b(?:adopted|entered\s+into|established)(?:\s+(?:on|as\s+of))?\s+([A-Z][a-z]{2,8}\.?\s+\d{1,2},\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})`)
 )
 
 const (
@@ -51,6 +64,7 @@ const (
 type InsiderTransaction struct {
 	CIK, Ticker, Accession, SourceURL string
 	OwnerName, OfficerTitle, Role     string
+	ReportingOwnerCIK                 string
 	Derivative                        bool
 	TransactionDate                   time.Time
 	TransactionCode                   string
@@ -63,6 +77,11 @@ type InsiderTransaction struct {
 	Qualified                         bool
 	ExclusionReason                   string
 	FounderConfirmationSuggested      bool
+	IsTenB5One                        bool
+	TenB5OneStatus                    string
+	TenB5OnePlanAdoptionDate          *time.Time
+	TenB5OneEvidenceSource            string
+	TenB5OneEvidence                  string
 }
 
 type InsiderTransactionSource interface {
@@ -96,6 +115,74 @@ type SECForm4InsiderSource struct {
 	LookbackDays    int
 	DocumentTimeout time.Duration
 	OnProgress      func(Form4IngestionProgress)
+}
+
+// LoadInsiderPlanDisclosuresWithMetadata loads structured Form 144 notices
+// for the same candidate-scoped issuer set used by Form 4 ingestion.
+func (s SECForm4InsiderSource) LoadInsiderPlanDisclosuresWithMetadata(ctx context.Context, records []SecuritySourceRecord, transactions []InsiderTransaction, allowed map[string]struct{}, asOf time.Time) ([]InsiderPlanDisclosure, error) {
+	if s.Downloader == nil {
+		return nil, fmt.Errorf("SEC Form 144 downloader is required")
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = "https://www.sec.gov/Archives/edgar/data"
+	}
+	// Form 144 is filed under the reporting person's CIK rather than the
+	// issuer's CIK. Reuse owner CIKs observed in candidate-scoped Form 4 rows so
+	// this stage never downloads the global Form 144 universe.
+	reporters := map[string]struct{}{}
+	for _, transaction := range transactions {
+		if transaction.ReportingOwnerCIK != "" {
+			reporters[transaction.ReportingOwnerCIK] = struct{}{}
+		}
+	}
+	cutoff := asOf.AddDate(-2, 0, 0)
+	result := []InsiderPlanDisclosure{}
+	for _, record := range records {
+		if _, ok := reporters[record.CIK]; !ok {
+			continue
+		}
+		for _, filing := range record.FilingMetadata {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			form := strings.ToUpper(strings.TrimSpace(filing.Form))
+			if form != "144" && form != "144/A" {
+				continue
+			}
+			filed := filing.FiledAt
+			if filed.IsZero() {
+				filed = filing.AcceptedAt
+			}
+			if filed.IsZero() || filed.Before(cutoff) || filed.After(asOf) {
+				continue
+			}
+			sourceURL, cacheKey, err := form4DocumentLocation(baseURL, filing)
+			if err != nil {
+				continue
+			}
+			download, err := s.Downloader.DownloadWithCacheTTL(ctx, sourceURL, "form144-"+cacheKey, nil, -1)
+			if err != nil {
+				continue
+			}
+			file, err := os.Open(download.Path)
+			if err != nil {
+				continue
+			}
+			disclosures, parseErr := ParseForm144PlanXML(file, filing.Accession, sourceURL)
+			closeErr := file.Close()
+			if parseErr != nil || closeErr != nil {
+				continue
+			}
+			for _, disclosure := range disclosures {
+				if _, ok := allowed[disclosure.CIK]; ok {
+					result = append(result, disclosure)
+				}
+			}
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return canonicalLess(result[i], result[j]) })
+	return result, nil
 }
 
 type Form4IngestionProgress struct {
@@ -535,10 +622,13 @@ func ParseForm4OwnershipXML(r io.Reader, accession, sourceURL string) ([]Insider
 	}
 	owner := doc.ReportingOwner
 	role, founderSuggested := normalizeInsiderRole(owner.Relationship.OfficerTitle)
+	plan := form4TenB5OneEvidence(doc)
 	base := InsiderTransaction{
 		CIK: cik, Ticker: strings.ToUpper(strings.TrimSpace(doc.Issuer.TradingSymbol)), Accession: accession, SourceURL: sourceURL,
-		OwnerName: strings.TrimSpace(owner.ID.Name), OfficerTitle: strings.TrimSpace(owner.Relationship.OfficerTitle), Role: role,
+		OwnerName: strings.TrimSpace(owner.ID.Name), ReportingOwnerCIK: normalizeCIKString(owner.ID.CIK), OfficerTitle: strings.TrimSpace(owner.Relationship.OfficerTitle), Role: role,
 		FounderConfirmationSuggested: founderSuggested,
+		IsTenB5One:                   plan.Confirmed, TenB5OneStatus: plan.Status, TenB5OnePlanAdoptionDate: plan.AdoptionDate,
+		TenB5OneEvidenceSource: plan.Source, TenB5OneEvidence: plan.Evidence,
 	}
 	out := make([]InsiderTransaction, 0, len(doc.NonDerivativeTable.Transactions)+len(doc.DerivativeTable.Transactions))
 	for _, row := range doc.NonDerivativeTable.Transactions {
@@ -699,12 +789,14 @@ func sanitizeForm4CachePart(value string) string {
 
 type ownershipDocument struct {
 	DocumentType string `xml:"documentType"`
+	Aff10b5One   string `xml:"aff10b5One"`
 	Issuer       struct {
 		CIK           string `xml:"issuerCik"`
 		TradingSymbol string `xml:"issuerTradingSymbol"`
 	} `xml:"issuer"`
 	ReportingOwner struct {
 		ID struct {
+			CIK  string `xml:"rptOwnerCik"`
 			Name string `xml:"rptOwnerName"`
 		} `xml:"reportingOwnerId"`
 		Relationship struct {
@@ -718,6 +810,77 @@ type ownershipDocument struct {
 	DerivativeTable struct {
 		Transactions []ownershipTransaction `xml:"derivativeTransaction"`
 	} `xml:"derivativeTable"`
+	Footnotes struct {
+		Items []struct {
+			ID   string `xml:"id,attr"`
+			Text string `xml:",chardata"`
+		} `xml:"footnote"`
+	} `xml:"footnotes"`
+}
+
+type tenB5OneEvidence struct {
+	Confirmed    bool
+	Status       string
+	AdoptionDate *time.Time
+	Source       string
+	Evidence     string
+}
+
+func form4TenB5OneEvidence(doc ownershipDocument) tenB5OneEvidence {
+	relevant := make([]string, 0)
+	for _, footnote := range doc.Footnotes.Items {
+		text := strings.Join(strings.Fields(footnote.Text), " ")
+		if text != "" && tenB5OneMentionPattern.MatchString(text) {
+			relevant = append(relevant, text)
+		}
+	}
+	evidence := strings.Join(relevant, "\n")
+	if len(evidence) > 4096 {
+		evidence = evidence[:4096]
+	}
+	checkbox := parseForm4Boolean(doc.Aff10b5One)
+	result := tenB5OneEvidence{Status: TenB5OneStatusNotDisclosed, Evidence: evidence}
+	switch {
+	case checkbox:
+		result.Confirmed = true
+		result.Status = TenB5OneStatusConfirmed
+		result.Source = "form4_checkbox"
+	case tenB5OneExecutionPattern.MatchString(evidence):
+		// Older filings can explicitly state the plan relationship in a
+		// footnote even though they predate the structured checkbox.
+		result.Confirmed = true
+		result.Status = TenB5OneStatusConfirmed
+		result.Source = "form4_footnote"
+	case evidence != "":
+		result.Status = TenB5OneStatusPossible
+		result.Source = "form4_footnote"
+	}
+	result.AdoptionDate = parseTenB5OneAdoptionDate(evidence)
+	return result
+}
+
+func parseForm4Boolean(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseTenB5OneAdoptionDate(evidence string) *time.Time {
+	match := tenB5OneAdoptionPattern.FindStringSubmatch(evidence)
+	if len(match) != 2 {
+		return nil
+	}
+	value := strings.ReplaceAll(strings.TrimSpace(match[1]), ".", "")
+	for _, layout := range []string{"January 2, 2006", "Jan 2, 2006", time.DateOnly, "1/2/2006", "01/02/2006"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			parsed = parsed.UTC()
+			return &parsed
+		}
+	}
+	return nil
 }
 
 type ownershipTransaction struct {
@@ -825,11 +988,13 @@ func parsePositiveForm4Decimal(value string) (float64, bool) {
 
 func InsiderTransactionToSnapshot(securityID uint, tx InsiderTransaction, createdAt time.Time) InsiderTransactionSnapshot {
 	row := InsiderTransactionSnapshot{
-		SecurityID: securityID, Accession: tx.Accession, OwnerName: tx.OwnerName, OfficerTitle: tx.OfficerTitle, Role: tx.Role,
+		SecurityID: securityID, Accession: tx.Accession, OwnerName: tx.OwnerName, ReportingOwnerCIK: tx.ReportingOwnerCIK, OfficerTitle: tx.OfficerTitle, Role: tx.Role,
 		Derivative: tx.Derivative, TransactionDate: tx.TransactionDate, TransactionCode: tx.TransactionCode, AcquiredDisposedCode: tx.AcquiredDisposedCode,
 		SharesMicros: decimalFloatToMicros(tx.Shares), PriceMicros: decimalFloatToMicros(tx.PricePerShareUSD), ValueMicros: decimalFloatToMicros(tx.ValueUSD),
 		SharesOwnedAfterMicros: decimalFloatToMicros(tx.SharesOwnedAfter), SharesOwnedBeforeMicros: decimalFloatToMicros(tx.SharesOwnedBefore),
 		Qualified: tx.Qualified, ExclusionReason: tx.ExclusionReason, FounderConfirmationSuggested: tx.FounderConfirmationSuggested,
+		IsTenB5One: tx.IsTenB5One, TenB5OneStatus: tx.TenB5OneStatus, TenB5OnePlanAdoptionDate: tx.TenB5OnePlanAdoptionDate,
+		TenB5OneEvidenceSource: tx.TenB5OneEvidenceSource, TenB5OneEvidence: tx.TenB5OneEvidence,
 		ParserVersion: InsiderParserVersion, SourceURL: tx.SourceURL, CreatedAt: createdAt,
 	}
 	row.IdentitySHA256 = insiderTransactionSnapshotIdentity(row)

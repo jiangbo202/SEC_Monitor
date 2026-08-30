@@ -65,6 +65,30 @@ func TestCandidateResearchPortfolioAggregatesRiskWeightsAndConcentration(t *test
 	}
 }
 
+func TestCandidatePortfolioRiskUsesPointInTimeIWMReturns(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	if err := db.Create(&CandidateResearchPosition{Ticker: "RISK", MaxWeightPct: 10}).Error; err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	for day := 0; day < 30; day++ {
+		date := start.AddDate(0, 0, day)
+		benchmark := int64((100.0 + float64(day)) * 1_000_000)
+		asset := int64((50.0 + float64(day)) * 1_000_000)
+		rows := []PriceSnapshot{{Source: "test", SourceVersion: "v1", Symbol: "IWM", TradeDate: date, CloseMicros: benchmark, QualityStatus: QualityStatusValid}, {Source: "test", SourceVersion: "v1", Symbol: "RISK", TradeDate: date, CloseMicros: asset, QualityStatus: QualityStatusValid}}
+		if err := db.Create(&rows).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	portfolio, err := ListCandidateResearchPositions(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if portfolio.RiskAnalysis.WeightedMarketBeta == nil || portfolio.RiskAnalysis.BetaCoveredWeight != 10 || len(portfolio.RiskAnalysis.Scenarios) != 4 {
+		t.Fatalf("risk analysis = %+v", portfolio.RiskAnalysis)
+	}
+}
+
 func TestResearchPositionRiskGateAllowsReductionsAndRequiresOverrideForIncreases(t *testing.T) {
 	cost := 10.0
 	before := CandidateResearchPosition{Ticker: "PLAN", MaxWeightPct: 5, ReferenceCostUSD: &cost}

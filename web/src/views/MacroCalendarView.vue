@@ -148,7 +148,14 @@
             </div>
           </template>
         </el-table-column>
-		<el-table-column label="数据类别" width="168"><template #default="{ row }"><el-tooltip :content="categoryLabel(row.category)" placement="top"><el-tag class="macro-category-tag" effect="plain">{{ categoryLabel(row.category) }}</el-tag></el-tooltip></template></el-table-column>
+		<el-table-column label="数据类别" width="220">
+		  <template #default="{ row }">
+		    <div class="macro-category-cell" :title="categoryLabel(row.category)">
+		      <i class="macro-category-dot" aria-hidden="true" />
+		      <span class="macro-category-text">{{ tableCategoryLabel(row.category) }}</span>
+		    </div>
+		  </template>
+		</el-table-column>
         <el-table-column label="频率" width="88"><template #default="{ row }">{{ releaseFrequencyLabel(row.category) }}</template></el-table-column>
 		<el-table-column prop="title" label="日历事件" min-width="320"><template #default="{ row }"><el-tooltip :content="row.title" placement="top"><span class="macro-cell-overflow">{{ row.title }}</span></el-tooltip></template></el-table-column>
         <el-table-column prop="reference_period" label="数据期" width="135" />
@@ -397,6 +404,13 @@ function categoryLabel(value: string) {
                               : value === 'treasury_real_yields' ? '美债实际收益率曲线（TIPS）'
 								: value === 'fomc' ? 'FOMC 会议' : value === 'market_calendar' ? 'Longbridge 高重要性日历' : value || '-'
 }
+function tableCategoryLabel(value: string) {
+  return value === 'treasury_real_yields' ? '美债实际收益率（TIPS）'
+    : value === 'treasury_yields' ? '美债名义收益率'
+      : value === 'petroleum_inventories' ? 'EIA 石油库存'
+        : value === 'personal_income_outlays' ? '个人收入 / PCE'
+          : categoryLabel(value)
+}
 function releaseFrequencyLabel(category: string) { return ['treasury_yields', 'treasury_real_yields'].includes(category) ? '每日' : ['initial_claims', 'petroleum_inventories'].includes(category) ? '每周' : category === 'gdp' ? '季度' : category === 'fomc' ? '政策会议' : category === 'market_calendar' ? '市场日历' : '月度' }
 function providerLabel(value?: string) { return value === 'bea' ? 'BEA 链接' : value === 'bls' ? 'BLS 链接' : value === 'fred' ? 'FRED（原始来源：BLS）' : value === 'census' ? 'Census 链接' : value === 'dol' ? 'DOL 链接' : value === 'eia' ? 'EIA 链接' : value === 'treasury' ? '财政部链接' : value === 'federal_reserve' ? '美联储链接' : value === 'longbridge' ? 'Longbridge' : '来源链接' }
 function releaseTimeLabel(row: MacroRelease) { return row.release_stage === 'fred_mirror' ? `${formatDateOnly(row.scheduled_at)}（数据期）` : formatDateTime(row.scheduled_at) }
@@ -445,8 +459,10 @@ onMounted(load)
 
 <style scoped>
 .macro-source-alert { margin-bottom: 12px; }
-.macro-category-tag, .macro-cell-overflow { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.macro-category-tag { width: fit-content; }
+.macro-cell-overflow { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.macro-category-cell { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--el-text-color-regular); font-weight: 500; line-height: 1.35; }
+.macro-category-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--el-color-primary-light-3); }
+.macro-category-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .macro-sync-note { margin-top: 6px; font-size: 12px; color: var(--el-text-color-secondary); }
 .macro-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .macro-count { margin-left: auto; color: var(--el-text-color-secondary); font-size: 13px; }

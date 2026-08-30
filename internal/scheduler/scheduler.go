@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,6 +63,7 @@ type Scheduler struct {
 	institutionalHoldings   *service.InstitutionalHoldingsService
 	earningsPreview         *service.EarningsPreviewService
 	mu                      sync.Mutex
+	retryMu                 sync.Mutex
 	runningTasks            map[string]bool
 	runningSECTask          string
 	started                 bool
@@ -189,6 +191,11 @@ func (s *Scheduler) Reload(ctx context.Context) error {
 			return err
 		}
 	}
+	// Scan persisted due times independently of business cron expressions.
+	// One serial dispatcher bounds provider pressure and reuses task/SEC locks.
+	if _, err := nextCron.AddFunc("@every 1m", func() { s.runDueRetries(context.Background(), time.Now().UTC()) }); err != nil {
+		return err
+	}
 	if err := s.tasks.SetNextRunAts(ctx, nextRuns); err != nil {
 		return fmt.Errorf("persist scheduler next-run plan: %w", err)
 	}
@@ -204,6 +211,30 @@ func (s *Scheduler) Reload(ctx context.Context) error {
 		<-previousCron.Stop().Done()
 	}
 	return nil
+}
+
+func (s *Scheduler) runDueRetries(ctx context.Context, now time.Time) {
+	if !s.retryMu.TryLock() {
+		return
+	}
+	defer s.retryMu.Unlock()
+	tasks, err := s.tasks.DueRetries(ctx, now)
+	if err != nil {
+		log.Printf("load due task retries: %v", err)
+		return
+	}
+	for _, task := range tasks {
+		if ctx.Err() != nil {
+			return
+		}
+		if s.canRunTask(task.TaskName) {
+			retryCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+			if err := s.runTaskWithTrigger(retryCtx, task.TaskName, "retry"); err != nil {
+				log.Printf("retry task %s: %v", task.TaskName, err)
+			}
+			cancel()
+		}
+	}
 }
 
 func (s *Scheduler) schedulerLocation(ctx context.Context) (*time.Location, error) {
@@ -226,6 +257,15 @@ func (s *Scheduler) RunTask(ctx context.Context, taskName string) error {
 }
 
 func (s *Scheduler) runTaskWithTrigger(ctx context.Context, taskName, trigger string) (err error) {
+	if trigger == "scheduled" {
+		allowed, retryAt, checkErr := s.tasks.ScheduledRunAllowed(ctx, taskName, time.Now().UTC())
+		if checkErr != nil {
+			return fmt.Errorf("check scheduler circuit for %s: %w", taskName, checkErr)
+		}
+		if !allowed {
+			return service.SkipTask(fmt.Sprintf("连续失败退避中；%s 后自动恢复", retryAt.UTC().Format(time.RFC3339)))
+		}
+	}
 	s.mu.Lock()
 	if s.runningTasks[taskName] {
 		s.mu.Unlock()
@@ -237,20 +277,32 @@ func (s *Scheduler) runTaskWithTrigger(ctx context.Context, taskName, trigger st
 		s.mu.Unlock()
 		return service.TaskResourceBusy(taskName, blockingTask)
 	}
+	if trigger == "retry" {
+		claimed, claimErr := s.tasks.ClaimRetry(ctx, taskName, time.Now().UTC())
+		if claimErr != nil || !claimed {
+			s.mu.Unlock()
+			return claimErr
+		}
+		ctx = service.WithTaskRetry(ctx)
+	}
 	s.runningTasks[taskName] = true
 	if usesSEC {
 		s.runningSECTask = taskName
 	}
 	s.mu.Unlock()
 
-	if err := s.tasks.MarkRunStarted(ctx, taskName); err != nil {
+	var startErr error
+	if trigger != "retry" {
+		startErr = s.tasks.MarkRunStarted(ctx, taskName)
+	}
+	if startErr != nil {
 		s.mu.Lock()
 		delete(s.runningTasks, taskName)
 		if usesSEC && s.runningSECTask == taskName {
 			s.runningSECTask = ""
 		}
 		s.mu.Unlock()
-		return err
+		return startErr
 	}
 	var executionID uint
 	startedAt := time.Now().UTC()
@@ -260,12 +312,18 @@ func (s *Scheduler) runTaskWithTrigger(ctx context.Context, taskName, trigger st
 			log.Printf("%v", err)
 		}
 		finishedAt := time.Now().UTC()
+		// Cancellation must not leave a completed task stuck in running state.
+		finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		if err == nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		if executionID != 0 {
-			if executionErr := s.tasks.FinishExecution(ctx, executionID, finishedAt, err); executionErr != nil {
+			if executionErr := s.tasks.FinishExecution(finishCtx, executionID, finishedAt, err); executionErr != nil {
 				log.Printf("persist execution history for scheduler task %s: %v", taskName, executionErr)
 			}
 		}
-		if finishErr := s.tasks.MarkRunOutcome(ctx, taskName, finishedAt, err); finishErr != nil {
+		if finishErr := s.tasks.MarkRunOutcome(finishCtx, taskName, finishedAt, err); finishErr != nil {
 			// A persistence error must not be hidden behind an otherwise benign
 			// skipped outcome; operators need to know the task state was not saved.
 			if err == nil || errors.Is(err, service.ErrTaskSkipped) {
@@ -460,7 +518,7 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 			return service.SkipTask(result.Message)
 		}
 		if result.Failed > 0 || len(result.Warnings) > 0 {
-			return service.PartialTask(fmt.Sprintf("Longbridge P1 已更新 %d/%d 个候选；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+			return researchPartialOutcome(result.Fetched, result.Attempted, result.Failed, result.Warnings)
 		}
 		return nil
 	case longbridgeCandidateValuationSyncTaskName:
@@ -472,7 +530,7 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 			return service.SkipTask(result.Message)
 		}
 		if result.Failed > 0 || len(result.Warnings) > 0 {
-			return service.PartialTask(fmt.Sprintf("Longbridge P2 已更新 %d/%d 个候选；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+			return researchPartialOutcome(result.Fetched, result.Attempted, result.Failed, result.Warnings)
 		}
 		return nil
 	case longbridgeWatchTargetValuationSyncTaskName:
@@ -484,7 +542,7 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 			return service.SkipTask(result.Message)
 		}
 		if result.Failed > 0 || len(result.Warnings) > 0 {
-			return service.PartialTask(fmt.Sprintf("Longbridge 监控标的估值已更新 %d/%d 个；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+			return researchPartialOutcome(result.Fetched, result.Attempted, result.Failed, result.Warnings)
 		}
 		return nil
 	case longbridgeWatchTargetResearchSyncTaskName:
@@ -496,7 +554,7 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 			return service.SkipTask(result.Message)
 		}
 		if result.Failed > 0 || len(result.Warnings) > 0 {
-			return service.PartialTask(fmt.Sprintf("Longbridge 监控标的机构持仓已更新 %d/%d 个；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+			return researchPartialOutcome(result.Fetched, result.Attempted, result.Failed, result.Warnings)
 		}
 		return nil
 	case longbridgeCandidateOptionResearchSyncTaskName:
@@ -509,7 +567,7 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 		}
 		// Partial coverage is recorded per ticker; only failed requests retry.
 		if result.Failed > 0 {
-			return service.PartialTask(fmt.Sprintf("Longbridge 候选期权/空头研究已更新 %d/%d 个；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+			return researchPartialOutcome(result.Fetched, result.Attempted, result.Failed, result.Warnings)
 		}
 		return nil
 	case longbridgeWatchTargetOptionResearchSyncTaskName:
@@ -521,7 +579,7 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 			return service.SkipTask(result.Message)
 		}
 		if result.Failed > 0 {
-			return service.PartialTask(fmt.Sprintf("Longbridge 监控标的期权/空头研究已更新 %d/%d 个；%d 个待重试", result.Fetched, result.Attempted, result.Failed))
+			return researchPartialOutcome(result.Fetched, result.Attempted, result.Failed, result.Warnings)
 		}
 		return nil
 	case watchTargetMarketSyncTaskName:
@@ -532,8 +590,9 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 		if result.Skipped {
 			return service.SkipTask(result.Message)
 		}
-		if result.RecordCount < result.RequestedCount {
-			return service.PartialTask(fmt.Sprintf("监控标的日线仅同步 %d/%d 家；下次任务会继续补齐", result.RecordCount, result.RequestedCount))
+		if completed := result.CoveredCount; completed < result.RequestedCount {
+			pending := result.RequestedCount - completed
+			return service.PendingTask(fmt.Sprintf("监控标的日线已覆盖 %d/%d 家（含本地有效数据）；%d 家待补齐", completed, result.RequestedCount, pending), &pending)
 		}
 		return nil
 	case watchTargetEarningsSyncTaskName:
@@ -545,13 +604,13 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 			return service.SkipTask(result.Message)
 		}
 		if result.Failed > 0 {
-			return service.PartialTask(fmt.Sprintf("财报预告已更新 %d/%d 个标的，%d 个失败", result.Fetched, result.TargetCount, result.Failed))
+			return service.PendingTask(fmt.Sprintf("财报预告已更新 %d/%d 个标的，%d 个失败", result.Fetched, result.TargetCount, result.Failed), &result.Failed)
 		}
 		if !result.CoverageComplete {
-			return service.PartialTask("财报日历分页未完整覆盖；未匹配标的不会被误判为未来无财报，下一次任务将继续刷新")
+			return service.PendingTask("财报日历分页未完整覆盖；已保存分页进度，补偿任务继续扫描；未匹配标的不判为无财报", nil)
 		}
 		if _, candidateErr := s.earningsPreview.SyncCurrentCandidates(ctx); candidateErr != nil {
-			return service.PartialTask("监控标的财报预告已更新；小盘候选财报日历待下次重试：" + candidateErr.Error())
+			return service.PendingTask("监控标的财报预告已更新；小盘候选财报日历待补偿："+candidateErr.Error(), nil)
 		}
 		return nil
 	case notificationRetrySyncTaskName:
@@ -611,4 +670,17 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 	default:
 		return nil
 	}
+}
+
+func researchPartialOutcome(fetched, attempted, failed int, warnings []string) error {
+	reason := fmt.Sprintf("本批已更新 %d/%d 个；失败待补 %d 个", fetched, attempted, failed)
+	if len(warnings) > 0 {
+		reason += "；" + strings.Join(warnings, "；")
+	}
+	if failed > 0 {
+		return service.PendingTask(reason, &failed)
+	}
+	// Coverage warnings are not request failures: do not loop over valid
+	// no-coverage responses or pretend that zero failed records means healthy.
+	return service.PartialTask(reason)
 }

@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "vitest run src",
+    "test:browser": "playwright test",
+    "test:browser:fixture": "go run ../internal/testfixture/browser",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview"
   },
@@ -19,9 +22,11 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
+    "vitest": "^3.2.7",
     "vue-tsc": "^2.2.0"
   }
 }

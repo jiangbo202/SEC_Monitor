@@ -87,6 +87,19 @@ func TestSQLiteBackupServiceCreatesVerifiedSnapshotsAndPrunesExpiredFiles(t *tes
 	}
 }
 
+func TestSQLiteBackupReplicaDirectoryFallsBackToDeploymentEnvironment(t *testing.T) {
+	t.Setenv("SEC_MONITOR_BACKUP_REPLICA_DIR", "/app/backup-replica")
+	service := &SQLiteBackupService{}
+	directory, err := service.replicaDirectory(context.Background(), "/app/data/backups")
+	if err != nil || directory != "/app/backup-replica" {
+		t.Fatalf("replica directory = %q, %v", directory, err)
+	}
+	t.Setenv("SEC_MONITOR_BACKUP_REPLICA_DIR", "/app/data/backups")
+	if _, err := service.replicaDirectory(context.Background(), "/app/data/backups"); err == nil {
+		t.Fatal("same local and replica directory should be rejected")
+	}
+}
+
 func TestSQLiteBackupRecoveryReadinessReportsNoBackupWithoutError(t *testing.T) {
 	dir := t.TempDir()
 	mainPath := filepath.Join(dir, "sec_monitor.db")
@@ -103,6 +116,83 @@ func TestSQLiteBackupRecoveryReadinessReportsNoBackupWithoutError(t *testing.T) 
 	var drill model.RecoveryDrill
 	if err := mainDB.Order("id DESC").First(&drill).Error; err != nil || drill.Status != "unavailable" {
 		t.Fatalf("recovery drill = %#v, %v", drill, err)
+	}
+}
+
+func TestRecoveryDrillIndependentlyChecksReplicaAndDetectsCorruption(t *testing.T) {
+	dir := t.TempDir()
+	mainPath, researchPath := filepath.Join(dir, "main.db"), filepath.Join(dir, "research.db")
+	mainDB, researchDB := openSQLiteBackupTestDB(t, mainPath), openSQLiteBackupTestDB(t, researchPath)
+	if err := mainDB.AutoMigrate(&model.SystemConfig{}, &model.RecoveryDrill{}, &model.TaskConfig{}, &model.WatchTarget{}, &model.Filing{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"universe_batches", "securities", "candidate_score_snapshots"} {
+		if err := researchDB.Exec("CREATE TABLE " + table + " (id INTEGER PRIMARY KEY)").Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	replicaDir := filepath.Join(dir, "replica")
+	t.Setenv("SEC_MONITOR_BACKUP_REPLICA_DIR", replicaDir)
+	svc := NewSQLiteBackupService(mainDB, researchDB, mainPath, researchPath, nil)
+	backup, err := svc.Backup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.CheckRecoveryReadiness(context.Background())
+	if err != nil || result.Status != "ready" || result.LocalStatus != "ready" || result.ReplicaStatus != "ready" || result.ReplicaVerification == nil {
+		t.Fatalf("drill: %+v %v", result, err)
+	}
+	for name, hash := range result.Verification.SHA256 {
+		if len(hash) != 64 || result.ReplicaVerification.SHA256[name] != hash {
+			t.Fatal("replica checksum mismatch")
+		}
+	}
+	// These are disposable test snapshots, never production backups.
+	if err := os.WriteFile(backup.ReplicaFiles["small_cap"], []byte("corrupt snapshot"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err = svc.CheckRecoveryReadiness(context.Background())
+	if err != nil || result.Status != "failed" || result.LocalStatus != "ready" || result.ReplicaStatus != "failed" || result.ReplicaReason == "" {
+		t.Fatalf("corrupt replica reported healthy: %+v %v", result, err)
+	}
+	var drill model.RecoveryDrill
+	if err := mainDB.Order("id DESC").First(&drill).Error; err != nil {
+		t.Fatal(err)
+	}
+	if drill.LocalStatus != "ready" || drill.ReplicaStatus != "failed" {
+		t.Fatalf("drill statuses not persisted: %+v", drill)
+	}
+	if err := os.Remove(backup.Files["sec_monitor"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(backup.Files["small_cap"], filepath.Join(dir, "copy.db")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup.ReplicaFiles["small_cap"], mustReadBackupTestFile(t, backup.Files["small_cap"]), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err = svc.CheckRecoveryReadiness(context.Background())
+	if err != nil || result.LocalStatus == "ready" || result.ReplicaStatus != "ready" {
+		t.Fatalf("local loss prevented independent replica drill: %+v %v", result, err)
+	}
+}
+
+func mustReadBackupTestFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestRestoreRehearsalRejectsChecksumMismatch(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.db")
+	openSQLiteBackupTestDB(t, source)
+	err := rehearseVerifiedSQLitePair(SQLiteBackupVerification{Files: map[string]string{"sec_monitor": source}, SHA256: map[string]string{"sec_monitor": "wrong"}})
+	if err == nil {
+		t.Fatal("checksum mismatch accepted")
 	}
 }
 
@@ -153,6 +243,45 @@ func TestSQLiteBackupHealthReportsIncompletePair(t *testing.T) {
 	health, err := service.Health(context.Background())
 	if err != nil || health.CompletePairs != 0 || health.IncompletePairs != 1 {
 		t.Fatalf("backup health = %#v, %v", health, err)
+	}
+}
+
+func TestSQLiteBackupServiceReplicatesVerifiedPairToExternalDirectory(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "sec_monitor.db")
+	discoveryPath := filepath.Join(dir, "small_cap.db")
+	mainDB := openSQLiteBackupTestDB(t, mainPath)
+	discoveryDB := openSQLiteBackupTestDB(t, discoveryPath)
+	if err := mainDB.AutoMigrate(&model.SystemConfig{}, &model.RecoveryDrill{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mainDB.Exec("CREATE TABLE local_payload (id INTEGER PRIMARY KEY)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := discoveryDB.Exec("CREATE TABLE research_payload (id INTEGER PRIMARY KEY)").Error; err != nil {
+		t.Fatal(err)
+	}
+	replicaDir := filepath.Join(dir, "external-volume")
+	if err := mainDB.Create(&model.SystemConfig{ConfigKey: "system.backup_replica_dir", ConfigValue: replicaDir, ValueType: "string", Category: "system"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	configs := NewConfigService(mainDB, nil)
+	service := NewSQLiteBackupService(mainDB, discoveryDB, mainPath, discoveryPath, configs)
+	result, err := service.Backup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReplicaDirectory != replicaDir || len(result.ReplicaFiles) != 2 {
+		t.Fatalf("replica result = %#v", result)
+	}
+	for _, name := range []string{"sec_monitor", "small_cap"} {
+		if err := verifySQLiteBackup(result.ReplicaFiles[name]); err != nil {
+			t.Fatalf("verify replica %s: %v", name, err)
+		}
+	}
+	health, err := service.Health(context.Background())
+	if err != nil || !health.Replica.Enabled || health.Replica.Status != "ready" || health.Replica.CompletePairs != 1 {
+		t.Fatalf("replica health = %#v, %v", health.Replica, err)
 	}
 }
 

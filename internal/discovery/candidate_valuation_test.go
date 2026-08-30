@@ -1,9 +1,21 @@
 package discovery
 
 import (
+	"context"
 	"testing"
 	"time"
 )
+
+func TestValuationComparisonFrameworkFreezesOldestPeerSet(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	value := func(number float64) *float64 { return &number }
+	old := ValuationResearchSnapshot{FetchedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Peers: []ValuationPeer{{Symbol: "OLD.US", Name: "Old Peer", PS: value(2)}}, Metrics: ValuationResearchMetrics{PS: ValuationMetric{Current: value(2), History: []ValuationHistoryPoint{{Date: "2025-01-01", Value: value(1)}, {Date: "2025-04-01", Value: value(2)}, {Date: "2025-07-01", Value: value(3)}, {Date: "2025-10-01", Value: value(4)}, {Date: "2026-01-01", Value: value(2)}}}}}
+	latest := ValuationResearchSnapshot{FetchedAt: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), Peers: []ValuationPeer{{Symbol: "OLD.US", Name: "Old Peer", PS: value(3)}, {Symbol: "NEW.US", Name: "New Peer", PS: value(5)}}, Metrics: old.Metrics}
+	framework := buildValuationComparisonFramework(context.Background(), db, []ValuationResearchSnapshot{latest, old})
+	if len(framework.Peers) != 1 || framework.Peers[0].Symbol != "OLD" || framework.PeerSetVersion == "" || framework.SelfHistory[2].Percentile == nil {
+		t.Fatalf("framework = %+v", framework)
+	}
+}
 
 func TestBuildCandidateValuationUsesOnlyCompleteEvidence(t *testing.T) {
 	base := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)

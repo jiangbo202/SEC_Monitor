@@ -267,6 +267,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "system.operation_history_retention_days", Value: "90", ValueType: "int", Category: "system"},
 		{Key: "system.backup_retention_days", Value: "7", ValueType: "int", Category: "system"},
 		{Key: "system.backup_dir", Value: "", ValueType: "string", Category: "system"},
+		{Key: "system.backup_replica_dir", Value: "", ValueType: "string", Category: "system"},
 		{Key: "system.storage_warning_pct", Value: "80", ValueType: "int", Category: "system"},
 		{Key: "system.storage_by_day", Value: "false", ValueType: "bool", Category: "system"},
 		{Key: "scheduler.timezone", Value: "UTC", ValueType: "string", Category: "scheduler"},
@@ -324,6 +325,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "in_app_notification.technical_signal_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.major_event_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.insider_trading_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
+		{Key: "in_app_notification.ten_b5_one_plan_discovered_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.ipo_progress_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.ai_analysis_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		// Telegram shares the durable notification queue with every business

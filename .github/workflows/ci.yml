@@ -51,8 +51,42 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - run: npm test
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
+
+  browser-regression:
+    name: Browser regression (isolated)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      # Real thesis handlers + memory-only SQLite. No secrets, schedules,
+      # provider calls or production databases are available to these tests.
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: browser-regression-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7
 
   secret-scan:
     name: Secret scan

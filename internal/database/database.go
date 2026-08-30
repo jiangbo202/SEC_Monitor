@@ -60,7 +60,7 @@ func gormLogger() logger.Interface {
 }
 
 func Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&model.WatchTarget{},
 		&model.Filing{},
 		&model.WatchTargetFiling{},
@@ -85,16 +85,48 @@ func Migrate(db *gorm.DB) error {
 		&model.NotificationBatchItem{},
 		&model.InAppNotification{},
 		&model.AIAnalysis{},
+		&model.ResearchThesis{},
+		&model.ResearchThesisRevision{},
 		&model.TradeSetupNotificationState{},
 		&model.MacroRelease{},
 		&model.MacroObservation{},
 		&model.MarketTrendDaily{},
 		&model.MarketTemperatureDaily{},
 		&model.EarningsPreview{},
+		&model.EarningsCalendarCheckpoint{},
 		&model.EarningsPreviewNotice{},
 		&model.CandidateEarningsPreview{},
+		&model.EarningsExpectationSnapshot{},
 		&model.FundFilingIdentity{},
 		&model.InstitutionalFiling{},
 		&model.InstitutionalPortfolioHolding{},
-	)
+	); err != nil {
+		return err
+	}
+	return backfillInAppNotificationDecisionContext(db)
+}
+
+// backfillInAppNotificationDecisionContext upgrades pre-P1 inbox rows once.
+// New rows always carry DedupKey, so this deliberately leaves producer-owned
+// decisions untouched on later starts.
+func backfillInAppNotificationDecisionContext(db *gorm.DB) error {
+	legacy := func() *gorm.DB {
+		return db.Model(&model.InAppNotification{}).Where("dedup_key = '' OR dedup_key IS NULL")
+	}
+	if err := legacy().Update("priority", gorm.Expr("CASE severity WHEN 'danger' THEN 'urgent' WHEN 'warning' THEN 'high' WHEN 'success' THEN 'normal' ELSE 'low' END")).Error; err != nil {
+		return err
+	}
+	if err := legacy().Update("thesis_impact", gorm.Expr(`CASE
+		WHEN source IN ('technical_signal', 'technical_signal_watch_target', 'technical_signal_candidate', 'major_event', 'major_event_watch_target', 'earnings_release', 'earnings_release_watch_target', 'earnings_release_candidate') THEN 'review'
+		WHEN source IN ('insider_trading', 'insider_trading_watch_target', 'ten_b5_one_plan_discovered', 'earnings_preview', 'earnings_preview_watch_target', 'earnings_preview_candidate') THEN 'context'
+		ELSE 'none' END`)).Error; err != nil {
+		return err
+	}
+	if err := legacy().Update("suggested_action", gorm.Expr("CASE severity WHEN 'danger' THEN 'review_now' WHEN 'warning' THEN 'review_today' ELSE 'record_only' END")).Error; err != nil {
+		return err
+	}
+	if err := legacy().Update("why_now", gorm.Expr("CASE WHEN TRIM(COALESCE(body, '')) <> '' THEN body ELSE '历史事件已按统一决策语义补齐。' END")).Error; err != nil {
+		return err
+	}
+	return legacy().Update("dedup_key", gorm.Expr("event_key")).Error
 }

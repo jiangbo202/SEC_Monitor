@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -42,8 +45,36 @@ type EarningsPreviewSettings struct {
 }
 
 type EarningsPreviewView struct {
-	Preview *model.EarningsPreview `json:"preview,omitempty"`
-	Message string                 `json:"message"`
+	Preview *model.EarningsPreview    `json:"preview,omitempty"`
+	Cycle   *EarningsExpectationCycle `json:"cycle,omitempty"`
+	Message string                    `json:"message"`
+}
+
+type EarningsExpectationCycle struct {
+	Ticker             string                              `json:"ticker"`
+	Status             string                              `json:"status"`
+	ReportAt           *time.Time                          `json:"report_at,omitempty"`
+	FiscalYear         int                                 `json:"fiscal_year,omitempty"`
+	FiscalPeriod       string                              `json:"fiscal_period,omitempty"`
+	FrozenConsensus    *model.EarningsExpectationSnapshot  `json:"frozen_consensus,omitempty"`
+	Actual             *model.EarningsExpectationSnapshot  `json:"actual,omitempty"`
+	PostReportRevision *model.EarningsExpectationSnapshot  `json:"post_report_revision,omitempty"`
+	GuidanceStatus     string                              `json:"guidance_status"`
+	GuidanceMessage    string                              `json:"guidance_message"`
+	PriceReaction      EarningsPriceReaction               `json:"price_reaction"`
+	Timeline           []model.EarningsExpectationSnapshot `json:"timeline"`
+	Warnings           []string                            `json:"warnings"`
+}
+
+type EarningsPriceReaction struct {
+	Status        string   `json:"status"`
+	BaselineDate  string   `json:"baseline_date,omitempty"`
+	BaselineClose *float64 `json:"baseline_close,omitempty"`
+	Day1Date      string   `json:"day_1_date,omitempty"`
+	Day1ReturnPct *float64 `json:"day_1_return_pct,omitempty"`
+	Day5Date      string   `json:"day_5_date,omitempty"`
+	Day5ReturnPct *float64 `json:"day_5_return_pct,omitempty"`
+	Source        string   `json:"source"`
 }
 
 type EarningsPreviewRefreshResult struct {
@@ -151,9 +182,12 @@ func (s *EarningsPreviewService) SyncCurrentCandidates(ctx context.Context) (int
 		return 0, err
 	}
 	now := s.now().UTC()
-	events, _, err := loadLongbridgeEarningsEvents(ctx, client, now, settings.LookaheadDays, settings.MaxCalendarPages)
+	events, complete, err := s.loadResumableEarningsEvents(ctx, client, now, settings, "candidates")
 	if err != nil {
 		return 0, err
+	}
+	if !complete {
+		return 0, PendingTask("小盘候选财报日历未完整覆盖，已保存分页进度", nil)
 	}
 	matched := nearestEarningsEvents(events, now)
 	tickerSet := map[string]bool{}
@@ -261,7 +295,11 @@ func (s *EarningsPreviewService) Get(ctx context.Context, targetID uint) (Earnin
 	if err != nil {
 		return EarningsPreviewView{}, err
 	}
-	return EarningsPreviewView{Preview: &preview, Message: earningsPreviewMessage(preview)}, nil
+	cycle, cycleErr := s.buildExpectationCycle(ctx, preview)
+	if cycleErr != nil {
+		return EarningsPreviewView{}, cycleErr
+	}
+	return EarningsPreviewView{Preview: &preview, Cycle: &cycle, Message: earningsPreviewMessage(preview)}, nil
 }
 
 func (s *EarningsPreviewService) List(ctx context.Context) ([]model.EarningsPreview, error) {
@@ -343,7 +381,7 @@ func (s *EarningsPreviewService) syncTargets(ctx context.Context, targets []mode
 		return result, fmt.Errorf("create Longbridge earnings client: %w", err)
 	}
 	now := s.now().UTC()
-	events, complete, err := loadLongbridgeEarningsEvents(ctx, client, now, settings.LookaheadDays, settings.MaxCalendarPages)
+	events, complete, err := s.loadResumableEarningsEvents(ctx, client, now, settings, "watch")
 	if err != nil {
 		for _, target := range targets {
 			_ = s.recordProviderError(ctx, target, err, now)
@@ -357,6 +395,14 @@ func (s *EarningsPreviewService) syncTargets(ctx context.Context, targets []mode
 	byTicker := nearestEarningsEvents(events, now)
 	changedPreviews := make([]model.EarningsPreview, 0)
 	for _, target := range targets {
+		if IsTaskRetry(ctx) {
+			var cached model.EarningsPreview
+			if err := s.db.WithContext(ctx).Where("target_id = ? AND last_error = ? AND fetched_at >= ? AND status IN ?", target.ID, "", dateAtUTC(now), []string{earningsPreviewStatusScheduled, earningsPreviewStatusNoCoverage}).First(&cached).Error; err == nil {
+				continue
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return result, err
+			}
+		}
 		event, found := byTicker[normalizeEarningsTicker(target.Ticker)]
 		if !found {
 			if complete {
@@ -481,7 +527,102 @@ func (s *EarningsPreviewService) savePreview(ctx context.Context, next model.Ear
 		}
 		return nil
 	})
+	if err == nil {
+		err = s.recordExpectationSnapshot(ctx, saved)
+	}
 	return saved, changed, err
+}
+
+func (s *EarningsPreviewService) recordExpectationSnapshot(ctx context.Context, preview model.EarningsPreview) error {
+	fetchedAt := s.now().UTC()
+	if preview.FetchedAt != nil {
+		fetchedAt = preview.FetchedAt.UTC()
+	}
+	identity, _ := json.Marshal(struct {
+		TargetID                                               uint
+		EventKey                                               string
+		FiscalYear                                             int
+		FiscalPeriod                                           string
+		ReportAt                                               *time.Time
+		Currency                                               string
+		EPSEstimate, EPSActual, RevenueEstimate, RevenueActual *float64
+	}{preview.TargetID, preview.EventKey, preview.FiscalYear, preview.FiscalPeriod, preview.ReportAt, preview.Currency, preview.EPSEstimate, preview.EPSActual, preview.RevenueEstimate, preview.RevenueActual})
+	sum := sha256.Sum256(identity)
+	snapshot := model.EarningsExpectationSnapshot{TargetID: preview.TargetID, Ticker: preview.Ticker, EventKey: preview.EventKey, FiscalYear: preview.FiscalYear, FiscalPeriod: preview.FiscalPeriod, ReportAt: preview.ReportAt, Currency: preview.Currency, EPSEstimate: preview.EPSEstimate, EPSActual: preview.EPSActual, RevenueEstimate: preview.RevenueEstimate, RevenueActual: preview.RevenueActual, Provider: preview.Provider, ProviderUpdatedAt: preview.ProviderUpdatedAt, FetchedAt: fetchedAt, SnapshotHash: hex.EncodeToString(sum[:]), CreatedAt: s.now().UTC()}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&snapshot).Error
+}
+
+func (s *EarningsPreviewService) buildExpectationCycle(ctx context.Context, preview model.EarningsPreview) (EarningsExpectationCycle, error) {
+	result := EarningsExpectationCycle{Ticker: preview.Ticker, Status: "incomplete", ReportAt: preview.ReportAt, FiscalYear: preview.FiscalYear, FiscalPeriod: preview.FiscalPeriod, GuidanceStatus: "not_covered", GuidanceMessage: "当前本地来源尚未结构化公司指引；不会用公告摘要或模型推断替代管理层明确指引。", Timeline: []model.EarningsExpectationSnapshot{}, Warnings: []string{}, PriceReaction: EarningsPriceReaction{Status: "unavailable", Source: "local_daily_close"}}
+	if err := s.db.WithContext(ctx).Where("target_id = ?", preview.TargetID).Order("fetched_at ASC, id ASC").Find(&result.Timeline).Error; err != nil {
+		return result, err
+	}
+	if len(result.Timeline) == 0 {
+		result.Warnings = append(result.Warnings, "point_in_time_history_not_yet_available")
+		return result, nil
+	}
+	if preview.ReportAt == nil {
+		result.Status = "pre_earnings"
+		return result, nil
+	}
+	reportAt := preview.ReportAt.UTC()
+	for index := range result.Timeline {
+		row := &result.Timeline[index]
+		if !row.FetchedAt.After(reportAt) && (row.EPSEstimate != nil || row.RevenueEstimate != nil) {
+			result.FrozenConsensus = row
+		}
+		if row.FetchedAt.After(reportAt) && (row.EPSActual != nil || row.RevenueActual != nil) {
+			result.Actual = row
+		}
+	}
+	if result.Actual != nil {
+		for index := len(result.Timeline) - 1; index >= 0; index-- {
+			row := &result.Timeline[index]
+			if row.FetchedAt.After(result.Actual.FetchedAt) && row.FiscalYear == result.Actual.FiscalYear && row.FiscalPeriod == result.Actual.FiscalPeriod && (row.EPSEstimate != nil || row.RevenueEstimate != nil) {
+				result.PostReportRevision = row
+				break
+			}
+		}
+	}
+	if result.FrozenConsensus == nil {
+		result.Warnings = append(result.Warnings, "pre_report_consensus_missing")
+	}
+	if result.Actual == nil {
+		result.Warnings = append(result.Warnings, "reported_actual_missing")
+	}
+	result.PriceReaction = s.earningsPriceReaction(ctx, preview.Ticker, reportAt)
+	if result.Actual != nil && result.FrozenConsensus != nil {
+		result.Status = "closed"
+	} else if s.now().UTC().Before(reportAt) {
+		result.Status = "pre_earnings"
+	} else {
+		result.Status = "awaiting_actual"
+	}
+	return result, nil
+}
+
+func (s *EarningsPreviewService) earningsPriceReaction(ctx context.Context, ticker string, reportAt time.Time) EarningsPriceReaction {
+	result := EarningsPriceReaction{Status: "unavailable", Source: "discovery.price_snapshots"}
+	if s.discoveryDB == nil {
+		return result
+	}
+	symbols := []string{strings.ToUpper(ticker), strings.ToUpper(ticker) + ".US", "." + strings.ToUpper(ticker) + ".US"}
+	var before discovery.PriceSnapshot
+	if err := s.discoveryDB.WithContext(ctx).Where("symbol IN ? AND trade_date < ? AND close_micros > 0 AND quality_status = ?", symbols, reportAt, discovery.QualityStatusValid).Order("trade_date DESC, id DESC").First(&before).Error; err != nil {
+		return result
+	}
+	var after []discovery.PriceSnapshot
+	if err := s.discoveryDB.WithContext(ctx).Where("symbol IN ? AND trade_date >= ? AND close_micros > 0 AND quality_status = ?", symbols, reportAt, discovery.QualityStatusValid).Order("trade_date ASC, id ASC").Limit(5).Find(&after).Error; err != nil || len(after) == 0 {
+		return result
+	}
+	baseline := float64(before.CloseMicros) / 1_000_000
+	day1 := (float64(after[0].CloseMicros)/float64(before.CloseMicros) - 1) * 100
+	result.Status, result.BaselineDate, result.BaselineClose, result.Day1Date, result.Day1ReturnPct = "partial", before.TradeDate.UTC().Format(time.DateOnly), &baseline, after[0].TradeDate.UTC().Format(time.DateOnly), &day1
+	if len(after) >= 5 {
+		day5 := (float64(after[4].CloseMicros)/float64(before.CloseMicros) - 1) * 100
+		result.Day5Date, result.Day5ReturnPct, result.Status = after[4].TradeDate.UTC().Format(time.DateOnly), &day5, "available"
+	}
+	return result
 }
 
 func earningsPreviewChangeSummary(before, after model.EarningsPreview) string {

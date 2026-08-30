@@ -50,8 +50,68 @@ type CandidateResearchPortfolio struct {
 	EventRiskWeightPct     float64                         `json:"event_risk_weight_pct"`
 	CatalystWeightPct      float64                         `json:"upcoming_catalyst_weight_pct"`
 	RiskCoverage           map[string]string               `json:"risk_coverage"`
+	RiskAnalysis           CandidatePortfolioRiskAnalysis  `json:"risk_analysis"`
 	Warnings               []string                        `json:"warnings"`
 	Items                  []CandidateResearchPositionView `json:"items"`
+}
+
+type CandidatePortfolioRiskAnalysis struct {
+	Benchmark          string                              `json:"benchmark"`
+	AsOf               string                              `json:"as_of,omitempty"`
+	ObservationDays    int                                 `json:"observation_days"`
+	WeightedMarketBeta *float64                            `json:"weighted_market_beta,omitempty"`
+	BetaCoveredWeight  float64                             `json:"beta_covered_weight_pct"`
+	FactorExposures    []CandidatePortfolioFactorExposure  `json:"factor_exposures"`
+	PositionMetrics    []CandidatePortfolioPositionRisk    `json:"position_metrics"`
+	Correlations       []CandidatePortfolioCorrelation     `json:"correlations"`
+	Scenarios          []CandidatePortfolioStressScenario  `json:"scenarios"`
+	SharedEventRisks   []CandidatePortfolioSharedEventRisk `json:"shared_event_risks"`
+	Warnings           []string                            `json:"warnings"`
+}
+
+type CandidatePortfolioPositionRisk struct {
+	Ticker              string   `json:"ticker"`
+	WeightPct           float64  `json:"weight_pct"`
+	MarketBeta          *float64 `json:"market_beta,omitempty"`
+	AnnualVolatility    *float64 `json:"annual_volatility_pct,omitempty"`
+	Momentum20Day       *float64 `json:"momentum_20d_pct,omitempty"`
+	AverageDollarVolume float64  `json:"average_dollar_volume_usd"`
+	ObservationDays     int      `json:"observation_days"`
+	Status              string   `json:"status"`
+}
+
+type CandidatePortfolioFactorExposure struct {
+	Factor      string  `json:"factor"`
+	Value       float64 `json:"value"`
+	Unit        string  `json:"unit"`
+	CoveragePct float64 `json:"coverage_pct"`
+	Meaning     string  `json:"meaning"`
+}
+
+type CandidatePortfolioCorrelation struct {
+	Left            string   `json:"left"`
+	Right           string   `json:"right"`
+	Correlation     *float64 `json:"correlation,omitempty"`
+	ObservationDays int      `json:"observation_days"`
+	Status          string   `json:"status"`
+}
+
+type CandidatePortfolioStressScenario struct {
+	Key              string   `json:"key"`
+	Label            string   `json:"label"`
+	ShockPct         float64  `json:"shock_pct"`
+	EstimatedLossPct *float64 `json:"estimated_loss_pct,omitempty"`
+	CoveredWeightPct float64  `json:"covered_weight_pct"`
+	Method           string   `json:"method"`
+	Status           string   `json:"status"`
+}
+
+type CandidatePortfolioSharedEventRisk struct {
+	Key       string  `json:"key"`
+	Label     string  `json:"label"`
+	Count     int     `json:"count"`
+	WeightPct float64 `json:"weight_pct"`
+	ReviewBy  string  `json:"review_by,omitempty"`
 }
 
 type CandidateResearchPositionView struct {
@@ -73,7 +133,7 @@ func ListCandidateResearchPositions(ctx context.Context, db *gorm.DB) (Candidate
 		SectorWeights: map[string]float64{}, RiskCoverage: map[string]string{
 			"sector": "available", "liquidity": "missing", "reference_pnl": "missing",
 			"market_beta": "missing", "style_factors": "missing",
-		}, Items: []CandidateResearchPositionView{}, Warnings: []string{},
+		}, RiskAnalysis: CandidatePortfolioRiskAnalysis{Benchmark: "IWM", FactorExposures: []CandidatePortfolioFactorExposure{}, PositionMetrics: []CandidatePortfolioPositionRisk{}, Correlations: []CandidatePortfolioCorrelation{}, Scenarios: []CandidatePortfolioStressScenario{}, SharedEventRisks: []CandidatePortfolioSharedEventRisk{}, Warnings: []string{}}, Items: []CandidateResearchPositionView{}, Warnings: []string{},
 	}
 	if db == nil {
 		return result, errors.New("database is required")
@@ -236,7 +296,12 @@ func ListCandidateResearchPositions(ctx context.Context, db *gorm.DB) (Candidate
 		result.Warnings = append(result.Warnings, "position_concentration_high")
 	}
 	if len(result.Items) > 0 {
-		result.Warnings = append(result.Warnings, "market_beta_and_style_factor_unavailable")
+		result.RiskAnalysis = buildCandidatePortfolioRiskAnalysis(ctx, db, result.Items, now)
+		result.RiskCoverage["market_beta"] = coverageStatus(result.RiskAnalysis.BetaCoveredWeight, result.TotalMaxWeightPct)
+		result.RiskCoverage["style_factors"] = coverageStatus(result.RiskAnalysis.BetaCoveredWeight, result.TotalMaxWeightPct)
+		if result.RiskCoverage["market_beta"] == "missing" {
+			result.Warnings = append(result.Warnings, "market_beta_unavailable")
+		}
 	}
 	return result, nil
 }

@@ -242,7 +242,7 @@ function statusLabel(status: string) {
 }
 
 function triggerLabel(trigger: string) {
-  return trigger === 'scheduled' ? '定时调度' : trigger === 'manual' ? '手动执行' : trigger || '-'
+  return trigger === 'scheduled' ? '定时调度' : trigger === 'retry' ? '自动补偿' : trigger === 'manual' ? '手动执行' : trigger || '-'
 }
 
 function taskLabel(value: string) {

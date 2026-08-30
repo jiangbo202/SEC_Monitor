@@ -49,6 +49,7 @@ type OperationalTaskStatus struct {
 	NextRunAt           *time.Time `json:"next_run_at,omitempty"`
 	RunningSince        *time.Time `json:"running_since,omitempty"`
 	ConsecutiveFailures int        `json:"consecutive_failures"`
+	RetryNotBefore      *time.Time `json:"retry_not_before,omitempty"`
 	ExpectedWithinMins  int        `json:"expected_within_mins"`
 }
 
@@ -141,7 +142,7 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 		expected := taskExpectedWithin(task.TaskName)
 		report.Tasks = append(report.Tasks, OperationalTaskStatus{
 			TaskName: task.TaskName, Enabled: task.Enabled, Running: task.Running, LastStatus: task.LastStatus, LastRunAt: task.LastRunAt, NextRunAt: task.NextRunAt,
-			RunningSince: task.RunningSince, ConsecutiveFailures: task.ConsecutiveFailures, ExpectedWithinMins: int(expected.Minutes()),
+			RunningSince: task.RunningSince, ConsecutiveFailures: task.ConsecutiveFailures, RetryNotBefore: task.RetryNotBefore, ExpectedWithinMins: int(expected.Minutes()),
 		})
 		if !task.Enabled {
 			continue
@@ -160,9 +161,22 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 			if message := strings.TrimSpace(SanitizeSensitiveError(task.LastErrorMessage)); message != "" {
 				detail += "：" + truncateOperationalText(message, 240)
 			}
+			if task.RetryNotBefore != nil && now.Before(*task.RetryNotBefore) {
+				detail += "；自动重试退避至 " + task.RetryNotBefore.UTC().Format(time.RFC3339)
+			}
 			report.addIssue("task_failed:"+task.TaskName, "task", severity, "调度任务失败", task.TaskName+" · "+detail, "scheduler", now)
 		case "partial":
-			report.addIssue("task_partial:"+task.TaskName, "task", "warning", "调度任务部分完成", task.TaskName+" 仍有待自动重试或人工处理的记录", "scheduler", now)
+			detail := task.TaskName + " · " + truncateOperationalText(SanitizeSensitiveError(task.LastErrorMessage), 240)
+			if task.PendingCount != nil {
+				detail += fmt.Sprintf("；待补 %d 项", *task.PendingCount)
+			}
+			if task.RetryNotBefore != nil {
+				detail += "；补偿重试 " + task.RetryNotBefore.UTC().Format(time.RFC3339)
+			}
+			if task.AutoRetryAttempts >= MaxTaskAutoRetries && task.RetryNotBefore == nil {
+				detail += "；本轮自动重试已达上限，等待常规定时或手动处理"
+			}
+			report.addIssue("task_partial:"+task.TaskName, "task", "warning", "调度任务部分完成", detail, "scheduler", now)
 		}
 		if !task.Running && task.LastRunAt != nil && now.Sub(*task.LastRunAt) > 2*expected {
 			report.addIssue("task_stale:"+task.TaskName, "task", "warning", "调度任务长时间未更新", fmt.Sprintf("%s 距上次完成已 %s（预期不超过 %s）", task.TaskName, formatOperationalDuration(now.Sub(*task.LastRunAt)), formatOperationalDuration(expected)), "scheduler", now)
@@ -352,6 +366,13 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 			}
 			if backup.TotalBytes >= operationalBackupCapacityWarningBytes {
 				report.addIssue("backup_capacity", "backup", "warning", "SQLite 备份占用较大", fmt.Sprintf("完整备份当前占用 %s；请评估备份保留天数、外部备份目标或在低峰执行数据库压缩", formatOperationalBytes(backup.TotalBytes)), "system-health", now)
+			}
+			if !backup.Replica.Enabled {
+				report.addIssue("backup_replica_disabled", "backup", "warning", "尚未配置异地备份副本", "请在系统配置中设置外部备份目录，并将其挂载到独立磁盘、NAS或受控对象存储；本地卷不能防范主机丢失", "configs", now)
+			} else if backup.Replica.Status != "ready" {
+				report.addIssue("backup_replica_"+backup.Replica.Status, "backup", "critical", "异地备份副本不可用", truncateOperationalText(backup.Replica.Reason, 240), "system-health", now)
+			} else if backup.Replica.LatestCompleted == nil || now.Sub(*backup.Replica.LatestCompleted) > 30*time.Hour {
+				report.addIssue("backup_replica_stale", "backup", "warning", "异地备份副本已过期", "最近异地双库快照超过 30 小时未更新，请检查挂载目录和 sqlite_backup 任务", "scheduler", now)
 			}
 		}
 		if drill, err := s.backup.LatestRecoveryDrill(ctx); err != nil {

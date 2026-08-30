@@ -3,6 +3,7 @@ package database
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"sec_monitor/internal/config"
 	"sec_monitor/internal/model"
@@ -66,6 +67,29 @@ func TestOpenTableDriven(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBackfillInAppNotificationDecisionContext(t *testing.T) {
+	db, err := Open(config.DatabaseConfig{Type: "sqlite", DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	row := model.InAppNotification{EventKey: "legacy:technical:1", Source: "technical_signal", Scope: "watch_target", EntityKind: "trade_setup", Severity: "warning", Priority: "low", Title: "技术信号变化", Body: "收盘跌破均线", ThesisImpact: "none", SuggestedAction: "record_only", OccurredAt: time.Now().UTC()}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("create legacy row: %v", err)
+	}
+	if err := backfillInAppNotificationDecisionContext(db); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if err := db.First(&row, row.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if row.Priority != "high" || row.ThesisImpact != "review" || row.SuggestedAction != "review_today" || row.DedupKey != row.EventKey || row.WhyNow != row.Body {
+		t.Fatalf("backfilled row = %+v", row)
 	}
 }
 

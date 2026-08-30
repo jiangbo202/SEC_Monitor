@@ -13,18 +13,23 @@ import (
 )
 
 type InAppNotificationInput struct {
-	EventKey    string
-	Source      string
-	Scope       string
-	EntityKind  string
-	TargetID    uint
-	Ticker      string
-	CompanyName string
-	Severity    string
-	Title       string
-	Body        string
-	Link        string
-	OccurredAt  time.Time
+	EventKey        string
+	Source          string
+	Scope           string
+	EntityKind      string
+	TargetID        uint
+	Ticker          string
+	CompanyName     string
+	Severity        string
+	Priority        string
+	Title           string
+	Body            string
+	WhyNow          string
+	ThesisImpact    string
+	SuggestedAction string
+	NextReviewAt    *time.Time
+	Link            string
+	OccurredAt      time.Time
 }
 
 type InAppNotificationFilter struct {
@@ -67,11 +72,12 @@ func (s *InAppNotificationService) Create(ctx context.Context, input InAppNotifi
 		occurredAt = s.now().UTC()
 	}
 	now := s.now().UTC()
+	decision := normalizeNotificationDecision(input, now)
 	item := model.InAppNotification{
 		EventKey: input.EventKey, Source: strings.TrimSpace(input.Source), Scope: defaultInAppValue(input.Scope, "watch_target"),
 		EntityKind: defaultInAppValue(input.EntityKind, "ticker"), TargetID: input.TargetID, Ticker: strings.ToUpper(strings.TrimSpace(input.Ticker)),
-		CompanyName: strings.TrimSpace(input.CompanyName), Severity: defaultInAppValue(input.Severity, "info"),
-		Title: strings.TrimSpace(input.Title), Body: strings.TrimSpace(input.Body), Link: strings.TrimSpace(input.Link),
+		CompanyName: strings.TrimSpace(input.CompanyName), Severity: defaultInAppValue(input.Severity, "info"), Priority: decision.Priority,
+		Title: strings.TrimSpace(input.Title), Body: strings.TrimSpace(input.Body), WhyNow: decision.WhyNow, ThesisImpact: decision.ThesisImpact, SuggestedAction: decision.SuggestedAction, NextReviewAt: decision.NextReviewAt, DedupKey: input.EventKey, Link: strings.TrimSpace(input.Link),
 		OccurredAt: occurredAt, CreatedAt: now, UpdatedAt: now,
 	}
 	result := s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&item)
@@ -85,6 +91,71 @@ func (s *InAppNotificationService) Create(ctx context.Context, input InAppNotifi
 		return model.InAppNotification{}, false, err
 	}
 	return item, false, nil
+}
+
+type notificationDecisionContext struct {
+	Priority        string
+	WhyNow          string
+	ThesisImpact    string
+	SuggestedAction string
+	NextReviewAt    *time.Time
+}
+
+// normalizeNotificationDecision gives every inbox event the same action
+// semantics. Producers can provide a more precise judgment, while legacy
+// producers receive a conservative default derived from source and severity.
+func normalizeNotificationDecision(input InAppNotificationInput, now time.Time) notificationDecisionContext {
+	severity := strings.ToLower(strings.TrimSpace(input.Severity))
+	priority := strings.ToLower(strings.TrimSpace(input.Priority))
+	if priority == "" {
+		switch severity {
+		case "danger":
+			priority = "urgent"
+		case "warning":
+			priority = "high"
+		case "success":
+			priority = "normal"
+		default:
+			priority = "low"
+		}
+	}
+	impact := strings.ToLower(strings.TrimSpace(input.ThesisImpact))
+	if impact == "" {
+		switch strings.TrimSpace(input.Source) {
+		case "technical_signal", "technical_signal_watch_target", "technical_signal_candidate", "major_event", "major_event_watch_target", "earnings_release", "earnings_release_watch_target", "earnings_release_candidate":
+			impact = "review"
+		case "insider_trading", "insider_trading_watch_target", "ten_b5_one_plan_discovered", "earnings_preview", "earnings_preview_watch_target", "earnings_preview_candidate":
+			impact = "context"
+		default:
+			impact = "none"
+		}
+	}
+	action := strings.ToLower(strings.TrimSpace(input.SuggestedAction))
+	if action == "" {
+		if priority == "urgent" {
+			action = "review_now"
+		} else if priority == "high" {
+			action = "review_today"
+		} else {
+			action = "record_only"
+		}
+	}
+	why := strings.TrimSpace(input.WhyNow)
+	if why == "" {
+		why = strings.TrimSpace(input.Body)
+		if why == "" {
+			why = "本地同步首次记录该事件；相同事件键不会重复生成站内信。"
+		}
+	}
+	next := input.NextReviewAt
+	if next == nil && action != "record_only" {
+		value := now.Add(24 * time.Hour)
+		if action == "review_now" {
+			value = now.Add(4 * time.Hour)
+		}
+		next = &value
+	}
+	return notificationDecisionContext{Priority: priority, WhyNow: why, ThesisImpact: impact, SuggestedAction: action, NextReviewAt: next}
 }
 
 func (s *InAppNotificationService) sourceEnabled(ctx context.Context, source string) (bool, error) {
@@ -132,6 +203,8 @@ func inAppNotificationConfigKeys(source string) (string, string, bool) {
 		return "in_app_notification.watch_target_major_event_enabled", "in_app_notification.major_event_enabled", true
 	case "insider_trading_watch_target":
 		return "in_app_notification.watch_target_insider_trading_enabled", "in_app_notification.insider_trading_enabled", true
+	case "ten_b5_one_plan_discovered":
+		return "in_app_notification.ten_b5_one_plan_discovered_enabled", "", true
 	case "ipo_progress":
 		return "in_app_notification.ipo_progress_enabled", "", true
 	case "ai_analysis":

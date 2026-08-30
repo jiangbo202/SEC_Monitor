@@ -14,6 +14,7 @@ AGENTS.md
 data/
 dist/
 logs/
+backups/
 node_modules/
 coverage/
 *.log
@@ -21,6 +22,8 @@ coverage/
 *.test
 web/dist/
 web/.vite/
+web/playwright-report/
+web/test-results/
 
 # Environment and editor files
 .env
