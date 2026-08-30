@@ -478,29 +478,107 @@ type FinancialMetricSnapshot struct {
 }
 
 type InsiderTransactionSnapshot struct {
-	ID                           uint      `json:"id"`
-	SecurityID                   uint      `json:"security_id" gorm:"index"`
-	IdentitySHA256               string    `json:"identity_sha256" gorm:"size:64;index"`
-	Accession                    string    `json:"accession" gorm:"size:32;index"`
-	OwnerName                    string    `json:"owner_name" gorm:"size:255"`
-	OfficerTitle                 string    `json:"officer_title" gorm:"size:255"`
-	Role                         string    `json:"role" gorm:"size:32;index"`
-	Derivative                   bool      `json:"derivative"`
-	TransactionDate              time.Time `json:"transaction_date" gorm:"index"`
-	TransactionCode              string    `json:"transaction_code" gorm:"size:8;index"`
-	AcquiredDisposedCode         string    `json:"acquired_disposed_code" gorm:"size:8"`
-	SharesMicros                 int64     `json:"shares_micros"`
-	PriceMicros                  int64     `json:"price_micros"`
-	ValueMicros                  int64     `json:"value_micros"`
-	SharesOwnedAfterMicros       int64     `json:"shares_owned_after_micros"`
-	SharesOwnedBeforeMicros      int64     `json:"shares_owned_before_micros"`
-	Qualified                    bool      `json:"qualified" gorm:"index"`
-	ExclusionReason              string    `json:"exclusion_reason" gorm:"size:64;index"`
-	FounderConfirmationSuggested bool      `json:"founder_confirmation_suggested"`
-	ParserVersion                string    `json:"parser_version" gorm:"size:64"`
-	SourceURL                    string    `json:"source_url" gorm:"size:2048"`
-	CreatedAt                    time.Time `json:"created_at"`
-	Security                     Security  `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+	ID                           uint       `json:"id"`
+	SecurityID                   uint       `json:"security_id" gorm:"index"`
+	IdentitySHA256               string     `json:"identity_sha256" gorm:"size:64;index"`
+	Accession                    string     `json:"accession" gorm:"size:32;index"`
+	OwnerName                    string     `json:"owner_name" gorm:"size:255"`
+	ReportingOwnerCIK            string     `json:"reporting_owner_cik" gorm:"size:10;index"`
+	OfficerTitle                 string     `json:"officer_title" gorm:"size:255"`
+	Role                         string     `json:"role" gorm:"size:32;index"`
+	Derivative                   bool       `json:"derivative"`
+	TransactionDate              time.Time  `json:"transaction_date" gorm:"index"`
+	TransactionCode              string     `json:"transaction_code" gorm:"size:8;index"`
+	AcquiredDisposedCode         string     `json:"acquired_disposed_code" gorm:"size:8"`
+	SharesMicros                 int64      `json:"shares_micros"`
+	PriceMicros                  int64      `json:"price_micros"`
+	ValueMicros                  int64      `json:"value_micros"`
+	SharesOwnedAfterMicros       int64      `json:"shares_owned_after_micros"`
+	SharesOwnedBeforeMicros      int64      `json:"shares_owned_before_micros"`
+	Qualified                    bool       `json:"qualified" gorm:"index"`
+	ExclusionReason              string     `json:"exclusion_reason" gorm:"size:64;index"`
+	FounderConfirmationSuggested bool       `json:"founder_confirmation_suggested"`
+	IsTenB5One                   bool       `json:"is_10b5_1" gorm:"index"`
+	TenB5OneStatus               string     `json:"ten_b5_1_status" gorm:"size:24;index"`
+	TenB5OnePlanAdoptionDate     *time.Time `json:"ten_b5_1_plan_adoption_date"`
+	TenB5OneEvidenceSource       string     `json:"ten_b5_1_evidence_source" gorm:"size:32"`
+	TenB5OneEvidence             string     `json:"ten_b5_1_evidence" gorm:"type:text"`
+	TenB5OnePlanID               *uint      `json:"ten_b5_1_plan_id" gorm:"index"`
+	TenB5OneLinkConfidence       string     `json:"ten_b5_1_link_confidence" gorm:"size:24;index"`
+	ParserVersion                string     `json:"parser_version" gorm:"size:64"`
+	SourceURL                    string     `json:"source_url" gorm:"size:2048"`
+	CreatedAt                    time.Time  `json:"created_at"`
+	Security                     Security   `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
+// InsiderTradingPlan is the durable 10b5-1 plan registry. A row is created
+// only when the reporting person and adoption date are explicitly disclosed;
+// unknown maximum shares and remaining capacity stay unknown rather than
+// being inferred from later Form 4 executions.
+type InsiderTradingPlan struct {
+	ID                     uint       `json:"id"`
+	SecurityID             uint       `json:"security_id" gorm:"index"`
+	IdentitySHA256         string     `json:"identity_sha256" gorm:"size:64;uniqueIndex"`
+	OwnerKey               string     `json:"owner_key" gorm:"size:255;index"`
+	OwnerName              string     `json:"owner_name" gorm:"size:255"`
+	OfficerTitle           string     `json:"officer_title" gorm:"size:255"`
+	AdoptionDate           time.Time  `json:"adoption_date" gorm:"index"`
+	AmendmentDate          *time.Time `json:"amendment_date"`
+	TerminationDate        *time.Time `json:"termination_date"`
+	ExpirationDate         *time.Time `json:"expiration_date"`
+	Status                 string     `json:"status" gorm:"size:24;index"`
+	EvidenceConfidence     string     `json:"evidence_confidence" gorm:"size:24;index"`
+	MaximumSharesKnown     bool       `json:"maximum_shares_known"`
+	MaximumSharesMicros    int64      `json:"maximum_shares_micros"`
+	ExecutedSharesMicros   int64      `json:"executed_shares_micros"`
+	ExecutedValueMicros    int64      `json:"executed_value_micros"`
+	RemainingSharesKnown   bool       `json:"remaining_shares_known"`
+	RemainingSharesMicros  int64      `json:"remaining_shares_micros"`
+	ExecutionCount         int        `json:"execution_count"`
+	EvidenceCount          int        `json:"evidence_count"`
+	FirstExecutionDate     *time.Time `json:"first_execution_date"`
+	LastExecutionDate      *time.Time `json:"last_execution_date"`
+	PrimarySourceForm      string     `json:"primary_source_form" gorm:"size:16"`
+	PrimarySourceAccession string     `json:"primary_source_accession" gorm:"size:32"`
+	PrimarySourceURL       string     `json:"primary_source_url" gorm:"size:2048"`
+	EvidenceSummary        string     `json:"evidence_summary" gorm:"type:text"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+	Security               Security   `json:"-" gorm:"foreignKey:SecurityID;references:ID;constraint:OnUpdate:RESTRICT,OnDelete:RESTRICT"`
+}
+
+// InsiderTradingPlanEvent keeps the append-only evidence trail behind a plan.
+// P1 initially records Form 4 executions; Form 144 and periodic-report
+// adoption/amendment/termination evidence use the same schema when available.
+type InsiderTradingPlanEvent struct {
+	ID             uint      `json:"id"`
+	PlanID         uint      `json:"plan_id" gorm:"index"`
+	SecurityID     uint      `json:"security_id" gorm:"index"`
+	IdentitySHA256 string    `json:"identity_sha256" gorm:"size:64;uniqueIndex"`
+	EventType      string    `json:"event_type" gorm:"size:24;index"`
+	EventDate      time.Time `json:"event_date" gorm:"index"`
+	SourceForm     string    `json:"source_form" gorm:"size:16"`
+	Accession      string    `json:"accession" gorm:"size:32;index"`
+	SourceURL      string    `json:"source_url" gorm:"size:2048"`
+	Evidence       string    `json:"evidence" gorm:"type:text"`
+	Confidence     string    `json:"confidence" gorm:"size:24;index"`
+	SharesMicros   int64     `json:"shares_micros"`
+	ValueMicros    int64     `json:"value_micros"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// InsiderPlanDocumentReceipt is the durable parse receipt for one SEC plan
+// evidence document. It is deliberately separate from plan events: a valid
+// Form 144 may contain no plan adoption date and must still be remembered as
+// successfully inspected.
+type InsiderPlanDocumentReceipt struct {
+	ID              uint      `json:"id"`
+	SourceForm      string    `json:"source_form" gorm:"size:16;uniqueIndex:idx_insider_plan_document_receipt,priority:1"`
+	Accession       string    `json:"accession" gorm:"size:32;uniqueIndex:idx_insider_plan_document_receipt,priority:2"`
+	SourceURL       string    `json:"source_url" gorm:"size:2048"`
+	ParserVersion   string    `json:"parser_version" gorm:"size:64;index"`
+	DisclosureCount int       `json:"disclosure_count"`
+	ParsedAt        time.Time `json:"parsed_at" gorm:"index"`
 }
 
 // InsiderCoverageSnapshot records the result of the Form 4 evidence pass for
@@ -788,6 +866,44 @@ type CandidateResearchPosition struct {
 	Note                        string    `json:"note" gorm:"type:text"`
 	CreatedAt                   time.Time `json:"created_at"`
 	UpdatedAt                   time.Time `json:"updated_at"`
+}
+
+// ResearchTradeDecision is an append-only record of a human research decision.
+// It captures the evidence boundary and intended risk parameters at decision
+// time. It is not an order and is never consumed by an execution adapter.
+type ResearchTradeDecision struct {
+	ID               uint       `json:"id"`
+	Ticker           string     `json:"ticker" gorm:"size:32;index:idx_research_trade_decision_ticker_time,priority:1"`
+	SecurityID       uint       `json:"security_id" gorm:"index"`
+	Action           string     `json:"action" gorm:"size:16;index"`
+	DecidedAt        time.Time  `json:"decided_at" gorm:"index:idx_research_trade_decision_ticker_time,priority:2"`
+	PlannedPriceUSD  *float64   `json:"planned_price_usd"`
+	TargetWeightPct  *float64   `json:"target_weight_pct"`
+	StopLossUSD      *float64   `json:"stop_loss_usd"`
+	TakeProfitUSD    *float64   `json:"take_profit_usd"`
+	EvidenceAsOf     *time.Time `json:"evidence_as_of"`
+	EvidenceSnapshot string     `json:"evidence_snapshot" gorm:"type:text"`
+	ScoringVersion   string     `json:"scoring_version" gorm:"size:64"`
+	Rationale        string     `json:"rationale" gorm:"type:text"`
+	Note             string     `json:"note" gorm:"type:text"`
+	CreatedAt        time.Time  `json:"created_at"`
+}
+
+// ResearchTradeExecution is an append-only manually entered fill. The system
+// deliberately has no broker integration; these rows are an auditable local
+// ledger used to calculate position and outcome attribution.
+type ResearchTradeExecution struct {
+	ID         uint      `json:"id"`
+	DecisionID *uint     `json:"decision_id" gorm:"index"`
+	Ticker     string    `json:"ticker" gorm:"size:32;index:idx_research_trade_execution_ticker_time,priority:1"`
+	SecurityID uint      `json:"security_id" gorm:"index"`
+	Side       string    `json:"side" gorm:"size:8;index"`
+	Shares     float64   `json:"shares"`
+	PriceUSD   float64   `json:"price_usd"`
+	FeesUSD    float64   `json:"fees_usd"`
+	ExecutedAt time.Time `json:"executed_at" gorm:"index:idx_research_trade_execution_ticker_time,priority:2"`
+	Note       string    `json:"note" gorm:"type:text"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // TradeSetupStatusEvent records a state transition of the deterministic

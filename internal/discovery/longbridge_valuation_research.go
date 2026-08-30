@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -20,10 +21,51 @@ import (
 )
 
 type CandidateValuationResearch struct {
-	Latest  *ValuationResearchSnapshot  `json:"latest,omitempty"`
-	History []ValuationResearchSnapshot `json:"history"`
-	Message string                      `json:"message"`
-	Quality DataQualityMetadata         `json:"quality"`
+	Latest    *ValuationResearchSnapshot   `json:"latest,omitempty"`
+	History   []ValuationResearchSnapshot  `json:"history"`
+	Framework ValuationComparisonFramework `json:"framework"`
+	Message   string                       `json:"message"`
+	Quality   DataQualityMetadata          `json:"quality"`
+}
+
+type ValuationComparisonFramework struct {
+	PeerSetVersion string                    `json:"peer_set_version,omitempty"`
+	PeerSetAsOf    string                    `json:"peer_set_as_of,omitempty"`
+	PeerSetPolicy  string                    `json:"peer_set_policy"`
+	SnapshotSeries []ValuationSnapshotPoint  `json:"snapshot_series"`
+	SelfHistory    []ValuationSelfHistory    `json:"self_history"`
+	Peers          []ValuationPeerComparison `json:"peers"`
+	Warnings       []string                  `json:"warnings"`
+}
+
+type ValuationSnapshotPoint struct {
+	FetchedAt time.Time `json:"fetched_at"`
+	PE        *float64  `json:"pe,omitempty"`
+	PB        *float64  `json:"pb,omitempty"`
+	PS        *float64  `json:"ps,omitempty"`
+}
+
+type ValuationSelfHistory struct {
+	Metric       string   `json:"metric"`
+	Current      *float64 `json:"current,omitempty"`
+	Percentile   *float64 `json:"percentile,omitempty"`
+	Observations int      `json:"observations"`
+	Status       string   `json:"status"`
+}
+
+type ValuationPeerComparison struct {
+	Symbol              string   `json:"symbol"`
+	Name                string   `json:"name"`
+	Role                string   `json:"role"`
+	Currency            string   `json:"currency"`
+	PE                  *float64 `json:"pe,omitempty"`
+	PB                  *float64 `json:"pb,omitempty"`
+	PS                  *float64 `json:"ps,omitempty"`
+	MarketCapUSD        *int64   `json:"market_cap_usd,omitempty"`
+	RevenueGrowthPct    *float64 `json:"revenue_growth_pct,omitempty"`
+	GrossMarginPct      *float64 `json:"gross_margin_pct,omitempty"`
+	CashRunwayMonths    *float64 `json:"cash_runway_months,omitempty"`
+	FundamentalCoverage string   `json:"fundamental_coverage"`
 }
 
 type ValuationResearchSnapshot struct {
@@ -113,7 +155,7 @@ func NewLongbridgeValuationResearchOptions(cfg config.DiscoveryConfig) Longbridg
 }
 
 func GetCandidateValuationResearch(ctx context.Context, db *gorm.DB, ticker string) (CandidateValuationResearch, error) {
-	result := CandidateValuationResearch{History: []ValuationResearchSnapshot{}}
+	result := CandidateValuationResearch{History: []ValuationResearchSnapshot{}, Framework: ValuationComparisonFramework{PeerSetPolicy: "固定为本地最早成功快照中的提供方同业；后续快照只更新数值，不自动换样本", SnapshotSeries: []ValuationSnapshotPoint{}, SelfHistory: []ValuationSelfHistory{}, Peers: []ValuationPeerComparison{}, Warnings: []string{}}}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -139,9 +181,91 @@ func GetCandidateValuationResearch(ctx context.Context, db *gorm.DB, ticker stri
 		return result, nil
 	}
 	result.Latest = &result.History[0]
+	result.Framework = buildValuationComparisonFramework(ctx, db, result.History)
 	result.Message = "Longbridge 估值历史、行业分位与同业比较；仅用于研究展示，不能作为硬筛选。"
 	result.Quality = researchQualityMetadata(DataLayerFact, longbridgeCandidateResearchProvider, result.Latest.SourceVersion, result.Latest.FetchedAt, 30*24*time.Hour, 90*24*time.Hour)
 	return result, nil
+}
+
+func buildValuationComparisonFramework(ctx context.Context, db *gorm.DB, history []ValuationResearchSnapshot) ValuationComparisonFramework {
+	result := ValuationComparisonFramework{PeerSetPolicy: "固定为本地最早成功快照中的提供方同业；后续快照只更新数值，不自动换样本", SnapshotSeries: []ValuationSnapshotPoint{}, SelfHistory: []ValuationSelfHistory{}, Peers: []ValuationPeerComparison{}, Warnings: []string{}}
+	if len(history) == 0 {
+		return result
+	}
+	for index := len(history) - 1; index >= 0; index-- {
+		row := history[index]
+		result.SnapshotSeries = append(result.SnapshotSeries, ValuationSnapshotPoint{FetchedAt: row.FetchedAt, PE: row.Metrics.PE.Current, PB: row.Metrics.PB.Current, PS: row.Metrics.PS.Current})
+	}
+	latest, baseline := history[0], history[len(history)-1]
+	result.PeerSetAsOf = baseline.FetchedAt.UTC().Format(time.RFC3339)
+	peerSymbols := make([]string, 0, len(baseline.Peers))
+	for _, peer := range baseline.Peers {
+		if symbol := normalizeAnalystRatingTicker(peer.Symbol); symbol != "" {
+			peerSymbols = append(peerSymbols, symbol)
+		}
+	}
+	if len(peerSymbols) == 0 {
+		for _, peer := range latest.Peers {
+			if symbol := normalizeAnalystRatingTicker(peer.Symbol); symbol != "" {
+				peerSymbols = append(peerSymbols, symbol)
+			}
+		}
+		result.PeerSetAsOf = latest.FetchedAt.UTC().Format(time.RFC3339)
+		result.Warnings = append(result.Warnings, "earliest_snapshot_has_no_peers")
+	}
+	sort.Strings(peerSymbols)
+	result.PeerSetVersion = valuationResearchHash(strings.Join(peerSymbols, ","))[:12]
+	latestPeers := map[string]ValuationPeer{}
+	for _, peer := range latest.Peers {
+		latestPeers[normalizeAnalystRatingTicker(peer.Symbol)] = peer
+	}
+	for _, symbol := range peerSymbols {
+		peer := latestPeers[symbol]
+		comparison := ValuationPeerComparison{Symbol: symbol, Name: peer.Name, Role: "provider_peer", Currency: peer.Currency, PE: peer.PE, PB: peer.PB, PS: peer.PS, FundamentalCoverage: "missing"}
+		if score, ok, err := currentCandidateScoreByTicker(ctx, db, symbol); err == nil && ok {
+			marketCap, growth, runway := score.MarketCapUSD, score.RevenueGrowthPct, score.CashRunwayMonths
+			comparison.MarketCapUSD, comparison.RevenueGrowthPct, comparison.CashRunwayMonths = &marketCap, &growth, &runway
+			var metric FinancialMetricSnapshot
+			if err := db.WithContext(ctx).Where("security_id = ?", score.SecurityID).Order("period_end DESC, id DESC").First(&metric).Error; err == nil && metric.GrossMarginAvailable {
+				margin := metric.GrossMarginPct
+				comparison.GrossMarginPct = &margin
+			}
+			comparison.FundamentalCoverage = "partial"
+			if comparison.GrossMarginPct != nil {
+				comparison.FundamentalCoverage = "available"
+			}
+		}
+		result.Peers = append(result.Peers, comparison)
+	}
+	result.SelfHistory = append(result.SelfHistory,
+		valuationSelfHistory("PE", latest.Metrics.PE), valuationSelfHistory("PB", latest.Metrics.PB), valuationSelfHistory("PS", latest.Metrics.PS))
+	if len(result.Peers) == 0 {
+		result.Warnings = append(result.Warnings, "fixed_peer_set_unavailable")
+	}
+	return result
+}
+
+func valuationSelfHistory(metric string, value ValuationMetric) ValuationSelfHistory {
+	result := ValuationSelfHistory{Metric: metric, Current: value.Current, Observations: 0, Status: "insufficient"}
+	values := make([]float64, 0, len(value.History))
+	for _, point := range value.History {
+		if point.Value != nil && !math.IsNaN(*point.Value) && !math.IsInf(*point.Value, 0) {
+			values = append(values, *point.Value)
+		}
+	}
+	result.Observations = len(values)
+	if value.Current == nil || len(values) < 5 {
+		return result
+	}
+	below := 0
+	for _, current := range values {
+		if current <= *value.Current {
+			below++
+		}
+	}
+	percentile := float64(below) / float64(len(values)) * 100
+	result.Percentile, result.Status = &percentile, "available"
+	return result
 }
 
 func RefreshLongbridgeCandidateValuationResearch(ctx context.Context, db *gorm.DB, cfg config.DiscoveryConfig, ticker, cik string) (ValuationResearchRefreshResult, error) {
@@ -238,6 +362,11 @@ func refreshLongbridgeCandidateValuationResearch(ctx context.Context, db *gorm.D
 	dist, distErr := client.IndustryValuationDist(requestCtx, symbol)
 	if distErr != nil {
 		result.Warnings = append(result.Warnings, "行业分位："+SanitizeLongbridgeCandidateResearchError(distErr))
+	}
+	if peerErr != nil || distErr != nil {
+		// Retain the last successful complete snapshot; a failed component must
+		// not overwrite it with empty peers or advance the shared freshness cursor.
+		return result, errors.Join(peerErr, distErr)
 	}
 	payload := valuationResearchPayload(valuation, peers, dist)
 	encoded, err := json.Marshal(payload)

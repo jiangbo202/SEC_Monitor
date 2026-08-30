@@ -456,7 +456,7 @@ func TestWatchTargetMarketSyncFetchesOnlyLocalPriceGaps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AlreadyCurrentCount != 1 || len(provider.expected) != 1 || provider.expected[0].Ticker != "MISSING" {
+	if result.AlreadyCurrentCount != 1 || result.CoveredCount != 2 || result.CoveredCount != result.RequestedCount || len(provider.expected) != 1 || provider.expected[0].Ticker != "MISSING" {
 		t.Fatalf("result=%#v expected=%#v", result, provider.expected)
 	}
 }

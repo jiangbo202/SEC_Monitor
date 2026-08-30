@@ -36,8 +36,14 @@ export interface InAppNotification {
   ticker?: string
   company_name?: string
   severity: 'info' | 'success' | 'warning' | 'danger' | string
+	priority: 'urgent' | 'high' | 'normal' | 'low' | string
   title: string
   body?: string
+	why_now?: string
+	thesis_impact: 'review' | 'context' | 'none' | string
+	suggested_action: 'review_now' | 'review_today' | 'record_only' | string
+	next_review_at?: string | null
+	dedup_key: string
   link?: string
   occurred_at: string
   created_at: string
@@ -94,7 +100,20 @@ export interface EarningsPreview {
 
 export interface EarningsPreviewView {
   preview?: EarningsPreview | null
+	cycle?: EarningsExpectationCycle | null
   message: string
+}
+
+export interface EarningsExpectationSnapshot {
+	id: number; target_id: number; ticker: string; event_key?: string; fiscal_year?: number; fiscal_period?: string; report_at?: string | null; currency?: string;
+	eps_estimate?: number | null; eps_actual?: number | null; revenue_estimate?: number | null; revenue_actual?: number | null; provider: string; provider_updated_at?: string | null; fetched_at: string; snapshot_hash: string
+}
+export interface EarningsExpectationCycle {
+	ticker: string; status: string; report_at?: string | null; fiscal_year?: number; fiscal_period?: string;
+	frozen_consensus?: EarningsExpectationSnapshot | null; actual?: EarningsExpectationSnapshot | null; post_report_revision?: EarningsExpectationSnapshot | null;
+	guidance_status: string; guidance_message: string;
+	price_reaction: { status: string; baseline_date?: string; baseline_close?: number | null; day_1_date?: string; day_1_return_pct?: number | null; day_5_date?: string; day_5_return_pct?: number | null; source: string };
+	timeline: EarningsExpectationSnapshot[]; warnings: string[]
 }
 
 export interface EarningsPreviewRefreshResult {
@@ -986,8 +1005,81 @@ export interface CandidateResearchPortfolio {
 	event_risk_weight_pct: number
 	upcoming_catalyst_weight_pct: number
 	risk_coverage: Record<string, string>
+	risk_analysis: CandidatePortfolioRiskAnalysis
   warnings: string[]
   items: CandidateResearchPositionView[]
+}
+
+export interface CandidatePortfolioRiskAnalysis {
+	benchmark: string; as_of?: string; observation_days: number; weighted_market_beta?: number | null; beta_covered_weight_pct: number;
+	factor_exposures: Array<{ factor: string; value: number; unit: string; coverage_pct: number; meaning: string }>;
+	position_metrics: Array<{ ticker: string; weight_pct: number; market_beta?: number | null; annual_volatility_pct?: number | null; momentum_20d_pct?: number | null; average_dollar_volume_usd: number; observation_days: number; status: string }>;
+	correlations: Array<{ left: string; right: string; correlation?: number | null; observation_days: number; status: string }>;
+	scenarios: Array<{ key: string; label: string; shock_pct: number; estimated_loss_pct?: number | null; covered_weight_pct: number; method: string; status: string }>;
+	shared_event_risks: Array<{ key: string; label: string; count: number; weight_pct: number; review_by?: string }>;
+	warnings: string[]
+}
+
+export interface ResearchTradeDecision {
+  id: number
+  ticker: string
+  security_id: number
+  action: string
+  decided_at: string
+  planned_price_usd?: number | null
+  target_weight_pct?: number | null
+  stop_loss_usd?: number | null
+  take_profit_usd?: number | null
+  evidence_as_of?: string | null
+  evidence_snapshot: string
+  scoring_version: string
+  rationale: string
+  note: string
+  created_at: string
+}
+
+export interface ResearchTradeExecution {
+  id: number
+  decision_id?: number | null
+  ticker: string
+  security_id: number
+  side: 'buy' | 'sell' | string
+  shares: number
+  price_usd: number
+  fees_usd: number
+  executed_at: string
+  note: string
+  created_at: string
+}
+
+export interface ResearchTradePosition {
+  ticker: string
+  shares: number
+  average_cost_usd: number
+  current_price_usd?: number | null
+  market_value_usd?: number | null
+  realized_pnl_usd: number
+  unrealized_pnl_usd?: number | null
+  net_pnl_usd?: number | null
+  total_fees_usd: number
+  first_execution_at: string
+  last_execution_at: string
+  latest_decision: string
+  latest_decision_at?: string | null
+  outcome_status: string
+}
+
+export interface ResearchTradeLedger {
+  positions: ResearchTradePosition[]
+  decisions: ResearchTradeDecision[]
+  executions: ResearchTradeExecution[]
+  open_positions: number
+  total_market_value_usd: number
+  realized_pnl_usd: number
+  unrealized_pnl_usd: number
+  net_pnl_usd: number
+  priced_positions: number
+  generated_at: string
 }
 
 export interface ResearchActionGate {
@@ -1144,6 +1236,13 @@ export interface DiscoveryInsiderTransaction {
   transaction_date: string
   transaction_code: string
   qualified: boolean
+  is_10b5_1: boolean
+  ten_b5_1_status: 'confirmed' | 'possible' | 'not_disclosed' | string
+  ten_b5_1_plan_adoption_date?: string | null
+  ten_b5_1_evidence_source?: string
+  ten_b5_1_evidence?: string
+  ten_b5_1_plan_id?: number | null
+  ten_b5_1_link_confidence?: 'confirmed' | 'probable' | 'unlinked' | string
   value_micros: number
   source_url: string
 }
@@ -1376,7 +1475,7 @@ export interface TickerInstitutionalHoldingHistory {
 export interface ValuationMetricResearch { current?: number | null; low?: number | null; high?: number | null; median?: number | null; history: Array<{ date: string; value?: number | null }> }
 export interface ValuationPercentileResearch { value?: number | null; low?: number | null; high?: number | null; median?: number | null; ranking?: number | null; rank_index: string; rank_total: string }
 export interface CandidateValuationResearchSnapshot { id: number; ticker: string; metrics: { pe: ValuationMetricResearch; pb: ValuationMetricResearch; ps: ValuationMetricResearch }; percentiles: { pe: ValuationPercentileResearch; pb: ValuationPercentileResearch; ps: ValuationPercentileResearch }; peers: Array<{ symbol: string; name: string; currency: string; pe?: number | null; pb?: number | null; ps?: number | null }>; change_summary?: string; fetched_at: string; source_version?: string }
-export interface CandidateValuationResearch { latest?: CandidateValuationResearchSnapshot | null; history: CandidateValuationResearchSnapshot[]; message: string; quality?: DataQualityMetadata }
+export interface CandidateValuationResearch { latest?: CandidateValuationResearchSnapshot | null; history: CandidateValuationResearchSnapshot[]; framework?: { peer_set_version?: string; peer_set_as_of?: string; peer_set_policy: string; snapshot_series: Array<{ fetched_at: string; pe?: number | null; pb?: number | null; ps?: number | null }>; self_history: Array<{ metric: string; current?: number | null; percentile?: number | null; observations: number; status: string }>; peers: Array<{ symbol: string; name: string; role: string; currency: string; pe?: number | null; pb?: number | null; ps?: number | null; market_cap_usd?: number | null; revenue_growth_pct?: number | null; gross_margin_pct?: number | null; cash_runway_months?: number | null; fundamental_coverage: string }>; warnings: string[] }; message: string; quality?: DataQualityMetadata }
 export interface CandidateFairValueEstimate {
   status: 'available' | 'insufficient' | string
   currency: string
@@ -1887,6 +1986,9 @@ export interface TaskConfig {
   last_status: string
   last_error_message: string
   consecutive_failures: number
+	 retry_not_before?: string | null
+  auto_retry_attempts: number
+  pending_count?: number | null
 }
 
 export interface TaskExecution {
@@ -2018,12 +2120,24 @@ export interface SQLiteBackupHealth {
   total_bytes: number
   latest_pair_bytes: number
   latest_completed?: string | null
+  replica: {
+    enabled: boolean
+    directory?: string
+    complete_pairs: number
+    incomplete_pairs: number
+    total_bytes: number
+    latest_pair_bytes: number
+    latest_completed?: string | null
+    status: string
+    reason?: string
+  }
 }
 
 export interface SQLiteBackupVerification {
 	 directory: string
 	 files: Record<string, string>
 	 verified_at: string
+  sha256: Record<string, string>
 }
 
 export interface SQLiteRecoveryReadiness {
@@ -2032,6 +2146,11 @@ export interface SQLiteRecoveryReadiness {
   backup: SQLiteBackupHealth
   verification?: SQLiteBackupVerification | null
   reason?: string
+  local_status: string
+  replica_status: string
+  local_reason?: string
+  replica_reason?: string
+  replica_verification?: SQLiteBackupVerification | null
 }
 
 export interface SQLiteCompactionRun {
@@ -2069,6 +2188,10 @@ export interface SQLiteCompactionResult {
 export interface RecoveryDrill {
   id: number
   status: string
+  local_status?: string
+  replica_status?: string
+  local_reason?: string
+  replica_reason?: string
   backup_timestamp?: string | null
   started_at: string
   completed_at?: string | null

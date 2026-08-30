@@ -97,11 +97,20 @@ the incident automatically.
 - Research-position aggregation reports largest-name and top-three weights,
   normalized concentration, reference-return coverage, estimated daily
   liquidity capacity and weights exposed to liquidity, capital, event and data
-  gaps. Market beta and style-factor coverage are explicitly marked missing
-  until a point-in-time factor dataset is available.
-- EPS revision compares only snapshots with identical forecast periods. An
-  earnings surprise remains unavailable until actual EPS and the pre-release
-  consensus can be aligned without look-ahead.
+  gaps. Local daily closes provide IWM beta, annualized volatility, 20-day
+  momentum, pair correlations and explicit market/sector/liquidity/event stress
+  scenarios; every result carries sample and coverage boundaries.
+- Earnings consensus is append-only and frozen by fetch time. A cycle closes
+  only when a pre-report snapshot, reported actual and local post-report price
+  series can be aligned without look-ahead. Guidance remains `not_covered`
+  until an explicit management source is structured.
+- Valuation views freeze the provider peer universe from the earliest successful
+  local snapshot, retain cross-batch multiple history and calculate own-history
+  percentiles. Peer growth, margin and runway appear only when local point-in-time
+  fundamentals exist.
+- In-app notification creation centrally adds priority, why-now, thesis impact,
+  suggested action, review time and the deterministic event-key deduplication
+  boundary.
 
 ## Historical-price recovery
 

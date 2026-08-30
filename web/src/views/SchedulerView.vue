@@ -13,7 +13,7 @@
       :description="t('pages.scheduler.timezoneDescription')"
     />
     <div class="domain-strip">
-      <button v-for="item in domainSummary" :key="item.name" :class="{active:domainFilter===item.name}" @click="domainFilter=item.name"><span>{{ item.name }}</span><strong>{{ item.enabled }}/{{ item.total }}</strong><small :class="item.failed?'failed':''">{{ item.failed ? `${item.failed} 项异常` : '运行正常' }}</small></button>
+      <button v-for="item in domainSummary" :key="item.name" :class="{active:domainFilter===item.name}" @click="domainFilter=item.name"><span>{{ item.name }}</span><strong>{{ item.enabled }}/{{ item.total }}</strong><small :class="item.attention?'failed':''">{{ item.summary }}</small></button>
     </div>
     <el-table :data="filteredRows" v-loading="loading" border :empty-text="t('pages.scheduler.empty')">
       <el-table-column label="业务域" width="110"><template #default="{row}"><el-tag effect="plain">{{ taskDomain(row.task_name) }}</el-tag></template></el-table-column>
@@ -45,6 +45,8 @@
       </el-table-column>
       <el-table-column :label="t('pages.scheduler.nextRun')" width="170">
         <template #default="{ row }">
+          <div v-if="row.enabled && row.retry_not_before" class="retry-hint">补偿重试 {{ formatDateTime(row.retry_not_before) }}</div>
+          <div v-if="row.enabled && row.next_run_at" class="cron-hint">常规定时</div>
           <span v-if="row.enabled && row.next_run_at">{{ formatDateTime(row.next_run_at) }}</span>
           <el-tag v-else type="info" effect="plain">{{ t('pages.scheduler.notScheduled') }}</el-tag>
         </template>
@@ -55,6 +57,9 @@
             <el-tag :type="taskStatusType(row.last_status)" effect="plain">{{ taskStatusLabel(row.last_status) }}</el-tag>
           </el-tooltip>
           <el-tag v-else :type="taskStatusType(row.last_status)" effect="plain">{{ taskStatusLabel(row.last_status) }}</el-tag>
+          <div v-if="row.last_status === 'partial'" class="retry-hint">{{ row.pending_count == null ? '覆盖提示 / 数量未确定' : `待补 ${row.pending_count} 项` }}</div>
+          <div v-if="row.auto_retry_attempts" class="cron-hint">自动重试 {{ row.auto_retry_attempts }}/3</div>
+          <div v-if="row.auto_retry_attempts >= 3 && !row.retry_not_before && ['partial','failed','interrupted'].includes(row.last_status)" class="retry-hint">本轮重试已达上限；等待常规定时或手动处理</div>
         </template>
       </el-table-column>
       <el-table-column :label="t('pages.scheduler.consecutiveFailures')" width="110" align="center">
@@ -88,6 +93,7 @@ import { MoreFilled } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, SystemConfig, TaskConfig } from '@/api/types'
 import { useI18n } from '@/i18n'
+import { summarizeTaskHealth } from '@/utils/taskHealth'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -96,7 +102,7 @@ const running = ref(false)
 const rows = ref<TaskConfig[]>([])
 const schedulerTimezone = ref('UTC')
 const domainFilter = ref('全部')
-const domainSummary = computed(() => ['全部','SEC/标的','小盘研究','IPO','市场环境','通知','系统维护'].map((name) => { const items=name==='全部'?rows.value:rows.value.filter(row=>taskDomain(row.task_name)===name);return{name,total:items.length,enabled:items.filter(item=>item.enabled).length,failed:items.filter(item=>item.last_status==='failed'||item.consecutive_failures>0).length} }))
+const domainSummary = computed(() => ['全部','SEC/标的','小盘研究','IPO','市场环境','通知','系统维护'].map((name) => { const items=name==='全部'?rows.value:rows.value.filter(row=>taskDomain(row.task_name)===name);return{name,total:items.length,enabled:items.filter(item=>item.enabled).length,...summarizeTaskHealth(items)} }))
 const filteredRows = computed(() => domainFilter.value === '全部' ? rows.value : rows.value.filter((row) => taskDomain(row.task_name) === domainFilter.value))
 const cronPresets = computed(() => [
   { label: t('pages.scheduler.presets.every5'), value: '*/5 * * * *' },
@@ -311,7 +317,7 @@ onMounted(load)
 .scheduler-timezone {
   margin-bottom: 12px;
 }
-.domain-strip{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border:1px solid var(--el-border-color-light);border-radius:6px;margin-bottom:12px;overflow:hidden}.domain-strip button{border:0;border-right:1px solid var(--el-border-color-lighter);background:var(--el-bg-color);padding:9px 10px;text-align:left;cursor:pointer}.domain-strip button:last-child{border:0}.domain-strip button.active{background:var(--el-color-primary-light-9)}.domain-strip span,.domain-strip small{display:block;font-size:12px;color:var(--el-text-color-secondary)}.domain-strip strong{font-size:18px}.domain-strip .failed,.impact-warning{color:var(--el-color-danger)}.task-dependency{font-size:11px;color:var(--el-text-color-secondary);margin-top:3px}
+.domain-strip{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border:1px solid var(--el-border-color-light);border-radius:6px;margin-bottom:12px;overflow:hidden}.domain-strip button{border:0;border-right:1px solid var(--el-border-color-lighter);background:var(--el-bg-color);padding:9px 10px;text-align:left;cursor:pointer}.domain-strip button:last-child{border:0}.domain-strip button.active{background:var(--el-color-primary-light-9)}.domain-strip span,.domain-strip small{display:block;font-size:12px;color:var(--el-text-color-secondary)}.domain-strip strong{font-size:18px}.domain-strip .failed,.impact-warning{color:var(--el-color-danger)}.task-dependency{font-size:11px;color:var(--el-text-color-secondary);margin-top:3px}.retry-hint{margin-top:3px;color:var(--el-color-warning);font-size:11px;line-height:1.3}
 
 .task-description {
   margin-top: 4px;

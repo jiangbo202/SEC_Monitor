@@ -245,7 +245,7 @@ func (c *Coordinator) SyncIncrementalListings(ctx context.Context, input Increme
 	}
 	existingClassifications, existingSelections, err := c.cloneSecurityBatchEvidence(ctx, previous.BatchID, batch.BatchID, plan.ReplaceSourceKeys, plan.ReplaceSecurityIDs, now)
 	if err == nil {
-		addedClassifications, addedSelections, stageErr := c.stageSecurity(ctx, batch, newRecords, shares, financials, nil, nil, events, overrides, now)
+		addedClassifications, addedSelections, stageErr := c.stageSecurity(ctx, batch, newRecords, shares, financials, nil, nil, nil, events, overrides, now)
 		if stageErr != nil {
 			err = stageErr
 		} else {

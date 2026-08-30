@@ -431,7 +431,9 @@ func testDB(t *testing.T) *gorm.DB {
 		&model.MacroRelease{},
 		&model.MacroObservation{},
 		&model.EarningsPreview{},
+		&model.EarningsCalendarCheckpoint{},
 		&model.EarningsPreviewNotice{},
+		&model.EarningsExpectationSnapshot{},
 		&model.FundFilingIdentity{},
 		&model.IPOFiling{},
 		&model.IPOCompanyFollow{},
@@ -3630,7 +3632,7 @@ func TestTaskConfigServiceMarksPartialOutcome(t *testing.T) {
 	if err := db.Where("task_name = ?", "sec_filing_sync").First(&task).Error; err != nil {
 		t.Fatalf("load task: %v", err)
 	}
-	if task.LastStatus != "partial" || task.ConsecutiveFailures != 1 || task.LastErrorMessage == "" {
+	if task.LastStatus != "partial" || task.ConsecutiveFailures != 0 || task.LastErrorMessage == "" || task.RetryNotBefore != nil {
 		t.Fatalf("task outcome = %+v", task)
 	}
 }

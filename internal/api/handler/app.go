@@ -54,6 +54,8 @@ type AppHandler struct {
 	Scheduler              SchedulerController
 	tickerEvaluationMu     sync.Mutex
 	tickerEvaluations      map[string]struct{}
+	insiderPlanBackfillMu  sync.Mutex
+	insiderPlanBackfilling bool
 }
 
 const tickerEvaluationCooldown = 10 * time.Minute
@@ -534,6 +536,15 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 		}
 		followedOnly = parsed
 	}
+	hasTenB5One := false
+	if value := strings.TrimSpace(c.Query("has_ten_b5_one")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			Error(c, service.ErrValidation)
+			return
+		}
+		hasTenB5One = parsed
+	}
 	includePerformance := false
 	if value := strings.TrimSpace(c.Query("include_performance")); value != "" {
 		parsed, err := strconv.ParseBool(value)
@@ -608,6 +619,7 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 		UpcomingEarningsTickers: upcomingEarningsTickers,
 		UpcomingEarningsOnly:    upcomingEarningsOnly,
 		FollowedOnly:            followedOnly,
+		HasTenB5One:             hasTenB5One,
 	})
 	if err != nil {
 		Error(c, err)
@@ -797,6 +809,49 @@ func (h *AppHandler) DeleteCandidateResearchPosition(c *gin.Context) {
 		return
 	}
 	c.Status(204)
+}
+
+func (h *AppHandler) ListResearchTradeLedger(c *gin.Context) {
+	result, err := discovery.ListResearchTradeLedger(c.Request.Context(), h.DiscoveryDB, c.Query("ticker"), time.Now().UTC())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) CreateResearchTradeDecision(c *gin.Context) {
+	var input discovery.ResearchTradeDecisionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		Error(c, err)
+		return
+	}
+	result, err := discovery.CreateResearchTradeDecision(c.Request.Context(), h.DiscoveryDB, input, time.Now().UTC())
+	if err != nil {
+		Error(c, fmt.Errorf("%w: %v", service.ErrValidation, err))
+		return
+	}
+	if h.Audit != nil {
+		_ = h.Audit.Record(c.Request.Context(), operator(c), "create_research_trade_decision", "research_trade_decision", strconv.FormatUint(uint64(result.ID), 10), nil, result)
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) CreateResearchTradeExecution(c *gin.Context) {
+	var input discovery.ResearchTradeExecutionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		Error(c, err)
+		return
+	}
+	result, err := discovery.CreateResearchTradeExecution(c.Request.Context(), h.DiscoveryDB, input, time.Now().UTC())
+	if err != nil {
+		Error(c, fmt.Errorf("%w: %v", service.ErrValidation, err))
+		return
+	}
+	if h.Audit != nil {
+		_ = h.Audit.Record(c.Request.Context(), operator(c), "create_research_trade_execution", "research_trade_execution", strconv.FormatUint(uint64(result.ID), 10), nil, result)
+	}
+	OK(c, result)
 }
 
 func (h *AppHandler) GetDiscoveryCandidateDetail(c *gin.Context) {
@@ -1619,8 +1674,28 @@ func (h *AppHandler) ListWatchTargets(c *gin.Context) {
 		}
 		upcomingEarnings = parsed
 	}
+	hasTenB5One := false
+	if raw := strings.TrimSpace(c.Query("has_ten_b5_one")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			Error(c, service.ErrValidation)
+			return
+		}
+		hasTenB5One = parsed
+	}
+	var planTickers []string
+	if hasTenB5One {
+		var err error
+		planTickers, err = discovery.ActiveInsiderPlanTickers(c.Request.Context(), h.DiscoveryDB)
+		if err != nil {
+			Error(c, err)
+			return
+		}
+	}
 	result, err := h.Targets.List(c.Request.Context(), service.WatchTargetFilter{
 		Ticker:           c.Query("ticker"),
+		Tickers:          planTickers,
+		MatchNone:        hasTenB5One && len(planTickers) == 0,
 		Status:           c.Query("status"),
 		TargetType:       c.Query("target_type"),
 		Group:            c.Query("group"),
@@ -2563,6 +2638,13 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 			}
 			if value.IncompletePairs > 0 {
 				issues = append(issues, gin.H{"level": "warning", "message": fmt.Sprintf("发现 %d 组不完整 SQLite 备份；系统不会将其用作恢复点", value.IncompletePairs)})
+			}
+			if !value.Replica.Enabled {
+				issues = append(issues, gin.H{"level": "warning", "message": "尚未配置异地备份目录；当前备份无法防范主机或 Docker volume 丢失"})
+			} else if value.Replica.Status != "ready" {
+				issues = append(issues, gin.H{"level": "critical", "message": "异地备份副本不可用：" + service.SanitizeSensitiveError(value.Replica.Reason)})
+			} else if value.Replica.LatestCompleted == nil || time.Since(*value.Replica.LatestCompleted) > 30*time.Hour {
+				issues = append(issues, gin.H{"level": "warning", "message": "异地备份副本已超过 30 小时未更新"})
 			}
 		}
 		if drill, err := h.Backup.LatestRecoveryDrill(c.Request.Context()); err != nil {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -29,11 +30,14 @@ type SQLiteBackupService struct {
 }
 
 type SQLiteBackupResult struct {
-	StartedAt   time.Time         `json:"started_at"`
-	CompletedAt time.Time         `json:"completed_at"`
-	Directory   string            `json:"directory"`
-	Files       map[string]string `json:"files"`
-	Deleted     int               `json:"deleted"`
+	StartedAt        time.Time         `json:"started_at"`
+	CompletedAt      time.Time         `json:"completed_at"`
+	Directory        string            `json:"directory"`
+	Files            map[string]string `json:"files"`
+	Deleted          int               `json:"deleted"`
+	ReplicaDirectory string            `json:"replica_directory,omitempty"`
+	ReplicaFiles     map[string]string `json:"replica_files,omitempty"`
+	ReplicaDeleted   int               `json:"replica_deleted"`
 }
 
 // SQLiteCompactionDatabaseResult describes the physical size change for one
@@ -66,12 +70,25 @@ type SQLiteCompactionResult struct {
 // pair is required because SEC Monitor has separate operational and research
 // databases; a single file is not a recoverable application checkpoint.
 type SQLiteBackupHealth struct {
-	Directory       string     `json:"directory"`
+	Directory       string                    `json:"directory"`
+	CompletePairs   int                       `json:"complete_pairs"`
+	IncompletePairs int                       `json:"incomplete_pairs"`
+	TotalBytes      int64                     `json:"total_bytes"`
+	LatestPairBytes int64                     `json:"latest_pair_bytes"`
+	LatestCompleted *time.Time                `json:"latest_completed,omitempty"`
+	Replica         SQLiteBackupReplicaHealth `json:"replica"`
+}
+
+type SQLiteBackupReplicaHealth struct {
+	Enabled         bool       `json:"enabled"`
+	Directory       string     `json:"directory,omitempty"`
 	CompletePairs   int        `json:"complete_pairs"`
 	IncompletePairs int        `json:"incomplete_pairs"`
 	TotalBytes      int64      `json:"total_bytes"`
 	LatestPairBytes int64      `json:"latest_pair_bytes"`
 	LatestCompleted *time.Time `json:"latest_completed,omitempty"`
+	Status          string     `json:"status"`
+	Reason          string     `json:"reason,omitempty"`
 }
 
 // SQLiteBackupVerification is a read-only integrity check for the most
@@ -80,17 +97,23 @@ type SQLiteBackupVerification struct {
 	Directory  string            `json:"directory"`
 	Files      map[string]string `json:"files"`
 	VerifiedAt time.Time         `json:"verified_at"`
+	SHA256     map[string]string `json:"sha256"`
 }
 
 // SQLiteRecoveryReadiness is a non-destructive recovery drill. It confirms a
 // latest *pair* exists and can be opened independently of the live databases.
 // It does not copy, replace, or restart either application database.
 type SQLiteRecoveryReadiness struct {
-	Status       string                    `json:"status"`
-	CheckedAt    time.Time                 `json:"checked_at"`
-	Backup       SQLiteBackupHealth        `json:"backup"`
-	Verification *SQLiteBackupVerification `json:"verification,omitempty"`
-	Reason       string                    `json:"reason,omitempty"`
+	Status              string                    `json:"status"`
+	CheckedAt           time.Time                 `json:"checked_at"`
+	Backup              SQLiteBackupHealth        `json:"backup"`
+	Verification        *SQLiteBackupVerification `json:"verification,omitempty"`
+	Reason              string                    `json:"reason,omitempty"`
+	LocalStatus         string                    `json:"local_status"`
+	ReplicaStatus       string                    `json:"replica_status"`
+	LocalReason         string                    `json:"local_reason,omitempty"`
+	ReplicaReason       string                    `json:"replica_reason,omitempty"`
+	ReplicaVerification *SQLiteBackupVerification `json:"replica_verification,omitempty"`
 }
 
 func NewSQLiteBackupService(mainDB, discoveryDB *gorm.DB, mainDSN, discoveryDSN string, configs *ConfigService) *SQLiteBackupService {
@@ -107,7 +130,7 @@ func (s *SQLiteBackupService) Backup(ctx context.Context) (SQLiteBackupResult, e
 }
 
 func (s *SQLiteBackupService) backupLocked(ctx context.Context) (SQLiteBackupResult, error) {
-	result := SQLiteBackupResult{StartedAt: time.Now().UTC(), Files: map[string]string{}}
+	result := SQLiteBackupResult{StartedAt: time.Now().UTC(), Files: map[string]string{}, ReplicaFiles: map[string]string{}}
 	dir, retention, err := s.settings(ctx)
 	if err != nil {
 		return result, err
@@ -168,6 +191,15 @@ func (s *SQLiteBackupService) backupLocked(ctx context.Context) (SQLiteBackupRes
 		return result, err
 	}
 	result.Deleted, result.CompletedAt = deleted, time.Now().UTC()
+	if replicaDir, replicaErr := s.replicaDirectory(ctx, dir); replicaErr != nil {
+		return result, replicaErr
+	} else if replicaDir != "" {
+		replicaFiles, replicaDeleted, replicateErr := replicateSQLiteBackupPair(replicaDir, result.Files, retention, result.StartedAt)
+		if replicateErr != nil {
+			return result, replicateErr
+		}
+		result.ReplicaDirectory, result.ReplicaFiles, result.ReplicaDeleted = replicaDir, replicaFiles, replicaDeleted
+	}
 	return result, nil
 }
 
@@ -255,6 +287,38 @@ func (s *SQLiteBackupService) Health(ctx context.Context) (SQLiteBackupHealth, e
 	if err != nil {
 		return SQLiteBackupHealth{}, err
 	}
+	health := SQLiteBackupHealth{Directory: dir, Replica: SQLiteBackupReplicaHealth{Status: "disabled"}}
+	local, err := scanSQLiteBackupDirectory(dir)
+	if err != nil {
+		return health, err
+	}
+	health.CompletePairs, health.IncompletePairs, health.TotalBytes, health.LatestPairBytes, health.LatestCompleted = local.CompletePairs, local.IncompletePairs, local.TotalBytes, local.LatestPairBytes, local.LatestCompleted
+	replicaDir, err := s.replicaDirectory(ctx, dir)
+	if err != nil {
+		return health, err
+	}
+	if replicaDir == "" {
+		health.Replica.Reason = "external backup directory is not configured"
+		return health, nil
+	}
+	health.Replica.Enabled, health.Replica.Directory = true, replicaDir
+	replica, err := scanSQLiteBackupDirectory(replicaDir)
+	if err != nil {
+		health.Replica.Status, health.Replica.Reason = "unavailable", SanitizeSensitiveError(err.Error())
+		return health, nil
+	}
+	health.Replica.CompletePairs, health.Replica.IncompletePairs, health.Replica.TotalBytes, health.Replica.LatestPairBytes, health.Replica.LatestCompleted = replica.CompletePairs, replica.IncompletePairs, replica.TotalBytes, replica.LatestPairBytes, replica.LatestCompleted
+	if replica.LatestCompleted == nil {
+		health.Replica.Status, health.Replica.Reason = "missing", "no complete external backup pair is available"
+	} else if replica.IncompletePairs > 0 {
+		health.Replica.Status, health.Replica.Reason = "attention", "incomplete external backup pairs were found"
+	} else {
+		health.Replica.Status = "ready"
+	}
+	return health, nil
+}
+
+func scanSQLiteBackupDirectory(dir string) (SQLiteBackupHealth, error) {
 	health := SQLiteBackupHealth{Directory: dir}
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -308,6 +372,109 @@ func (s *SQLiteBackupService) Health(ctx context.Context) (SQLiteBackupHealth, e
 	return health, nil
 }
 
+func (s *SQLiteBackupService) replicaDirectory(ctx context.Context, localDir string) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	value := ""
+	if s.configs != nil {
+		configured, ok, err := s.configs.GetValue(ctx, "system.backup_replica_dir")
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			value = configured
+		}
+	}
+	// Docker deployments receive an independent bind mount by default. The
+	// explicit UI setting remains authoritative; the environment fallback makes
+	// a fresh installation protected before the first operator visit.
+	if strings.TrimSpace(value) == "" {
+		value = os.Getenv("SEC_MONITOR_BACKUP_REPLICA_DIR")
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+	dir := filepath.Clean(strings.TrimSpace(value))
+	localAbs, localErr := filepath.Abs(localDir)
+	replicaAbs, replicaErr := filepath.Abs(dir)
+	if localErr != nil || replicaErr != nil {
+		return "", errors.New("resolve backup replica directory")
+	}
+	if localAbs == replicaAbs {
+		return "", errors.New("external backup directory must differ from the local backup directory")
+	}
+	return dir, nil
+}
+
+func replicateSQLiteBackupPair(dir string, source map[string]string, retention int, now time.Time) (map[string]string, int, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, 0, fmt.Errorf("create external backup directory: %w", err)
+	}
+	result := map[string]string{}
+	cleanup := func() {
+		for _, path := range result {
+			_ = os.Remove(path)
+		}
+	}
+	for _, name := range []string{"sec_monitor", "small_cap"} {
+		sourcePath := source[name]
+		if sourcePath == "" {
+			cleanup()
+			return nil, 0, errors.New("local backup pair is incomplete")
+		}
+		destination := filepath.Join(dir, filepath.Base(sourcePath))
+		if err := copyFileAtomic(sourcePath, destination); err != nil {
+			cleanup()
+			return nil, 0, fmt.Errorf("replicate %s backup: %w", name, err)
+		}
+		if err := verifySQLiteBackup(destination); err != nil {
+			cleanup()
+			return nil, 0, fmt.Errorf("verify external %s backup: %w", name, err)
+		}
+		result[name] = destination
+	}
+	deleted, err := pruneSQLiteBackups(dir, retention, now)
+	if err != nil {
+		return result, 0, err
+	}
+	return result, deleted, nil
+}
+
+func copyFileAtomic(source, destination string) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	partial := destination + ".partial"
+	if err := os.Remove(partial); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	out, err := os.OpenFile(partial, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	syncErr := out.Sync()
+	closeErr := out.Close()
+	if copyErr != nil || syncErr != nil || closeErr != nil {
+		_ = os.Remove(partial)
+		if copyErr != nil {
+			return copyErr
+		}
+		if syncErr != nil {
+			return syncErr
+		}
+		return closeErr
+	}
+	if err := os.Rename(partial, destination); err != nil {
+		_ = os.Remove(partial)
+		return err
+	}
+	return nil
+}
+
 func (s *SQLiteBackupService) VerifyLatest(ctx context.Context) (SQLiteBackupVerification, error) {
 	if s == nil {
 		return SQLiteBackupVerification{}, errors.New("SQLite backup service is not configured")
@@ -316,6 +483,10 @@ func (s *SQLiteBackupService) VerifyLatest(ctx context.Context) (SQLiteBackupVer
 	if err != nil {
 		return SQLiteBackupVerification{}, err
 	}
+	return verifyLatestSQLitePair(dir)
+}
+
+func verifyLatestSQLitePair(dir string) (SQLiteBackupVerification, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -347,20 +518,43 @@ func (s *SQLiteBackupService) VerifyLatest(ctx context.Context) (SQLiteBackupVer
 		return SQLiteBackupVerification{}, errors.New("no complete SQLite backup is available")
 	}
 	files := pairs[latestStamp]
+	hashes := make(map[string]string, 2)
 	for _, name := range []string{"sec_monitor", "small_cap"} {
 		if err := verifySQLiteBackup(files[name]); err != nil {
 			return SQLiteBackupVerification{}, fmt.Errorf("verify %s snapshot: %w", name, err)
 		}
+		hash, err := sqliteSnapshotHash(files[name])
+		if err != nil {
+			return SQLiteBackupVerification{}, err
+		}
+		hashes[name] = hash
 	}
-	return SQLiteBackupVerification{Directory: dir, Files: files, VerifiedAt: time.Now().UTC()}, nil
+	return SQLiteBackupVerification{Directory: dir, Files: files, VerifiedAt: time.Now().UTC(), SHA256: hashes}, nil
+}
+
+func sqliteSnapshotHash(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func (s *SQLiteBackupService) CheckRecoveryReadiness(ctx context.Context) (SQLiteRecoveryReadiness, error) {
 	checkedAt := time.Now().UTC()
-	result := SQLiteRecoveryReadiness{Status: "unavailable", CheckedAt: checkedAt}
+	result := SQLiteRecoveryReadiness{Status: "unavailable", LocalStatus: "unavailable", ReplicaStatus: "disabled", CheckedAt: checkedAt}
 	if s == nil || s.mainDB == nil {
 		return result, errors.New("SQLite backup service is not configured")
 	}
+	// Serialize with backup creation/pruning so the chosen pair cannot vanish
+	// or be replaced while it is being hashed and staged.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	defer func() { _ = s.recordRecoveryDrill(ctx, result, checkedAt) }()
 	health, err := s.Health(ctx)
 	if err != nil {
@@ -368,21 +562,37 @@ func (s *SQLiteBackupService) CheckRecoveryReadiness(ctx context.Context) (SQLit
 		return result, nil
 	}
 	result.Backup = health
-	if health.LatestCompleted == nil {
-		result.Reason = "no complete SQLite backup is available"
-		return result, nil
-	}
 	verification, err := s.VerifyLatest(ctx)
+	if err == nil {
+		err = rehearseVerifiedSQLitePair(verification)
+	}
 	if err != nil {
-		result.Status, result.Reason = "failed", SanitizeSensitiveError(err.Error())
-		return result, nil
+		result.LocalStatus, result.LocalReason = "failed", SanitizeSensitiveError(err.Error())
+		if health.LatestCompleted == nil {
+			result.LocalStatus = "unavailable"
+		}
+	} else {
+		result.LocalStatus, result.Verification = "ready", &verification
 	}
-	if err := rehearseSQLiteRestorePair(verification.Files); err != nil {
-		result.Status, result.Reason = "failed", SanitizeSensitiveError(err.Error())
-		return result, nil
+	if health.Replica.Enabled {
+		replica, replicaErr := verifyLatestSQLitePair(health.Replica.Directory)
+		if replicaErr == nil {
+			replicaErr = rehearseVerifiedSQLitePair(replica)
+		}
+		if replicaErr != nil {
+			result.ReplicaStatus, result.ReplicaReason = "failed", SanitizeSensitiveError(replicaErr.Error())
+		} else {
+			result.ReplicaStatus, result.ReplicaVerification = "ready", &replica
+		}
 	}
-	result.Status = "ready"
-	result.Verification = &verification
+	result.Status = result.LocalStatus
+	if result.LocalStatus != "ready" {
+		result.Reason = "本地恢复未通过：" + result.LocalReason
+	}
+	if health.Replica.Enabled && result.ReplicaStatus != "ready" {
+		result.Status = "failed"
+		result.Reason += " 副本恢复未通过：" + result.ReplicaReason
+	}
 	return result, nil
 }
 
@@ -402,6 +612,7 @@ func (s *SQLiteBackupService) recordRecoveryDrill(ctx context.Context, result SQ
 	completedAt := time.Now().UTC()
 	drill := model.RecoveryDrill{
 		Status: result.Status, StartedAt: startedAt, CompletedAt: &completedAt,
+		LocalStatus: result.LocalStatus, ReplicaStatus: result.ReplicaStatus, LocalReason: result.LocalReason, ReplicaReason: result.ReplicaReason,
 		DurationMS: completedAt.Sub(startedAt).Milliseconds(), ErrorMessage: result.Reason,
 	}
 	if result.Backup.LatestCompleted != nil {
@@ -499,6 +710,11 @@ func verifySQLiteBackup(path string) error {
 // operational and research schema. It never changes a live database or the
 // published backup files.
 func rehearseSQLiteRestorePair(files map[string]string) error {
+	return rehearseVerifiedSQLitePair(SQLiteBackupVerification{Files: files})
+}
+
+func rehearseVerifiedSQLitePair(verification SQLiteBackupVerification) error {
+	files := verification.Files
 	dir, err := os.MkdirTemp("", "sec-monitor-recovery-")
 	if err != nil {
 		return fmt.Errorf("create recovery rehearsal directory: %w", err)
@@ -512,6 +728,15 @@ func rehearseSQLiteRestorePair(files map[string]string) error {
 		destination := filepath.Join(dir, name+".db")
 		if err := copyFile(source, destination); err != nil {
 			return fmt.Errorf("stage %s recovery snapshot: %w", name, err)
+		}
+		if expected := verification.SHA256[name]; expected != "" {
+			actual, err := sqliteSnapshotHash(destination)
+			if err != nil {
+				return err
+			}
+			if actual != expected {
+				return fmt.Errorf("staged %s snapshot checksum mismatch", name)
+			}
 		}
 		if err := verifySQLiteBackup(destination); err != nil {
 			return fmt.Errorf("verify staged %s recovery snapshot: %w", name, err)

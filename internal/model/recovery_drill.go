@@ -8,6 +8,10 @@ import "time"
 type RecoveryDrill struct {
 	ID              uint       `gorm:"primaryKey" json:"id"`
 	Status          string     `gorm:"size:16;not null;index" json:"status"`
+	LocalStatus     string     `gorm:"size:16" json:"local_status"`
+	ReplicaStatus   string     `gorm:"size:16" json:"replica_status"`
+	LocalReason     string     `gorm:"type:text" json:"local_reason,omitempty"`
+	ReplicaReason   string     `gorm:"type:text" json:"replica_reason,omitempty"`
 	BackupTimestamp *time.Time `gorm:"index" json:"backup_timestamp,omitempty"`
 	StartedAt       time.Time  `gorm:"index" json:"started_at"`
 	CompletedAt     *time.Time `json:"completed_at,omitempty"`

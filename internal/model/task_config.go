@@ -14,6 +14,9 @@ type TaskConfig struct {
 	LastStatus          string     `gorm:"size:16;index" json:"last_status"`
 	LastErrorMessage    string     `gorm:"type:text" json:"last_error_message"`
 	ConsecutiveFailures int        `gorm:"not null;default:0" json:"consecutive_failures"`
+	RetryNotBefore      *time.Time `gorm:"index" json:"retry_not_before,omitempty"`
+	AutoRetryAttempts   int        `gorm:"not null;default:0" json:"auto_retry_attempts"`
+	PendingCount        *int       `json:"pending_count"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }

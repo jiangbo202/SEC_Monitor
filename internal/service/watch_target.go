@@ -34,6 +34,8 @@ type WatchTargetInput struct {
 
 type WatchTargetFilter struct {
 	Ticker           string
+	Tickers          []string
+	MatchNone        bool
 	Status           string
 	TargetType       string
 	Group            string
@@ -145,6 +147,11 @@ func (s *WatchTargetService) Get(ctx context.Context, id uint) (model.WatchTarge
 func (s *WatchTargetService) List(ctx context.Context, filter WatchTargetFilter) (PageResult[model.WatchTarget], error) {
 	page, pageSize := normalizePage(filter.Page, filter.PageSize)
 	query := s.db.WithContext(ctx).Model(&model.WatchTarget{})
+	if filter.MatchNone {
+		query = query.Where("1 = 0")
+	} else if len(filter.Tickers) > 0 {
+		query = query.Where("UPPER(ticker) IN ?", filter.Tickers)
+	}
 	if filter.Ticker != "" {
 		query = query.Where("ticker LIKE ?", "%"+strings.ToUpper(strings.TrimSpace(filter.Ticker))+"%")
 	}

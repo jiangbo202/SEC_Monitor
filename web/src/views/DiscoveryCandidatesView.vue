@@ -295,6 +295,9 @@
           <el-button size="small" :type="quickFilterActive('upcoming_earnings') ? 'primary' : 'default'" plain @click="toggleQuickFilter('upcoming_earnings')">
             即将财报 <el-badge :value="upcomingEarningsCount" :hidden="upcomingEarningsCount === 0" class="quick-filter-badge" />
           </el-button>
+          <el-button size="small" :type="quickFilterActive('ten_b5_one') ? 'primary' : 'default'" plain @click="toggleQuickFilter('ten_b5_one')">
+            10b5-1 计划 <el-badge :value="tenB5OneCount" class="quick-filter-badge" />
+          </el-button>
           <el-button size="small" :type="quickFilterActive('followed') ? 'primary' : 'default'" plain @click="toggleQuickFilter('followed')">已关注</el-button>
           <el-button size="small" :type="quickFilterActive('exclude_low_liquidity') ? 'primary' : 'default'" plain @click="toggleQuickFilter('exclude_low_liquidity')">排除低流动性</el-button>
           <el-tooltip content="只显示价格过期、缺失、日期异常或尚未能校验的候选；前一交易日回退价仍视为可用。" placement="top">
@@ -1134,13 +1137,22 @@
               <el-table-column label="历史点数" width="100" align="right"><template #default="{ row }">{{ row.history.length }}</template></el-table-column>
             </el-table>
             <el-alert v-if="candidateDetail.valuation_research.latest.change_summary" type="warning" :closable="false" style="margin-top: 12px" :title="`估值快照变化：${candidateDetail.valuation_research.latest.change_summary}`" />
-            <div class="analyst-rating-provenance-title">同业比较（Longbridge 返回范围）</div>
-            <el-table :data="candidateDetail.valuation_research.latest.peers" size="small" border empty-text="Longbridge 暂无可比同业覆盖">
+			<div class="analyst-rating-provenance-title">自身历史分位（跨快照 / 提供方历史）</div>
+			<el-table :data="candidateDetail.valuation_research.framework?.self_history || []" size="small" border empty-text="至少需要 5 个历史点">
+			  <el-table-column prop="metric" label="指标" width="90" /><el-table-column label="当前" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.current) }}</template></el-table-column><el-table-column label="自身历史分位" width="140" align="right"><template #default="{ row }">{{ row.percentile == null ? '-' : `${row.percentile.toFixed(1)}%` }}</template></el-table-column><el-table-column prop="observations" label="样本" width="90" align="right" /><el-table-column label="状态" min-width="110"><template #default="{ row }">{{ row.status === 'available' ? '可用' : '样本不足' }}</template></el-table-column>
+			</el-table>
+			<div class="analyst-rating-provenance-title">固定同业比较 <small>版本 {{ candidateDetail.valuation_research.framework?.peer_set_version || '-' }} · {{ candidateDetail.valuation_research.framework?.peer_set_as_of ? formatDateTime(candidateDetail.valuation_research.framework.peer_set_as_of) : '-' }}</small></div>
+			<el-alert type="info" :closable="false" :title="candidateDetail.valuation_research.framework?.peer_set_policy || '固定同业集合，防止不同批次样本漂移。'" />
+			<el-table :data="candidateDetail.valuation_research.framework?.peers || []" size="small" border empty-text="Longbridge 暂无可固定的同业覆盖">
               <el-table-column prop="symbol" label="代码" width="110" />
               <el-table-column prop="name" label="公司" min-width="200" show-overflow-tooltip />
               <el-table-column label="PE" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.pe) }}</template></el-table-column>
               <el-table-column label="PB" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.pb) }}</template></el-table-column>
               <el-table-column label="PS" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.ps) }}</template></el-table-column>
+			  <el-table-column label="收入增速" width="105" align="right"><template #default="{ row }">{{ formatPct(row.revenue_growth_pct) }}</template></el-table-column>
+			  <el-table-column label="毛利率" width="95" align="right"><template #default="{ row }">{{ formatPct(row.gross_margin_pct) }}</template></el-table-column>
+			  <el-table-column label="现金跑道" width="105" align="right"><template #default="{ row }">{{ row.cash_runway_months == null ? '-' : `${row.cash_runway_months.toFixed(1)}月` }}</template></el-table-column>
+			  <el-table-column label="基本面覆盖" width="105"><template #default="{ row }">{{ portfolioCoverageLabel(row.fundamental_coverage) }}</template></el-table-column>
             </el-table>
           </template>
           <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="candidateDetail.valuation_research?.message || '尚未同步 Longbridge 估值研究'" />
@@ -1489,6 +1501,7 @@
             <el-table-column prop="owner_name" label="人员" min-width="120" />
             <el-table-column prop="role" label="角色" width="90" />
             <el-table-column prop="transaction_code" label="代码" width="70" />
+            <el-table-column label="10b5-1" width="112"><template #default="{ row }"><el-tooltip :disabled="!row.ten_b5_1_evidence" :content="row.ten_b5_1_evidence"><el-tag :type="row.is_10b5_1 ? 'success' : row.ten_b5_1_status === 'possible' ? 'warning' : 'info'" effect="plain">{{ row.is_10b5_1 ? '计划内' : row.ten_b5_1_status === 'possible' ? '待核验' : '未披露' }}</el-tag></el-tooltip></template></el-table-column>
             <el-table-column prop="qualified" label="合格" width="70"><template #default="{ row }"><el-tag :type="row.qualified ? 'success' : 'info'" effect="plain">{{ row.qualified ? '是' : '否' }}</el-tag></template></el-table-column>
           </el-table>
         </el-card>
@@ -1734,7 +1747,7 @@
       <template #footer><el-button @click="watchEditorVisible = false">取消</el-button><el-button type="primary" :loading="watchSaving" @click="saveCandidateResearch">保存</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="researchPortfolioVisible" title="手工研究组合（不连接券商、不生成交易指令）" width="980px">
+    <el-dialog v-model="researchPortfolioVisible" title="研究组合与真实成交账本（不连接券商、不自动下单）" width="1180px">
       <el-alert type="info" :closable="false" show-icon title="仅记录研究上限、参考成本和流动性/事件风险约束；不读取真实账户，也不会触发交易。" class="summary-alert" />
       <el-alert v-if="researchActionGate && !researchActionGate.allowed" type="warning" :closable="false" show-icon :title="`新增或提高研究仓位受限：${researchActionGate.reasons.join('；')}`" class="summary-alert" />
       <el-alert v-if="(researchPortfolio?.total_max_weight_pct || 0) > 100" type="warning" :closable="false" show-icon :title="`研究上限合计 ${formatPct(researchPortfolio?.total_max_weight_pct)}，超过 100%；请检查集中度。`" class="summary-alert" />
@@ -1752,6 +1765,30 @@
 		<el-descriptions-item label="事件权重" :span="2">人工事件 {{ formatPct(researchPortfolio?.event_risk_weight_pct) }} · 14日催化 {{ formatPct(researchPortfolio?.upcoming_catalyst_weight_pct) }}</el-descriptions-item>
 		<el-descriptions-item label="覆盖边界" :span="4">行业 {{ portfolioCoverageLabel(researchPortfolio?.risk_coverage?.sector) }} · 流动性 {{ portfolioCoverageLabel(researchPortfolio?.risk_coverage?.liquidity) }} · 参考收益 {{ portfolioCoverageLabel(researchPortfolio?.risk_coverage?.reference_pnl) }} · Beta/风格因子 {{ portfolioCoverageLabel(researchPortfolio?.risk_coverage?.market_beta) }}</el-descriptions-item>
       </el-descriptions>
+	  <el-divider content-position="left">组合风险（本地日线）</el-divider>
+	  <el-descriptions :column="4" border size="small" class="research-portfolio-summary">
+		<el-descriptions-item label="基准">{{ researchPortfolio?.risk_analysis?.benchmark || 'IWM' }}</el-descriptions-item>
+		<el-descriptions-item label="加权 Beta">{{ formatForecastNumber(researchPortfolio?.risk_analysis?.weighted_market_beta) }}</el-descriptions-item>
+		<el-descriptions-item label="Beta 覆盖">{{ formatPct(researchPortfolio?.risk_analysis?.beta_covered_weight_pct) }}</el-descriptions-item>
+		<el-descriptions-item label="数据时点">{{ researchPortfolio?.risk_analysis?.as_of || '-' }}</el-descriptions-item>
+	  </el-descriptions>
+	  <el-table :data="researchPortfolio?.risk_analysis?.scenarios || []" size="small" border empty-text="暂无可计算压力情景" class="portfolio-risk-table">
+		<el-table-column prop="label" label="压力情景" min-width="210" />
+		<el-table-column label="组合影响" width="120" align="right"><template #default="{ row }"><span :class="performanceClass(row.estimated_loss_pct)">{{ formatPerformance(row.estimated_loss_pct) }}</span></template></el-table-column>
+		<el-table-column label="覆盖权重" width="110" align="right"><template #default="{ row }">{{ formatPct(row.covered_weight_pct) }}</template></el-table-column>
+		<el-table-column prop="method" label="计算方法" min-width="300" show-overflow-tooltip />
+		<el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.status === 'available' ? 'success' : 'info'" effect="plain">{{ row.status === 'available' ? '可计算' : row.status === 'not_applicable' ? '不适用' : '样本不足' }}</el-tag></template></el-table-column>
+	  </el-table>
+	  <el-collapse class="portfolio-risk-details">
+		<el-collapse-item :title="`个股 Beta / 波动 / 动量 · 相关性 ${researchPortfolio?.risk_analysis?.correlations?.length || 0} 组`" name="risk-details">
+		  <el-table :data="researchPortfolio?.risk_analysis?.position_metrics || []" size="small" border>
+			<el-table-column prop="ticker" label="Ticker" width="90" /><el-table-column label="Beta" width="90" align="right"><template #default="{ row }">{{ formatForecastNumber(row.market_beta) }}</template></el-table-column><el-table-column label="年化波动" width="110" align="right"><template #default="{ row }">{{ formatPct(row.annual_volatility_pct) }}</template></el-table-column><el-table-column label="20日动量" width="110" align="right"><template #default="{ row }">{{ formatPerformance(row.momentum_20d_pct) }}</template></el-table-column><el-table-column prop="observation_days" label="样本" width="80" align="right" />
+		  </el-table>
+		  <el-table :data="researchPortfolio?.risk_analysis?.correlations || []" size="small" border max-height="220" empty-text="至少需要两个具有 20 个共同交易日的标的">
+			<el-table-column label="标的对" min-width="140"><template #default="{ row }">{{ row.left }} / {{ row.right }}</template></el-table-column><el-table-column label="相关系数" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.correlation) }}</template></el-table-column><el-table-column prop="observation_days" label="共同样本" width="100" align="right" /><el-table-column label="状态" width="100"><template #default="{ row }">{{ row.status === 'available' ? '可用' : '样本不足' }}</template></el-table-column>
+		  </el-table>
+		</el-collapse-item>
+	  </el-collapse>
       <div class="research-portfolio-toolbar"><el-button type="primary" plain @click="newResearchPosition()">新增研究仓位</el-button></div>
       <el-table :data="researchPortfolio?.items || []" v-loading="researchPortfolioLoading" size="small" border empty-text="尚未设置手工研究仓位">
         <el-table-column prop="ticker" label="Ticker" width="100" />
@@ -1764,6 +1801,37 @@
         <el-table-column prop="liquidity_note" label="流动性约束" min-width="170" show-overflow-tooltip />
         <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="editResearchPosition(row)">编辑</el-button><el-button link type="danger" @click="deleteResearchPosition(row.id)">删除</el-button></template></el-table-column>
       </el-table>
+      <el-divider content-position="left">真实决策与成交账本</el-divider>
+      <el-alert type="info" :closable="false" show-icon title="决策和成交均为本地人工记录、只追加不覆盖；系统不会连接券商或发送订单。收益按已记录成交和最新本地收盘价重算。" class="summary-alert" />
+      <el-descriptions :column="5" border size="small" class="research-portfolio-summary">
+        <el-descriptions-item label="开放仓位">{{ researchTradeLedger?.open_positions || 0 }}</el-descriptions-item>
+        <el-descriptions-item label="市值">{{ formatUSD(researchTradeLedger?.total_market_value_usd || 0) }}</el-descriptions-item>
+        <el-descriptions-item label="已实现">{{ formatSignedUSD(researchTradeLedger?.realized_pnl_usd) }}</el-descriptions-item>
+        <el-descriptions-item label="未实现">{{ formatSignedUSD(researchTradeLedger?.unrealized_pnl_usd) }}</el-descriptions-item>
+        <el-descriptions-item label="净收益">{{ formatSignedUSD(researchTradeLedger?.net_pnl_usd) }}</el-descriptions-item>
+      </el-descriptions>
+      <div class="research-portfolio-toolbar"><el-button type="primary" plain @click="openResearchDecisionEditor()">记录决策</el-button><el-button type="success" plain @click="openResearchExecutionEditor()">记录成交</el-button></div>
+      <el-table :data="researchTradeLedger?.positions || []" v-loading="researchTradeLedgerLoading" size="small" border empty-text="尚未记录真实成交">
+        <el-table-column prop="ticker" label="Ticker" width="90" />
+        <el-table-column label="数量" width="100" align="right"><template #default="{ row }">{{ formatForecastNumber(row.shares) }}</template></el-table-column>
+        <el-table-column label="平均成本" width="115" align="right"><template #default="{ row }">{{ formatPrice(row.average_cost_usd, 'USD') }}</template></el-table-column>
+        <el-table-column label="当前价" width="105" align="right"><template #default="{ row }">{{ formatPrice(row.current_price_usd, 'USD') }}</template></el-table-column>
+        <el-table-column label="市值" width="120" align="right"><template #default="{ row }">{{ formatUSD(row.market_value_usd || 0) }}</template></el-table-column>
+        <el-table-column label="已实现" width="115" align="right"><template #default="{ row }"><span :class="performanceClass(row.realized_pnl_usd)">{{ formatSignedUSD(row.realized_pnl_usd) }}</span></template></el-table-column>
+        <el-table-column label="未实现" width="115" align="right"><template #default="{ row }"><span :class="performanceClass(row.unrealized_pnl_usd)">{{ formatSignedUSD(row.unrealized_pnl_usd) }}</span></template></el-table-column>
+        <el-table-column label="最近决策" min-width="135"><template #default="{ row }">{{ researchDecisionActionLabel(row.latest_decision) }}<small class="cell-note">{{ formatDateTime(row.latest_decision_at) }}</small></template></el-table-column>
+        <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.outcome_status === 'open' ? 'success' : 'info'" effect="plain">{{ row.outcome_status === 'open' ? '持有中' : '已平仓' }}</el-tag></template></el-table-column>
+      </el-table>
+      <el-collapse class="trade-ledger-history">
+        <el-collapse-item :title="`历史记录：决策 ${researchTradeLedger?.decisions.length || 0} 条 · 成交 ${researchTradeLedger?.executions.length || 0} 条`" name="history">
+          <el-table :data="researchTradeLedger?.decisions || []" size="small" border max-height="240" empty-text="暂无决策记录">
+            <el-table-column prop="ticker" label="Ticker" width="85" /><el-table-column label="动作" width="90"><template #default="{ row }">{{ researchDecisionActionLabel(row.action) }}</template></el-table-column><el-table-column label="决策时间" width="155"><template #default="{ row }">{{ formatDateTime(row.decided_at) }}</template></el-table-column><el-table-column prop="rationale" label="判断依据" min-width="220" show-overflow-tooltip /><el-table-column prop="scoring_version" label="规则版本" width="130" show-overflow-tooltip />
+          </el-table>
+          <el-table :data="researchTradeLedger?.executions || []" size="small" border max-height="240" empty-text="暂无成交记录" class="execution-history-table">
+            <el-table-column prop="ticker" label="Ticker" width="85" /><el-table-column label="方向" width="85"><template #default="{ row }"><el-tag :type="row.side === 'buy' ? 'success' : 'danger'" effect="plain">{{ row.side === 'buy' ? '买入' : '卖出' }}</el-tag></template></el-table-column><el-table-column label="成交时间" width="155"><template #default="{ row }">{{ formatDateTime(row.executed_at) }}</template></el-table-column><el-table-column prop="shares" label="数量" width="100" align="right" /><el-table-column label="价格" width="105" align="right"><template #default="{ row }">{{ formatPrice(row.price_usd, 'USD') }}</template></el-table-column><el-table-column label="费用" width="100" align="right"><template #default="{ row }">{{ formatUSD(row.fees_usd || 0) }}</template></el-table-column><el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
+          </el-table>
+        </el-collapse-item>
+      </el-collapse>
     </el-dialog>
 
     <el-dialog v-model="researchPositionEditorVisible" :title="`${researchPositionEditor.ticker || '新增'}研究仓位`" width="600px" append-to-body>
@@ -1780,6 +1848,31 @@
         </template>
       </el-form>
       <template #footer><el-button @click="researchPositionEditorVisible = false">取消</el-button><el-button type="primary" :loading="researchPositionSaving" @click="saveResearchPosition">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="researchDecisionEditorVisible" title="记录研究决策" width="620px" append-to-body>
+      <el-form label-position="top">
+        <el-row :gutter="12"><el-col :span="12"><el-form-item label="Ticker"><el-input v-model="researchDecisionEditor.ticker" placeholder="例如 RKLB" /></el-form-item></el-col><el-col :span="12"><el-form-item label="决策动作"><el-select fit-input-width v-model="researchDecisionEditor.action" style="width:100%"><el-option label="建仓" value="open" /><el-option label="加仓" value="add" /><el-option label="减仓" value="reduce" /><el-option label="平仓" value="close" /><el-option label="继续持有" value="hold" /></el-select></el-form-item></el-col></el-row>
+        <el-form-item label="决策时间"><el-date-picker v-model="researchDecisionEditor.decided_at" type="datetime" style="width:100%" /></el-form-item>
+        <el-row :gutter="12"><el-col :span="12"><el-form-item label="计划价格（USD）"><el-input-number v-model="researchDecisionEditor.planned_price_usd" :min="0" :precision="4" style="width:100%" /></el-form-item></el-col><el-col :span="12"><el-form-item label="目标权重（%）"><el-input-number v-model="researchDecisionEditor.target_weight_pct" :min="0" :max="100" :precision="2" style="width:100%" /></el-form-item></el-col></el-row>
+        <el-row :gutter="12"><el-col :span="12"><el-form-item label="止损价（USD）"><el-input-number v-model="researchDecisionEditor.stop_loss_usd" :min="0" :precision="4" style="width:100%" /></el-form-item></el-col><el-col :span="12"><el-form-item label="止盈参考（USD）"><el-input-number v-model="researchDecisionEditor.take_profit_usd" :min="0" :precision="4" style="width:100%" /></el-form-item></el-col></el-row>
+        <el-form-item label="判断依据（必填）"><el-input v-model="researchDecisionEditor.rationale" type="textarea" :rows="3" placeholder="记录当时可见事实、判断及需要验证的条件" /></el-form-item>
+        <el-form-item label="证据快照摘要"><el-input v-model="researchDecisionEditor.evidence_snapshot" type="textarea" :rows="2" placeholder="例如：评分、SEC事件、技术状态与数据日期" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="researchDecisionEditor.note" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="researchDecisionEditorVisible=false">取消</el-button><el-button type="primary" :loading="researchTradeSaving" @click="saveResearchDecision">追加记录</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="researchExecutionEditorVisible" title="记录真实成交" width="560px" append-to-body>
+      <el-alert type="warning" :closable="false" show-icon title="成交记录只追加不覆盖；提交前请核对代码、方向、数量、价格和时间。卖出数量不能超过本地已记录持仓。" class="summary-alert" />
+      <el-form label-position="top">
+        <el-row :gutter="12"><el-col :span="12"><el-form-item label="Ticker"><el-input v-model="researchExecutionEditor.ticker" placeholder="例如 RKLB" /></el-form-item></el-col><el-col :span="12"><el-form-item label="方向"><el-select fit-input-width v-model="researchExecutionEditor.side" style="width:100%"><el-option label="买入" value="buy" /><el-option label="卖出" value="sell" /></el-select></el-form-item></el-col></el-row>
+        <el-form-item label="关联决策（可选）"><el-select fit-input-width v-model="researchExecutionEditor.decision_id" clearable style="width:100%"><el-option v-for="item in matchingResearchDecisions" :key="item.id" :label="`${formatDateTime(item.decided_at)} · ${researchDecisionActionLabel(item.action)} · ${item.rationale}`" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="成交时间"><el-date-picker v-model="researchExecutionEditor.executed_at" type="datetime" style="width:100%" /></el-form-item>
+        <el-row :gutter="12"><el-col :span="8"><el-form-item label="数量"><el-input-number v-model="researchExecutionEditor.shares" :min="0" :precision="4" style="width:100%" /></el-form-item></el-col><el-col :span="8"><el-form-item label="价格（USD）"><el-input-number v-model="researchExecutionEditor.price_usd" :min="0" :precision="4" style="width:100%" /></el-form-item></el-col><el-col :span="8"><el-form-item label="费用（USD）"><el-input-number v-model="researchExecutionEditor.fees_usd" :min="0" :precision="2" style="width:100%" /></el-form-item></el-col></el-row>
+        <el-form-item label="备注"><el-input v-model="researchExecutionEditor.note" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="researchExecutionEditorVisible=false">取消</el-button><el-button type="primary" :loading="researchTradeSaving" @click="saveResearchExecution">追加记录</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="effectivenessVisible" title="候选效果评估" width="920px">
@@ -1863,6 +1956,7 @@ import type { AIAnalysisStructuredResult } from '@/api/types'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
 import SmallCapPolicyDialog from '@/components/SmallCapPolicyDialog.vue'
+import { normalizedTickerQuery } from '@/utils/researchRouteState'
 import type {
   ApiResponse,
   CandidateDetail,
@@ -1877,6 +1971,8 @@ import type {
   CandidateReport,
   CandidateResearchPortfolio,
   CandidateResearchPosition,
+  ResearchTradeDecision,
+  ResearchTradeLedger,
   ResearchActionGate,
   CandidateEffectivenessReplayResult,
   CandidateReviewQueue,
@@ -1923,6 +2019,17 @@ const researchActionGate = ref<ResearchActionGate | null>(null)
 const researchPositionEditorVisible = ref(false)
 const researchPositionSaving = ref(false)
 const researchPositionEditor = reactive({ ticker: '', existing: false, max_weight_pct: 0, reference_cost_usd: undefined as number | undefined, max_daily_volume_participation_pct: 0, event_risk_note: '', liquidity_note: '', note: '', gate_override: false, gate_override_reason: '' })
+const researchTradeLedger = ref<ResearchTradeLedger | null>(null)
+const researchTradeLedgerLoading = ref(false)
+const researchTradeSaving = ref(false)
+const researchDecisionEditorVisible = ref(false)
+const researchExecutionEditorVisible = ref(false)
+const researchDecisionEditor = reactive({ ticker: '', action: 'open', decided_at: new Date(), planned_price_usd: undefined as number | undefined, target_weight_pct: undefined as number | undefined, stop_loss_usd: undefined as number | undefined, take_profit_usd: undefined as number | undefined, rationale: '', evidence_snapshot: '', note: '' })
+const researchExecutionEditor = reactive({ ticker: '', decision_id: undefined as number | undefined, side: 'buy', shares: 0, price_usd: 0, fees_usd: 0, executed_at: new Date(), note: '' })
+const matchingResearchDecisions = computed<ResearchTradeDecision[]>(() => {
+  const ticker = researchExecutionEditor.ticker.trim().toUpperCase()
+  return (researchTradeLedger.value?.decisions || []).filter((item) => !ticker || item.ticker === ticker)
+})
 const watchEditor = reactive({
   ticker: '',
   note: '',
@@ -2042,15 +2149,12 @@ const filters = reactive({
   min_net_cash_to_market_cap_pct: undefined as number | undefined,
   price_freshness: '',
   upcoming_earnings: false,
+  has_ten_b5_one: false,
   followed: false,
 })
 const sortState = reactive({ sort_by: 'total_score', sort_order: 'desc' })
 let candidateLoadSequence = 0
 
-function normalizedTickerQuery(value: unknown) {
-  const raw = Array.isArray(value) ? value[0] : value
-  return typeof raw === 'string' ? raw.trim().toUpperCase() : ''
-}
 const topSectorLabel = computed(() => {
   const entries = Object.entries(overview.value?.sector_counts || {}).sort((a, b) => b[1] - a[1])
   return entries[0]?.[0] || '-'
@@ -2113,6 +2217,7 @@ function requestParams() {
   if (filters.price_freshness === 'attention') params.price_freshness = 'stale,future,missing,unknown'
   else if (filters.price_freshness) params.price_freshness = filters.price_freshness
   if (filters.upcoming_earnings) params.upcoming_earnings = 'true'
+  if (filters.has_ten_b5_one) params.has_ten_b5_one = 'true'
   if (filters.followed) params.followed = 'true'
   if (sortState.sort_by) params.sort_by = sortState.sort_by
   if (sortState.sort_order) params.sort_order = sortState.sort_order
@@ -2145,11 +2250,19 @@ async function load() {
 }
 
 const upcomingEarningsCount = ref(0)
+const tenB5OneCount = ref(0)
 async function loadUpcomingEarningsCount() {
   try {
     const response = await apiClient.get<ApiResponse<PageResult<CandidateScore>>>('/discovery/candidates', { params: { page: 1, page_size: 1, upcoming_earnings: 'true' } })
     upcomingEarningsCount.value = response.data.data.total || 0
   } catch { upcomingEarningsCount.value = 0 }
+}
+
+async function loadTenB5OneCount() {
+  try {
+    const response = await apiClient.get<ApiResponse<{ count: number }>>('/insider-trading-plans/tickers', { params: { source: 'candidate' } })
+    tenB5OneCount.value = response.data.data.count || 0
+  } catch { tenB5OneCount.value = 0 }
 }
 
 async function refreshCandidateSupplementals() {
@@ -2841,17 +2954,92 @@ async function openResearchPortfolio(ticker = '') {
 
 async function loadResearchPortfolio() {
   researchPortfolioLoading.value = true
+  researchTradeLedgerLoading.value = true
   try {
-    const [res, gateRes] = await Promise.all([
+    const [res, gateRes, ledgerRes] = await Promise.all([
       apiClient.get<ApiResponse<CandidateResearchPortfolio>>('/discovery/research-positions'),
       apiClient.get<ApiResponse<ResearchActionGate>>('/discovery/research-action-gate'),
+      apiClient.get<ApiResponse<ResearchTradeLedger>>('/discovery/research-trade-ledger'),
     ])
     researchPortfolio.value = res.data.data
     researchActionGate.value = gateRes.data.data
+    researchTradeLedger.value = ledgerRes.data.data
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '加载研究组合失败')
   } finally {
     researchPortfolioLoading.value = false
+    researchTradeLedgerLoading.value = false
+  }
+}
+
+function openResearchDecisionEditor(ticker = '') {
+  researchDecisionEditor.ticker = ticker.toUpperCase()
+  researchDecisionEditor.action = 'open'
+  researchDecisionEditor.decided_at = new Date()
+  researchDecisionEditor.planned_price_usd = undefined
+  researchDecisionEditor.target_weight_pct = undefined
+  researchDecisionEditor.stop_loss_usd = undefined
+  researchDecisionEditor.take_profit_usd = undefined
+  researchDecisionEditor.rationale = ''
+  researchDecisionEditor.evidence_snapshot = ''
+  researchDecisionEditor.note = ''
+  researchDecisionEditorVisible.value = true
+}
+
+function openResearchExecutionEditor(ticker = '') {
+  researchExecutionEditor.ticker = ticker.toUpperCase()
+  researchExecutionEditor.decision_id = undefined
+  researchExecutionEditor.side = 'buy'
+  researchExecutionEditor.shares = 0
+  researchExecutionEditor.price_usd = 0
+  researchExecutionEditor.fees_usd = 0
+  researchExecutionEditor.executed_at = new Date()
+  researchExecutionEditor.note = ''
+  researchExecutionEditorVisible.value = true
+}
+
+async function saveResearchDecision() {
+  if (!researchDecisionEditor.ticker.trim() || researchDecisionEditor.rationale.trim().length < 5) {
+    ElMessage.warning('请填写 Ticker 和至少 5 个字符的判断依据')
+    return
+  }
+  researchTradeSaving.value = true
+  try {
+    await apiClient.post('/discovery/research-trade-decisions', {
+      ...researchDecisionEditor,
+      ticker: researchDecisionEditor.ticker.trim().toUpperCase(),
+      decided_at: researchDecisionEditor.decided_at.toISOString(),
+      evidence_as_of: researchDecisionEditor.decided_at.toISOString(),
+    })
+    researchDecisionEditorVisible.value = false
+    ElMessage.success('研究决策已追加到不可变账本')
+    await loadResearchPortfolio()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '保存研究决策失败')
+  } finally {
+    researchTradeSaving.value = false
+  }
+}
+
+async function saveResearchExecution() {
+  if (!researchExecutionEditor.ticker.trim() || researchExecutionEditor.shares <= 0 || researchExecutionEditor.price_usd <= 0) {
+    ElMessage.warning('请填写 Ticker、正数数量和成交价格')
+    return
+  }
+  researchTradeSaving.value = true
+  try {
+    await apiClient.post('/discovery/research-trade-executions', {
+      ...researchExecutionEditor,
+      ticker: researchExecutionEditor.ticker.trim().toUpperCase(),
+      executed_at: researchExecutionEditor.executed_at.toISOString(),
+    })
+    researchExecutionEditorVisible.value = false
+    ElMessage.success('真实成交已追加到不可变账本')
+    await loadResearchPortfolio()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '保存真实成交失败')
+  } finally {
+    researchTradeSaving.value = false
   }
 }
 
@@ -3110,6 +3298,7 @@ function reset() {
   filters.min_net_cash_to_market_cap_pct = undefined
   filters.price_freshness = ''
   filters.upcoming_earnings = false
+  filters.has_ten_b5_one = false
   filters.followed = false
   advancedFiltersVisible.value = false
   search()
@@ -3125,6 +3314,7 @@ function quickFilterActive(kind: string) {
   if (kind === 'exclude_low_liquidity') return filters.exclude_quality_tags.includes('low_liquidity')
   if (kind === 'price_attention') return filters.price_freshness === 'attention'
   if (kind === 'upcoming_earnings') return filters.upcoming_earnings
+  if (kind === 'ten_b5_one') return filters.has_ten_b5_one
   if (kind === 'followed') return filters.followed
   return false
 }
@@ -3140,6 +3330,8 @@ function toggleQuickFilter(kind: string) {
     filters.price_freshness = filters.price_freshness === 'attention' ? '' : 'attention'
   } else if (kind === 'upcoming_earnings') {
     filters.upcoming_earnings = !filters.upcoming_earnings
+  } else if (kind === 'ten_b5_one') {
+    filters.has_ten_b5_one = !filters.has_ten_b5_one
   } else if (kind === 'followed') {
     filters.followed = !filters.followed
   }
@@ -3772,9 +3964,29 @@ function healthInsiderDataLabel(status?: string, lineage?: string) {
 }
 
 function formatUSD(value?: number | null) {
-	if (!value) return '-'
-	if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`
-	return `$${(value / 1_000_000).toFixed(1)}M`
+	if (!Number.isFinite(value)) return '-'
+	const amount = Number(value)
+	const abs = Math.abs(amount)
+	const sign = amount < 0 ? '-' : ''
+	if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(2)}B`
+	if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`
+	if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`
+	return `${sign}$${abs.toFixed(2)}`
+}
+
+function formatSignedUSD(value?: number | null) {
+  if (!Number.isFinite(value)) return '-'
+  const amount = Number(value)
+  return `${amount > 0 ? '+' : ''}${formatUSD(amount)}`
+}
+
+function performanceClass(value?: number | null) {
+  if (!Number.isFinite(value) || Number(value) === 0) return ''
+  return Number(value) > 0 ? 'text-success' : 'text-danger'
+}
+
+function researchDecisionActionLabel(value?: string) {
+  return ({ open: '建仓', add: '加仓', reduce: '减仓', close: '平仓', hold: '继续持有' } as Record<string, string>)[value || ''] || value || '-'
 }
 
 function formatMultiple(value?: number | null) {
@@ -4279,6 +4491,7 @@ watch(() => route.query.ticker, (ticker) => {
 onMounted(() => {
 	filters.ticker = normalizedTickerQuery(route.query.ticker)
   load()
+  void loadTenB5OneCount()
   loadCriteria()
   void loadAIProviders()
   discoverySyncPoll = window.setInterval(() => {
@@ -4294,6 +4507,10 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.text-success { color: var(--el-color-success); }
+.text-danger { color: var(--el-color-danger); }
+.trade-ledger-history { margin-top: 12px; }
+.execution-history-table { margin-top: 10px; }
 .operations-card {
   margin-bottom: 12px;
 }

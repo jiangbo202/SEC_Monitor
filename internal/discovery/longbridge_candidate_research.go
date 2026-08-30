@@ -287,8 +287,10 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	symbol := result.Ticker + ".US"
+	var requestErrors []error
 
 	if forecast, fetchErr := client.ForecastEps(requestCtx, symbol); fetchErr != nil {
+		requestErrors = append(requestErrors, fmt.Errorf("EPS forecast: %w", fetchErr))
 		result.Warnings = append(result.Warnings, "EPS 预期："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else if latest, ok := latestForecastEpsItem(forecast); ok {
 		snapshot := epsForecastSnapshotFromLongbridge(result.Ticker, securityID, latest, now)
@@ -320,6 +322,7 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 	}
 
 	if anomalies, fetchErr := client.Anomaly(requestCtx, "US"); fetchErr != nil {
+		requestErrors = append(requestErrors, fmt.Errorf("market anomaly: %w", fetchErr))
 		result.Warnings = append(result.Warnings, "市场异动："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {
 		result.AnomaliesSaved, err = saveLongbridgeAnomalies(ctx, db, securityID, result.Ticker, anomalies, now)
@@ -328,6 +331,7 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 		}
 	}
 	if shareholders, fetchErr := client.Shareholder(requestCtx, symbol); fetchErr != nil {
+		requestErrors = append(requestErrors, fmt.Errorf("shareholders: %w", fetchErr))
 		result.Warnings = append(result.Warnings, "机构股东："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {
 		result.ShareholdersSaved, err = saveLongbridgeInstitutionalHolders(ctx, db, securityID, result.Ticker, shareholders, now)
@@ -336,6 +340,7 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 		}
 	}
 	if holders, fetchErr := client.FundHolder(requestCtx, symbol); fetchErr != nil {
+		requestErrors = append(requestErrors, fmt.Errorf("fund holders: %w", fetchErr))
 		result.Warnings = append(result.Warnings, "基金持仓："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {
 		result.FundHoldersSaved, err = saveLongbridgeFundHolders(ctx, db, securityID, result.Ticker, holders, now)
@@ -348,7 +353,9 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 	} else {
 		result.Message = "Longbridge 未返回该标的可保存的 P1 研究数据。"
 	}
-	return result, nil
+	// Preserve independently saved facts, but never mark this ticker fresh
+	// when any request failed. Empty successful responses remain no-coverage.
+	return result, errors.Join(requestErrors...)
 }
 
 func latestForecastEpsItem(value *lbfundamental.ForecastEps) (lbfundamental.ForecastEpsItem, bool) {

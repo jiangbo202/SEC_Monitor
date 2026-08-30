@@ -21,6 +21,11 @@
           即将财报 <el-badge :value="upcomingEarningsCount" :hidden="upcomingEarningsCount === 0" class="quick-filter-badge" />
         </el-button>
       </el-form-item>
+      <el-form-item>
+        <el-button :type="filters.has_ten_b5_one ? 'primary' : 'default'" plain @click="toggleTenB5One">
+          10b5-1 计划 <el-badge :value="tenB5OneCount" class="quick-filter-badge" />
+        </el-button>
+      </el-form-item>
       <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
     </el-form>
     <el-table class="target-list-table" :data="rows" v-loading="loading" border size="small" :empty-text="t('pages.targets.empty')">
@@ -426,6 +431,17 @@
               <el-descriptions-item v-if="detailEarningsPreview.preview.event_content" label="提供方说明" :span="2">{{ detailEarningsPreview.preview.event_content }}</el-descriptions-item>
             </el-descriptions>
             <el-alert type="info" :closable="false" show-icon class="target-technical-alert" title="财报日、发布时段与预期值由提供方维护，可能调整；实际披露结果仍以公司公告及 SEC 文件为准。" />
+			<el-divider content-position="left">预期差闭环（严格时点）</el-divider>
+			<el-descriptions :column="3" border size="small">
+			  <el-descriptions-item label="闭环状态">{{ earningsCycleStatusLabel(detailEarningsPreview.cycle?.status) }}</el-descriptions-item>
+			  <el-descriptions-item label="财报前冻结 EPS">{{ formatEarningsValue(detailEarningsPreview.cycle?.frozen_consensus?.eps_estimate, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
+			  <el-descriptions-item label="实际 EPS">{{ formatEarningsValue(detailEarningsPreview.cycle?.actual?.eps_actual, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
+			  <el-descriptions-item label="次日反应">{{ formatSignedPct(detailEarningsPreview.cycle?.price_reaction?.day_1_return_pct) }}</el-descriptions-item>
+			  <el-descriptions-item label="5日反应">{{ formatSignedPct(detailEarningsPreview.cycle?.price_reaction?.day_5_return_pct) }}</el-descriptions-item>
+			  <el-descriptions-item label="预期快照数">{{ detailEarningsPreview.cycle?.timeline?.length || 0 }}</el-descriptions-item>
+			  <el-descriptions-item label="公司指引" :span="3">{{ detailEarningsPreview.cycle?.guidance_message || '尚未结构化覆盖' }}</el-descriptions-item>
+			</el-descriptions>
+			<el-alert v-if="detailEarningsPreview.cycle?.warnings?.length" type="warning" :closable="false" show-icon class="target-technical-alert" :title="earningsCycleWarnings(detailEarningsPreview.cycle.warnings)" />
           </template>
           <el-alert v-else type="info" :closable="false" show-icon :title="detailEarningsPreview?.message || '尚未同步财报预告'" :description="detailEarningsPreview?.preview?.last_error || '可手动刷新当前标的；不会执行 SEC 同步或行情全量请求。'" />
         </div>
@@ -522,6 +538,7 @@ import type { AIAnalysisStructuredResult } from '@/api/types'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
 import type { AnalystRatingView, ApiResponse, CandidateFairValueEstimate, CandidateTechnicalAnalysis, CandidateTechnicalHistoryRow, CompanyProfile, EarningsPreview, EarningsPreviewRefreshResult, EarningsPreviewView, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerInstitutionalHoldingHistory, TickerLookup, TickerTechnicalHistory, TradePlanSimulationRebuildResult, TradePlanSimulationReport, TradeSetupStatusEvent, WatchTarget } from '@/api/types'
+import { targetRouteState } from '@/utils/researchRouteState'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
@@ -575,7 +592,7 @@ const simulationRebuilding = ref(false)
 const simulationReport = ref<TradePlanSimulationReport | null>(null)
 const systemConfigs = ref<SystemConfig[]>([])
 const editingId = ref<number | null>(null)
-const filters = reactive({ ticker: '', status: '', group: '', upcoming_earnings: false })
+const filters = reactive({ ticker: '', status: '', group: '', upcoming_earnings: false, has_ten_b5_one: false })
 const form = reactive({
   ticker: '', company_name: '', cik: '', target_type: 'stock', fund_series_id: '', fund_class_id: '', identity_source: '', group: '', status: 'enabled'
 })
@@ -626,6 +643,15 @@ async function load() {
 
 const upcomingEarningsCount = computed(() => Object.values(earningsPreviews.value).filter((preview) => preview.status === 'scheduled' && earningsDays(preview.report_at) !== null && (earningsDays(preview.report_at) || 0) >= 0).length)
 function toggleUpcomingEarnings() { filters.upcoming_earnings = !filters.upcoming_earnings; page.value = 1; load() }
+
+const tenB5OneCount = ref(0)
+function toggleTenB5One() { filters.has_ten_b5_one = !filters.has_ten_b5_one; page.value = 1; load() }
+async function loadTenB5OneCount() {
+  try {
+    const response = await apiClient.get<ApiResponse<{ count: number }>>('/insider-trading-plans/tickers', { params: { source: 'watch' } })
+    tenB5OneCount.value = response.data.data.count || 0
+  } catch { tenB5OneCount.value = 0 }
+}
 
 async function loadEarningsPreviews() {
   try {
@@ -1249,6 +1275,9 @@ function formatSignedPct(value?: number | null) {
   return Number.isFinite(value) ? `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(1)}%` : '-'
 }
 
+function earningsCycleStatusLabel(value?: string) { return ({ closed: '已闭环', pre_earnings: '财报前跟踪', awaiting_actual: '等待实际值', incomplete: '证据不足' } as Record<string, string>)[value || ''] || '证据不足' }
+function earningsCycleWarnings(values: string[]) { const labels: Record<string, string> = { point_in_time_history_not_yet_available: '尚无时点历史（下一次刷新后开始积累）', pre_report_consensus_missing: '缺少财报前冻结共识', reported_actual_missing: '尚未获得实际值' }; return values.map((item) => labels[item] || item).join('；') }
+
 function formatPct(value?: number | null) {
 	return Number.isFinite(value) ? `${Number(value).toFixed(1)}%` : '-'
 }
@@ -1381,15 +1410,11 @@ function syncIssueSuggestion(target: WatchTarget) {
 }
 
 onMounted(() => {
-  const ticker = route.query.ticker
-  if (typeof ticker === 'string') {
-    filters.ticker = ticker
-  }
-  const status = route.query.status
-  if (typeof status === 'string') {
-    filters.status = status
-  }
+  const state = targetRouteState(route.query)
+  filters.ticker = state.ticker
+  filters.status = state.status
   load()
+	void loadTenB5OneCount()
 	void loadAIProviders()
 })
 onUnmounted(() => { if (targetAIPollingTimer !== undefined) window.clearTimeout(targetAIPollingTimer) })

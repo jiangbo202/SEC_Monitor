@@ -646,3 +646,80 @@ func TestSchedulerMarksDisabledCandidateNotificationAsSkipped(t *testing.T) {
 func nowUTC() time.Time {
 	return time.Now().UTC()
 }
+
+func TestSchedulerRetriesDailyTaskWithoutWaitingForCron(t *testing.T) {
+	db := testDB(t)
+	due := time.Now().UTC().Add(-time.Minute)
+	if err := db.Create(&model.TaskConfig{TaskName: secFilingSyncTaskName, CronExpr: "0 0 * * *", Enabled: true, LastStatus: "failed", RetryNotBefore: &due}).Error; err != nil {
+		t.Fatal(err)
+	}
+	configs := service.NewConfigService(db, service.NewAuditService(db))
+	tasks := service.NewTaskConfigService(db, nil)
+	sched := New(tasks, service.NewFilingService(db, fakeSECClient{}, fakeNotifier{}, configs))
+	if err := sched.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sched.runDueRetries(context.Background(), time.Now().UTC())
+	var execution model.TaskExecution
+	if err := db.Where("task_name = ?", secFilingSyncTaskName).First(&execution).Error; err != nil {
+		t.Fatal(err)
+	}
+	if execution.Trigger != "retry" || execution.Status != "success" {
+		t.Fatalf("retry execution: %+v", execution)
+	}
+	sched.runDueRetries(context.Background(), time.Now().UTC())
+	var count int64
+	db.Model(&model.TaskExecution{}).Count(&count)
+	if count != 1 {
+		t.Fatalf("duplicate retry executed: %d", count)
+	}
+}
+
+func TestSchedulerPersistsOutcomeAfterCancellation(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create(&model.TaskConfig{TaskName: ipoRadarSyncTaskName, CronExpr: "0 0 * * *", Enabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	configs := service.NewConfigService(db, service.NewAuditService(db))
+	client := blockingIPOSECClient{started: make(chan struct{}, 1), unblock: make(chan struct{})}
+	if err := configs.EnsureDefaults(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ipo := service.NewIPORadarService(db, client, fakeNotifier{}, configs)
+	sched := New(service.NewTaskConfigService(db, nil), nil, ipo)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- sched.RunTask(ctx, ipoRadarSyncTaskName) }()
+	select {
+	case <-client.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("task did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("task did not finish")
+	}
+	var task model.TaskConfig
+	db.First(&task)
+	if task.Running || task.LastStatus != "failed" || task.RetryNotBefore == nil {
+		t.Fatalf("canceled task left stale status: %+v", task)
+	}
+	var execution model.TaskExecution
+	db.First(&execution)
+	if execution.Status != "failed" || execution.FinishedAt == nil {
+		t.Fatalf("canceled execution not finalized: %+v", execution)
+	}
+}
+
+func TestResearchWarningsDoNotCauseUnboundedRetries(t *testing.T) {
+	var partial *service.TaskPartialError
+	if err := researchPartialOutcome(5, 5, 0, []string{"EPS 暂无覆盖"}); !errors.As(err, &partial) || partial.Retryable {
+		t.Fatalf("coverage warning retried: %v", err)
+	}
+	if err := researchPartialOutcome(4, 5, 1, []string{"TEST timeout"}); !errors.As(err, &partial) || !partial.Retryable || partial.PendingCount == nil || *partial.PendingCount != 1 {
+		t.Fatalf("missing retry: %v", err)
+	}
+}

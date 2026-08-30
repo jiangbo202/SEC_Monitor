@@ -71,6 +71,7 @@ type WatchTargetMarketSyncResult struct {
 	TargetCount         int                      `json:"target_count"`
 	RequestedCount      int                      `json:"requested_count"`
 	AlreadyCurrentCount int                      `json:"already_current_count"`
+	CoveredCount        int                      `json:"covered_count"`
 	RecordCount         int                      `json:"record_count"`
 	PersistedCount      int                      `json:"persisted_count"`
 	EffectiveDate       string                   `json:"effective_date"`
@@ -1103,6 +1104,7 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	if s == nil || s.db == nil {
 		return DiscoverySyncResult{}, errors.New("discovery sync service is not configured")
 	}
+	planDiscoveryStartedAt := time.Now().UTC()
 	run, err := s.startDiscoverySyncRun("full")
 	if err != nil {
 		return DiscoverySyncResult{}, err
@@ -1166,6 +1168,9 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	}
 	if resume.SecurityBatch.BatchID == "" {
 		s.finishDiscoverySyncStep(securityStep.ID, "completed", securityBatch.RecordCount, nil)
+	}
+	if _, notifyErr := CreateTenB5OnePlanDiscoveryNotifications(context.WithoutCancel(ctx), s.watchDB, s.db, s.inApp, planDiscoveryStartedAt); notifyErr != nil {
+		log.Printf("create first-discovered 10b5-1 inbox notifications: %v", notifyErr)
 	}
 	s.appendSecurityCheckpointSteps(run.ID, securityBatch.BatchID)
 	s.updateDiscoverySyncRun(run.ID, "market_prescreen", securityBatch.BatchID, "")
@@ -1964,6 +1969,7 @@ func (s *DiscoverySyncService) syncEnabledWatchTargetMarketPricesWithProvider(ct
 	}
 	result.AlreadyCurrentCount = currentCount
 	if len(missing) == 0 {
+		result.CoveredCount = currentCount
 		s.recordTickerTradeSetupHistory(ctx, watchTargetTickers(targets))
 		result.Skipped, result.Message = true, fmt.Sprintf("全部 %d 个监控标的已具备 %s 的本地收盘数据，已跳过重复请求", currentCount, result.EffectiveDate)
 		return result, nil
@@ -1986,6 +1992,10 @@ func (s *DiscoverySyncService) syncEnabledWatchTargetMarketPricesWithProvider(ct
 	result.PersistedCount, err = discovery.PersistTechnicalPriceHistory(ctx, s.db, records, "watch-target-daily:"+result.EffectiveDate)
 	if err != nil {
 		return result, fmt.Errorf("persist enabled watch target daily prices: %w", err)
+	}
+	result.CoveredCount, _, err = currentWatchTargetPriceListings(ctx, s.db, listings, effectiveDate)
+	if err != nil {
+		return result, err
 	}
 	s.recordTickerTradeSetupHistory(ctx, watchTargetTickers(targets))
 	result.Message = fmt.Sprintf("已同步 %d 个缺口标的；%d/%d 个监控标的已复用 %s 本地收盘数据", result.RecordCount, result.AlreadyCurrentCount, result.RequestedCount, result.EffectiveDate)

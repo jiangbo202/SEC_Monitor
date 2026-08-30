@@ -103,6 +103,68 @@ func TestParseForm4OwnershipXMLExcludesNonPurchaseAndDerivativeRows(t *testing.T
 	}
 }
 
+func TestParseForm4OwnershipXMLCapturesConfirmedTenB5OneEvidence(t *testing.T) {
+	xml := `<ownershipDocument>
+  <documentType>4</documentType>
+  <aff10b5One>true</aff10b5One>
+  <issuer><issuerCik>0000001234</issuerCik><issuerTradingSymbol>ACME</issuerTradingSymbol></issuer>
+  <reportingOwner>
+    <reportingOwnerId><rptOwnerName>Plan Seller</rptOwnerName></reportingOwnerId>
+    <reportingOwnerRelationship><isOfficer>1</isOfficer><officerTitle>Chief Financial Officer</officerTitle></reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-08-27</value></transactionDate>
+      <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>6034</value></transactionShares>
+        <transactionPricePerShare><value>66.65</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+  <footnotes><footnote id="F1">The transaction was effected pursuant to a Rule 10b5-1 trading plan adopted on September 19, 2025.</footnote></footnotes>
+</ownershipDocument>`
+
+	transactions, err := ParseForm4OwnershipXML(strings.NewReader(xml), "0000001234-26-000010", "https://www.sec.gov/form4.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transactions) != 1 {
+		t.Fatalf("transactions = %#v", transactions)
+	}
+	tx := transactions[0]
+	if !tx.IsTenB5One || tx.TenB5OneStatus != TenB5OneStatusConfirmed || tx.TenB5OneEvidenceSource != "form4_checkbox" {
+		t.Fatalf("10b5-1 classification = %#v", tx)
+	}
+	wantDate := time.Date(2025, 9, 19, 0, 0, 0, 0, time.UTC)
+	if tx.TenB5OnePlanAdoptionDate == nil || !tx.TenB5OnePlanAdoptionDate.Equal(wantDate) || !strings.Contains(tx.TenB5OneEvidence, "Rule 10b5-1") {
+		t.Fatalf("10b5-1 evidence = %#v", tx)
+	}
+}
+
+func TestParseForm4OwnershipXMLUsesExplicitLegacyPlanFootnote(t *testing.T) {
+	xml := `<ownershipDocument>
+  <documentType>4</documentType>
+  <issuer><issuerCik>0000001234</issuerCik></issuer>
+  <reportingOwner><reportingOwnerId><rptOwnerName>Legacy Seller</rptOwnerName></reportingOwnerId><reportingOwnerRelationship><officerTitle>CEO</officerTitle></reportingOwnerRelationship></reportingOwner>
+  <nonDerivativeTable><nonDerivativeTransaction>
+    <transactionDate><value>2022-08-01</value></transactionDate>
+    <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+    <transactionAmounts><transactionShares><value>10</value></transactionShares><transactionPricePerShare><value>5</value></transactionPricePerShare><transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode></transactionAmounts>
+  </nonDerivativeTransaction></nonDerivativeTable>
+  <footnotes><footnote id="F1">Shares sold pursuant to the reporting person's Rule 10b5-1 plan.</footnote></footnotes>
+</ownershipDocument>`
+
+	transactions, err := ParseForm4OwnershipXML(strings.NewReader(xml), "0000001234-22-000010", "https://www.sec.gov/form4.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transactions) != 1 || !transactions[0].IsTenB5One || transactions[0].TenB5OneEvidenceSource != "form4_footnote" {
+		t.Fatalf("legacy footnote classification = %#v", transactions)
+	}
+}
+
 func TestParseForm4OwnershipXMLFounderTitleRequiresConfirmation(t *testing.T) {
 	xml := `<ownershipDocument>
   <documentType>4</documentType>
@@ -139,6 +201,130 @@ func TestInsiderTransactionSnapshotUsesMicros(t *testing.T) {
 	row := InsiderTransactionToSnapshot(7, tx, date)
 	if row.SecurityID != 7 || row.SharesMicros != 12_500_000 || row.PriceMicros != 2_250_000 || row.ValueMicros != 28_125_000 || row.SharesOwnedBeforeMicros != 87_500_000 || row.ParserVersion != InsiderParserVersion {
 		t.Fatalf("snapshot = %#v", row)
+	}
+}
+
+func TestPersistInsiderSnapshotsBackfillsTenB5OneEvidenceOnResync(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0000001234", CompanyName: "Plan Corp"}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	coordinator := Coordinator{DB: db}
+	date := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
+	tx := InsiderTransaction{
+		CIK: security.CIK, Accession: "0000001234-26-000010", OwnerName: "Plan Seller", Role: InsiderRoleCFO,
+		TransactionDate: date, TransactionCode: "S", AcquiredDisposedCode: "D", Shares: 10, PricePerShareUSD: 5, ValueUSD: 50,
+		TenB5OneStatus: TenB5OneStatusNotDisclosed,
+	}
+	byCIK := map[string][]InsiderTransaction{security.CIK: {tx}}
+	if err := coordinator.persistInsiderSnapshots(context.Background(), "security-old-parser", map[string]uint{security.CIK: security.ID}, byCIK, date); err != nil {
+		t.Fatal(err)
+	}
+	adopted := time.Date(2025, 9, 19, 0, 0, 0, 0, time.UTC)
+	tx.IsTenB5One = true
+	tx.TenB5OneStatus = TenB5OneStatusConfirmed
+	tx.TenB5OnePlanAdoptionDate = &adopted
+	tx.TenB5OneEvidenceSource = "form4_checkbox"
+	tx.TenB5OneEvidence = "Executed pursuant to a Rule 10b5-1 plan."
+	byCIK[security.CIK] = []InsiderTransaction{tx}
+	if err := coordinator.persistInsiderSnapshots(context.Background(), "security-new-parser", map[string]uint{security.CIK: security.ID}, byCIK, date.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var row InsiderTransactionSnapshot
+	if err := db.First(&row, "security_id = ?", security.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !row.IsTenB5One || row.TenB5OneStatus != TenB5OneStatusConfirmed || row.TenB5OnePlanAdoptionDate == nil || !row.TenB5OnePlanAdoptionDate.Equal(adopted) || row.ParserVersion != InsiderParserVersion {
+		t.Fatalf("resynced snapshot = %#v", row)
+	}
+}
+
+func TestReconcileInsiderTradingPlansLinksExecutionsAndKeepsUnknownCapacity(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0000004321", CompanyName: "Plan Registry Corp"}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	adopted := time.Date(2025, 9, 19, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)
+	rows := []InsiderTransactionSnapshot{
+		{SecurityID: security.ID, IdentitySHA256: "plan-lot-1", Accession: "a1", OwnerName: "Jane Seller", OfficerTitle: "CFO", TransactionDate: now.AddDate(0, 0, -2), TransactionCode: "S", AcquiredDisposedCode: "D", SharesMicros: 6_000_000_000, ValueMicros: 300_000_000_000, IsTenB5One: true, TenB5OneStatus: TenB5OneStatusConfirmed, TenB5OnePlanAdoptionDate: &adopted, TenB5OneEvidence: "Rule 10b5-1 plan adopted September 19, 2025."},
+		{SecurityID: security.ID, IdentitySHA256: "plan-lot-2", Accession: "a2", OwnerName: " Jane   Seller ", OfficerTitle: "CFO", TransactionDate: now.AddDate(0, 0, -1), TransactionCode: "S", AcquiredDisposedCode: "D", SharesMicros: 4_000_000_000, ValueMicros: 220_000_000_000, IsTenB5One: true, TenB5OneStatus: TenB5OneStatusConfirmed, TenB5OnePlanAdoptionDate: &adopted},
+		{SecurityID: security.ID, IdentitySHA256: "unknown-plan", Accession: "a3", OwnerName: "Other Seller", TransactionDate: now, TransactionCode: "S", AcquiredDisposedCode: "D", SharesMicros: 1_000_000_000, IsTenB5One: true, TenB5OneStatus: TenB5OneStatusConfirmed},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ReconcileInsiderTradingPlans(db, []uint{security.ID}, now); err != nil {
+		t.Fatal(err)
+	}
+	var plans []InsiderTradingPlan
+	if err := db.Find(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("plans = %#v", plans)
+	}
+	plan := plans[0]
+	if plan.ExecutionCount != 2 || plan.ExecutedSharesMicros != 10_000_000_000 || plan.ExecutedValueMicros != 520_000_000_000 || plan.MaximumSharesKnown || plan.RemainingSharesKnown {
+		t.Fatalf("plan aggregate = %#v", plan)
+	}
+	var linked, unlinked InsiderTransactionSnapshot
+	if err := db.First(&linked, "identity_sha256 = ?", "plan-lot-1").Error; err != nil {
+		t.Fatal(err)
+	}
+	if linked.TenB5OnePlanID == nil || linked.TenB5OneLinkConfidence != InsiderPlanConfidenceConfirmed {
+		t.Fatalf("linked = %#v", linked)
+	}
+	if err := db.First(&unlinked, "identity_sha256 = ?", "unknown-plan").Error; err != nil {
+		t.Fatal(err)
+	}
+	if unlinked.TenB5OnePlanID != nil || unlinked.TenB5OneLinkConfidence != InsiderPlanLinkUnlinked {
+		t.Fatalf("unlinked = %#v", unlinked)
+	}
+	if err := ReconcileInsiderTradingPlans(db, []uint{security.ID}, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var eventCount int64
+	if err := db.Model(&InsiderTradingPlanEvent{}).Count(&eventCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 2 {
+		t.Fatalf("event count = %d", eventCount)
+	}
+}
+
+func TestParseForm144PlanXMLCapturesAdoptionWithoutInventingPlanMaximum(t *testing.T) {
+	xmlBody := `<edgarSubmission><formData><issuerInfo><issuerCik>0001118676</issuerCik><nameOfPersonForWhoseAccountTheSecuritiesAreToBeSold>Jan Seller</nameOfPersonForWhoseAccountTheSecuritiesAreToBeSold><relationshipsToIssuer><relationshipToIssuer>Officer</relationshipToIssuer></relationshipsToIssuer></issuerInfo><securitiesInformation><noOfUnitsSold>17087</noOfUnitsSold><aggregateMarketValue>1282000.00</aggregateMarketValue><approxSaleDate>08/27/2026</approxSaleDate></securitiesInformation><noticeSignature><noticeDate>08/20/2026</noticeDate><planAdoptionDates><planAdoptionDate>09/19/2025</planAdoptionDate><planAdoptionDate>09/19/2025</planAdoptionDate></planAdoptionDates></noticeSignature></formData></edgarSubmission>`
+	disclosures, err := ParseForm144PlanXML(strings.NewReader(xmlBody), "0001118676-26-000001", "https://www.sec.gov/form144.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disclosures) != 1 || disclosures[0].OwnerName != "Jan Seller" || disclosures[0].ProposedShares != 17087 || disclosures[0].ProposedMarketValueUSD != 1282000 || disclosures[0].AdoptionDate.Format(time.DateOnly) != "2025-09-19" {
+		t.Fatalf("disclosures = %#v", disclosures)
+	}
+	db := openMigratedTestDatabase(t)
+	security := Security{CIK: "0001118676", CompanyName: "Form 144 Corp"}
+	if err := db.Create(&security).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertInsiderPlanDisclosures(db, map[string]uint{security.CIK: security.ID}, disclosures, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	var plan InsiderTradingPlan
+	if err := db.First(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	if plan.PrimarySourceForm != "144" || plan.MaximumSharesKnown || plan.RemainingSharesKnown || plan.Status != InsiderPlanStatusActive {
+		t.Fatalf("plan = %#v", plan)
+	}
+	var event InsiderTradingPlanEvent
+	if err := db.First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.EventType != InsiderPlanEventSaleNotice || event.SharesMicros != 17_087_000_000 {
+		t.Fatalf("event = %#v", event)
 	}
 }
 

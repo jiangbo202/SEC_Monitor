@@ -71,3 +71,28 @@ type CandidateEarningsPreview struct {
 }
 
 func (CandidateEarningsPreview) TableName() string { return "candidate_earnings_previews" }
+
+// EarningsExpectationSnapshot is append-only. It freezes the provider values
+// visible at one point in time so an earnings outcome can never be compared
+// with a consensus fetched after the report.
+type EarningsExpectationSnapshot struct {
+	ID                uint       `gorm:"primaryKey" json:"id"`
+	TargetID          uint       `gorm:"not null;index;uniqueIndex:idx_earnings_expectation_identity,priority:1" json:"target_id"`
+	Ticker            string     `gorm:"size:32;not null;index" json:"ticker"`
+	EventKey          string     `gorm:"size:255;index" json:"event_key,omitempty"`
+	FiscalYear        int        `json:"fiscal_year,omitempty"`
+	FiscalPeriod      string     `gorm:"size:32" json:"fiscal_period,omitempty"`
+	ReportAt          *time.Time `gorm:"index" json:"report_at,omitempty"`
+	Currency          string     `gorm:"size:16" json:"currency,omitempty"`
+	EPSEstimate       *float64   `json:"eps_estimate,omitempty"`
+	EPSActual         *float64   `json:"eps_actual,omitempty"`
+	RevenueEstimate   *float64   `json:"revenue_estimate,omitempty"`
+	RevenueActual     *float64   `json:"revenue_actual,omitempty"`
+	Provider          string     `gorm:"size:32;not null" json:"provider"`
+	ProviderUpdatedAt *time.Time `json:"provider_updated_at,omitempty"`
+	FetchedAt         time.Time  `gorm:"not null;index" json:"fetched_at"`
+	SnapshotHash      string     `gorm:"size:64;not null;uniqueIndex:idx_earnings_expectation_identity,priority:2" json:"snapshot_hash"`
+	CreatedAt         time.Time  `json:"created_at"`
+}
+
+func (EarningsExpectationSnapshot) TableName() string { return "earnings_expectation_snapshots" }

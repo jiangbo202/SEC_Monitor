@@ -115,7 +115,7 @@
             <span>事件通知渠道</span>
             <div class="panel-header-actions">
               <el-tag effect="plain">站内 {{ inAppNotificationEnabledCount }} / {{ notificationChannelRows.length }}</el-tag>
-              <el-tag effect="plain">Telegram {{ telegramNotificationEnabledCount }} / {{ notificationChannelRows.length }}</el-tag>
+              <el-tag effect="plain">Telegram {{ telegramNotificationEnabledCount }} / {{ telegramNotificationRowCount }}</el-tag>
             </div>
           </div>
         </template>
@@ -127,7 +127,10 @@
             <template #default="{ row }"><el-checkbox :model-value="notificationChannelEnabled('in_app', row.key)" @change="setNotificationChannelEnabled('in_app', row.key, $event)">启用</el-checkbox></template>
           </el-table-column>
           <el-table-column label="Telegram" width="140" align="center">
-            <template #default="{ row }"><el-checkbox :model-value="notificationChannelEnabled('telegram', row.key)" @change="setNotificationChannelEnabled('telegram', row.key, $event)">启用</el-checkbox></template>
+            <template #default="{ row }">
+              <el-checkbox v-if="!row.inAppOnly" :model-value="notificationChannelEnabled('telegram', row.key)" @change="setNotificationChannelEnabled('telegram', row.key, $event)">启用</el-checkbox>
+              <span v-else class="muted">仅站内</span>
+            </template>
           </el-table-column>
         </el-table>
         <el-alert title="两个渠道独立控制，仅影响后续事件。关闭 Telegram 后不会发送，并会在通知日志记录“按事件频道关闭”；Telegram 仍需启用机器人，且原有范围、阈值、静默时段规则继续生效。" type="info" :closable="false" show-icon />
@@ -652,6 +655,10 @@
             <el-input v-model="systemForm.backup_dir" :placeholder="t('pages.configs.backupDirectoryPlaceholder')" />
             <span class="form-help">{{ t('pages.configs.backupDirectoryHint') }}</span>
           </el-form-item>
+          <el-form-item label="异地备份目录">
+            <el-input v-model="systemForm.backup_replica_dir" placeholder="例如 /mnt/nas/sec-monitor 或 /mnt/object-storage/sec-monitor" />
+            <span class="form-help">每次本地双库快照通过校验后，原子复制并再次校验到该目录。请挂载独立磁盘、NAS或受控对象存储目录；不能与本地备份目录相同。</span>
+          </el-form-item>
           <el-form-item :label="t('pages.configs.storageWarningPct')">
             <el-input-number v-model="systemForm.storage_warning_pct" :min="1" :max="100" />
           </el-form-item>
@@ -762,7 +769,7 @@ function applyRequestedSection(value: unknown) {
 }
 
 const secForm = reactive({ user_agent: '', initial_fetch_days: 30, sync_window_days: 30, max_fetch_count: 300, fetch_full_history: false })
-const systemForm = reactive({ data_retention_days: 30, storage_by_day: false, backup_retention_days: 7, operation_history_retention_days: 90, backup_dir: '', storage_warning_pct: 80 })
+const systemForm = reactive({ data_retention_days: 30, storage_by_day: false, backup_retention_days: 7, operation_history_retention_days: 90, backup_dir: '', backup_replica_dir: '', storage_warning_pct: 80 })
 const uiForm = reactive<{ default_locale: Locale }>({ default_locale: 'zh-CN' })
 const notificationForm = reactive({
   important_only: false,
@@ -782,6 +789,7 @@ const inAppNotificationForm = reactive({
   candidate_earnings_preview_enabled: true,
   candidate_earnings_release_enabled: true,
   candidate_technical_signal_enabled: true,
+  ten_b5_one_plan_discovered_enabled: true,
   ipo_progress_enabled: true,
   ai_analysis_enabled: true,
 })
@@ -795,11 +803,14 @@ const telegramNotificationForm = reactive({
   candidate_earnings_preview_enabled: true,
   candidate_earnings_release_enabled: true,
   candidate_technical_signal_enabled: true,
+  ten_b5_one_plan_discovered_enabled: false,
   ipo_progress_enabled: true,
   ai_analysis_enabled: false,
 })
 const telegramNotificationEnabledCount = computed(() => Object.values(telegramNotificationForm).filter(Boolean).length)
-const notificationChannelRows = [
+type NotificationChannelKey = keyof typeof inAppNotificationForm
+type NotificationChannelRow = { menu: string; key: NotificationChannelKey; legacyKey: string; label: string; description: string; inAppOnly?: boolean }
+const notificationChannelRows: NotificationChannelRow[] = [
   { menu: '监控标的', key: 'watch_target_earnings_preview_enabled', legacyKey: 'earnings_preview_enabled', label: '财报预告', description: '监控标的的财报日期新增、变更或进入提醒窗口' },
   { menu: '监控标的', key: 'watch_target_earnings_release_enabled', legacyKey: 'earnings_release_enabled', label: '财报已发布', description: '监控标的的 SEC 定期财报或可识别的业绩公告' },
   { menu: '监控标的', key: 'watch_target_technical_signal_enabled', legacyKey: 'technical_signal_enabled', label: '技术信号变化', description: '监控标的出现入场候选、离场预警或趋势失效' },
@@ -808,10 +819,11 @@ const notificationChannelRows = [
   { menu: '小盘候选', key: 'candidate_earnings_preview_enabled', legacyKey: 'earnings_preview_enabled', label: '财报预告', description: '小盘候选的财报日期新增、变更或进入提醒窗口' },
   { menu: '小盘候选', key: 'candidate_earnings_release_enabled', legacyKey: 'earnings_release_enabled', label: '财报已发布', description: '小盘候选对应的 SEC 定期财报或业绩公告' },
   { menu: '小盘候选', key: 'candidate_technical_signal_enabled', legacyKey: 'technical_signal_enabled', label: '技术信号变化', description: '小盘候选出现入场候选、离场预警或趋势失效' },
+  { menu: '标的列表', key: 'ten_b5_one_plan_discovered_enabled', legacyKey: 'ten_b5_one_plan_discovered_enabled', label: '首次发现计划', description: '任务首次确认当前监控标的或小盘候选存在 10b5-1 计划时发送站内消息', inAppOnly: true },
   { menu: 'IPO监控', key: 'ipo_progress_enabled', legacyKey: 'ipo_progress_enabled', label: '关注 IPO 进展', description: '仅已关注 IPO 公司出现新文件或关键状态、代码、交易所、定价变化时通知' },
   { menu: 'AI研判', key: 'ai_analysis_enabled', legacyKey: 'ai_analysis_enabled', label: 'AI 任务完成', description: '手动提交的 AI 研判在后台成功或失败后通知；可跳转查看结果' },
-] as const
-type NotificationChannelKey = typeof notificationChannelRows[number]['key']
+]
+const telegramNotificationRowCount = computed(() => notificationChannelRows.filter((row) => !row.inAppOnly).length)
 
 function notificationChannelEnabled(channel: 'in_app' | 'telegram', key: string) {
   const normalized = key as NotificationChannelKey
@@ -1082,6 +1094,7 @@ async function load() {
 		systemForm.backup_retention_days = Number(configValue(configs, 'system.backup_retention_days', '7'))
 		systemForm.operation_history_retention_days = Number(configValue(configs, 'system.operation_history_retention_days', '90'))
     systemForm.backup_dir = configValue(configs, 'system.backup_dir', '')
+    systemForm.backup_replica_dir = configValue(configs, 'system.backup_replica_dir', '')
     systemForm.storage_warning_pct = Number(configValue(configs, 'system.storage_warning_pct', '80'))
     uiForm.default_locale = localeValue(configValue(configs, 'ui.default_locale', 'zh-CN'))
     notificationForm.important_only = configValue(configs, 'notification.important_only', 'false') === 'true'
@@ -1098,7 +1111,7 @@ async function load() {
     }
     for (const row of notificationChannelRows) {
       inAppNotificationForm[row.key] = configValue(configs, `in_app_notification.${row.key}`, configValue(configs, `in_app_notification.${row.legacyKey}`, 'true')) === 'true'
-      telegramNotificationForm[row.key] = configValue(configs, `telegram_notification.${row.key}`, configValue(configs, `telegram_notification.${row.legacyKey}`, 'true')) === 'true'
+      telegramNotificationForm[row.key] = row.inAppOnly ? false : configValue(configs, `telegram_notification.${row.key}`, configValue(configs, `telegram_notification.${row.legacyKey}`, 'true')) === 'true'
     }
     candidateNotificationForm.enabled = configValue(configs, 'candidate_notification.enabled', 'false') === 'true'
     candidateNotificationForm.shadow_mode = configValue(configs, 'candidate_notification.shadow_mode', 'false') === 'true'
@@ -1192,6 +1205,7 @@ async function save() {
       { key: 'system.backup_retention_days', value: String(systemForm.backup_retention_days), value_type: 'int', category: 'system', encrypted: false },
 			{ key: 'system.operation_history_retention_days', value: String(systemForm.operation_history_retention_days), value_type: 'int', category: 'system', encrypted: false },
       { key: 'system.backup_dir', value: systemForm.backup_dir, value_type: 'string', category: 'system', encrypted: false },
+      { key: 'system.backup_replica_dir', value: systemForm.backup_replica_dir, value_type: 'string', category: 'system', encrypted: false },
       { key: 'system.storage_warning_pct', value: String(systemForm.storage_warning_pct), value_type: 'int', category: 'system', encrypted: false },
       { key: 'ui.default_locale', value: uiForm.default_locale, value_type: 'string', category: 'ui', encrypted: false },
       { key: 'notification.important_only', value: String(notificationForm.important_only), value_type: 'bool', category: 'notification', encrypted: false },
@@ -1201,7 +1215,7 @@ async function save() {
       { key: 'notification.quiet_hours_start', value: notificationForm.quiet_hours_start, value_type: 'string', category: 'notification', encrypted: false },
       { key: 'notification.quiet_hours_end', value: notificationForm.quiet_hours_end, value_type: 'string', category: 'notification', encrypted: false },
       ...notificationChannelRows.map((row) => ({ key: `in_app_notification.${row.key}`, value: String(inAppNotificationForm[row.key]), value_type: 'bool', category: 'in_app_notification', encrypted: false })),
-      ...notificationChannelRows.map((row) => ({ key: `telegram_notification.${row.key}`, value: String(telegramNotificationForm[row.key]), value_type: 'bool', category: 'telegram_notification', encrypted: false })),
+      ...notificationChannelRows.filter((row) => !row.inAppOnly).map((row) => ({ key: `telegram_notification.${row.key}`, value: String(telegramNotificationForm[row.key]), value_type: 'bool', category: 'telegram_notification', encrypted: false })),
       { key: 'candidate_notification.enabled', value: String(candidateNotificationForm.enabled), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.shadow_mode', value: String(candidateNotificationForm.shadow_mode), value_type: 'bool', category: 'candidate_notification', encrypted: false },
       { key: 'candidate_notification.notify_a', value: String(candidateNotificationForm.notify_a), value_type: 'bool', category: 'candidate_notification', encrypted: false },

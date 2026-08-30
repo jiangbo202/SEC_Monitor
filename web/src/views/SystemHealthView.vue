@@ -12,7 +12,8 @@
       <el-card shadow="never" class="kpi-card">
         <div class="metric">
           <span>{{ t('common.status') }}</span>
-          <strong>{{ health?.status === 'ok' ? t('pages.systemHealth.statusOk') : t('pages.systemHealth.statusWarning') }}</strong>
+          <strong>{{ health?.status === 'ok' && operational?.status === 'ok' ? t('pages.systemHealth.statusOk') : t('pages.systemHealth.statusWarning') }}</strong>
+          <span v-if="operational?.tasks.some(task => task.enabled && task.last_status === 'partial')">有任务部分完成，请查看下方运行健康</span>
         </div>
       </el-card>
       <el-card shadow="never" class="kpi-card">
@@ -88,7 +89,15 @@
           <span>{{ t('pages.systemHealth.backupPairs', { count: health.backup.complete_pairs }) }}</span>
 			<span>备份占用 {{ formatBytes(health.backup.total_bytes) }}（最新一组 {{ formatBytes(health.backup.latest_pair_bytes) }}）</span>
           <span v-if="health.backup.incomplete_pairs">{{ t('pages.systemHealth.backupIncompletePairs', { count: health.backup.incomplete_pairs }) }}</span>
+          <span><el-tag :type="health.backup.replica?.status === 'ready' ? 'info' : 'warning'" effect="plain">备份副本 {{ health.backup.replica?.enabled ? (health.backup.replica.status === 'ready' ? '文件齐全' : '需处理') : '未配置' }}</el-tag></span>
+          <span v-if="health.backup.replica?.latest_completed">最近副本 {{ formatDateTime(health.backup.replica.latest_completed) }} · {{ health.backup.replica.complete_pairs }} 组（同盘目录不等于异地容灾）</span>
           <span v-if="health.recovery_drill?.id">{{ t('pages.systemHealth.lastRecoveryDrill', { status: health.recovery_drill.status, time: formatDateTime(health.recovery_drill.started_at) }) }}</span>
+          <el-tooltip v-if="health.recovery_drill?.id" :content="health.recovery_drill.local_reason || '最近一次本地隔离恢复演练'">
+            <el-tag :type="health.recovery_drill.local_status === 'ready' ? 'success' : 'warning'">本地恢复 {{ recoveryStatusLabel(health.recovery_drill.local_status) }}</el-tag>
+          </el-tooltip>
+          <el-tooltip v-if="health.recovery_drill?.id" :content="health.recovery_drill.replica_reason || '最近一次副本隔离恢复演练'">
+            <el-tag :type="health.recovery_drill.replica_status === 'ready' ? 'success' : 'warning'">副本恢复 {{ recoveryStatusLabel(health.recovery_drill.replica_status) }}</el-tag>
+          </el-tooltip>
           <el-button size="small" :loading="verifyingBackup" @click="verifyLatestBackup">{{ t('pages.systemHealth.recoveryCheck') }}</el-button>
 			<el-button size="small" type="warning" :loading="compacting" @click="compactDatabases">{{ t('pages.systemHealth.compactDatabases') }}</el-button>
 			<span v-if="latestCompaction?.id">{{ t('pages.systemHealth.lastCompaction', { status: latestCompaction.status, time: formatDateTime(latestCompaction.started_at), size: formatBytes(compactionReclaimedBytes(latestCompaction)) }) }}</span>
@@ -274,19 +283,23 @@ async function notifyOperational() {
 async function verifyLatestBackup() {
 	verifyingBackup.value = true
 	try {
-		const res = await apiClient.post<ApiResponse<SQLiteRecoveryReadiness>>('/system/backups/recovery-check')
+		const res = await apiClient.post<ApiResponse<SQLiteRecoveryReadiness>>('/system/backups/recovery-check', null, { timeout: 1_250_000 })
 		const result = res.data.data
+    await load()
 		if (result.status !== 'ready') {
 			ElMessage.warning(result.reason || t('pages.systemHealth.backupRecoveryUnavailable'))
 			return
 		}
 		ElMessage.success(t('pages.systemHealth.backupVerifySuccess'))
-    await load()
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.message || error?.message || t('common.error'))
   } finally {
     verifyingBackup.value = false
   }
+}
+
+function recoveryStatusLabel(status?: string) {
+  return ({ ready: '通过', failed: '未通过', unavailable: '不可用', disabled: '未配置' } as Record<string, string>)[status || ''] || '尚未验证'
 }
 
 function formatBytes(value: number) {

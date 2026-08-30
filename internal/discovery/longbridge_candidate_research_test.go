@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,14 +12,15 @@ import (
 )
 
 type fakeLongbridgeCandidateResearchClient struct {
-	forecast     *lbfundamental.ForecastEps
-	anomalies    *lbmarket.AnomalyResponse
-	shareholders *lbfundamental.ShareholderList
-	fundHolders  *lbfundamental.FundHolders
+	forecast      *lbfundamental.ForecastEps
+	anomalies     *lbmarket.AnomalyResponse
+	shareholders  *lbfundamental.ShareholderList
+	fundHolders   *lbfundamental.FundHolders
+	forecastError error
 }
 
 func (f *fakeLongbridgeCandidateResearchClient) ForecastEps(context.Context, string) (*lbfundamental.ForecastEps, error) {
-	return f.forecast, nil
+	return f.forecast, f.forecastError
 }
 func (f *fakeLongbridgeCandidateResearchClient) Anomaly(context.Context, string) (*lbmarket.AnomalyResponse, error) {
 	return f.anomalies, nil
@@ -28,6 +30,19 @@ func (f *fakeLongbridgeCandidateResearchClient) Shareholder(context.Context, str
 }
 func (f *fakeLongbridgeCandidateResearchClient) FundHolder(context.Context, string) (*lbfundamental.FundHolders, error) {
 	return f.fundHolders, nil
+}
+
+func TestResearchRequestFailureIsNotSuccessfulNoCoverage(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	client := &fakeLongbridgeCandidateResearchClient{forecastError: errors.New("provider timeout")}
+	options := LongbridgeCandidateResearchOptions{AppKey: "key", AppSecret: "secret", AccessToken: "token", NewClient: func(_, _, _ string) (longbridgeCandidateResearchClient, error) { return client, nil }}
+	if _, err := refreshLongbridgeCandidateMarketResearch(context.Background(), db, "TEST", "", options); err == nil {
+		t.Fatal("request failure was swallowed as a coverage warning")
+	}
+	client.forecastError = nil
+	if _, err := refreshLongbridgeCandidateMarketResearch(context.Background(), db, "TEST", "", options); err != nil {
+		t.Fatalf("empty successful response should remain no-coverage: %v", err)
+	}
 }
 
 func TestRefreshLongbridgeCandidateMarketResearchPersistsEvidenceAndEPSRevision(t *testing.T) {

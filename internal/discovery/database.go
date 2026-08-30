@@ -105,6 +105,9 @@ func Migrate(db *gorm.DB) error {
 			&FinancialFactSnapshot{},
 			&FinancialMetricSnapshot{},
 			&InsiderTransactionSnapshot{},
+			&InsiderTradingPlan{},
+			&InsiderTradingPlanEvent{},
+			&InsiderPlanDocumentReceipt{},
 			&InsiderCoverageSnapshot{},
 			&SECFilingSnapshot{},
 			&CapitalRiskSnapshot{},
@@ -119,6 +122,8 @@ func Migrate(db *gorm.DB) error {
 			&CandidateWatch{},
 			&CandidateResearchMemoVersion{},
 			&CandidateResearchPosition{},
+			&ResearchTradeDecision{},
+			&ResearchTradeExecution{},
 			&TradeSetupStatusEvent{},
 			&TradePlanSimulation{},
 			&BatchShareSelection{},
@@ -130,6 +135,15 @@ func Migrate(db *gorm.DB) error {
 		}
 		if err := migrateInsiderTransactionIdentity(tx); err != nil {
 			return err
+		}
+		var planSecurityIDs []uint
+		if err := tx.Model(&InsiderTransactionSnapshot{}).
+			Where("is_ten_b5_one = ? AND ten_b5_one_plan_adoption_date IS NOT NULL", true).
+			Distinct("security_id").Pluck("security_id", &planSecurityIDs).Error; err != nil {
+			return fmt.Errorf("load 10b5-1 plan backfill scope: %w", err)
+		}
+		if err := ReconcileInsiderTradingPlans(tx, planSecurityIDs, time.Now().UTC()); err != nil {
+			return fmt.Errorf("backfill 10b5-1 plan registry: %w", err)
 		}
 		// Discovery workflows share the same mutable security/market workspace.
 		// Keep the exclusion rule in SQLite rather than only in a process mutex so

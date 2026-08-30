@@ -1480,11 +1480,11 @@ func TestSecurityInputNormalizationIsPermutationInvariantAndRejectsConflicts(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	h1, err := hashSecurityInputs(one, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil, nil, nil)
+	h1, err := hashSecurityInputs(one, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2, err := hashSecurityInputs(two, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil, nil, nil)
+	h2, err := hashSecurityInputs(two, []ShareFact{{CIK: a.CIK, Accession: "a", Instant: now}}, nil, nil, nil, nil, nil, nil)
 	if err != nil || h1 != h2 {
 		t.Fatalf("hashes=%s/%s err=%v", h1, h2, err)
 	}

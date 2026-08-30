@@ -55,6 +55,7 @@ type CandidateScoreQuery struct {
 	UpcomingEarningsTickers []string
 	UpcomingEarningsOnly    bool
 	FollowedOnly            bool
+	HasTenB5One             bool
 }
 
 type RevenueGrowthExplanation struct {
@@ -295,6 +296,10 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		return result, err
 	}
 	query := db.WithContext(ctx).Model(&CandidateScoreSnapshot{}).Where("batch_id = ?", batch.BatchID)
+	if filter.HasTenB5One {
+		query = query.Where("security_id IN (?)", db.WithContext(ctx).Model(&InsiderTradingPlan{}).
+			Select("security_id").Where("status IN ?", []string{InsiderPlanStatusActive, InsiderPlanStatusExecuting}))
+	}
 	if ticker := strings.ToUpper(strings.TrimSpace(filter.Ticker)); ticker != "" {
 		query = query.Where("ticker = ?", ticker)
 	}
