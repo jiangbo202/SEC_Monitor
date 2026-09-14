@@ -220,6 +220,7 @@ function formatDateTime(value?: string | null) {
 
 function taskStatusType(value: string) {
   if (value === 'success') return 'success'
+  if (value === 'degraded') return 'warning'
   if (value === 'partial') return 'warning'
   if (value === 'skipped') return 'info'
   if (value === 'failed') return 'danger'
@@ -236,6 +237,7 @@ function taskLabel(value: string) {
   const labels: Record<string, string> = {
     watch_target_market_sync: '监控标的每日行情同步',
     watch_target_earnings_sync: '监控标的财报预告同步',
+    price_action_cycle_replay: '价格周期历史回放',
     small_cap_discovery_sync: '小盘候选每日同步',
     small_cap_discovery_full_sync: '小盘候选全量校准',
     sec_filing_sync: 'SEC 公告同步',
@@ -250,6 +252,7 @@ function taskLabel(value: string) {
     longbridge_candidate_valuation_sync: 'Longbridge P2 候选估值研究',
     longbridge_watch_target_valuation_sync: 'Longbridge 监控标的估值研究',
     longbridge_watch_target_research_sync: 'Longbridge 监控标的机构持仓研究',
+    sqlite_recovery_drill: 'SQLite 恢复演练',
   }
   return labels[value] || value
 }
@@ -265,6 +268,7 @@ function taskDescription(value: string) {
     small_cap_discovery_full_sync: '每周全量校准 SEC/Nasdaq 候选宇宙，用于修复身份变化和遗漏。',
     watch_target_market_sync: '美股收盘后同步监控标的日线，供持仓与技术指标使用。',
     watch_target_earnings_sync: '同步监控标的及当前候选的 Longbridge 财报日历和市场预期。',
+    price_action_cycle_replay: '在收盘日线同步后，基于本地 OHLC 与 IWM 基准重放三套价格行为规则并刷新效果验证；不会访问外部数据源。',
     market_trend_sync: '美股收盘后从 Longbridge 更新大盘、VIX 和板块 ETF 日线。',
     us_futures_sync: '更新美股指数、商品及国债连续期货日线；来源为 Yahoo Finance，失败不影响 Longbridge 数据。',
     macro_calendar_sync: '在美国宏观数据常见发布时间后刷新官方日历、实际值和 Longbridge 日历补充。',
@@ -276,6 +280,7 @@ function taskDescription(value: string) {
     trade_setup_notification_sync: '按交易计划状态生成入场、退出或失效提醒；通知功能关闭时不会发送。',
     notification_retry_sync: '重试到期但此前发送失败的通知，不重新拉取市场或 SEC 数据。',
     sqlite_backup: '备份主库与小盘研究库；安排在日常数据任务完成后，避免影响数据更新。',
+    sqlite_recovery_drill: '每周只读打开最新本地与副本备份，验证双库快照可以独立恢复；不会替换在线数据库。',
     operation_history_cleanup: '清理过期运行、诊断和通知历史，不删除行情、候选或 SEC 数据。',
     operational_health_notification_sync: '每日生成运行健康摘要；仅在启用 Telegram 后发送去重告警，未配置时会安全跳过外发。'
   }
@@ -284,7 +289,7 @@ function taskDescription(value: string) {
 
 function taskDomain(value: string) {
   if (value.startsWith('ipo_')) return 'IPO'
-  if (value.includes('small_cap') || value.includes('candidate_research') || value.includes('candidate_valuation')) return '小盘研究'
+  if (value.includes('small_cap') || value.includes('candidate_research') || value.includes('candidate_valuation') || value.includes('price_action_cycle')) return '小盘研究'
   if (value.includes('notification')) return '通知'
   if (value.includes('market_trend') || value.includes('futures') || value.includes('macro_calendar')) return '市场环境'
   if (value.includes('backup') || value.includes('cleanup')) return '系统维护'
@@ -293,6 +298,7 @@ function taskDomain(value: string) {
 
 function taskDependency(value: string) {
   if (value.includes('notification')) return '候选/行情/事件事实已更新'
+  if (value.includes('price_action_cycle')) return '监控标的与候选日线、IWM 基准已同步'
   if (value.includes('valuation') || value.includes('research')) return '候选或监控标的基础同步'
   if (value.includes('ipo_') && value !== 'ipo_radar_sync') return 'IPO 新申报扫描'
   if (value.includes('backup')) return '日常数据任务完成'

@@ -3845,8 +3845,8 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(tasks) != 25 {
-				t.Fatalf("tasks = %d, want 25", len(tasks))
+			if len(tasks) != 27 {
+				t.Fatalf("tasks = %d, want 27", len(tasks))
 			}
 			names := map[string]bool{}
 			enabled := map[string]bool{}
@@ -3854,7 +3854,7 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 				names[task.TaskName] = true
 				enabled[task.TaskName] = task.Enabled
 			}
-			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] || !names["ipo_lifecycle_reconcile_sync"] || !names["ipo_offering_reconcile_sync"] || !names["ipo_listing_reconcile_sync"] || !names["candidate_notification_sync"] || !names["trade_setup_notification_sync"] || !names["small_cap_discovery_sync"] || !names["small_cap_discovery_full_sync"] || !names["watch_target_market_sync"] || !names["watch_target_earnings_sync"] || !names["notification_retry_sync"] || !names["sqlite_backup"] || !names["operation_history_cleanup"] || !names["operational_health_notification_sync"] || !names["macro_calendar_sync"] || !names["market_trend_sync"] || !names["us_futures_sync"] || !names["institutional_holdings_sync"] || !names["longbridge_candidate_research_sync"] || !names["longbridge_candidate_valuation_sync"] || !names["longbridge_watch_target_valuation_sync"] || !names["longbridge_watch_target_research_sync"] || !names["longbridge_candidate_option_research_sync"] || !names["longbridge_watch_target_option_research_sync"] {
+			if !names["sec_filing_sync"] || !names["ipo_radar_sync"] || !names["ipo_lifecycle_reconcile_sync"] || !names["ipo_offering_reconcile_sync"] || !names["ipo_listing_reconcile_sync"] || !names["candidate_notification_sync"] || !names["trade_setup_notification_sync"] || !names["small_cap_discovery_sync"] || !names["small_cap_discovery_full_sync"] || !names["watch_target_market_sync"] || !names["watch_target_earnings_sync"] || !names["price_action_cycle_replay"] || !names["notification_retry_sync"] || !names["sqlite_backup"] || !names["sqlite_recovery_drill"] || !names["operation_history_cleanup"] || !names["operational_health_notification_sync"] || !names["macro_calendar_sync"] || !names["market_trend_sync"] || !names["us_futures_sync"] || !names["institutional_holdings_sync"] || !names["longbridge_candidate_research_sync"] || !names["longbridge_candidate_valuation_sync"] || !names["longbridge_watch_target_valuation_sync"] || !names["longbridge_watch_target_research_sync"] || !names["longbridge_candidate_option_research_sync"] || !names["longbridge_watch_target_option_research_sync"] {
 				t.Fatalf("task names = %+v, want SEC, IPO, candidate/trade-plan notification, small-cap discovery, watch-target market/earnings, macro calendar, market trend, US futures, retry, backup, history cleanup, and operational alert tasks", names)
 			}
 			if !enabled["operational_health_notification_sync"] {

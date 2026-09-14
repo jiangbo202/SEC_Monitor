@@ -62,6 +62,11 @@ type OperationalReport struct {
 	DeferredTargets           int64                   `json:"deferred_targets"`
 	CompanyProfileRetryDue    int64                   `json:"company_profile_retry_due"`
 	MarketPriceRecovery       int                     `json:"market_price_recovery"`
+	MarketPriceLocalCurrent   int                     `json:"market_price_local_current"`
+	PriceActionTargetDate     string                  `json:"price_action_target_date,omitempty"`
+	PriceActionCurrent        int                     `json:"price_action_current"`
+	PriceActionStale          int                     `json:"price_action_stale"`
+	PriceActionMissing        int                     `json:"price_action_missing"`
 	LowCoverageProviders      int64                   `json:"low_coverage_providers"`
 	SlowSECTargets            int64                   `json:"slow_sec_targets"`
 	SlowDiscoverySteps        int                     `json:"slow_discovery_steps"`
@@ -178,7 +183,13 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 			}
 			report.addIssue("task_partial:"+task.TaskName, "task", "warning", "调度任务部分完成", detail, "scheduler", now)
 		}
-		if !task.Running && task.LastRunAt != nil && now.Sub(*task.LastRunAt) > 2*expected {
+		stale := !task.Running && task.LastRunAt != nil && now.Sub(*task.LastRunAt) > 2*expected
+		// NextRunAt already reflects weekday-only cron schedules. Do not report a
+		// weekend gap as stale before the next scheduled opportunity is missed.
+		if stale && task.NextRunAt != nil && !now.After(task.NextRunAt.UTC().Add(30*time.Minute)) {
+			stale = false
+		}
+		if stale {
 			report.addIssue("task_stale:"+task.TaskName, "task", "warning", "调度任务长时间未更新", fmt.Sprintf("%s 距上次完成已 %s（预期不超过 %s）", task.TaskName, formatOperationalDuration(now.Sub(*task.LastRunAt)), formatOperationalDuration(expected)), "scheduler", now)
 		}
 	}
@@ -348,8 +359,37 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 			return report, err
 		}
 		report.MarketPriceRecovery = len(queue.Items)
+		report.MarketPriceLocalCurrent = queue.LocalFallbackCurrentCount
 		if report.MarketPriceRecovery > 0 {
-			report.addIssue("market_price_recovery", "market", "warning", "候选行情需要补偿", fmt.Sprintf("%d 个当前 A/B 候选缺价、过期或使用本地回退价；可在小盘发现日志按标的补齐并重算", report.MarketPriceRecovery), "discovery-logs", now)
+			report.addIssue("market_price_recovery", "market", "warning", "候选行情需要补偿", fmt.Sprintf("%d 个当前 A/B 候选缺价、过期或日期异常；可在小盘发现日志按标的补齐并重算", report.MarketPriceRecovery), "discovery-logs", now)
+		}
+		candidateTickers, err := discovery.CurrentCandidateTickers(ctx, s.discoveryDB)
+		if err != nil {
+			return report, err
+		}
+		cycleScope := make([]discovery.PriceActionReplayScope, 0, len(candidateTickers))
+		for _, ticker := range candidateTickers {
+			cycleScope = append(cycleScope, discovery.PriceActionReplayScope{Ticker: ticker, Source: "candidate"})
+		}
+		var watchTickers []string
+		if err := s.db.WithContext(ctx).Model(&model.WatchTarget{}).Where("status = ?", "enabled").Pluck("ticker", &watchTickers).Error; err != nil {
+			return report, err
+		}
+		for _, ticker := range watchTickers {
+			cycleScope = append(cycleScope, discovery.PriceActionReplayScope{Ticker: ticker, Source: "watch"})
+		}
+		if len(cycleScope) > 0 {
+			cycleHealth, err := discovery.BuildPriceActionCycleHealth(ctx, s.discoveryDB, cycleScope)
+			if err != nil {
+				return report, err
+			}
+			report.PriceActionTargetDate = cycleHealth.IWMLatestTradeDate
+			report.PriceActionCurrent = cycleHealth.ScopeCurrentCount
+			report.PriceActionStale = cycleHealth.ScopeStaleCount
+			report.PriceActionMissing = cycleHealth.ScopeMissingCount + cycleHealth.AdjustmentBlockedCount
+			if report.PriceActionStale > 0 || report.PriceActionMissing > 0 {
+				report.addIssue("price_action_freshness", "market", "warning", "价格周期结论未全部推进", fmt.Sprintf("目标交易日 %s：%d 个结论滞后，%d 个缺少完整 OHLC 或被复权门控", valueOrDash(report.PriceActionTargetDate), report.PriceActionStale, report.PriceActionMissing), "price-action-cycle", now)
+			}
 		}
 	}
 	if s.backup != nil {
@@ -652,9 +692,9 @@ func taskExpectedWithin(taskName string) time.Duration {
 		return 9 * 24 * time.Hour
 	case "sqlite_backup", "operational_health_notification_sync":
 		return 30 * time.Hour
-	case "macro_calendar_sync", "market_trend_sync", "us_futures_sync", "longbridge_candidate_research_sync", "longbridge_candidate_valuation_sync", "longbridge_watch_target_valuation_sync", "longbridge_watch_target_research_sync":
+	case "macro_calendar_sync", "market_trend_sync", "us_futures_sync", "price_action_cycle_replay", "longbridge_candidate_research_sync", "longbridge_candidate_valuation_sync", "longbridge_watch_target_valuation_sync", "longbridge_watch_target_research_sync":
 		return 30 * time.Hour
-	case "operation_history_cleanup":
+	case "operation_history_cleanup", "sqlite_recovery_drill":
 		return 9 * 24 * time.Hour
 	default:
 		return 48 * time.Hour

@@ -9,6 +9,7 @@
         <div class="nav-section-label">{{ t('nav.monitor') }}</div>
         <el-menu-item index="/"><el-icon><DataBoard /></el-icon><span>{{ t('nav.dashboard') }}</span></el-menu-item>
         <el-menu-item index="/strategy-pool"><el-icon><Compass /></el-icon><span>{{ t('nav.strategyPool') }}</span></el-menu-item>
+		<el-menu-item index="/price-action-cycle"><el-icon><TrendCharts /></el-icon><span>{{ t('nav.priceActionCycle') }}</span></el-menu-item>
 		<el-menu-item index="/ticker-workspace"><el-icon><Search /></el-icon><span>{{ t('nav.tickerWorkspace') }}</span></el-menu-item>
 		<el-menu-item index="/ticker-evaluation"><el-icon><MagicStick /></el-icon><span>{{ t('nav.tickerEvaluation') }}</span></el-menu-item>
 		<el-menu-item index="/option-research"><el-icon><DataAnalysis /></el-icon><span>{{ t('nav.optionResearch') }}</span></el-menu-item>
@@ -160,11 +161,11 @@ async function openMessage(item: InAppNotification) {
 }
 
 function sourceLabel(source: string) {
-  return ({ earnings_preview: '财报预告', earnings_preview_watch_target: '监控标的 · 财报预告', earnings_preview_candidate: '小盘候选 · 财报预告', earnings_release: '财报发布', earnings_release_watch_target: '监控标的 · 财报发布', earnings_release_candidate: '小盘候选 · 财报发布', technical_signal: '技术信号', technical_signal_watch_target: '监控标的 · 技术信号', technical_signal_candidate: '小盘候选 · 技术信号', major_event: '重大事件', major_event_watch_target: '监控标的 · 重大事件', insider_trading: '内幕交易', insider_trading_watch_target: '监控标的 · 内幕交易', ipo_progress: '关注 IPO 进展', ai_analysis: 'AI 研判' } as Record<string, string>)[source] || source
+  return ({ earnings_preview: '财报预告', earnings_preview_watch_target: '监控标的 · 财报预告', earnings_preview_candidate: '小盘候选 · 财报预告', earnings_release: '财报发布', earnings_release_watch_target: '监控标的 · 财报发布', earnings_release_candidate: '小盘候选 · 财报发布', technical_signal: '技术信号', technical_signal_watch_target: '监控标的 · 技术信号', technical_signal_candidate: '小盘候选 · 技术信号', price_action_cycle_candidate: '小盘候选 · 价格周期', price_action_cycle_watch_target: '监控标的 · 价格周期', major_event: '重大事件', major_event_watch_target: '监控标的 · 重大事件', insider_trading: '内幕交易', insider_trading_watch_target: '监控标的 · 内幕交易', ipo_progress: '关注 IPO 进展', ai_analysis: 'AI 研判' } as Record<string, string>)[source] || source
 }
 
 function sourceTagType(source: string) {
-  return ({ earnings_preview: 'info', earnings_preview_watch_target: 'info', earnings_preview_candidate: 'info', earnings_release: 'success', earnings_release_watch_target: 'success', earnings_release_candidate: 'success', technical_signal: 'warning', technical_signal_watch_target: 'warning', technical_signal_candidate: 'warning', major_event: 'danger', major_event_watch_target: 'danger', insider_trading: 'warning', insider_trading_watch_target: 'warning', ipo_progress: 'primary', ai_analysis: 'primary' } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[source] || 'info'
+  return ({ earnings_preview: 'info', earnings_preview_watch_target: 'info', earnings_preview_candidate: 'info', earnings_release: 'success', earnings_release_watch_target: 'success', earnings_release_candidate: 'success', technical_signal: 'warning', technical_signal_watch_target: 'warning', technical_signal_candidate: 'warning', price_action_cycle_candidate: 'primary', price_action_cycle_watch_target: 'primary', major_event: 'danger', major_event_watch_target: 'danger', insider_trading: 'warning', insider_trading_watch_target: 'warning', ipo_progress: 'primary', ai_analysis: 'primary' } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[source] || 'info'
 }
 
 function priorityLabel(value: string) { return ({ urgent: '立即', high: '今日', normal: '常规', low: '记录' } as Record<string, string>)[value] || value || '记录' }

@@ -75,6 +75,7 @@ type CandidateTechnicalAnalysis struct {
 	RelativeStrength        CandidateRelativeStrength   `json:"relative_strength"`
 	AnchoredVWAP            CandidateAnchoredVWAP       `json:"anchored_vwap"`
 	Oscillator              CandidateOscillatorAnalysis `json:"oscillator"`
+	PriceAction             PriceActionCycleAnalysis    `json:"price_action"`
 	Signals                 []CandidateTechnicalSignal  `json:"signals"`
 	TradeSetup              CandidateTradeSetup         `json:"trade_setup"`
 	AdjustmentReview        PriceAdjustmentReview       `json:"adjustment_review"`
@@ -195,6 +196,7 @@ func hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx context.Context, db
 		}
 	}
 	benchmarkCache := map[string][]PriceSnapshot{}
+	cycleProfile := activePriceActionProfile(ctx, db)
 	for i := range items {
 		rows := priceHistories[items[i].SecurityID]
 		items[i].Technical = buildCandidateTechnicalAnalysis(rows)
@@ -211,6 +213,12 @@ func hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx context.Context, db
 			benchmarkCache[cacheKey] = benchmarkRows
 		}
 		items[i].Technical.RelativeStrength = buildCandidateRelativeStrengthFromRows(rows, benchmarkRows)
+		items[i].Technical.PriceAction = buildPriceActionCycleAnalysisWithProfile(rows, items[i].Technical.RelativeStrength, cycleProfile)
+		targetTradeDate := ""
+		if items[i].PriceTradeDate != nil {
+			targetTradeDate = items[i].PriceTradeDate.Format(time.DateOnly)
+		}
+		applyPriceActionFreshness(&items[i].Technical.PriceAction, targetTradeDate)
 		items[i].Technical.AnchoredVWAP = buildCandidateAnchoredVWAP(rows, eventsBySecurity[items[i].SecurityID], items[i].PriceTradeDate, items[i].PriceSource)
 		items[i].Technical.TradeSetup = buildCandidateTradeSetup(items[i].Technical)
 		if kinds := capitalActionsBySecurity[items[i].SecurityID]; len(kinds) > 0 && hasUnadjustedPriceRows(rows) {
@@ -220,7 +228,10 @@ func hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx context.Context, db
 			items[i].Technical.TradeSetup = unavailableCandidateTradeSetup(TechnicalStatusCorporateActionReview)
 		}
 	}
-	return hydrateTradeSetupStatusSince(ctx, db, items)
+	if err := hydrateTradeSetupStatusSince(ctx, db, items); err != nil {
+		return err
+	}
+	return hydratePriceActionPhaseSince(ctx, db, items)
 }
 
 // candidateTechnicalPriceHistories reads the common price-history window for
@@ -445,7 +456,7 @@ func technicalPriceHistoryForSymbol(ctx context.Context, db *gorm.DB, symbol, pr
 			return nil, err
 		}
 		selected := technicalPriceHistoryFromRaw(preferredRows, preferredSource, limit, cutoff)
-		if len(selected) >= limit {
+		if technicalHistoryWindowComplete(selected, limit) {
 			return selected, nil
 		}
 	}
@@ -458,6 +469,18 @@ func technicalPriceHistoryForSymbol(ctx context.Context, db *gorm.DB, symbol, pr
 		return nil, err
 	}
 	return technicalPriceHistoryFromRaw(raw, preferredSource, limit, cutoff), nil
+}
+
+func technicalHistoryWindowComplete(rows []PriceSnapshot, limit int) bool {
+	if len(rows) < limit {
+		return false
+	}
+	for _, row := range rows {
+		if !priceSnapshotHasOHLC(row) {
+			return false
+		}
+	}
+	return true
 }
 
 func technicalPriceHistoryFromRaw(raw []PriceSnapshot, preferredSource string, limit int, cutoff *time.Time) []PriceSnapshot {
@@ -482,7 +505,10 @@ func technicalPriceHistoryFromRaw(raw []PriceSnapshot, preferredSource string, l
 		}
 		date := row.TradeDate.Format("2006-01-02")
 		existing, found := byDate[date]
-		if !found || (row.Source == preferredSource && existing.Source != preferredSource) {
+		rowComplete := priceSnapshotHasOHLC(row)
+		existingComplete := priceSnapshotHasOHLC(existing)
+		if !found || (rowComplete && !existingComplete) ||
+			(rowComplete == existingComplete && row.Source == preferredSource && existing.Source != preferredSource) {
 			byDate[date] = row
 		}
 	}
@@ -537,6 +563,7 @@ func buildCandidateTechnicalAnalysis(rows []PriceSnapshot) CandidateTechnicalAna
 		RelativeStrength:   CandidateRelativeStrength{Status: "missing", BenchmarkTicker: "IWM"},
 		AnchoredVWAP:       CandidateAnchoredVWAP{Status: "anchor_unavailable"},
 		Oscillator:         buildCandidateOscillatorAnalysis(rows),
+		PriceAction:        buildPriceActionCycleAnalysis(rows, CandidateRelativeStrength{Status: "missing", BenchmarkTicker: "IWM"}),
 		Signals:            []CandidateTechnicalSignal{},
 		TradeSetup:         unavailableCandidateTradeSetup(TechnicalStatusMissing),
 		AdjustmentReview:   priceAdjustmentReview(rows),
@@ -610,6 +637,7 @@ func buildCandidateTechnicalAnalysis(rows []PriceSnapshot) CandidateTechnicalAna
 		analysis.Signals = append(analysis.Signals, CandidateTechnicalSignal{Kind: TechnicalSignalVolumeBackedBreakout, Label: "放量突破", Direction: "bullish"})
 	}
 	analysis.TradeSetup = buildCandidateTradeSetup(analysis)
+	analysis.PriceAction = buildPriceActionCycleAnalysis(rows, analysis.RelativeStrength)
 	return analysis
 }
 

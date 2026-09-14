@@ -323,6 +323,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "in_app_notification.earnings_preview_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.earnings_release_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.technical_signal_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
+		{Key: "in_app_notification.price_action_cycle_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.major_event_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.insider_trading_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},
 		{Key: "in_app_notification.ten_b5_one_plan_discovered_enabled", Value: "true", ValueType: "bool", Category: "in_app_notification"},

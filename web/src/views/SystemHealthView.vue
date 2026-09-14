@@ -133,6 +133,22 @@
       </el-card>
 
       <el-card shadow="never" class="dashboard-panel panel-wide">
+        <template #header><div class="panel-heading-action"><span>价格周期运行健康</span><el-button link type="primary" @click="router.push({name:'price-action-cycle',query:{tab:'rules'}})">查看规则</el-button></div></template>
+        <el-descriptions :column="4" border size="small">
+          <el-descriptions-item label="阶段覆盖"><el-tag :type="cycleCoverageTagType(cycleHealth)" effect="plain">{{ cycleHealth ? `${cycleHealth.ready_count}/${cycleHealth.scope_count} · ${cycleHealth.coverage_pct.toFixed(1)}%` : '-' }}</el-tag></el-descriptions-item>
+          <el-descriptions-item label="正式版本">{{ cycleHealth?.active_rule_version || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="IWM 历史">{{ cycleHealth ? `${cycleRuntimeStatusLabel(cycleHealth.iwm_status)} · ${cycleHealth.iwm_sample_days} 日` : '-' }}</el-descriptions-item>
+          <el-descriptions-item label="效果状态">{{ cycleValidationStatusLabel(cycleHealth?.effectiveness_status) }}</el-descriptions-item>
+          <el-descriptions-item label="OHLC 缺失">{{ cycleHealth?.ohlc_missing_count || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="复权阻断">{{ cycleHealth?.adjustment_blocked_count || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="最近回放">{{ formatDateTime(cycleHealth?.last_replay_at) }} · {{ cycleRuntimeStatusLabel(cycleHealth?.last_replay_status) }}</el-descriptions-item>
+          <el-descriptions-item label="结果推进">{{ cycleHealth?.effectiveness_latest_date || '-' }} / IWM {{ cycleHealth?.iwm_latest_trade_date || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="当日结论">{{ cycleHealth ? `${cycleHealth.scope_current_count}/${cycleHealth.scope_count}` : '-' }}</el-descriptions-item>
+          <el-descriptions-item label="结论滞后"><el-tag :type="cycleHealth?.scope_stale_count ? 'warning' : 'success'" effect="plain">{{ cycleHealth?.scope_stale_count || 0 }}</el-tag></el-descriptions-item>
+        </el-descriptions>
+      </el-card>
+
+      <el-card shadow="never" class="dashboard-panel panel-wide">
         <template #header>
           <div class="panel-heading-action">
             <span>{{ t('pages.systemHealth.operationalReport') }}</span>
@@ -146,6 +162,8 @@
             <el-descriptions-item :label="t('pages.systemHealth.deferredTargets')">{{ operational.deferred_targets }}</el-descriptions-item>
             <el-descriptions-item :label="t('pages.systemHealth.profileRetryDue')">{{ operational.company_profile_retry_due }}</el-descriptions-item>
             <el-descriptions-item :label="t('pages.systemHealth.marketRecovery')">{{ operational.market_price_recovery }}</el-descriptions-item>
+            <el-descriptions-item label="本地行情可用">{{ operational.market_price_local_current || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="周期当日 / 滞后">{{ operational.price_action_current || 0 }} / {{ operational.price_action_stale || 0 }}</el-descriptions-item>
             <el-descriptions-item :label="t('pages.systemHealth.lowCoverageProviders')">{{ operational.low_coverage_providers }}</el-descriptions-item>
 			<el-descriptions-item :label="t('pages.systemHealth.slowSECTargets')">{{ operational.slow_sec_targets }}</el-descriptions-item>
 			<el-descriptions-item :label="t('pages.systemHealth.slowDiscoverySteps')">{{ operational.slow_discovery_steps }}</el-descriptions-item>
@@ -219,6 +237,7 @@ import type { ApiResponse, OperationalAlertResult, OperationalReport, Operationa
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
+type CycleHealth = { scope_count:number; ready_count:number; coverage_pct:number; ohlc_missing_count:number; adjustment_blocked_count:number; iwm_status:string; iwm_sample_days:number; iwm_latest_trade_date:string; active_rule_version:string; last_replay_status:string; last_replay_at?:string; effectiveness_status:string; effectiveness_latest_date:string; scope_current_count:number; scope_stale_count:number; scope_missing_count:number }
 const router = useRouter()
 const loading = ref(false)
 const verifyingBackup = ref(false)
@@ -227,21 +246,24 @@ const health = ref<SystemHealth | null>(null)
 const operational = ref<OperationalReport | null>(null)
 const notifyingOperational = ref(false)
 const latestCompaction = ref<SQLiteCompactionRun | null>(null)
+const cycleHealth = ref<CycleHealth | null>(null)
 const schedulerTimezone = ref('UTC')
 
 async function load() {
   loading.value = true
   try {
-    const [healthRes, operationalRes, compactionRes, schedulerConfigsRes] = await Promise.all([
+    const [healthRes, operationalRes, compactionRes, schedulerConfigsRes, cycleHealthRes] = await Promise.all([
       apiClient.get<ApiResponse<SystemHealth>>('/system-health'),
       apiClient.get<ApiResponse<OperationalReport>>('/operational-health'),
-		apiClient.get<ApiResponse<SQLiteCompactionRun>>('/system/databases/latest-compaction'),
-      apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs?category=scheduler')
+      apiClient.get<ApiResponse<SQLiteCompactionRun>>('/system/databases/latest-compaction'),
+      apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs?category=scheduler'),
+      apiClient.get<ApiResponse<CycleHealth>>('/price-action-cycle/health')
     ])
     health.value = healthRes.data.data
     operational.value = operationalRes.data.data
-		latestCompaction.value = compactionRes.data.data?.id ? compactionRes.data.data : null
+    latestCompaction.value = compactionRes.data.data?.id ? compactionRes.data.data : null
     schedulerTimezone.value = schedulerConfigsRes.data.data.find((item) => item.config_key === 'scheduler.timezone')?.config_value || 'UTC'
+    cycleHealth.value = cycleHealthRes.data.data
   } finally {
     loading.value = false
   }
@@ -300,6 +322,18 @@ async function verifyLatestBackup() {
 
 function recoveryStatusLabel(status?: string) {
   return ({ ready: '通过', failed: '未通过', unavailable: '不可用', disabled: '未配置' } as Record<string, string>)[status || ''] || '尚未验证'
+}
+
+function cycleRuntimeStatusLabel(status?: string) {
+  return ({ ready: '就绪', success: '成功', degraded: '降级可用', running: '运行中', failed: '失败', missing: '缺失', warning: '需关注', ok: '正常' } as Record<string, string>)[status || ''] || '尚无记录'
+}
+
+function cycleCoverageTagType(value: CycleHealth | null) {
+  return value && value.coverage_pct >= 90 ? 'success' : 'warning'
+}
+
+function cycleValidationStatusLabel(status?: string) {
+  return ({ validated: '已验证', validating: '观察中', unverified: '未验证' } as Record<string, string>)[status || ''] || '尚无记录'
 }
 
 function formatBytes(value: number) {
@@ -381,6 +415,7 @@ function openSourceAction(action: string) {
     'sync-runs': 'sync-runs',
     'notification-logs': 'notification-logs',
     'macro-calendar': 'macro-calendar',
+    'price-action-cycle': 'price-action-cycle',
     'system-health': 'system-health'
   }
   const name = routes[action]

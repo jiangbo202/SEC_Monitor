@@ -88,6 +88,20 @@
           </el-tooltip>
         </template>
       </el-table-column>
+      <el-table-column label="价格阶段" width="128">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              <div>{{ priceActionEvidenceText(row.technical?.price_action) }}</div>
+              <div>下一确认：{{ row.technical?.price_action?.next_confirmation || '-' }}</div>
+              <div>失效：{{ row.technical?.price_action?.invalidation || '-' }}</div>
+            </template>
+            <el-tag size="small" :type="priceActionTagType(row.technical?.price_action?.phase)" effect="plain">
+              {{ priceActionLabel(row.technical?.price_action?.phase) }}<template v-if="row.technical?.price_action?.status === 'ready'"> {{ row.technical.price_action.confidence }}%</template>
+            </el-tag>
+          </el-tooltip>
+        </template>
+      </el-table-column>
       <el-table-column label="交易计划" width="110">
         <template #default="{ row }">
           <el-tooltip :content="tradeSetupSummary(row.technical)" placement="top">
@@ -466,6 +480,18 @@
             class="target-technical-alert"
           />
           <TechnicalPriceHistoryChart :ticker="detailTarget.ticker" :rows="detailTechnicalHistory" :technical="detailTechnicalAnalysis" />
+        </div>
+
+        <div v-if="detailTechnicalAnalysis?.price_action" class="target-detail-section">
+          <div class="panel-header target-detail-section-title"><span>价格行为循环</span><el-link type="primary" @click="$router.push({ path: '/price-action-cycle', query: { ticker: detailTarget.ticker } })">集中看台</el-link></div>
+          <el-descriptions :column="3" border size="small">
+            <el-descriptions-item label="当前阶段"><el-tag :type="priceActionTagType(detailTechnicalAnalysis.price_action.phase)" effect="plain">{{ priceActionLabel(detailTechnicalAnalysis.price_action.phase) }}</el-tag></el-descriptions-item>
+            <el-descriptions-item label="置信度">{{ detailTechnicalAnalysis.price_action.status === 'ready' ? `${detailTechnicalAnalysis.price_action.confidence}%` : '-' }}</el-descriptions-item>
+            <el-descriptions-item label="持续时间">{{ detailTechnicalAnalysis.price_action.duration_trading_days ? `${detailTechnicalAnalysis.price_action.duration_trading_days} 个交易日` : '-' }}</el-descriptions-item>
+            <el-descriptions-item label="支持证据" :span="3">{{ priceActionEvidenceText(detailTechnicalAnalysis.price_action) }}</el-descriptions-item>
+            <el-descriptions-item label="下一确认" :span="3">{{ detailTechnicalAnalysis.price_action.next_confirmation || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="失效条件" :span="3">{{ detailTechnicalAnalysis.price_action.invalidation || '-' }}</el-descriptions-item>
+          </el-descriptions>
         </div>
 
         <div class="target-detail-section">
@@ -1310,6 +1336,22 @@ function liquidityShortLabel(status?: string) {
 
 function technicalSignalsTooltip(technical?: CandidateTechnicalAnalysis | null) {
   return technical?.signals?.map((signal) => signal.label).join('、') || '暂无突破'
+}
+
+function priceActionLabel(phase?: string) {
+  return ({ reversal_extension: '反转延伸', wedge_pop: '楔形突破', ema_crossback: '均线回踩', base_break: '平台突破', exhaustion_extension: '衰竭延伸', wedge_drop: '楔形跌破', unconfirmed: '阶段未确认', unavailable: '数据不足' } as Record<string, string>)[phase || ''] || '数据不足'
+}
+
+function priceActionTagType(phase?: string) {
+  if (phase === 'wedge_pop' || phase === 'base_break') return 'success'
+  if (phase === 'ema_crossback' || phase === 'reversal_extension') return 'primary'
+  if (phase === 'exhaustion_extension') return 'warning'
+  if (phase === 'wedge_drop') return 'danger'
+  return 'info'
+}
+
+function priceActionEvidenceText(priceAction?: CandidateTechnicalAnalysis['price_action']) {
+  return priceAction?.evidence?.join('；') || '尚未形成一致的价格、成交量与均线证据'
 }
 
 function liquidityTagType(status?: string) {

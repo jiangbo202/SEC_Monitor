@@ -289,9 +289,9 @@ func TestTechnicalPriceHistoryFallsBackWhenPreferredLocalCacheIsIncomplete(t *te
 	db := openMigratedTestDatabase(t)
 	base := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)
 	prices := []PriceSnapshot{
-		{Source: "longbridge", SourceVersion: "longbridge:history", Symbol: "CACHE", TradeDate: base, CloseMicros: 10_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "longbridge", SourceVersion: "longbridge:history", Symbol: "CACHE", TradeDate: base.AddDate(0, 0, 1), CloseMicros: 11_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "longbridge", SourceVersion: "longbridge:history", Symbol: "CACHE", TradeDate: base.AddDate(0, 0, 2), CloseMicros: 12_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "longbridge:history", Symbol: "CACHE", TradeDate: base, OpenMicros: 9_900_000, HighMicros: 10_200_000, LowMicros: 9_800_000, CloseMicros: 10_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "longbridge:history", Symbol: "CACHE", TradeDate: base.AddDate(0, 0, 1), OpenMicros: 10_800_000, HighMicros: 11_200_000, LowMicros: 10_700_000, CloseMicros: 11_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "longbridge:history", Symbol: "CACHE", TradeDate: base.AddDate(0, 0, 2), OpenMicros: 11_800_000, HighMicros: 12_200_000, LowMicros: 11_700_000, CloseMicros: 12_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
 		{Source: PriceSourceLocalCache, SourceVersion: "cache:latest", Symbol: "CACHE", TradeDate: base.AddDate(0, 0, 2), CloseMicros: 12_100_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
 	}
 	if err := db.Create(&prices).Error; err != nil {
@@ -305,8 +305,8 @@ func TestTechnicalPriceHistoryFallsBackWhenPreferredLocalCacheIsIncomplete(t *te
 	if len(rows) != 3 {
 		t.Fatalf("history rows = %d, want 3", len(rows))
 	}
-	if rows[len(rows)-1].Source != PriceSourceLocalCache {
-		t.Fatalf("latest source = %q, want %q", rows[len(rows)-1].Source, PriceSourceLocalCache)
+	if rows[len(rows)-1].Source != "longbridge" || !priceSnapshotHasOHLC(rows[len(rows)-1]) {
+		t.Fatalf("latest row = %+v, want complete longbridge OHLC", rows[len(rows)-1])
 	}
 }
 

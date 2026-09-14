@@ -87,10 +87,27 @@ func GetTickerTechnicalHistory(ctx context.Context, db *gorm.DB, ticker string) 
 		return result, err
 	}
 	result.Technical = buildCandidateTechnicalAnalysis(rows)
+	if len(rows) > 0 {
+		latest := rows[len(rows)-1]
+		benchmarkRows, benchmarkErr := technicalPriceHistoryForSymbol(ctx, db, "IWM", latest.Source, technicalRelativeLongDays+1, &latest.TradeDate)
+		if benchmarkErr != nil {
+			return result, benchmarkErr
+		}
+		result.Technical.RelativeStrength = buildCandidateRelativeStrengthFromRows(rows, benchmarkRows)
+		result.Technical.PriceAction = buildPriceActionCycleAnalysisWithProfile(rows, result.Technical.RelativeStrength, activePriceActionProfile(ctx, db))
+		targetTradeDate := latest.TradeDate.Format(time.DateOnly)
+		if len(benchmarkRows) > 0 {
+			targetTradeDate = benchmarkRows[len(benchmarkRows)-1].TradeDate.Format(time.DateOnly)
+		}
+		applyPriceActionFreshness(&result.Technical.PriceAction, targetTradeDate)
+	}
 	if err := applyTickerCorporateActionReview(ctx, db, result.Ticker, rows, &result.Technical); err != nil {
 		return result, err
 	}
 	if err := hydrateTickerTradeSetupStatusSince(ctx, db, result.Ticker, &result.Technical); err != nil {
+		return result, err
+	}
+	if err := hydrateTickerPriceActionPhaseSince(ctx, db, result.Ticker, &result.Technical); err != nil {
 		return result, err
 	}
 	result.History = candidateTechnicalHistoryRows(rows)

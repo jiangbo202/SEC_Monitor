@@ -199,6 +199,8 @@ func inAppNotificationConfigKeys(source string) (string, string, bool) {
 		return "in_app_notification.watch_target_technical_signal_enabled", "in_app_notification.technical_signal_enabled", true
 	case "technical_signal_candidate":
 		return "in_app_notification.candidate_technical_signal_enabled", "in_app_notification.technical_signal_enabled", true
+	case "price_action_cycle_candidate", "price_action_cycle_watch_target":
+		return "in_app_notification.price_action_cycle_enabled", "", true
 	case "major_event_watch_target":
 		return "in_app_notification.watch_target_major_event_enabled", "in_app_notification.major_event_enabled", true
 	case "insider_trading_watch_target":

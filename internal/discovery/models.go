@@ -932,6 +932,105 @@ type TradeSetupStatusEvent struct {
 	CreatedAt             time.Time `json:"created_at"`
 }
 
+// PriceActionPhaseSnapshot is the immutable daily result of the versioned
+// price-action cycle classifier. Explanations are stored with the phase so a
+// later rule change cannot rewrite what the researcher saw at the time.
+type PriceActionPhaseSnapshot struct {
+	ID                  uint      `json:"id"`
+	SecurityID          uint      `json:"security_id" gorm:"index"`
+	Ticker              string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_price_action_ticker_version_date,priority:1;index"`
+	Source              string    `json:"source" gorm:"size:32;index"`
+	RuleVersion         string    `json:"rule_version" gorm:"size:32;uniqueIndex:idx_price_action_ticker_version_date,priority:2;index"`
+	TradeDate           string    `json:"trade_date" gorm:"size:10;uniqueIndex:idx_price_action_ticker_version_date,priority:3;index"`
+	Status              string    `json:"status" gorm:"size:24;index"`
+	Phase               string    `json:"phase" gorm:"size:32;index"`
+	PreviousPhase       string    `json:"previous_phase" gorm:"size:32"`
+	Confidence          int       `json:"confidence"`
+	EvidenceJSON        string    `json:"evidence_json" gorm:"type:text"`
+	CounterEvidenceJSON string    `json:"counter_evidence_json" gorm:"type:text"`
+	Evidence            []string  `json:"evidence" gorm:"-"`
+	CounterEvidence     []string  `json:"counter_evidence" gorm:"-"`
+	NextConfirmation    string    `json:"next_confirmation" gorm:"type:text"`
+	Invalidation        string    `json:"invalidation" gorm:"type:text"`
+	CloseUSD            float64   `json:"close_usd"`
+	RSI14               *float64  `json:"rsi14,omitempty"`
+	KDJ_K               *float64  `json:"kdj_k,omitempty" gorm:"column:kdj_k"`
+	KDJ_D               *float64  `json:"kdj_d,omitempty" gorm:"column:kdj_d"`
+	KDJ_J               *float64  `json:"kdj_j,omitempty" gorm:"column:kdj_j"`
+	KDJMethod           string    `json:"kdj_method" gorm:"size:32"`
+	EMA10USD            float64   `json:"ema10_usd"`
+	EMA20USD            float64   `json:"ema20_usd"`
+	EMA50USD            float64   `json:"ema50_usd"`
+	ATR14USD            float64   `json:"atr14_usd"`
+	VolumeRatio20       float64   `json:"volume_ratio_20"`
+	RelativeIWM20DPct   *float64  `json:"relative_iwm_20d_pct,omitempty"`
+	StartedAt           time.Time `json:"started_at" gorm:"index"`
+	RecordedAt          time.Time `json:"recorded_at" gorm:"index"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
+// PriceActionEffectivenessSnapshot keeps the last successfully generated
+// aggregate report for each rule profile. The API can serve this compact
+// artifact without rescanning thousands of replay events on every page load.
+type PriceActionEffectivenessSnapshot struct {
+	ID          uint      `json:"id"`
+	Profile     string    `json:"profile" gorm:"size:32;uniqueIndex"`
+	RuleVersion string    `json:"rule_version" gorm:"size:48;index"`
+	ReportJSON  string    `json:"-" gorm:"type:text"`
+	GeneratedAt time.Time `json:"generated_at" gorm:"index"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PriceActionReplayEvent is a point-in-time, append-only stage-entry event
+// created by historical replay. Outcomes are stored with the rule version so
+// later parameter changes cannot silently rewrite prior validation results.
+type PriceActionReplayEvent struct {
+	ID                     uint      `json:"id"`
+	SecurityID             uint      `json:"security_id" gorm:"index"`
+	Ticker                 string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_price_action_replay_event,priority:1;index"`
+	Source                 string    `json:"source" gorm:"size:32;uniqueIndex:idx_price_action_replay_event,priority:2;index"`
+	RuleVersion            string    `json:"rule_version" gorm:"size:48;uniqueIndex:idx_price_action_replay_event,priority:3;index"`
+	SignalDate             string    `json:"signal_date" gorm:"size:10;uniqueIndex:idx_price_action_replay_event,priority:4;index"`
+	Phase                  string    `json:"phase" gorm:"size:32;index"`
+	Confidence             int       `json:"confidence"`
+	MarketRegime           string    `json:"market_regime" gorm:"size:32;index"`
+	MarketCapBucket        string    `json:"market_cap_bucket" gorm:"size:32;index"`
+	LiquidityBucket        string    `json:"liquidity_bucket" gorm:"size:32;index"`
+	RelativeStrengthBucket string    `json:"relative_strength_bucket" gorm:"size:32;index"`
+	EntryCloseUSD          float64   `json:"entry_close_usd"`
+	ATR14USD               float64   `json:"atr14_usd"`
+	PhaseDurationDays      int       `json:"phase_duration_days"`
+	TransitionSucceeded    bool      `json:"transition_succeeded"`
+	TransitionMature       bool      `json:"transition_mature"`
+	FalseBreakout          bool      `json:"false_breakout"`
+	FalseBreakoutMature    bool      `json:"false_breakout_mature"`
+	MaxFavorablePct20      *float64  `json:"max_favorable_pct_20"`
+	MaxAdversePct20        *float64  `json:"max_adverse_pct_20"`
+	MaxDrawdownPct20       *float64  `json:"max_drawdown_pct_20"`
+	RMultiple20            *float64  `json:"r_multiple_20"`
+	OutcomesJSON           string    `json:"outcomes_json" gorm:"type:text"`
+	ReplayedAt             time.Time `json:"replayed_at" gorm:"index"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
+// PriceActionCycleSetting is deliberately a singleton with constrained
+// profile names. Arbitrary numeric production rules are not accepted by the
+// API; a shadow profile must prove itself before promotion.
+type PriceActionCycleSetting struct {
+	ID                   uint       `json:"id" gorm:"primaryKey"`
+	ActiveProfile        string     `json:"active_profile" gorm:"size:24"`
+	ShadowProfile        string     `json:"shadow_profile" gorm:"size:24"`
+	PreviousProfile      string     `json:"previous_profile" gorm:"size:24"`
+	LastReplayStatus     string     `json:"last_replay_status" gorm:"size:24"`
+	LastReplayError      string     `json:"last_replay_error" gorm:"type:text"`
+	LastReplayAt         *time.Time `json:"last_replay_at,omitempty" gorm:"index"`
+	LastReplayDurationMS int64      `json:"last_replay_duration_ms"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	CreatedAt            time.Time  `json:"created_at"`
+}
+
 // TradePlanSimulation is a daily-close paper-trade record. It stores the
 // signal snapshot separately from its subsequently observed lifecycle; it is
 // never connected to a brokerage or execution system.

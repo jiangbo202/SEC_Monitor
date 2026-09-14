@@ -94,6 +94,22 @@ func PartialTask(reason string) error {
 	return &TaskPartialError{Reason: strings.TrimSpace(reason)}
 }
 
+// TaskDegradedError records a successful request whose optional provider
+// fields were not covered. It is neither a retryable failure nor an
+// operational warning: the durable task history still preserves the gap.
+type TaskDegradedError struct{ Reason string }
+
+func (e *TaskDegradedError) Error() string {
+	if e == nil || strings.TrimSpace(e.Reason) == "" {
+		return "task completed with optional coverage gaps"
+	}
+	return strings.TrimSpace(e.Reason)
+}
+
+func DegradedTask(reason string) error {
+	return &TaskDegradedError{Reason: strings.TrimSpace(reason)}
+}
+
 // PendingTask is used only by resumable, idempotent data jobs. A nil count
 // means coverage is incomplete but the source cannot quantify the gap yet.
 func PendingTask(reason string, count *int) error {
@@ -173,6 +189,9 @@ func (s *TaskConfigService) EnsureDefault(ctx context.Context) error {
 		// US regular session close in both daylight-saving and standard time.
 		// The task itself still resolves the latest completed NYSE trading day.
 		{TaskName: "watch_target_market_sync", CronExpr: "35 5 * * 2-6", Enabled: true, Running: false},
+		// Local-only validation runs after both candidate and watch EOD prices.
+		// Failures use the scheduler's persisted retry/limit mechanism.
+		{TaskName: "price_action_cycle_replay", CronExpr: "5 6 * * 2-6", Enabled: true, Running: false},
 		// Asia/Shanghai Tuesday-Saturday 06:30 is after the prior US close.
 		// The task only updates locally cached earnings dates and estimates; it
 		// does not run SEC filing or market-price synchronization.
@@ -185,6 +204,9 @@ func (s *TaskConfigService) EnsureDefault(ctx context.Context) error {
 		// must not compete with institutional-holdings or the Saturday full scan
 		// for SQLite write locks and disk IO.
 		{TaskName: "sqlite_backup", CronExpr: "15 3 * * *", Enabled: true, Running: false},
+		// Weekly read-only recovery rehearsal opens the newest local and replica
+		// snapshot pair in isolation. It never replaces the live databases.
+		{TaskName: "sqlite_recovery_drill", CronExpr: "45 4 * * 0", Enabled: true, Running: false},
 		// This cleanup removes only completed execution/diagnostic history. It
 		// never deletes filings, candidates, price history, or research batches.
 		{TaskName: "operation_history_cleanup", CronExpr: "45 9 * * 0", Enabled: true, Running: false},
@@ -435,12 +457,16 @@ func normalizedTaskTrigger(value string) string {
 func taskExecutionOutcome(runErr error) (status, summary, errorMessage string) {
 	var skipped *TaskSkippedError
 	var partial *TaskPartialError
+	var degraded *TaskDegradedError
 	switch {
 	case errors.As(runErr, &skipped):
 		return "skipped", taskExecutionValueOrDefault(strings.TrimSpace(skipped.Reason), "任务按当前配置跳过"), ""
 	case errors.As(runErr, &partial):
 		message := SanitizeSensitiveError(partial.Reason)
 		return "partial", taskExecutionValueOrDefault(message, "任务部分完成"), message
+	case errors.As(runErr, &degraded):
+		message := SanitizeSensitiveError(degraded.Reason)
+		return "degraded", taskExecutionValueOrDefault(message, "任务完成，可选数据未覆盖"), ""
 	case runErr == nil:
 		return "success", "任务执行完成", ""
 	default:
@@ -479,9 +505,16 @@ func (s *TaskConfigService) MarkRunOutcome(ctx context.Context, taskName string,
 	}
 	var skipped *TaskSkippedError
 	var partial *TaskPartialError
+	var degraded *TaskDegradedError
 	if errors.As(runErr, &skipped) {
 		updates["last_status"] = "skipped"
 		updates["last_error_message"] = strings.TrimSpace(skipped.Reason)
+		updates["consecutive_failures"] = 0
+		updates["retry_not_before"] = gorm.Expr("NULL")
+		updates["auto_retry_attempts"] = 0
+	} else if errors.As(runErr, &degraded) {
+		updates["last_status"] = "degraded"
+		updates["last_error_message"] = SanitizeSensitiveError(degraded.Reason)
 		updates["consecutive_failures"] = 0
 		updates["retry_not_before"] = gorm.Expr("NULL")
 		updates["auto_retry_attempts"] = 0

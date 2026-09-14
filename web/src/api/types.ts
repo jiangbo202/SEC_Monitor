@@ -304,6 +304,7 @@ export interface CandidateScore {
   batch_id: string
   security_id: number
   ticker: string
+	company_name?: string
   market_cap_usd: number
   grade: 'A' | 'B' | 'excluded' | string
   eligible_a: boolean
@@ -554,6 +555,7 @@ export interface CandidateTechnicalAnalysis {
   relative_strength: CandidateRelativeStrength
   anchored_vwap: CandidateAnchoredVWAP
   oscillator: CandidateOscillatorAnalysis
+	price_action?: PriceActionCycleAnalysis
 	signals: CandidateTechnicalSignal[]
 	trade_setup: CandidateTradeSetup
   adjustment_review?: {
@@ -562,6 +564,73 @@ export interface CandidateTechnicalAnalysis {
     event_kinds: string[]
     detail: string
   }
+}
+
+export interface PriceActionCycleAnalysis {
+  status: 'ready' | 'unavailable' | string
+  phase: 'unavailable' | 'unconfirmed' | 'reversal_extension' | 'wedge_pop' | 'ema_crossback' | 'base_break' | 'exhaustion_extension' | 'wedge_drop' | string
+  label: string
+  confidence: number
+  rule_version: string
+  trade_date: string
+  target_trade_date?: string
+  freshness_status: 'current' | 'stale' | 'missing' | string
+  freshness_detail?: string
+  evidence: string[]
+  counter_evidence: string[]
+  next_confirmation: string
+  invalidation: string
+  ema10_usd: number
+  ema20_usd: number
+	ema50_usd: number
+	ma200_usd: number
+	ma200_available: boolean
+  atr14_usd: number
+  distance_to_ema20_atr: number
+  range_contraction_pct: number
+  volume_ratio_20: number
+  started_at?: string | null
+  duration_trading_days: number
+}
+
+export interface PriceActionPhaseSnapshot {
+  id: number
+  security_id: number
+  ticker: string
+  source: string
+  rule_version: string
+  trade_date: string
+  status: string
+  phase: string
+  previous_phase: string
+  confidence: number
+  evidence: string[]
+  counter_evidence: string[]
+  next_confirmation: string
+  invalidation: string
+  close_usd: number
+  rsi14?: number | null
+  kdj_k?: number | null
+  kdj_d?: number | null
+  kdj_j?: number | null
+  kdj_method: string
+  ema10_usd: number
+  ema20_usd: number
+  ema50_usd: number
+  atr14_usd: number
+  volume_ratio_20: number
+  relative_iwm_20d_pct?: number | null
+  started_at: string
+  recorded_at: string
+}
+
+export interface PriceActionTimeline {
+  ticker: string
+  rule_version: string
+  available_rule_versions: string[]
+  changes_only: boolean
+  total: number
+  items: PriceActionPhaseSnapshot[]
 }
 
 export interface CandidateOscillatorAnalysis {
@@ -1213,6 +1282,7 @@ export interface MarketPriceRecoveryItem {
 export interface MarketPriceRecoveryQueue {
   batch_id: string
   effective_date: string
+  local_fallback_current_count: number
   items: MarketPriceRecoveryItem[]
 }
 
@@ -2288,6 +2358,11 @@ export interface OperationalReport {
   deferred_targets: number
   company_profile_retry_due: number
   market_price_recovery: number
+  market_price_local_current: number
+  price_action_target_date?: string
+  price_action_current: number
+  price_action_stale: number
+  price_action_missing: number
   low_coverage_providers: number
 	 slow_sec_targets: number
 	 slow_discovery_steps: number
