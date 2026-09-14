@@ -500,6 +500,14 @@
           </el-tooltip>
         </template>
       </el-table-column>
+      <el-table-column label="价格阶段" :width="candidateTableView === 'compact' ? 124 : 140">
+        <template #default="{ row }">
+          <el-tooltip placement="top" effect="dark">
+            <template #content><div class="metric-tooltip"><div>{{ priceActionEvidenceText(row.technical?.price_action) }}</div><div>下一确认：{{ row.technical?.price_action?.next_confirmation || '-' }}</div><div>失效：{{ row.technical?.price_action?.invalidation || '-' }}</div></div></template>
+            <el-tag size="small" :type="priceActionTagType(row.technical?.price_action?.phase)" effect="plain">{{ priceActionLabel(row.technical?.price_action?.phase) }}<template v-if="row.technical?.price_action?.status === 'ready'"> {{ row.technical.price_action.confidence }}%</template></el-tag>
+          </el-tooltip>
+        </template>
+      </el-table-column>
       <el-table-column v-if="candidateTableView === 'full'" prop="quality_adjusted_score" label="调整分" width="90" align="right">
         <template #default="{ row }">
           <el-tooltip v-if="row.quality_adjusted_score !== row.total_score" content="已按低基数、极端增长、低流动性或融资风险进行上限保护" placement="top">
@@ -1435,6 +1443,11 @@
 										<span class="history-source">{{ candidateDetail.technical.oscillator?.reasons?.join('；') || '至少需要 15 个有效交易日' }}</span>
 									</el-space>
 								</el-descriptions-item>
+						<el-descriptions-item label="价格阶段"><el-tag :type="priceActionTagType(candidateDetail.technical.price_action?.phase)" effect="plain">{{ priceActionLabel(candidateDetail.technical.price_action?.phase) }}</el-tag></el-descriptions-item>
+						<el-descriptions-item label="阶段置信度">{{ candidateDetail.technical.price_action?.status === 'ready' ? `${candidateDetail.technical.price_action.confidence}%` : '-' }}</el-descriptions-item>
+						<el-descriptions-item label="阶段证据" :span="2">{{ priceActionEvidenceText(candidateDetail.technical.price_action) }}</el-descriptions-item>
+						<el-descriptions-item label="下一确认" :span="2">{{ candidateDetail.technical.price_action?.next_confirmation || '-' }}</el-descriptions-item>
+						<el-descriptions-item label="失效条件" :span="2">{{ candidateDetail.technical.price_action?.invalidation || '-' }}</el-descriptions-item>
 						<el-descriptions-item label="交易计划状态">{{ tradeSetupLabel(candidateDetail.technical.trade_setup.status) }}</el-descriptions-item>
 						<el-descriptions-item label="当前状态开始于">{{ formatDateTime(candidateDetail.technical.trade_setup.status_since) }}</el-descriptions-item>
 						<el-descriptions-item label="入场触发">{{ candidateDetail.technical.trade_setup.entry_trigger || '等待触发条件' }}</el-descriptions-item>
@@ -1980,7 +1993,8 @@ import type {
   CandidateScore,
   CandidateSelectionCriteria,
   CandidateSummary,
-	CandidateTechnicalAnalysis,
+  CandidateTechnicalAnalysis,
+	PriceActionCycleAnalysis,
   CandidateDilutionTrend,
   CandidateInvestability,
   CandidateWatch,
@@ -4166,6 +4180,22 @@ function compactTechnicalSignalType(row: CandidateScore) {
   if (row.technical?.status !== 'ready') return 'is-warning'
   if ((row.technical.signals || []).length) return 'is-success'
   return 'is-info'
+}
+
+function priceActionLabel(phase?: string) {
+  return ({ reversal_extension: '反转延伸', wedge_pop: '楔形突破', ema_crossback: '均线回踩', base_break: '平台突破', exhaustion_extension: '衰竭延伸', wedge_drop: '楔形跌破', unconfirmed: '阶段未确认', unavailable: '数据不足' } as Record<string, string>)[phase || ''] || '数据不足'
+}
+
+function priceActionTagType(phase?: string) {
+  if (phase === 'wedge_pop' || phase === 'base_break') return 'success'
+  if (phase === 'ema_crossback' || phase === 'reversal_extension') return 'primary'
+  if (phase === 'exhaustion_extension') return 'warning'
+  if (phase === 'wedge_drop') return 'danger'
+  return 'info'
+}
+
+function priceActionEvidenceText(priceAction?: PriceActionCycleAnalysis) {
+  return priceAction?.evidence?.join('；') || '尚未形成一致的价格、成交量与均线证据'
 }
 
 function technicalStatusDescription(technical?: CandidateScore['technical']) {

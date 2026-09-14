@@ -19,9 +19,10 @@ import (
 // persisted snapshots so opening the discovery-log page never consumes a
 // market-data-provider request.
 type MarketPriceRecoveryQueue struct {
-	BatchID       string                    `json:"batch_id"`
-	EffectiveDate string                    `json:"effective_date"`
-	Items         []MarketPriceRecoveryItem `json:"items"`
+	BatchID                   string                    `json:"batch_id"`
+	EffectiveDate             string                    `json:"effective_date"`
+	LocalFallbackCurrentCount int                       `json:"local_fallback_current_count"`
+	Items                     []MarketPriceRecoveryItem `json:"items"`
 }
 
 type MarketPriceRecoveryItem struct {
@@ -71,6 +72,11 @@ func ListCurrentCandidateMarketPriceRecoveryQueue(ctx context.Context, db *gorm.
 		return result, err
 	}
 	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.PriceSource), PriceSourceLocalCache) &&
+			(item.PriceFreshnessStatus == PriceFreshnessCurrent || item.PriceFreshnessStatus == PriceFreshnessPreviousTradingDay) {
+			result.LocalFallbackCurrentCount++
+			continue
+		}
 		issue, label := marketPriceRecoveryIssue(item)
 		if issue == "" {
 			continue

@@ -406,7 +406,7 @@ const profileRetryTicker = ref('')
 const profileBulkRetrying = ref(false)
 
 const marketRecoveryLoading = ref(false)
-const marketRecoveryQueue = ref<MarketPriceRecoveryQueue>({ batch_id: '', effective_date: '', items: [] })
+const marketRecoveryQueue = ref<MarketPriceRecoveryQueue>({ batch_id: '', effective_date: '', local_fallback_current_count: 0, items: [] })
 const marketRetryTicker = ref('')
 
 const technicalRecoveryLoading = ref(false)

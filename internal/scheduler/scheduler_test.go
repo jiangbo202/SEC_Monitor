@@ -716,8 +716,9 @@ func TestSchedulerPersistsOutcomeAfterCancellation(t *testing.T) {
 
 func TestResearchWarningsDoNotCauseUnboundedRetries(t *testing.T) {
 	var partial *service.TaskPartialError
-	if err := researchPartialOutcome(5, 5, 0, []string{"EPS 暂无覆盖"}); !errors.As(err, &partial) || partial.Retryable {
-		t.Fatalf("coverage warning retried: %v", err)
+	var degraded *service.TaskDegradedError
+	if err := researchPartialOutcome(5, 5, 0, []string{"EPS 暂无覆盖"}); !errors.As(err, &degraded) {
+		t.Fatalf("coverage warning was not recorded as degraded: %v", err)
 	}
 	if err := researchPartialOutcome(4, 5, 1, []string{"TEST timeout"}); !errors.As(err, &partial) || !partial.Retryable || partial.PendingCount == nil || *partial.PendingCount != 1 {
 		t.Fatalf("missing retry: %v", err)

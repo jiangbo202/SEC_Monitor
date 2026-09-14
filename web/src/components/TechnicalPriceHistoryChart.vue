@@ -30,6 +30,13 @@
         <span class="oscillator-help">判断依据</span>
       </el-tooltip>
     </div>
+    <div v-if="technical?.price_action" class="price-action-summary">
+      <span class="oscillator-label">价格周期</span>
+      <el-tag :type="priceActionTagType(technical.price_action.phase)" effect="plain">{{ priceActionLabel(technical.price_action.phase) }}</el-tag>
+      <strong v-if="technical.price_action.status === 'ready'">{{ technical.price_action.confidence }}%</strong>
+      <span>{{ technical.price_action.evidence?.slice(0, 2).join('；') || '尚未形成一致证据' }}</span>
+      <el-tooltip :content="`下一确认：${technical.price_action.next_confirmation || '-'}；失效：${technical.price_action.invalidation || '-'}`" placement="top"><span class="oscillator-help">确认与失效</span></el-tooltip>
+    </div>
 
     <template v-if="view === 'chart'">
       <div v-if="chart.points.length" class="technical-chart" role="img" :aria-label="`${ticker} 本地日线价格和成交量图表`">
@@ -132,6 +139,8 @@ function oscillatorTagType(signal?: string) {
   return 'info'
 }
 function kdjLabel(method?: string) { return method === 'ohlc_9_3_3' ? '标准 KDJ(9,3,3)' : '收盘价近似 KDJ(9,3,3)' }
+function priceActionLabel(value?: string) { return ({ reversal_extension:'反转延伸',wedge_pop:'楔形突破',ema_crossback:'均线回踩',base_break:'平台突破',exhaustion_extension:'衰竭延伸',wedge_drop:'楔形跌破',unconfirmed:'阶段未确认',unavailable:'数据不足' } as Record<string,string>)[value || ''] || '数据不足' }
+function priceActionTagType(value?: string) { if(value==='wedge_pop'||value==='base_break')return'success';if(value==='ema_crossback'||value==='reversal_extension')return'primary';if(value==='exhaustion_extension')return'warning';if(value==='wedge_drop')return'danger';return'info' }
 
 function filterTechnicalHistoryRange(rows: CandidateTechnicalHistoryRow[], selected: TechnicalHistoryRange) {
   if (selected === 'all' || !rows.length) return rows
@@ -151,6 +160,7 @@ function filterTechnicalHistoryRange(rows: CandidateTechnicalHistoryRow[], selec
 .technical-history-controls { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
 .technical-history-meta { color:var(--el-text-color-secondary); font-size:13px; margin-left:10px; }
 .oscillator-summary { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; margin:0 0 10px; padding:8px 10px; border:1px solid var(--el-border-color-lighter); border-radius:6px; background:var(--el-fill-color-light); color:var(--el-text-color-regular); font-size:13px; }
+.price-action-summary { display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin:0 0 10px;padding:8px 10px;border-left:3px solid var(--el-color-primary);border-radius:6px;background:var(--el-color-primary-light-9);color:var(--el-text-color-regular);font-size:13px }
 .oscillator-label { color:var(--el-text-color-secondary); }
 .oscillator-help { color:var(--el-color-primary); cursor:help; border-bottom:1px dotted currentColor; }
 .technical-chart { border:1px solid var(--el-border-color-lighter); border-radius:10px; padding:14px; }

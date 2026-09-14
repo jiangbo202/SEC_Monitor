@@ -54,14 +54,14 @@ func TestListCurrentCandidateMarketPriceRecoveryQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(queue.Items) != 2 {
-		t.Fatalf("queue items = %+v, want two recovery items", queue.Items)
+	if len(queue.Items) != 1 {
+		t.Fatalf("queue items = %+v, want one actionable recovery item", queue.Items)
 	}
 	if queue.Items[0].Ticker != "MISS" || queue.Items[0].Issue != "missing" {
 		t.Fatalf("first item = %+v", queue.Items[0])
 	}
-	if queue.Items[1].Ticker != "FALL" || queue.Items[1].Issue != "local_fallback" {
-		t.Fatalf("second item = %+v", queue.Items[1])
+	if queue.LocalFallbackCurrentCount != 1 {
+		t.Fatalf("local current count = %d, want 1", queue.LocalFallbackCurrentCount)
 	}
 }
 

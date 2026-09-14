@@ -53,16 +53,17 @@ type productionDiscoveryRunner struct {
 }
 
 type DiscoverySyncResult struct {
-	Status                 string                       `json:"status"`
-	Message                string                       `json:"message,omitempty"`
-	BatchID                string                       `json:"batch_id"`
-	SecurityBatchID        string                       `json:"security_batch_id"`
-	MarketBatchID          string                       `json:"market_batch_id"`
-	SecurityBatch          discovery.UniverseBatch      `json:"security_batch"`
-	MarketBatch            discovery.UniverseBatch      `json:"market_batch"`
-	Summary                discovery.CandidateSummary   `json:"summary"`
-	Health                 discovery.CandidateHealth    `json:"health"`
-	TechnicalHistoryWarmup TechnicalHistoryWarmupResult `json:"technical_history_warmup"`
+	Status                 string                            `json:"status"`
+	Message                string                            `json:"message,omitempty"`
+	BatchID                string                            `json:"batch_id"`
+	SecurityBatchID        string                            `json:"security_batch_id"`
+	MarketBatchID          string                            `json:"market_batch_id"`
+	SecurityBatch          discovery.UniverseBatch           `json:"security_batch"`
+	MarketBatch            discovery.UniverseBatch           `json:"market_batch"`
+	Summary                discovery.CandidateSummary        `json:"summary"`
+	Health                 discovery.CandidateHealth         `json:"health"`
+	TechnicalHistoryWarmup TechnicalHistoryWarmupResult      `json:"technical_history_warmup"`
+	PriceActionReplay      discovery.PriceActionReplayResult `json:"price_action_replay"`
 }
 
 // WatchTargetMarketSyncResult describes one local EOD refresh for enabled SEC
@@ -1215,6 +1216,24 @@ func (s *DiscoverySyncService) Run(ctx context.Context) (DiscoverySyncResult, er
 	} else {
 		s.finishDiscoverySyncStep(technicalStep.ID, result.TechnicalHistoryWarmup.Status, result.TechnicalHistoryWarmup.Result.PersistedCount, nil)
 	}
+	priceActionStep := s.startDiscoverySyncStep(run.ID, "price_action_replay", "重算当前交易日价格行为周期（本地）")
+	if s.runner != nil {
+		s.finishDiscoverySyncStep(priceActionStep.ID, DiscoverySyncRunStatusSkipped, 0, nil)
+	} else {
+		result.PriceActionReplay, err = s.ReplayPriceActionCycleHistory(ctx)
+		if err != nil {
+			// Price-action conclusions are research derivatives. Preserve the
+			// published market batch and expose the failed local replay as a
+			// retryable warning instead of rolling back valid source facts.
+			s.finishDiscoverySyncStep(priceActionStep.ID, "warning", result.PriceActionReplay.PersistedCount, err)
+			log.Printf("discovery price-action replay warning: %v", err)
+		} else if result.PriceActionReplay.ProductStatus == "degraded" {
+			s.finishDiscoverySyncStep(priceActionStep.ID, "warning", result.PriceActionReplay.PersistedCount,
+				fmt.Errorf("价格周期仍有 %d 个滞后、%d 个缺失", result.PriceActionReplay.StaleCount, result.PriceActionReplay.MissingCount))
+		} else {
+			s.finishDiscoverySyncStep(priceActionStep.ID, "completed", result.PriceActionReplay.PersistedCount, nil)
+		}
+	}
 	s.recordCurrentCandidateTradeSetupHistory(ctx)
 	s.refreshCandidateSignalOutcomes(ctx, run.ID, securityBatch.BatchID, marketBatch.BatchID)
 	s.createInAppCandidateEarningsReleases(ctx)
@@ -2161,6 +2180,7 @@ func (s *DiscoverySyncService) recordCurrentCandidateTradeSetupHistory(ctx conte
 	} else if created > 0 {
 		s.createInAppCandidateTechnicalSignals(ctx, tickers, recordedAt)
 	}
+	s.createInAppPriceActionSignals(ctx, tickers, recordedAt, "candidate")
 }
 
 // refreshCandidateSignalOutcomes is a non-blocking feature-layer checkpoint.
@@ -2334,6 +2354,75 @@ func (s *DiscoverySyncService) recordTickerTradeSetupHistory(ctx context.Context
 	} else if created > 0 {
 		s.createInAppWatchTargetTechnicalSignals(ctx, tickers, recordedAt)
 	}
+	s.createInAppPriceActionSignals(ctx, tickers, recordedAt, "watch_target")
+}
+
+// ReplayPriceActionCycleHistory is a local-only, independently retryable P1
+// task. It never calls a provider and never changes candidate scores.
+func (s *DiscoverySyncService) ReplayPriceActionCycleHistory(ctx context.Context) (discovery.PriceActionReplayResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.PriceActionReplayResult{}, errors.New("discovery service is not configured")
+	}
+	candidates, err := discovery.CurrentCandidateTickers(ctx, s.db)
+	if err != nil {
+		return discovery.PriceActionReplayResult{}, err
+	}
+	scope := make([]discovery.PriceActionReplayScope, 0, len(candidates))
+	for _, ticker := range candidates {
+		scope = append(scope, discovery.PriceActionReplayScope{Ticker: ticker, Source: "candidate"})
+	}
+	if s.watchDB != nil {
+		var watchTickers []string
+		if err := s.watchDB.WithContext(ctx).Model(&model.WatchTarget{}).Where("status = ?", "enabled").Pluck("ticker", &watchTickers).Error; err != nil {
+			return discovery.PriceActionReplayResult{}, err
+		}
+		for _, ticker := range watchTickers {
+			scope = append(scope, discovery.PriceActionReplayScope{Ticker: ticker, Source: "watch"})
+		}
+	}
+	return discovery.ReplayPriceActionCycleHistory(ctx, s.db, scope, time.Now().UTC())
+}
+
+func (s *DiscoverySyncService) createInAppPriceActionSignals(ctx context.Context, tickers []string, recordedAt time.Time, scope string) {
+	if s == nil || s.inApp == nil || s.db == nil || len(tickers) == 0 {
+		return
+	}
+	var snapshots []discovery.PriceActionPhaseSnapshot
+	if err := s.db.WithContext(ctx).Where("ticker IN ? AND recorded_at >= ?", tickers, recordedAt.Add(-time.Second)).Find(&snapshots).Error; err != nil {
+		log.Printf("load price action phase notifications: %v", err)
+		return
+	}
+	for _, snapshot := range snapshots {
+		// The first observation establishes a quiet baseline. Unconfirmed and
+		// unavailable states remain visible on the page but are not actionable.
+		if snapshot.PreviousPhase == "" || snapshot.PreviousPhase == snapshot.Phase || snapshot.Phase == discovery.PriceActionPhaseUnconfirmed || snapshot.Phase == discovery.PriceActionPhaseUnavailable {
+			continue
+		}
+		severity := "info"
+		if snapshot.Phase == discovery.PriceActionPhaseWedgePop || snapshot.Phase == discovery.PriceActionPhaseBaseBreak {
+			severity = "success"
+		}
+		if snapshot.Phase == discovery.PriceActionPhaseExhaustionExtension {
+			severity = "warning"
+		}
+		if snapshot.Phase == discovery.PriceActionPhaseWedgeDrop {
+			severity = "danger"
+		}
+		source := "price_action_cycle_" + scope
+		link := "/price-action-cycle?ticker=" + snapshot.Ticker
+		if _, _, err := s.inApp.Create(ctx, InAppNotificationInput{
+			EventKey: fmt.Sprintf("price-action:%s:%s:%s:%s", scope, snapshot.Ticker, snapshot.Phase, snapshot.TradeDate),
+			Source:   source, Scope: scope, EntityKind: "price_action_phase", Ticker: snapshot.Ticker,
+			Severity: severity, Title: "价格阶段变化：" + priceActionPhaseLabel(snapshot.Phase),
+			Body: strings.Join(discovery.PriceActionEvidence(snapshot), "；"), Link: link, OccurredAt: snapshot.RecordedAt,
+		}); err != nil {
+			log.Printf("create price action notification: %v", err)
+		}
+	}
+}
+
+func priceActionPhaseLabel(phase string) string {
+	return map[string]string{discovery.PriceActionPhaseReversalExtension: "反转延伸", discovery.PriceActionPhaseWedgePop: "楔形突破", discovery.PriceActionPhaseEMACrossback: "均线回踩", discovery.PriceActionPhaseBaseBreak: "平台突破", discovery.PriceActionPhaseExhaustionExtension: "衰竭延伸", discovery.PriceActionPhaseWedgeDrop: "楔形跌破"}[phase]
 }
 
 func (s *DiscoverySyncService) createInAppWatchTargetTechnicalSignals(ctx context.Context, tickers []string, recordedAt time.Time) {

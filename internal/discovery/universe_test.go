@@ -1557,3 +1557,32 @@ func TestPersistPricesChecksEntireDuplicateGroupDeterministically(t *testing.T) 
 		t.Fatalf("rows=%#v", rows)
 	}
 }
+
+func TestLocalPriceFallbackPreservesCompleteOHLC(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	tradeDate := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
+	row := PriceSnapshot{
+		Source: "longbridge", Symbol: "OHLC", TradeDate: tradeDate,
+		OpenMicros: 9_000_000, HighMicros: 11_000_000, LowMicros: 8_000_000,
+		CloseMicros: 10_000_000, Volume: 1234, Currency: "USD", QualityStatus: QualityStatusValid,
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	closeOnly := PriceSnapshot{Source: PriceSourceLocalCache, Symbol: "OHLC", TradeDate: tradeDate, CloseMicros: row.CloseMicros, Volume: row.Volume, Currency: "USD", QualityStatus: QualityStatusValid}
+	if err := db.Create(&closeOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	coordinator := Coordinator{DB: db}
+	records, err := coordinator.localPriceFallbackRecords(context.Background(), []Listing{{Ticker: "OHLC"}}, map[string]struct{}{}, tradeDate.AddDate(0, 0, -1), tradeDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v", records)
+	}
+	got := records[0]
+	if got.OpenMicros != row.OpenMicros || got.HighMicros != row.HighMicros || got.LowMicros != row.LowMicros || got.CloseMicros != row.CloseMicros || got.Volume != row.Volume {
+		t.Fatalf("fallback lost OHLCV: got %#v, source %#v", got, row)
+	}
+}

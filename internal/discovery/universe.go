@@ -1038,7 +1038,11 @@ func (c *Coordinator) localPriceFallbackRecords(ctx context.Context, expected []
 	bySymbol := make(map[string]PriceSnapshot, len(rows))
 	for _, row := range rows {
 		symbol := strings.ToUpper(strings.TrimSpace(row.Symbol))
-		if _, exists := bySymbol[symbol]; !exists {
+		existing, exists := bySymbol[symbol]
+		// A close-only local fallback can be newer than the provider's complete
+		// OHLC row for the same session. Prefer completeness within the same
+		// trading day so the next published batch repairs technical history.
+		if !exists || row.TradeDate.After(existing.TradeDate) || (row.TradeDate.Equal(existing.TradeDate) && priceSnapshotHasOHLC(row) && !priceSnapshotHasOHLC(existing)) {
 			bySymbol[symbol] = row
 		}
 	}
@@ -1060,6 +1064,7 @@ func (c *Coordinator) localPriceFallbackRecords(ctx context.Context, expected []
 		}
 		result = append(result, PriceRecord{
 			Symbol: canonical, TradeDate: row.TradeDate,
+			OpenMicros: row.OpenMicros, HighMicros: row.HighMicros, LowMicros: row.LowMicros,
 			CloseMicros: row.CloseMicros, Volume: row.Volume, Currency: row.Currency,
 			Adjusted: row.Adjusted, Source: PriceSourceLocalCache,
 		})

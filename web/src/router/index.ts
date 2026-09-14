@@ -25,6 +25,7 @@ const USFuturesView = () => import('@/views/USFuturesView.vue')
 const SectorBreadthView = () => import('@/views/SectorBreadthView.vue')
 const InstitutionalHoldingsView = () => import('@/views/InstitutionalHoldingsView.vue')
 const StrategyPoolView = () => import('@/views/StrategyPoolView.vue')
+const PriceActionCycleView = () => import('@/views/PriceActionCycleView.vue')
 const TickerEvaluationView = () => import('@/views/TickerEvaluationView.vue')
 const OptionResearchView = () => import('@/views/OptionResearchView.vue')
 const AIAnalysesView = () => import('@/views/AIAnalysesView.vue')
@@ -42,6 +43,7 @@ const router = createRouter({
         { path: 'filings', name: 'filings', component: FilingsView },
         { path: 'discovery-candidates', name: 'discovery-candidates', component: DiscoveryCandidatesView },
         { path: 'strategy-pool', name: 'strategy-pool', component: StrategyPoolView },
+		{ path: 'price-action-cycle', name: 'price-action-cycle', component: PriceActionCycleView },
 		{ path: 'ticker-workspace', name: 'ticker-workspace', component: TickerWorkspaceView },
 		{ path: 'ticker-evaluation', name: 'ticker-evaluation', component: TickerEvaluationView },
 		{ path: 'option-research', name: 'option-research', component: OptionResearchView },

@@ -25,6 +25,9 @@ func RecordTradeSetupStatusTransitions(ctx context.Context, db *gorm.DB, tickers
 		recordedAt = time.Now().UTC()
 	}
 	recordedAt = recordedAt.UTC()
+	if _, err := RecordPriceActionPhaseSnapshots(ctx, db, symbols, recordedAt); err != nil {
+		return 0, err
+	}
 
 	var latest []TradeSetupStatusEvent
 	if err := db.WithContext(ctx).Where("ticker IN ?", symbols).Order("ticker ASC, started_at DESC, id DESC").Find(&latest).Error; err != nil {

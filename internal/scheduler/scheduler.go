@@ -24,10 +24,12 @@ const (
 	smallCapDiscoverySyncTaskName                   = "small_cap_discovery_sync"
 	smallCapDiscoveryFullSyncTaskName               = "small_cap_discovery_full_sync"
 	watchTargetMarketSyncTaskName                   = "watch_target_market_sync"
+	priceActionCycleReplayTaskName                  = "price_action_cycle_replay"
 	watchTargetEarningsSyncTaskName                 = "watch_target_earnings_sync"
 	secFilingSyncTaskName                           = "sec_filing_sync"
 	notificationRetrySyncTaskName                   = "notification_retry_sync"
 	sqliteBackupTaskName                            = "sqlite_backup"
+	sqliteRecoveryDrillTaskName                     = "sqlite_recovery_drill"
 	operationHistoryCleanupTaskName                 = "operation_history_cleanup"
 	operationalHealthNotificationTaskName           = "operational_health_notification_sync"
 	macroCalendarSyncTaskName                       = "macro_calendar_sync"
@@ -338,6 +340,12 @@ func (s *Scheduler) runTaskWithTrigger(ctx context.Context, taskName, trigger st
 			// skipped state, but do not report it as a failed manual or cron run.
 			err = nil
 		}
+		var degraded *service.TaskDegradedError
+		if errors.As(err, &degraded) {
+			// Optional coverage gaps are persisted as a distinct scheduler state,
+			// while manual and scheduled callers still receive a successful run.
+			err = nil
+		}
 		s.mu.Lock()
 		delete(s.runningTasks, taskName)
 		if usesSEC && s.runningSECTask == taskName {
@@ -413,13 +421,13 @@ func (s *Scheduler) canRunTask(taskName string) bool {
 		return s.candidateNotifications != nil
 	case tradeSetupNotificationSyncTaskName:
 		return s.tradeSetupNotifications != nil
-	case smallCapDiscoverySyncTaskName, smallCapDiscoveryFullSyncTaskName, watchTargetMarketSyncTaskName, longbridgeCandidateResearchSyncTaskName, longbridgeCandidateValuationSyncTaskName, longbridgeWatchTargetValuationSyncTaskName, longbridgeWatchTargetResearchSyncTaskName, longbridgeCandidateOptionResearchSyncTaskName, longbridgeWatchTargetOptionResearchSyncTaskName:
+	case smallCapDiscoverySyncTaskName, smallCapDiscoveryFullSyncTaskName, watchTargetMarketSyncTaskName, priceActionCycleReplayTaskName, longbridgeCandidateResearchSyncTaskName, longbridgeCandidateValuationSyncTaskName, longbridgeWatchTargetValuationSyncTaskName, longbridgeWatchTargetResearchSyncTaskName, longbridgeCandidateOptionResearchSyncTaskName, longbridgeWatchTargetOptionResearchSyncTaskName:
 		return s.discoverySync != nil
 	case watchTargetEarningsSyncTaskName:
 		return s.earningsPreview != nil
 	case notificationRetrySyncTaskName:
 		return s.notificationBatches != nil
-	case sqliteBackupTaskName:
+	case sqliteBackupTaskName, sqliteRecoveryDrillTaskName:
 		return s.backup != nil
 	case operationHistoryCleanupTaskName:
 		return s.lifecycle != nil
@@ -595,6 +603,18 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 			return service.PendingTask(fmt.Sprintf("监控标的日线已覆盖 %d/%d 家（含本地有效数据）；%d 家待补齐", completed, result.RequestedCount, pending), &pending)
 		}
 		return nil
+	case priceActionCycleReplayTaskName:
+		result, err := s.discoverySync.ReplayPriceActionCycleHistory(ctx)
+		if err != nil {
+			return err
+		}
+		if result.StaleCount > 0 {
+			return service.PartialTask(fmt.Sprintf("价格周期已完成回放，但 %d 个标的结论早于目标交易日 %s", result.StaleCount, result.TargetTradeDate))
+		}
+		if result.MissingCount > 0 {
+			return service.DegradedTask(fmt.Sprintf("价格周期回放完成；%d 个标的缺少足够的完整 OHLC，已从当日研究优先级排除", result.MissingCount))
+		}
+		return nil
 	case watchTargetEarningsSyncTaskName:
 		result, err := s.earningsPreview.SyncEnabled(ctx)
 		if err != nil {
@@ -625,6 +645,15 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 	case sqliteBackupTaskName:
 		_, err := s.backup.Backup(ctx)
 		return err
+	case sqliteRecoveryDrillTaskName:
+		result, err := s.backup.CheckRecoveryReadiness(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Status != "ready" {
+			return fmt.Errorf("SQLite 恢复演练未通过：%s", strings.TrimSpace(result.Reason))
+		}
+		return nil
 	case operationHistoryCleanupTaskName:
 		_, err := s.lifecycle.Cleanup(ctx, time.Now().UTC())
 		return err
@@ -682,5 +711,5 @@ func researchPartialOutcome(fetched, attempted, failed int, warnings []string) e
 	}
 	// Coverage warnings are not request failures: do not loop over valid
 	// no-coverage responses or pretend that zero failed records means healthy.
-	return service.PartialTask(reason)
+	return service.DegradedTask(reason)
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -626,6 +627,187 @@ func (h *AppHandler) ListDiscoveryCandidates(c *gin.Context) {
 		return
 	}
 	OK(c, result)
+}
+
+func (h *AppHandler) ListPriceActionCycleTransitions(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	scope, err := h.priceActionCycleScope(c.Request.Context())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	tickers := make([]string, 0, len(scope))
+	for _, item := range scope {
+		tickers = append(tickers, item.Ticker)
+	}
+	result, err := discovery.ListPriceActionPhaseTransitions(c.Request.Context(), h.DiscoveryDB, tickers, limit)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetPriceActionCycleTimeline(c *gin.Context) {
+	ticker := strings.ToUpper(strings.TrimSpace(c.Param("ticker")))
+	scope, err := h.priceActionCycleScope(c.Request.Context())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	allowed := false
+	for _, item := range scope {
+		if strings.EqualFold(item.Ticker, ticker) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		c.JSON(http.StatusNotFound, gin.H{"code": http.StatusNotFound, "message": "ticker is not in the current price-action research scope"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "260"))
+	changesOnly, parseErr := strconv.ParseBool(c.DefaultQuery("changes_only", "true"))
+	if parseErr != nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	fromDate := strings.TrimSpace(c.Query("from"))
+	toDate := strings.TrimSpace(c.Query("to"))
+	for _, value := range []string{fromDate, toDate} {
+		if value != "" {
+			if _, dateErr := time.Parse(time.DateOnly, value); dateErr != nil {
+				Error(c, service.ErrValidation)
+				return
+			}
+		}
+	}
+	if fromDate != "" && toDate != "" && fromDate > toDate {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := discovery.GetPriceActionTimeline(c.Request.Context(), h.DiscoveryDB, ticker, c.Query("rule_version"), fromDate, toDate, changesOnly, limit)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetPriceActionCycleEffectiveness(c *gin.Context) {
+	config, err := discovery.GetPriceActionCycleConfig(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	profile := strings.TrimSpace(c.Query("profile"))
+	if profile == "" {
+		profile = config.ActiveProfile
+	}
+	result, err := discovery.GetPriceActionEffectiveness(c.Request.Context(), h.DiscoveryDB, profile)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) ReplayPriceActionCycleHistory(c *gin.Context) {
+	scope, err := h.priceActionCycleScope(c.Request.Context())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	result, err := discovery.ReplayPriceActionCycleHistory(context.WithoutCancel(c.Request.Context()), h.DiscoveryDB, scope, time.Now().UTC())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetPriceActionCycleConfig(c *gin.Context) {
+	result, err := discovery.GetPriceActionCycleConfig(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) UpdatePriceActionCycleConfig(c *gin.Context) {
+	var input struct {
+		ActiveProfile string `json:"active_profile"`
+		ShadowProfile string `json:"shadow_profile"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := discovery.UpdatePriceActionCycleConfig(c.Request.Context(), h.DiscoveryDB, input.ActiveProfile, input.ShadowProfile)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) RollbackPriceActionCycleConfig(c *gin.Context) {
+	result, err := discovery.RollbackPriceActionCycleConfig(c.Request.Context(), h.DiscoveryDB)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetPriceActionCycleShadowComparison(c *gin.Context) {
+	scope, err := h.priceActionCycleScope(c.Request.Context())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	result, err := discovery.BuildPriceActionShadowComparison(c.Request.Context(), h.DiscoveryDB, scope)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetPriceActionCycleHealth(c *gin.Context) {
+	scope, err := h.priceActionCycleScope(c.Request.Context())
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	result, err := discovery.BuildPriceActionCycleHealth(c.Request.Context(), h.DiscoveryDB, scope)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) priceActionCycleScope(ctx context.Context) ([]discovery.PriceActionReplayScope, error) {
+	candidates, err := discovery.CurrentCandidateTickers(ctx, h.DiscoveryDB)
+	if err != nil {
+		return nil, err
+	}
+	scope := make([]discovery.PriceActionReplayScope, 0, len(candidates))
+	for _, ticker := range candidates {
+		scope = append(scope, discovery.PriceActionReplayScope{Ticker: ticker, Source: "candidate"})
+	}
+	if h.DB != nil {
+		var watchTickers []string
+		if err := h.DB.WithContext(ctx).Model(&model.WatchTarget{}).Where("status = ?", "enabled").Pluck("ticker", &watchTickers).Error; err != nil {
+			return nil, err
+		}
+		for _, ticker := range watchTickers {
+			scope = append(scope, discovery.PriceActionReplayScope{Ticker: ticker, Source: "watch"})
+		}
+	}
+	return scope, nil
 }
 
 func (h *AppHandler) GetDiscoveryCandidateCriteria(c *gin.Context) {

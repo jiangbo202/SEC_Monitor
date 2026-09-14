@@ -253,7 +253,7 @@ function taskLabel(value: string) {
     longbridge_candidate_research_sync: 'Longbridge P1 候选市场研究', longbridge_candidate_valuation_sync: 'Longbridge P2 候选估值研究',
     longbridge_watch_target_valuation_sync: 'Longbridge 监控标的估值研究', longbridge_watch_target_research_sync: 'Longbridge 监控标的机构持仓研究',
     candidate_notification_sync: '候选通知同步', trade_setup_notification_sync: '交易计划通知同步', notification_retry_sync: '通知重试',
-    sqlite_backup: 'SQLite 备份', operation_history_cleanup: '运行历史清理', operational_health_notification_sync: '运行健康告警', institutional_holdings_sync: '机构持仓同步'
+    sqlite_backup: 'SQLite 备份', sqlite_recovery_drill: 'SQLite 恢复演练', operation_history_cleanup: '运行历史清理', operational_health_notification_sync: '运行健康告警', institutional_holdings_sync: '机构持仓同步'
   }
   return labels[value] || value
 }
