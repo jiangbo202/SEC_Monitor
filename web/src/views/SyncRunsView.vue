@@ -21,6 +21,7 @@
         <el-select fit-input-width v-model="filters.status" clearable placeholder="全部状态" style="width: 135px">
           <el-option label="成功" value="success" />
           <el-option label="部分完成" value="partial" />
+          <el-option label="降级完成" value="degraded" />
           <el-option label="已跳过" value="skipped" />
           <el-option label="失败" value="failed" />
           <el-option label="已中断" value="interrupted" />
@@ -39,10 +40,11 @@
       </el-form-item>
     </el-form>
 
-    <el-table :data="rows" v-loading="loading" border :empty-text="'暂无任务执行记录'">
+    <el-alert v-if="collapsedRetryCount > 0" type="info" :closable="false" show-icon class="retry-collapse-notice" :title="`本页已将同一任务、同一天、同类错误的 ${collapsedRetryCount} 条自动补偿记录折叠显示；徽标为实际尝试次数。`" />
+    <el-table :data="displayRows" v-loading="loading" border :empty-text="'暂无任务执行记录'">
       <el-table-column label="任务" min-width="245" show-overflow-tooltip>
         <template #default="{ row }">
-          <div>{{ taskLabel(row.task_name) }}</div>
+          <div>{{ taskLabel(row.task_name) }} <el-tag v-if="row.attempt_count > 1" size="small" type="info" effect="plain">{{ row.attempt_count }} 次尝试</el-tag></div>
           <div class="task-code">{{ row.task_name }}</div>
         </template>
       </el-table-column>
@@ -52,8 +54,8 @@
       <el-table-column label="触发方式" width="115">
         <template #default="{ row }"><el-tag type="info" effect="plain">{{ triggerLabel(row.trigger) }}</el-tag></template>
       </el-table-column>
-      <el-table-column label="开始时间" width="175">
-        <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
+      <el-table-column label="发生时间" width="195">
+        <template #default="{ row }"><span v-if="row.attempt_count > 1">{{ formatDateTime(row.first_started_at) }}<br>至 {{ formatDateTime(row.started_at) }}</span><span v-else>{{ formatDateTime(row.started_at) }}</span></template>
       </el-table-column>
       <el-table-column label="结束时间" width="175">
         <template #default="{ row }">{{ formatDateTime(row.finished_at) }}</template>
@@ -140,6 +142,36 @@ const legacyPage = ref(1)
 const legacyFilters = reactive({ status: '' })
 const legacyDetails = ref<Record<number, SyncRunDetail[]>>({})
 const retryingTargetID = ref<number | null>(null)
+
+type TaskExecutionDisplay = TaskExecution & { attempt_count: number; first_started_at: string }
+
+const displayRows = computed<TaskExecutionDisplay[]>(() => {
+  const grouped = new Map<string, TaskExecutionDisplay>()
+  const result: TaskExecutionDisplay[] = []
+  for (const row of rows.value) {
+    const collapsible = row.trigger !== 'manual' && (row.status === 'failed' || row.status === 'partial')
+    const display: TaskExecutionDisplay = { ...row, attempt_count: 1, first_started_at: row.started_at }
+    if (!collapsible) {
+      result.push(display)
+      continue
+    }
+    const day = row.started_at.slice(0, 10)
+    const signature = normalizedFailureSignature(row.error_message || row.summary)
+    const key = `${row.task_name}\u0000${day}\u0000${signature}`
+    const existing = grouped.get(key)
+    if (!existing) {
+      grouped.set(key, display)
+      result.push(display)
+      continue
+    }
+    existing.attempt_count++
+    existing.first_started_at = row.started_at
+    existing.duration_ms += row.duration_ms || 0
+  }
+  return result
+})
+
+const collapsedRetryCount = computed(() => rows.value.length - displayRows.value.length)
 
 const loggableTasks = computed(() => tasks.value.filter((task) => !standaloneDiscoveryTasks.has(task.task_name)))
 
@@ -230,19 +262,30 @@ function formatDuration(value: number, status: string) {
 
 function statusType(status: string) {
   if (status === 'success') return 'success'
-  if (status === 'partial' || status === 'interrupted') return 'warning'
+  if (status === 'partial' || status === 'degraded' || status === 'interrupted') return 'warning'
   if (status === 'failed') return 'danger'
   if (status === 'running') return 'primary'
   return 'info'
 }
 
 function statusLabel(status: string) {
-  const labels: Record<string, string> = { success: '成功', partial: '部分完成', skipped: '已跳过', failed: '失败', interrupted: '已中断', running: '运行中' }
+  const labels: Record<string, string> = { success: '成功', partial: '部分完成', degraded: '降级完成', skipped: '已跳过', failed: '失败', interrupted: '已中断', running: '运行中' }
   return labels[status] || status || '-'
 }
 
 function triggerLabel(trigger: string) {
   return trigger === 'scheduled' ? '定时调度' : trigger === 'retry' ? '自动补偿' : trigger === 'manual' ? '手动执行' : trigger || '-'
+}
+
+function normalizedFailureSignature(value: string) {
+  return (value || 'unknown')
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, '<url>')
+	.replace(/\btrace\s*[:=]\s*[a-z0-9-]+/g, 'trace:<id>')
+    .replace(/\b\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[t\s]\d{1,2}:\d{2}(?::\d{2})?)?/g, '<time>')
+    .replace(/\b\d+\b/g, '#')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function taskLabel(value: string) {
@@ -252,6 +295,8 @@ function taskLabel(value: string) {
     market_trend_sync: '大盘趋势日线同步', us_futures_sync: '美股期货日线同步',
     longbridge_candidate_research_sync: 'Longbridge P1 候选市场研究', longbridge_candidate_valuation_sync: 'Longbridge P2 候选估值研究',
     longbridge_watch_target_valuation_sync: 'Longbridge 监控标的估值研究', longbridge_watch_target_research_sync: 'Longbridge 监控标的机构持仓研究',
+	longbridge_candidate_option_research_sync: 'Longbridge 候选期权研究', longbridge_watch_target_option_research_sync: 'Longbridge 监控标的期权研究',
+	price_action_cycle_replay: '价格周期历史回放',
     candidate_notification_sync: '候选通知同步', trade_setup_notification_sync: '交易计划通知同步', notification_retry_sync: '通知重试',
     sqlite_backup: 'SQLite 备份', sqlite_recovery_drill: 'SQLite 恢复演练', operation_history_cleanup: '运行历史清理', operational_health_notification_sync: '运行健康告警', institutional_holdings_sync: '机构持仓同步'
   }
@@ -273,4 +318,5 @@ onMounted(async () => {
 .legacy-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .legacy-header span { margin-left: 12px; color: var(--el-text-color-secondary); font-size: 13px; }
 .compact-toolbar { margin-bottom: 12px; }
+.retry-collapse-notice { margin-bottom: 12px; }
 </style>

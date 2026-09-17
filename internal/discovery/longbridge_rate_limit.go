@@ -42,14 +42,44 @@ func waitLongbridgeFundamentalSlot(ctx context.Context, interval time.Duration) 
 
 func longbridgeFundamentalCall[T any](ctx context.Context, interval time.Duration, call func(context.Context) (T, error)) (T, error) {
 	var zero T
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 3; attempt++ {
 		if err := waitLongbridgeFundamentalSlot(ctx, interval); err != nil {
 			return zero, err
 		}
 		result, err := call(ctx)
-		if err == nil || companyProfileBulkRetryFailureKind(err) != "rate_limited" || attempt == 1 {
+		if err == nil || companyProfileBulkRetryFailureKind(err) != "rate_limited" || attempt == 2 {
 			return result, err
 		}
+		deferLongbridgeFundamentalRequests(longbridgeRateLimitCooldown(interval, attempt))
 	}
 	return zero, nil
+}
+
+func deferLongbridgeFundamentalRequests(delay time.Duration) {
+	if delay <= 0 {
+		return
+	}
+	longbridgeFundamentalPacer.Lock()
+	defer longbridgeFundamentalPacer.Unlock()
+	next := time.Now().Add(delay)
+	if next.After(longbridgeFundamentalPacer.nextRequestAt) {
+		longbridgeFundamentalPacer.nextRequestAt = next
+	}
+}
+
+func longbridgeRateLimitCooldown(interval time.Duration, attempt int) time.Duration {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	delay := interval * time.Duration(2<<attempt)
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	// A bounded time-derived jitter prevents independently started processes
+	// from retrying at exactly the same boundary without making waits unbounded.
+	jitterWindow := interval / 2
+	if jitterWindow > 0 {
+		delay += time.Duration(time.Now().UnixNano() % int64(jitterWindow))
+	}
+	return delay
 }

@@ -189,8 +189,9 @@ func (s *TaskConfigService) EnsureDefault(ctx context.Context) error {
 		// US regular session close in both daylight-saving and standard time.
 		// The task itself still resolves the latest completed NYSE trading day.
 		{TaskName: "watch_target_market_sync", CronExpr: "35 5 * * 2-6", Enabled: true, Running: false},
-		// Local-only validation runs after both candidate and watch EOD prices.
-		// Failures use the scheduler's persisted retry/limit mechanism.
+		// Validation runs after both candidate and watch EOD prices. It may repair
+		// a bounded number of missing histories before the local replay; failures
+		// remain isolated per ticker and use scheduler retry semantics.
 		{TaskName: "price_action_cycle_replay", CronExpr: "5 6 * * 2-6", Enabled: true, Running: false},
 		// Asia/Shanghai Tuesday-Saturday 06:30 is after the prior US close.
 		// The task only updates locally cached earnings dates and estimates; it

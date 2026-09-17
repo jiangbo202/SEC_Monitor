@@ -34,3 +34,20 @@ func TestLongbridgeFundamentalCallDoesNotRetryOtherFailures(t *testing.T) {
 		t.Fatalf("calls=%d err=%v", calls, err)
 	}
 }
+
+func TestLongbridgeFundamentalCallRetriesRepeatedRateLimits(t *testing.T) {
+	longbridgeFundamentalPacer.Lock()
+	longbridgeFundamentalPacer.nextRequestAt = time.Time{}
+	longbridgeFundamentalPacer.Unlock()
+	calls := 0
+	result, err := longbridgeFundamentalCall(context.Background(), time.Millisecond, func(context.Context) (string, error) {
+		calls++
+		if calls < 3 {
+			return "", errors.New("HTTP 429 rate limited")
+		}
+		return "recovered", nil
+	})
+	if err != nil || result != "recovered" || calls != 3 {
+		t.Fatalf("result=%q calls=%d err=%v", result, calls, err)
+	}
+}

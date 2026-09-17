@@ -53,6 +53,9 @@ type PriceActionReplayResult struct {
 	CurrentCount    int       `json:"current_count"`
 	StaleCount      int       `json:"stale_count"`
 	MissingCount    int       `json:"missing_count"`
+	RepairAttempted int       `json:"repair_attempted"`
+	RepairSucceeded int       `json:"repair_succeeded"`
+	RepairFailed    int       `json:"repair_failed"`
 	StaleTickers    []string  `json:"stale_tickers"`
 	MissingTickers  []string  `json:"missing_tickers"`
 }

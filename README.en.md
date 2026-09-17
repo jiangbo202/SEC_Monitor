@@ -74,6 +74,19 @@ remain visible instead of being replaced with optimistic defaults.
   reconcile listing status using SEC mappings and optional Longbridge checks.
 - **Small-cap research and strategy pool**: preserve explainable fundamentals,
   price, technical, liquidity and trade-discipline snapshots and changes.
+- **Recoverable data pipelines**: isolate failures by provider, batch and
+  ticker; persist bounded retry checkpoints; distinguish genuine provider
+  failures from newly listed securities that are still accumulating history.
+- **Provider-aware pacing**: company profiles, consensus, valuation and
+  options research share a global Longbridge request cadence with bounded
+  rate-limit backoff.
+- **Resilient listing-directory ingestion**: Nasdaq venue codes are mapped
+  centrally, including the `F` / `TXSE` transition for Texas Stock Exchange;
+  unknown future venues are quarantined and cannot enter the eligible
+  small-cap universe or fail the whole daily run.
+- **Repair-before-replay price action**: the daily cycle replay attempts a
+  bounded OHLC repair for missing names and preserves results for every ticker
+  that is already ready.
 - **Ticker evaluation**: apply the existing research logic to a stock or ETF
   and retain historical results.
 - **Macro and market research**: market trends, sector ETFs, US futures, macro
@@ -104,6 +117,23 @@ Notifications**; the former standalone Telegram route redirects there.
 
 The application does not present commercial forecasts, ratings or bullish/bearish
 labels as SEC facts. Missing data remains explicit rather than being invented.
+
+## Task status and recovery semantics
+
+Scheduler, execution-history and health views use the same operating states:
+
+| State | Meaning | Operator expectation |
+| --- | --- | --- |
+| Success | The primary workflow and publication completed | No action required |
+| Partial | The primary result is usable with explicit gaps | Gaps enter ticker- or provider-scoped recovery |
+| Degraded | A fallback was used or unavailable names were excluded | Keep the result and review the health reason |
+| Failed | No primary result was published | Durable bounded retries run before manual handling |
+| Waiting for history | A recent listing cannot yet satisfy the history window | Recheck when samples can exist; do not count it as a provider failure |
+
+Automatic retries with the same task, day and normalized error are collapsed
+in **Execution History** while preserving the real attempt count. Small-cap
+syncs retain their own step-by-step workflow log; a long HTTP request timing
+out does not cancel a healthy background run whose heartbeat is still moving.
 
 ## Quick start
 

@@ -284,3 +284,41 @@ func TestTechnicalHistoryRetryEscalatesToManualReview(t *testing.T) {
 		t.Fatalf("manual recovery queue = %+v err=%v", queue, err)
 	}
 }
+
+func TestInsufficientTechnicalHistoryWaitsForNaturalSamples(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC)
+	state, err := recordTechnicalHistoryRetry(ctx, db, "sample-batch", "newco", "insufficient_history", technicalHistoryCoverage{SampleDays: 167, LatestDate: "2026-08-22"}, 200, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != TechnicalHistoryRetryWaitingHistory || state.FailureCount != 0 || state.NextRetryAt == nil || !state.NextRetryAt.After(now.Add(30*24*time.Hour-time.Second)) {
+		t.Fatalf("waiting state = %+v", state)
+	}
+	var openIncidents int64
+	if err := db.Model(&DataQualityIncident{}).Where("domain = ? AND entity_key = ? AND status = ?", "technical_history", "NEWCO", DataQualityIncidentOpen).Count(&openIncidents).Error; err != nil {
+		t.Fatal(err)
+	}
+	if openIncidents != 0 {
+		t.Fatalf("natural sample accumulation must not open an incident: %d", openIncidents)
+	}
+}
+
+func TestNormalizeLegacyInsufficientHistoryManualReview(t *testing.T) {
+	db := openMigratedTestDatabase(t)
+	now := time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC)
+	legacy := TechnicalHistoryRetryState{Ticker: "IPO", BatchID: "batch", Status: TechnicalHistoryRetryManual, Reason: "insufficient_history", FailureCount: 5, LastAttemptAt: now.Add(-time.Hour)}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := NormalizeTechnicalHistoryRetryStates(context.Background(), db, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&legacy, "ticker = ?", "IPO").Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Status != TechnicalHistoryRetryWaitingHistory || legacy.FailureCount != 0 || legacy.NextRetryAt == nil {
+		t.Fatalf("normalized state = %+v", legacy)
+	}
+}

@@ -1975,7 +1975,7 @@ export interface CandidateEffectivenessReplayResult {
 export interface TechnicalHistoryRetryState {
   ticker: string
   batch_id: string
-  status: 'backoff' | 'deferred' | 'manual_review' | 'resolved' | string
+  status: 'backoff' | 'deferred' | 'waiting_history' | 'manual_review' | 'resolved' | string
   reason: string
   failure_count: number
   sample_days: number
@@ -2371,6 +2371,8 @@ export interface OperationalReport {
 	technical_history_pending: number
 	technical_history_retry_due: number
 	technical_history_deferred: number
+	technical_history_waiting: number
+	technical_history_manual_review: number
   failed_notification_batches: number
   dead_letter_batches: number
   summary: string

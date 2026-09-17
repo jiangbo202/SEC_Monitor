@@ -61,6 +61,22 @@ type NasdaqDirectorySource struct {
 var listedHeader = []string{"Symbol", "Security Name", "Market Category", "Test Issue", "Financial Status", "Round Lot Size", "ETF", "NextShares"}
 var otherHeader = []string{"ACT Symbol", "Security Name", "Exchange", "CQS Symbol", "ETF", "Round Lot Size", "Test Issue", "NASDAQ Symbol"}
 
+var nasdaqOtherExchangeNames = map[string]string{
+	"N": "NYSE",
+	"A": "NYSE American",
+	"P": "NYSE Arca",
+	"Z": "Cboe BZX",
+	"V": "IEX",
+	"M": "NYSE Texas",
+	// Nasdaq introduced F as the primary-listing-market code for Texas
+	// Stock Exchange in 2026. Keep accepting the earlier textual value as
+	// well because cached transition-day directories can still contain it.
+	"F":    "Texas Stock Exchange",
+	"TXSE": "Texas Stock Exchange",
+}
+
+const unmappedNasdaqExchangePrefix = "Unmapped Nasdaq venue: "
+
 func ParseNasdaqListed(r io.Reader) ([]SecuritySourceRecord, string, error) {
 	return parseNasdaq(r, listedHeader, func(fields []string, line int) (SecuritySourceRecord, error) {
 		if fields[0] == "" {
@@ -89,11 +105,6 @@ func ParseNasdaqOther(r io.Reader) ([]SecuritySourceRecord, string, error) {
 		if fields[1] == "" {
 			return SecuritySourceRecord{}, fmt.Errorf("line %d: empty security name", line)
 		}
-		exchanges := map[string]string{"N": "NYSE", "A": "NYSE American", "P": "NYSE Arca", "Z": "Cboe BZX", "V": "IEX", "M": "NYSE Texas"}
-		exchange, ok := exchanges[fields[2]]
-		if !ok {
-			return SecuritySourceRecord{}, fmt.Errorf("line %d: unknown exchange code %q", line, fields[2])
-		}
 		etf, err := parseYN(fields[4])
 		if err != nil {
 			return SecuritySourceRecord{}, fmt.Errorf("line %d: ETF: %w", line, err)
@@ -101,6 +112,16 @@ func ParseNasdaqOther(r io.Reader) ([]SecuritySourceRecord, string, error) {
 		test, err := parseYN(fields[6])
 		if err != nil {
 			return SecuritySourceRecord{}, fmt.Errorf("line %d: Test Issue: %w", line, err)
+		}
+		exchangeCode := strings.ToUpper(fields[2])
+		exchange, ok := nasdaqOtherExchangeNames[exchangeCode]
+		if !ok {
+			// The upstream directory can add a listing venue before its public
+			// field-definition page is updated. Preserve the record under an
+			// explicitly non-canonical venue instead of failing the entire daily
+			// universe. Small-cap policy validation only permits canonical venues,
+			// so this value cannot accidentally enter the candidate pool.
+			exchange = unmappedNasdaqExchangePrefix + exchangeCode
 		}
 		return SecuritySourceRecord{Ticker: strings.ToUpper(fields[0]), ProviderTicker: strings.ToUpper(fields[7]), SecurityName: fields[1], CompanyName: fields[1], Exchange: exchange, TestIssue: test, ETF: etf}, nil
 	})

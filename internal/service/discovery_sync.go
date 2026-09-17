@@ -2357,8 +2357,9 @@ func (s *DiscoverySyncService) recordTickerTradeSetupHistory(ctx context.Context
 	s.createInAppPriceActionSignals(ctx, tickers, recordedAt, "watch_target")
 }
 
-// ReplayPriceActionCycleHistory is a local-only, independently retryable P1
-// task. It never calls a provider and never changes candidate scores.
+// ReplayPriceActionCycleHistory repairs a small bounded set of missing OHLC
+// histories before running the local replay. It never changes candidate
+// scores, and a failed repair does not discard replay results for ready names.
 func (s *DiscoverySyncService) ReplayPriceActionCycleHistory(ctx context.Context) (discovery.PriceActionReplayResult, error) {
 	if s == nil || s.db == nil {
 		return discovery.PriceActionReplayResult{}, errors.New("discovery service is not configured")
@@ -2380,7 +2381,38 @@ func (s *DiscoverySyncService) ReplayPriceActionCycleHistory(ctx context.Context
 			scope = append(scope, discovery.PriceActionReplayScope{Ticker: ticker, Source: "watch"})
 		}
 	}
-	return discovery.ReplayPriceActionCycleHistory(ctx, s.db, scope, time.Now().UTC())
+	health, err := discovery.BuildPriceActionCycleHealth(ctx, s.db, scope)
+	if err != nil {
+		return discovery.PriceActionReplayResult{}, err
+	}
+	repairTickers := health.ScopeMissingTickers
+	if len(repairTickers) > 8 {
+		repairTickers = repairTickers[:8]
+	}
+	repairAttempted, repairSucceeded, repairFailed := 0, 0, 0
+	if len(repairTickers) > 0 {
+		cfg, cfgErr := s.appliedDiscoveryConfig(ctx)
+		if cfgErr != nil {
+			log.Printf("price action history repair config: %v", cfgErr)
+			repairFailed = len(repairTickers)
+		} else {
+			for _, ticker := range repairTickers {
+				if ctx.Err() != nil {
+					break
+				}
+				repairAttempted++
+				if _, repairErr := s.backfillTickerTechnicalHistoryWithConfig(ctx, cfg, ticker, 0); repairErr != nil {
+					repairFailed++
+					log.Printf("price action history repair %s: %v", ticker, repairErr)
+					continue
+				}
+				repairSucceeded++
+			}
+		}
+	}
+	result, err := discovery.ReplayPriceActionCycleHistory(ctx, s.db, scope, time.Now().UTC())
+	result.RepairAttempted, result.RepairSucceeded, result.RepairFailed = repairAttempted, repairSucceeded, repairFailed
+	return result, err
 }
 
 func (s *DiscoverySyncService) createInAppPriceActionSignals(ctx context.Context, tickers []string, recordedAt time.Time, scope string) {

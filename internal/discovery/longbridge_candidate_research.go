@@ -110,15 +110,16 @@ type longbridgeCandidateResearchClient interface {
 }
 
 type LongbridgeCandidateResearchOptions struct {
-	AppKey      string
-	AppSecret   string
-	AccessToken string
-	Now         func() time.Time
-	NewClient   func(string, string, string) (longbridgeCandidateResearchClient, error)
+	AppKey          string
+	AppSecret       string
+	AccessToken     string
+	RequestInterval time.Duration
+	Now             func() time.Time
+	NewClient       func(string, string, string) (longbridgeCandidateResearchClient, error)
 }
 
 func NewLongbridgeCandidateResearchOptions(cfg config.DiscoveryConfig) LongbridgeCandidateResearchOptions {
-	return LongbridgeCandidateResearchOptions{AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken}
+	return LongbridgeCandidateResearchOptions{AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken, RequestInterval: time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS) * time.Millisecond}
 }
 
 // GetCandidateMarketResearch never calls Longbridge. Detail views stay fast
@@ -289,7 +290,9 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 	symbol := result.Ticker + ".US"
 	var requestErrors []error
 
-	if forecast, fetchErr := client.ForecastEps(requestCtx, symbol); fetchErr != nil {
+	if forecast, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.ForecastEps, error) {
+		return client.ForecastEps(callCtx, symbol)
+	}); fetchErr != nil {
 		requestErrors = append(requestErrors, fmt.Errorf("EPS forecast: %w", fetchErr))
 		result.Warnings = append(result.Warnings, "EPS 预期："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else if latest, ok := latestForecastEpsItem(forecast); ok {
@@ -321,7 +324,7 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 		result.Warnings = append(result.Warnings, "EPS 预期：Longbridge 暂无覆盖")
 	}
 
-	if anomalies, fetchErr := client.Anomaly(requestCtx, "US"); fetchErr != nil {
+	if anomalies, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbmarket.AnomalyResponse, error) { return client.Anomaly(callCtx, "US") }); fetchErr != nil {
 		requestErrors = append(requestErrors, fmt.Errorf("market anomaly: %w", fetchErr))
 		result.Warnings = append(result.Warnings, "市场异动："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {
@@ -330,7 +333,9 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 			return result, err
 		}
 	}
-	if shareholders, fetchErr := client.Shareholder(requestCtx, symbol); fetchErr != nil {
+	if shareholders, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.ShareholderList, error) {
+		return client.Shareholder(callCtx, symbol)
+	}); fetchErr != nil {
 		requestErrors = append(requestErrors, fmt.Errorf("shareholders: %w", fetchErr))
 		result.Warnings = append(result.Warnings, "机构股东："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {
@@ -339,7 +344,9 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 			return result, err
 		}
 	}
-	if holders, fetchErr := client.FundHolder(requestCtx, symbol); fetchErr != nil {
+	if holders, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.FundHolders, error) {
+		return client.FundHolder(callCtx, symbol)
+	}); fetchErr != nil {
 		requestErrors = append(requestErrors, fmt.Errorf("fund holders: %w", fetchErr))
 		result.Warnings = append(result.Warnings, "基金持仓："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {

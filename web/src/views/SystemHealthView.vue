@@ -170,6 +170,7 @@
             <el-descriptions-item :label="t('pages.systemHealth.providerWarnings')">{{ operational.provider_warnings }}</el-descriptions-item>
 			<el-descriptions-item label="技术历史待补">{{ operational.technical_history_pending }}</el-descriptions-item>
 			<el-descriptions-item label="技术历史到期重试">{{ operational.technical_history_retry_due }}</el-descriptions-item>
+			<el-descriptions-item label="等待自然样本">{{ operational.technical_history_waiting || 0 }}</el-descriptions-item>
 			<el-descriptions-item label="技术历史连续失败">{{ operational.technical_history_deferred }}</el-descriptions-item>
 			<el-descriptions-item label="失败通知批次">{{ operational.failed_notification_batches }}</el-descriptions-item>
 			<el-descriptions-item label="通知死信批次">{{ operational.dead_letter_batches }}</el-descriptions-item>

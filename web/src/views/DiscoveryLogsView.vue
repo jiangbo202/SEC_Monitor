@@ -203,22 +203,22 @@
         <div class="card-header">
           <span>技术历史补偿队列</span>
           <el-space>
-            <el-tag type="info" effect="plain">仅当前候选 · 失败自动退避</el-tag>
+            <el-tag type="info" effect="plain">仅当前候选 · 故障退避 / 新股等样本</el-tag>
             <el-button link type="primary" :loading="technicalRecoveryLoading" @click="loadTechnicalRecoveryQueue">刷新</el-button>
           </el-space>
         </div>
       </template>
-      <el-alert type="info" :closable="false" show-icon title="技术历史同步失败会自动退避重试；连续失败达到上限后转入人工处理，不再占用自动任务预算。人工重试仅补该标的日线并重新计算技术指标。" class="profile-recovery-notice" />
+      <el-alert type="info" :closable="false" show-icon title="提供方故障会自动退避，连续失败后才转人工处理；上市时间较短造成的自然样本不足会等待数据积累，不计作故障。" class="profile-recovery-notice" />
       <el-empty v-if="!technicalRecoveryLoading && technicalRecoveryQueue.items.length === 0" description="当前候选没有待补偿的技术历史" :image-size="48" />
       <el-table v-else :data="technicalRecoveryQueue.items" v-loading="technicalRecoveryLoading" border>
         <el-table-column prop="ticker" label="Ticker" width="105" />
         <el-table-column label="状态" width="120">
-          <template #default="{ row }"><el-tag :type="row.status === 'manual_review' ? 'danger' : technicalRetryDue(row) ? 'warning' : 'info'" effect="plain">{{ technicalRetryStatusLabel(row) }}</el-tag></template>
+          <template #default="{ row }"><el-tag :type="row.status === 'manual_review' ? 'danger' : row.status === 'waiting_history' ? 'info' : technicalRetryDue(row) ? 'warning' : 'info'" effect="plain">{{ technicalRetryStatusLabel(row) }}</el-tag></template>
         </el-table-column>
         <el-table-column label="历史覆盖" width="145" align="right"><template #default="{ row }">{{ row.sample_days || 0 }} / {{ row.required_days || 0 }} 日</template></el-table-column>
-        <el-table-column prop="failure_count" label="失败次数" width="100" align="right" />
+        <el-table-column label="失败次数" width="100" align="right"><template #default="{ row }">{{ row.status === 'waiting_history' ? '-' : row.failure_count }}</template></el-table-column>
         <el-table-column label="最近尝试" width="180"><template #default="{ row }">{{ formatDateTime(row.last_attempt_at) }}</template></el-table-column>
-        <el-table-column label="下次自动重试" width="180"><template #default="{ row }">{{ row.status === 'manual_review' ? '已停止自动重试' : technicalRetryDue(row) ? '下次同步执行' : formatDateTime(row.next_retry_at) }}</template></el-table-column>
+        <el-table-column label="下次检查" width="180"><template #default="{ row }">{{ row.status === 'manual_review' ? '已停止自动重试' : technicalRetryDue(row) ? '下次同步执行' : formatDateTime(row.next_retry_at) }}</template></el-table-column>
         <el-table-column prop="reason" label="失败原因" min-width="220" show-overflow-tooltip />
         <el-table-column label="操作" width="100" fixed="right">
           <template #default="{ row }"><el-button link type="primary" :loading="technicalRetryTicker === row.ticker" @click="retryTechnicalHistory(row)">人工重试</el-button></template>
@@ -655,6 +655,7 @@ function formatPct(value?: number) {
 
 function technicalRetryStatusLabel(row: TechnicalHistoryRetryState) {
   if (row.status === 'manual_review') return '人工处理'
+  if (row.status === 'waiting_history') return '等待样本'
   return technicalRetryDue(row) ? '可自动补偿' : '等待退避'
 }
 
