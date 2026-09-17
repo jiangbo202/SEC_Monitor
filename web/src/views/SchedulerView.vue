@@ -268,7 +268,7 @@ function taskDescription(value: string) {
     small_cap_discovery_full_sync: '每周全量校准 SEC/Nasdaq 候选宇宙，用于修复身份变化和遗漏。',
     watch_target_market_sync: '美股收盘后同步监控标的日线，供持仓与技术指标使用。',
     watch_target_earnings_sync: '同步监控标的及当前候选的 Longbridge 财报日历和市场预期。',
-    price_action_cycle_replay: '在收盘日线同步后，基于本地 OHLC 与 IWM 基准重放三套价格行为规则并刷新效果验证；不会访问外部数据源。',
+    price_action_cycle_replay: '在收盘日线同步后，先限量补齐缺失 OHLC，再基于本地数据与 IWM 重放价格行为规则；单个标的补齐失败不会阻断其他标的。',
     market_trend_sync: '美股收盘后从 Longbridge 更新大盘、VIX 和板块 ETF 日线。',
     us_futures_sync: '更新美股指数、商品及国债连续期货日线；来源为 Yahoo Finance，失败不影响 Longbridge 数据。',
     macro_calendar_sync: '在美国宏观数据常见发布时间后刷新官方日历、实际值和 Longbridge 日历补充。',

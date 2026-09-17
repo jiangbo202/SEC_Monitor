@@ -143,15 +143,16 @@ type longbridgeValuationResearchClient interface {
 	IndustryValuationDist(context.Context, string) (*lbfundamental.IndustryValuationDist, error)
 }
 type LongbridgeValuationResearchOptions struct {
-	AppKey      string
-	AppSecret   string
-	AccessToken string
-	Now         func() time.Time
-	NewClient   func(string, string, string) (longbridgeValuationResearchClient, error)
+	AppKey          string
+	AppSecret       string
+	AccessToken     string
+	RequestInterval time.Duration
+	Now             func() time.Time
+	NewClient       func(string, string, string) (longbridgeValuationResearchClient, error)
 }
 
 func NewLongbridgeValuationResearchOptions(cfg config.DiscoveryConfig) LongbridgeValuationResearchOptions {
-	return LongbridgeValuationResearchOptions{AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken}
+	return LongbridgeValuationResearchOptions{AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken, RequestInterval: time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS) * time.Millisecond}
 }
 
 func GetCandidateValuationResearch(ctx context.Context, db *gorm.DB, ticker string) (CandidateValuationResearch, error) {
@@ -351,15 +352,21 @@ func refreshLongbridgeCandidateValuationResearch(ctx context.Context, db *gorm.D
 	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	symbol := result.Ticker + ".US"
-	valuation, valuationErr := client.Valuation(requestCtx, symbol)
+	valuation, valuationErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.ValuationData, error) {
+		return client.Valuation(callCtx, symbol)
+	})
 	if valuationErr != nil {
 		return result, fmt.Errorf("load Longbridge valuation: %w", valuationErr)
 	}
-	peers, peerErr := client.IndustryValuation(requestCtx, symbol)
+	peers, peerErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.IndustryValuationList, error) {
+		return client.IndustryValuation(callCtx, symbol)
+	})
 	if peerErr != nil {
 		result.Warnings = append(result.Warnings, "同业比较："+SanitizeLongbridgeCandidateResearchError(peerErr))
 	}
-	dist, distErr := client.IndustryValuationDist(requestCtx, symbol)
+	dist, distErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.IndustryValuationDist, error) {
+		return client.IndustryValuationDist(callCtx, symbol)
+	})
 	if distErr != nil {
 		result.Warnings = append(result.Warnings, "行业分位："+SanitizeLongbridgeCandidateResearchError(distErr))
 	}

@@ -72,15 +72,16 @@ type longbridgeOptionResearchClientCloser interface {
 }
 
 type LongbridgeOptionResearchOptions struct {
-	AppKey      string
-	AppSecret   string
-	AccessToken string
-	Now         func() time.Time
-	NewClient   func(string, string, string) (longbridgeOptionResearchClient, error)
+	AppKey          string
+	AppSecret       string
+	AccessToken     string
+	RequestInterval time.Duration
+	Now             func() time.Time
+	NewClient       func(string, string, string) (longbridgeOptionResearchClient, error)
 }
 
 func NewLongbridgeOptionResearchOptions(cfg config.DiscoveryConfig) LongbridgeOptionResearchOptions {
-	return LongbridgeOptionResearchOptions{AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken}
+	return LongbridgeOptionResearchOptions{AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken, RequestInterval: time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS) * time.Millisecond}
 }
 
 // GetOptionResearch is deliberately local/read-only. The page may be opened
@@ -201,9 +202,13 @@ func refreshLongbridgeOptionResearchWithClient(ctx context.Context, db *gorm.DB,
 	hadRequestError := false
 	shortRequestSucceeded := false
 
-	if volume, fetchErr := client.OptionVolume(requestCtx, symbol); fetchErr != nil {
+	if volume, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbquote.OptionVolumeStats, error) {
+		return client.OptionVolume(callCtx, symbol)
+	}); fetchErr != nil {
 		hadRequestError = true
-		if daily, dailyErr := client.OptionVolumeDaily(requestCtx, symbol, now.AddDate(0, 0, -45), now); dailyErr != nil {
+		if daily, dailyErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) ([]*lbquote.DailyOptionVolume, error) {
+			return client.OptionVolumeDaily(callCtx, symbol, now.AddDate(0, 0, -45), now)
+		}); dailyErr != nil {
 			result.Warnings = append(result.Warnings, "期权成交量："+SanitizeLongbridgeCandidateResearchError(fetchErr)+"；日序列回退失败："+SanitizeLongbridgeCandidateResearchError(dailyErr))
 		} else if latest := latestDailyOptionVolume(daily); latest != nil {
 			if call, ok := parseInt64Ptr(latest.TotalCallVolume); ok {
@@ -234,7 +239,9 @@ func refreshLongbridgeOptionResearchWithClient(ctx context.Context, db *gorm.DB,
 		snapshot.OptionVolumeAsOf = now.Format(time.RFC3339)
 	}
 
-	if positions, fetchErr := client.ShortPositions(requestCtx, symbol, 1); fetchErr != nil {
+	if positions, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbquote.ShortPositionsResponse, error) {
+		return client.ShortPositions(callCtx, symbol, 1)
+	}); fetchErr != nil {
 		hadRequestError = true
 		result.Warnings = append(result.Warnings, "空头持仓："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {

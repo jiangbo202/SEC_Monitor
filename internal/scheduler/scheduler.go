@@ -612,7 +612,7 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 			return service.PartialTask(fmt.Sprintf("价格周期已完成回放，但 %d 个标的结论早于目标交易日 %s", result.StaleCount, result.TargetTradeDate))
 		}
 		if result.MissingCount > 0 {
-			return service.DegradedTask(fmt.Sprintf("价格周期回放完成；%d 个标的缺少足够的完整 OHLC，已从当日研究优先级排除", result.MissingCount))
+			return service.DegradedTask(fmt.Sprintf("价格周期回放完成；已自动尝试修复 %d 个（成功 %d），仍有 %d 个缺少足够的完整 OHLC，已从当日研究优先级排除", result.RepairAttempted, result.RepairSucceeded, result.MissingCount))
 		}
 		return nil
 	case watchTargetEarningsSyncTaskName:

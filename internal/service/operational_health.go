@@ -75,6 +75,7 @@ type OperationalReport struct {
 	TechnicalHistoryPending   int64                   `json:"technical_history_pending"`
 	TechnicalHistoryRetryDue  int64                   `json:"technical_history_retry_due"`
 	TechnicalHistoryDeferred  int64                   `json:"technical_history_deferred"`
+	TechnicalHistoryWaiting   int64                   `json:"technical_history_waiting"`
 	TechnicalHistoryManual    int64                   `json:"technical_history_manual_review"`
 	OutcomeTrackingStatus     string                  `json:"outcome_tracking_status,omitempty"`
 	OutcomeTracked            int                     `json:"outcome_tracked"`
@@ -250,6 +251,9 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 			}
 		}
 		if s.discoveryDB.Migrator().HasTable(&discovery.TechnicalHistoryRetryState{}) {
+			if err := discovery.NormalizeTechnicalHistoryRetryStates(ctx, s.discoveryDB, now); err != nil {
+				return report, err
+			}
 			var pointer discovery.CurrentBatchPointer
 			pointerErr := s.discoveryDB.WithContext(ctx).Where("kind = ?", discovery.BatchKindPrescreen).First(&pointer).Error
 			if pointerErr != nil && !errors.Is(pointerErr, gorm.ErrRecordNotFound) {
@@ -269,6 +273,9 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 				if err := retryQuery().Where("status = ?", discovery.TechnicalHistoryRetryDeferred).Count(&report.TechnicalHistoryDeferred).Error; err != nil {
 					return report, err
 				}
+				if err := retryQuery().Where("status = ?", discovery.TechnicalHistoryRetryWaitingHistory).Count(&report.TechnicalHistoryWaiting).Error; err != nil {
+					return report, err
+				}
 				if err := retryQuery().Where("status = ?", discovery.TechnicalHistoryRetryManual).Count(&report.TechnicalHistoryManual).Error; err != nil {
 					return report, err
 				}
@@ -280,7 +287,7 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 					severity = "critical"
 					title = "部分候选技术历史连续失败"
 				}
-				detail := fmt.Sprintf("待补齐 %d 个，到期可重试 %d 个，退避 %d 个，需人工处理 %d 个；单个标的失败不会重跑已完成标的", report.TechnicalHistoryPending, report.TechnicalHistoryRetryDue, report.TechnicalHistoryDeferred, report.TechnicalHistoryManual)
+				detail := fmt.Sprintf("待补齐 %d 个，到期可重试 %d 个，等待样本 %d 个，退避 %d 个，需人工处理 %d 个；自然历史不足不会计为故障", report.TechnicalHistoryPending, report.TechnicalHistoryRetryDue, report.TechnicalHistoryWaiting, report.TechnicalHistoryDeferred, report.TechnicalHistoryManual)
 				report.addIssue("technical_history_retry_queue", "data_quality", severity, title, detail, "discovery-logs", now)
 			}
 		}

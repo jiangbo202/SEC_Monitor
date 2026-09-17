@@ -15,6 +15,7 @@ import (
 const (
 	TechnicalHistoryRetryBackoff         = "backoff"
 	TechnicalHistoryRetryDeferred        = "deferred"
+	TechnicalHistoryRetryWaitingHistory  = "waiting_history"
 	TechnicalHistoryRetryManual          = "manual_review"
 	TechnicalHistoryRetryResolved        = "resolved"
 	technicalHistoryMaxAutomaticFailures = 5
@@ -58,6 +59,9 @@ func filterTechnicalHistoryRetries(ctx context.Context, db *gorm.DB, batchID str
 	if err := db.WithContext(ctx).Model(&TechnicalHistoryRetryState{}).
 		Where("ticker IN ? AND status <> ?", tickers, TechnicalHistoryRetryResolved).
 		Update("batch_id", batchID).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := NormalizeTechnicalHistoryRetryStates(ctx, db, now); err != nil {
 		return nil, 0, err
 	}
 	if force {
@@ -166,13 +170,19 @@ func recordTechnicalHistoryRetry(ctx context.Context, db *gorm.DB, batchID, tick
 		return TechnicalHistoryRetryState{}, err
 	}
 	failures := 1
-	if err == nil && prior.Status != TechnicalHistoryRetryResolved {
+	status := TechnicalHistoryRetryBackoff
+	if reason == "insufficient_history" {
+		// A newly listed security cannot manufacture pre-listing candles. Treat
+		// the gap as sample accumulation, not as a provider failure that will
+		// eventually wake an operator after five identical retries.
+		failures = 0
+		status = TechnicalHistoryRetryWaitingHistory
+	} else if err == nil && prior.Status != TechnicalHistoryRetryResolved {
 		failures = prior.FailureCount + 1
 	}
-	delay := technicalHistoryRetryDelay(reason, failures)
+	delay := technicalHistoryRetryDelayForCoverage(reason, failures, coverage.SampleDays, required)
 	nextRetry := attemptedAt.Add(delay)
-	status := TechnicalHistoryRetryBackoff
-	if failures >= technicalHistoryMaxAutomaticFailures {
+	if reason != "insufficient_history" && failures >= technicalHistoryMaxAutomaticFailures {
 		status = TechnicalHistoryRetryManual
 	}
 	state := TechnicalHistoryRetryState{
@@ -192,6 +202,9 @@ func recordTechnicalHistoryRetry(ctx context.Context, db *gorm.DB, batchID, tick
 		}
 		if err := resolveTechnicalHistoryIncidents(tx, ticker, reason, attemptedAt); err != nil {
 			return err
+		}
+		if status == TechnicalHistoryRetryWaitingHistory {
+			return resolveAllTechnicalHistoryIncidents(tx, ticker, attemptedAt)
 		}
 		return upsertTechnicalHistoryIncident(tx, state, attemptedAt)
 	})
@@ -224,6 +237,10 @@ func resolveTechnicalHistoryRetry(ctx context.Context, db *gorm.DB, batchID, tic
 }
 
 func technicalHistoryRetryDelay(reason string, failures int) time.Duration {
+	return technicalHistoryRetryDelayForCoverage(reason, failures, 0, 0)
+}
+
+func technicalHistoryRetryDelayForCoverage(reason string, failures, sampleDays, requiredDays int) time.Duration {
 	if failures < 1 {
 		failures = 1
 	}
@@ -232,7 +249,18 @@ func technicalHistoryRetryDelay(reason string, failures int) time.Duration {
 	case "no_usable_records":
 		base, capDelay = 12*time.Hour, 7*24*time.Hour
 	case "insufficient_history":
-		base, capDelay = 24*time.Hour, 7*24*time.Hour
+		missingTradingDays := requiredDays - sampleDays
+		if missingTradingDays < 1 {
+			missingTradingDays = 1
+		}
+		calendarDays := (missingTradingDays*7 + 4) / 5
+		if calendarDays < 7 {
+			calendarDays = 7
+		}
+		if calendarDays > 30 {
+			calendarDays = 30
+		}
+		return time.Duration(calendarDays) * 24 * time.Hour
 	case "stale_history":
 		base, capDelay = time.Hour, 24*time.Hour
 	}
@@ -246,9 +274,35 @@ func technicalHistoryRetryDelay(reason string, failures int) time.Duration {
 	return delay
 }
 
+// NormalizeTechnicalHistoryRetryStates migrates legacy checkpoints which
+// counted naturally short listing histories as repeated provider failures.
+// It is idempotent and intentionally safe to call from health/read paths.
+func NormalizeTechnicalHistoryRetryStates(ctx context.Context, db *gorm.DB, now time.Time) error {
+	if db == nil {
+		return nil
+	}
+	nextRetry := now.UTC().Add(7 * 24 * time.Hour)
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&TechnicalHistoryRetryState{}).
+			Where("reason = ? AND status NOT IN ?", "insufficient_history", []string{TechnicalHistoryRetryResolved, TechnicalHistoryRetryWaitingHistory}).
+			Updates(map[string]interface{}{"status": TechnicalHistoryRetryWaitingHistory, "failure_count": 0, "next_retry_at": nextRetry, "updated_at": now.UTC()}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&DataQualityIncident{}).
+			Where("domain = ? AND reason = ? AND status = ?", "technical_history", "insufficient_history", DataQualityIncidentOpen).
+			Updates(map[string]interface{}{"status": DataQualityIncidentResolved, "retryable": false, "resolved_at": now.UTC(), "updated_at": now.UTC()}).Error
+	})
+}
+
 func resolveTechnicalHistoryIncidents(tx *gorm.DB, ticker, currentReason string, at time.Time) error {
 	return tx.Model(&DataQualityIncident{}).
 		Where("domain = ? AND entity_key = ? AND reason <> ? AND status = ?", "technical_history", ticker, currentReason, DataQualityIncidentOpen).
+		Updates(map[string]interface{}{"status": DataQualityIncidentResolved, "retryable": false, "resolved_at": at, "updated_at": at}).Error
+}
+
+func resolveAllTechnicalHistoryIncidents(tx *gorm.DB, ticker string, at time.Time) error {
+	return tx.Model(&DataQualityIncident{}).
+		Where("domain = ? AND entity_key = ? AND status = ?", "technical_history", ticker, DataQualityIncidentOpen).
 		Updates(map[string]interface{}{"status": DataQualityIncidentResolved, "retryable": false, "resolved_at": at, "updated_at": at}).Error
 }
 
@@ -302,6 +356,9 @@ func ListTechnicalHistoryRecoveryQueue(ctx context.Context, db *gorm.DB) (Techni
 	result := TechnicalHistoryRecoveryQueue{Items: []TechnicalHistoryRetryState{}}
 	if db == nil {
 		return result, fmt.Errorf("database is required")
+	}
+	if err := NormalizeTechnicalHistoryRetryStates(ctx, db, time.Now().UTC()); err != nil {
+		return result, err
 	}
 	query := db.WithContext(ctx).Where("status <> ?", TechnicalHistoryRetryResolved)
 	var pointer CurrentBatchPointer

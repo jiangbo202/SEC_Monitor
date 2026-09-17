@@ -106,6 +106,7 @@ func TestOperationalHealthReportsTechnicalHistoryRetryQueue(t *testing.T) {
 		{Ticker: "DUE", BatchID: "market-retry", Status: discovery.TechnicalHistoryRetryBackoff, Reason: "provider_request_failed", FailureCount: 2, NextRetryAt: &due, LastAttemptAt: now.Add(-time.Hour)},
 		{Ticker: "WAIT", BatchID: "market-retry", Status: discovery.TechnicalHistoryRetryBackoff, Reason: "no_usable_records", FailureCount: 3, NextRetryAt: &later, LastAttemptAt: now.Add(-time.Hour)},
 		{Ticker: "HARD", BatchID: "market-retry", Status: discovery.TechnicalHistoryRetryDeferred, Reason: "no_usable_records", FailureCount: 5, NextRetryAt: &later, LastAttemptAt: now.Add(-time.Hour)},
+		{Ticker: "NEW", BatchID: "market-retry", Status: discovery.TechnicalHistoryRetryManual, Reason: "insufficient_history", FailureCount: 5, LastAttemptAt: now.Add(-time.Hour)},
 		{Ticker: "OLD", BatchID: "old-market", Status: discovery.TechnicalHistoryRetryDeferred, Reason: "no_usable_records", FailureCount: 8, NextRetryAt: &due, LastAttemptAt: now.Add(-time.Hour)},
 	}
 	if err := discoveryDB.Create(&states).Error; err != nil {
@@ -115,7 +116,7 @@ func TestOperationalHealthReportsTechnicalHistoryRetryQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.TechnicalHistoryPending != 3 || report.TechnicalHistoryRetryDue != 1 || report.TechnicalHistoryDeferred != 1 {
+	if report.TechnicalHistoryPending != 4 || report.TechnicalHistoryRetryDue != 1 || report.TechnicalHistoryDeferred != 1 || report.TechnicalHistoryWaiting != 1 || report.TechnicalHistoryManual != 0 {
 		t.Fatalf("report = %+v", report)
 	}
 	if report.Status != "critical" || !hasOperationalIssue(report.Issues, "technical_history_retry_queue") {

@@ -30,7 +30,7 @@ func TestParseNasdaqOtherExchangeMappings(t *testing.T) {
 	header := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\n"
 	var rows strings.Builder
 	rows.WriteString(header)
-	for _, r := range []string{"n|N|N|n|N|100|N|n", "a|A|A|a|N|100|N|a", "p|P|P|p|N|100|N|p", "z|Z|Z|z|N|100|N|z", "v|V|V|v|N|100|Y|v", "m|M|M|m|N|100|Y|m"} {
+	for _, r := range []string{"n|N|N|n|N|100|N|n", "a|A|A|a|N|100|N|a", "p|P|P|p|N|100|N|p", "z|Z|Z|z|N|100|N|z", "v|V|V|v|N|100|Y|v", "m|M|M|m|N|100|Y|m", "f|F|F|f|N|100|N|f", "txse|TXSE|TXSE|txse|N|100|Y|txse"} {
 		rows.WriteString(r + "\n")
 	}
 	rows.WriteString("File Creation Time: 06212026|||||||\n")
@@ -38,11 +38,40 @@ func TestParseNasdaqOtherExchangeMappings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"N": "NYSE", "A": "NYSE American", "P": "NYSE Arca", "Z": "Cboe BZX", "V": "IEX", "M": "NYSE Texas"}
+	want := map[string]string{"N": "NYSE", "A": "NYSE American", "P": "NYSE Arca", "Z": "Cboe BZX", "V": "IEX", "M": "NYSE Texas", "F": "Texas Stock Exchange", "TXSE": "Texas Stock Exchange"}
 	for _, rec := range recs {
 		if rec.Exchange != want[rec.Ticker] {
 			t.Fatalf("exchange[%s] = %q", rec.Ticker, rec.Exchange)
 		}
+	}
+}
+
+func TestParseNasdaqOtherUnknownTestVenueDoesNotBlockDirectory(t *testing.T) {
+	body := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\n" +
+		"ZZZZZ|Future Venue Test Security|FUTURE|ZZZZZ|N|100|Y|ZZZZZ\n" +
+		"File Creation Time: 0621202618:00|||||||\n"
+	records, _, err := ParseNasdaqOther(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || !records[0].TestIssue || records[0].Exchange != unmappedNasdaqExchangePrefix+"FUTURE" {
+		t.Fatalf("records = %#v", records)
+	}
+}
+
+func TestParseNasdaqOtherUnknownProductionVenueIsQuarantined(t *testing.T) {
+	body := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\n" +
+		"NEWV|New Venue Security|NEW|NEWV|N|100|N|NEWV\n" +
+		"File Creation Time: 0621202618:00|||||||\n"
+	records, _, err := ParseNasdaqOther(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Exchange != unmappedNasdaqExchangePrefix+"NEW" {
+		t.Fatalf("records = %#v", records)
+	}
+	if policyAllowsExchange(DefaultSmallCapPolicy(), records[0].Exchange) {
+		t.Fatalf("unmapped venue must not enter the small-cap candidate pool: %#v", records[0])
 	}
 }
 
@@ -61,10 +90,6 @@ func TestParseNasdaqErrors(t *testing.T) {
 				t.Fatalf("error = %v", err)
 			}
 		})
-	}
-	other := "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol\nA|name|X|A|N|100|N|A\nFile Creation Time: x\n"
-	if _, _, err := ParseNasdaqOther(strings.NewReader(other)); err == nil || !strings.Contains(err.Error(), "unknown exchange") {
-		t.Fatalf("error = %v", err)
 	}
 }
 
