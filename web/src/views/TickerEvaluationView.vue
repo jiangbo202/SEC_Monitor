@@ -26,6 +26,9 @@
     </el-card>
 
     <template v-if="selected">
+      <el-alert :type="evaluationAgeDays(selected) > 1 ? 'warning' : 'info'" :closable="false" show-icon class="warnings" :title="evaluationSnapshotTitle(selected)">
+        <template #default>这是保存于 {{ formatDate(selected.evaluated_at) }} 的历史快照，行情交易日为 {{ selected.candidate_score?.price_trade_date ? String(selected.candidate_score.price_trade_date).slice(0, 10) : '未记录' }}；页面不会把旧快照自动解释为当前结论。</template>
+      </el-alert>
       <div class="result-heading">
         <div>
           <h3>{{ selected.ticker }} <small>{{ selected.company_name || '-' }}</small></h3>
@@ -108,10 +111,11 @@
           </template>
         </el-table-column>
         <el-table-column prop="ticker" label="标的" width="108" fixed="left" />
+        <el-table-column label="快照状态" width="125"><template #default="{ row }"><el-tooltip :content="evaluationSnapshotTitle(row)" placement="top"><el-tag :type="snapshotTagType(row)" effect="plain">{{ snapshotStatusLabel(row) }}</el-tag></el-tooltip></template></el-table-column>
         <el-table-column prop="company_name" label="公司 / 基金" min-width="180" show-overflow-tooltip />
         <el-table-column prop="fundamental" label="基本面" width="100" align="right" sortable="custom"><template #default="{ row }"><el-tooltip :content="fundamentalTooltip(row)" placement="top"><el-tag effect="plain">{{ row.candidate_score?.total_score ?? '-' }}</el-tag></el-tooltip></template></el-table-column>
         <el-table-column prop="review" label="短线复核" width="110" align="right" sortable="custom"><template #default="{ row }"><el-tooltip :content="reviewTooltip(row)" placement="top"><el-tag type="warning" effect="plain">{{ row.candidate_score?.review_priority_score ?? '-' }}</el-tag></el-tooltip></template></el-table-column>
-        <el-table-column prop="technical_status" label="技术状态" width="105" sortable="custom"><template #default="{ row }">{{ row.candidate_score?.technical?.status || '-' }}</template></el-table-column>
+        <el-table-column prop="technical_status" label="技术状态" width="105" sortable="custom"><template #default="{ row }">{{ technicalStatusLabel(row.candidate_score?.technical?.status) }}</template></el-table-column>
         <el-table-column label="收盘价" width="130" align="right"><template #default="{ row }"><el-tooltip :content="priceSnapshotTooltip(row)" placement="top"><span>{{ historicalClose(row) }}</span></el-tooltip></template></el-table-column>
         <el-table-column prop="distance_to_ma20" label="距 MA20" width="105" align="right" sortable="custom"><template #default="{ row }"><span :class="signedMetricClass(row.candidate_score?.technical?.distance_to_ma20_pct)">{{ pct(row.candidate_score?.technical?.distance_to_ma20_pct) }}</span></template></el-table-column>
         <el-table-column prop="distance_to_20d_high" label="距 20 日高点" width="120" align="right" sortable="custom"><template #default="{ row }"><span :class="signedMetricClass(row.candidate_score?.technical?.distance_to_20d_high_pct)">{{ pct(row.candidate_score?.technical?.distance_to_20d_high_pct) }}</span></template></el-table-column>
@@ -153,6 +157,14 @@ const historyTotal = ref(0)
 const historySortBy = ref('evaluated_at')
 const historySortOrder = ref<'asc' | 'desc'>('desc')
 const comparisonRows = ref<Evaluation[]>([])
+const latestEvaluationTimeByTicker = computed(() => {
+  const result = new Map<string, number>()
+  for (const row of history.value) {
+    const timestamp = new Date(row.evaluated_at).getTime()
+    if (Number.isFinite(timestamp) && timestamp > (result.get(row.ticker) || 0)) result.set(row.ticker, timestamp)
+  }
+  return result
+})
 type AIProvider = { id: string; name: string; model: string }
 type AIPromptTemplate = { id: string; name: string }
 type AIAnalysis = { id: number; provider_name: string; model: string; template_name?: string; content: string; status: string; error_message?: string; validation_warning?: string; system_prompt?: string; user_prompt?: string; requested_at: string; structured_result?: AIAnalysisStructuredResult }
@@ -233,6 +245,12 @@ function comparisonSelectable(row: Evaluation) { return comparisonRows.value.len
 function metricDelta(rows: Evaluation[], key: string, digits = 0) { const current=Number(rows[0]?.candidate_score?.[key]); const previous=Number(rows[1]?.candidate_score?.[key]); if(!Number.isFinite(current)||!Number.isFinite(previous))return '-'; const delta=current-previous; return `${previous.toFixed(digits)} → ${current.toFixed(digits)}（${delta>=0?'+':''}${delta.toFixed(digits)}）` }
 function technicalDelta(rows: Evaluation[], key: string) { const current=Number(rows[0]?.candidate_score?.technical?.[key]); const previous=Number(rows[1]?.candidate_score?.technical?.[key]); if(!Number.isFinite(current)||!Number.isFinite(previous))return '-'; const delta=current-previous; return `${previous.toFixed(2)}% → ${current.toFixed(2)}%（${delta>=0?'+':''}${delta.toFixed(2)}）` }
 function formatDate(value?: string) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '-' }
+function evaluationAgeDays(row: Evaluation) { const timestamp = new Date(row.evaluated_at).getTime(); return Number.isFinite(timestamp) ? Math.max(0, Math.floor((Date.now() - timestamp) / 86_400_000)) : 0 }
+function isLatestEvaluation(row: Evaluation) { const latest = latestEvaluationTimeByTicker.value.get(row.ticker); return latest == null || new Date(row.evaluated_at).getTime() === latest }
+function snapshotStatusLabel(row: Evaluation) { const age = evaluationAgeDays(row); if (!isLatestEvaluation(row)) return '已被新版本替代'; return age > 1 ? `${age} 天前快照` : '最新快照' }
+function snapshotTagType(row: Evaluation) { return !isLatestEvaluation(row) ? 'info' : evaluationAgeDays(row) > 1 ? 'warning' : 'success' }
+function evaluationSnapshotTitle(row: Evaluation) { const age = evaluationAgeDays(row); return `${isLatestEvaluation(row) ? '该标的最新保存记录' : '该记录已被更新的评估替代'} · 距今 ${age} 天` }
+function technicalStatusLabel(value?: string) { return ({ ready: '已完成', data_insufficient: '历史不足', unavailable: '数据待补', waiting: '等待观察' } as Record<string, string>)[value || ''] || (value ? '待核验' : '-') }
 function price(value?: number) { return Number.isFinite(value) ? Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-' }
 function microsPrice(value?: number, currency?: string) { return Number.isFinite(value) && Number(value) !== 0 ? `${price(Number(value) / 1_000_000)} ${currency || 'USD'}` : '-' }
 function decimal(value?: number) { return Number.isFinite(value) ? Number(value).toFixed(2) : '-' }

@@ -1,7 +1,7 @@
 <template>
   <section class="page ticker-workspace">
     <div class="page-header">
-      <div><h1>标的研究台</h1><p>把本地已保存的基本面、行情、SEC、内幕交易、机构持仓和 AI 研判汇总到一个入口。</p></div>
+      <div><h1>{{ symbol ? `${symbol} 标的研究` : '标的研究台' }}</h1><p>先给出结论、变化、风险与下一步，再下钻本地基本面、行情、SEC、内幕交易、机构持仓和 AI 证据。</p></div>
       <el-button :loading="loading" @click="load(); loadQueue()">刷新本地快照</el-button>
     </div>
     <el-card shadow="never" class="query-card">
@@ -27,9 +27,23 @@
         <article><span>数据更新</span><strong class="compact-value">{{ researchUpdatedAt }}</strong><small>{{ researchUpdateHint }}</small></article>
       </div>
 
-      <ResearchThesisCard :key="symbol" :ticker="symbol" class="section-gap" @saved="loadQueue" />
+      <nav class="workspace-nav section-gap" aria-label="研究模块导航">
+        <button type="button" @click="scrollToSection('workspace-overview')">结论</button>
+        <button type="button" @click="scrollToSection('workspace-thesis')">研究论点</button>
+        <button type="button" @click="scrollToSection('workspace-evidence')">SEC / 内幕</button>
+        <button type="button" @click="scrollToSection('workspace-ai')">AI 版本</button>
+      </nav>
 
-      <el-row :gutter="12" class="section-gap">
+      <el-card id="workspace-overview" shadow="never" class="decision-brief section-gap">
+        <div><span>当前结论</span><strong>{{ currentConclusion }}</strong><small>{{ conclusionDetail }}</small></div>
+        <div><span>最新变化</span><strong>{{ latestChange }}</strong><small>{{ latestChangeDetail }}</small></div>
+        <div class="is-risk"><span>核心风险</span><strong>{{ riskSummary }}</strong><small>{{ riskDetail }}</small></div>
+        <div class="is-next"><span>下一步</span><strong>{{ nextAction }}</strong><small>{{ nextActionDetail }}</small></div>
+      </el-card>
+
+      <ResearchThesisCard id="workspace-thesis" :key="symbol" :ticker="symbol" class="section-gap" @saved="loadQueue" />
+
+      <el-row id="workspace-evidence" :gutter="12" class="section-gap">
         <el-col :xs="24" :lg="14">
           <el-card shadow="never" class="full-height">
             <template #header><div class="card-head"><strong>研究结论与交易状态</strong><el-link type="primary" @click="go('/ticker-evaluation')">完整评估</el-link></div></template>
@@ -55,7 +69,7 @@
         <el-col :xs="24" :lg="12"><el-card shadow="never"><template #header><div class="card-head"><strong>内幕交易事实</strong><el-link type="primary" @click="go('/insider-trading')">查看全部</el-link></div></template><el-table :data="insiders" size="small" max-height="300" :empty-text="insiderEmptyText"><el-table-column prop="transaction_date" label="日期" width="105" /><el-table-column prop="owner_name" label="申报人" min-width="130" show-overflow-tooltip /><el-table-column label="方向" width="72"><template #default="{ row }"><el-tag :type="row.direction === 'buy' ? 'success' : 'danger'" effect="plain">{{ row.direction === 'buy' ? '买入' : '卖出' }}</el-tag></template></el-table-column><el-table-column label="计划" width="84"><template #default="{ row }"><el-tooltip :disabled="!row.ten_b5_1_evidence" :content="row.ten_b5_1_evidence"><el-tag :type="row.is_10b5_1 ? 'success' : row.ten_b5_1_status === 'possible' ? 'warning' : 'info'" effect="plain">{{ row.is_10b5_1 ? '10b5-1' : row.ten_b5_1_status === 'possible' ? '待核验' : '未披露' }}</el-tag></el-tooltip></template></el-table-column><el-table-column label="金额" width="105" align="right"><template #default="{ row }">{{ money(row.value_usd) }}</template></el-table-column></el-table></el-card></el-col>
       </el-row>
 
-      <el-card shadow="never" class="section-gap">
+      <el-card id="workspace-ai" shadow="never" class="section-gap">
         <template #header><div class="card-head"><strong>AI 研判版本</strong><el-link type="primary" @click="go('/ai-analyses')">比较全部版本</el-link></div></template>
         <el-table :data="analyses" size="small" empty-text="暂无手动 AI 研判"><el-table-column prop="provider_name" label="供应商" width="120" /><el-table-column prop="model" label="模型" width="170" /><el-table-column prop="template_name" label="模板" min-width="150" /><el-table-column prop="status" label="状态" width="90"><template #default="{ row }"><el-tag :type="row.status === 'success' ? 'success' : 'danger'" effect="plain">{{ row.status === 'success' ? '成功' : '失败' }}</el-tag></template></el-table-column><el-table-column label="结论" min-width="250" show-overflow-tooltip><template #default="{ row }">{{ row.structured_result?.conclusion || row.error_message || '-' }}</template></el-table-column><el-table-column prop="requested_at" label="时间" width="165"><template #default="{ row }">{{ formatDate(row.requested_at) }}</template></el-table-column></el-table>
       </el-card>
@@ -91,7 +105,7 @@ const tradeSetup = computed(() => currentTechnical.value?.trade_setup || {})
 const takeProfit = computed(() => tradeSetup.value.take_profit_zone_low_usd != null ? `${price(tradeSetup.value.take_profit_zone_low_usd)}–${price(tradeSetup.value.take_profit_zone_high_usd)}` : '-')
 const technicalSignals = computed(() => {
   const technical = currentTechnical.value
-  const items = [...(technical?.signals || technical?.signal_labels || [])]
+  const items = [...(technical?.signals || technical?.signal_labels || [])].map((item:any) => typeof item === 'string' ? item : item?.label || item?.kind).filter(Boolean)
   if (!items.length && technical?.oscillator?.label) items.push(technical.oscillator.label)
   if (technical?.liquidity_status === 'normal') items.push('流动性正常')
   return [...new Set(items)]
@@ -107,6 +121,30 @@ const dataNotice = computed(() => {
   if (localTechnicalHistory.value) return '尚未生成基本面评估；价格、技术状态与交易计划已回退到监控标的的本地日线快照。如需评分，请点击“完整评估”运行一次评估。'
   return '本地尚无评估快照或技术历史；SEC、持仓和 AI 等已有模块仍会独立展示。'
 })
+const currentConclusion = computed(() => {
+  const readiness = evaluation.value?.candidate_score?.research_readiness?.status
+  if (readiness === 'blocked') return '暂缓，不形成交易计划'
+  if (readiness === 'research_only') return '仅研究，等待证据补齐'
+  if (tradeSetup.value?.status === 'invalidated') return '趋势失效，优先处理风险'
+  if (tradeSetup.value?.status === 'exit_warning') return '离场预警，复核持仓'
+  if (tradeSetup.value?.status === 'entry_candidate') return '入场候选，等待执行复核'
+  if (readiness === 'ready') return '研究证据可用，尚待触发'
+  return '结论待生成'
+})
+const conclusionDetail = computed(() => evaluation.value?.candidate_score?.research_readiness?.reasons?.join('；') || tradeSetup.value?.entry_trigger || '先确认本地数据覆盖，再形成可证伪观点。')
+const latestChange = computed(() => filings.value[0]?.filing_type ? `${filings.value[0].filing_type} · ${filings.value[0].filing_date || '-'}` : technicalSignals.value[0] || '暂无已记录变化')
+const latestChangeDetail = computed(() => filings.value[0]?.title || (currentTradeDate.value ? `技术与行情截至 ${currentTradeDate.value}` : '当前没有可用的本地变化证据。'))
+const riskSummary = computed(() => capitalRiskLabel.value === '存在阻断' ? '资本风险阻断' : tradeSetup.value?.risk_pct ? `计划风险 ${Number(tradeSetup.value.risk_pct).toFixed(1)}%` : errors.value.length ? '数据覆盖不完整' : '待设定风险预算')
+const riskDetail = computed(() => tradeSetup.value?.stop_loss_usd ? `计划止损 ${price(tradeSetup.value.stop_loss_usd)}；目标区 ${takeProfit.value}` : evaluation.value?.candidate_score?.capital_risk_summaries?.[0]?.reason || '尚未保存可执行的止损与失效条件。')
+const nextAction = computed(() => {
+  const readiness = evaluation.value?.candidate_score?.research_readiness?.status
+  if (readiness === 'blocked') return '先解除阻断证据'
+  if (readiness === 'research_only') return '补齐关键研究证据'
+  if (tradeSetup.value?.status === 'invalidated' || tradeSetup.value?.status === 'exit_warning') return '开盘前复核退出计划'
+  if (tradeSetup.value?.status === 'entry_candidate') return '复核催化剂与单笔风险'
+  return filings.value.length ? '阅读最新 SEC 并更新论点' : '补齐 SEC 与行情快照'
+})
+const nextActionDetail = computed(() => tradeSetup.value?.entry_trigger || evaluation.value?.candidate_score?.research_readiness?.reasons?.[0] || '完成动作后记录结论、失效条件与下次复核日期。')
 const insiderEmptyText = computed(() => insiderSummary.value?.transactions > 0 ? `已解析 ${insiderSummary.value.transactions} 条内幕交易，当前页暂无可展示记录` : '暂无本地内幕交易记录')
 function unwrapItems(response:any){return response?.data?.data?.items || response?.data?.data || []}
 async function load(){
@@ -143,6 +181,7 @@ async function load(){
 }
 async function search(){const value=ticker.value.trim().toUpperCase();if(!value){ElMessage.warning('请输入标的代码');return}ticker.value=value;if(value===symbol.value){await load();return}await router.replace({query:{ticker:value}})}
 function go(path:string){router.push({path,query:{ticker:symbol.value}})}
+function scrollToSection(id:string){document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'})}
 function price(value:any){return value!=null && value!=='' && Number.isFinite(Number(value))?`$${Number(value).toFixed(2)}`:'-'}
 function money(value:any){return value!=null && value!=='' && Number.isFinite(Number(value))?`$${Number(value).toLocaleString('en-US',{maximumFractionDigits:0})}`:'-'}
 function months(value:any){return value!=null && value!=='' && Number.isFinite(Number(value))?`${Number(value).toFixed(1)} 个月`:'-'}
@@ -153,5 +192,6 @@ onMounted(loadQueue)
 
 <style scoped>
 .review-queue{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.query-card{margin-top:12px}.query-card :deep(.el-card__body){padding:10px 12px}.query-card :deep(.el-form-item){margin-bottom:0}.section-gap{margin-top:12px}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--el-border-color-light);border-radius:7px;background:var(--el-bg-color);overflow:hidden}.summary-grid article{padding:13px 15px;border-right:1px solid var(--el-border-color-lighter);min-width:0}.summary-grid article:last-child{border-right:0}.summary-grid span,.decision-grid span{display:block;color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;font-size:24px;margin:4px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary-grid .compact-value{font-size:16px;margin-top:8px}.summary-grid small{color:var(--el-text-color-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}.card-head{display:flex;justify-content:space-between;align-items:center}.full-height{height:100%}.decision-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.decision-grid div{padding-bottom:9px;border-bottom:1px solid var(--el-border-color-lighter)}.decision-grid b{display:block;margin-top:4px}.decision-grid.two{grid-template-columns:1fr 1fr}.tag-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.muted{color:var(--el-text-color-secondary)}@media(max-width:900px){.summary-grid{grid-template-columns:1fr 1fr}.summary-grid article{border-bottom:1px solid var(--el-border-color-lighter)}}
+.query-card{margin-top:12px}.query-card :deep(.el-card__body){padding:10px 12px}.query-card :deep(.el-form-item){margin-bottom:0}.section-gap{margin-top:12px}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--el-border-color-light);border-radius:7px;background:var(--el-bg-color);overflow:hidden}.summary-grid article{padding:13px 15px;border-right:1px solid var(--el-border-color-lighter);min-width:0}.summary-grid article:last-child{border-right:0}.summary-grid span,.decision-grid span,.decision-brief span{display:block;color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;font-size:24px;margin:4px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary-grid .compact-value{font-size:16px;margin-top:8px}.summary-grid small{color:var(--el-text-color-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}.workspace-nav{position:sticky;top:0;z-index:4;display:flex;gap:6px;padding:7px;border:1px solid var(--el-border-color-lighter);border-radius:7px;background:color-mix(in srgb,var(--el-bg-color) 94%,transparent);backdrop-filter:blur(8px)}.workspace-nav button{appearance:none;border:0;border-radius:5px;background:transparent;color:var(--el-text-color-regular);padding:7px 11px;cursor:pointer}.workspace-nav button:hover{background:var(--el-fill-color-light);color:var(--el-color-primary)}.decision-brief :deep(.el-card__body){display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:0}.decision-brief>div,.decision-brief :deep(.el-card__body)>div{padding:15px;border-right:1px solid var(--el-border-color-lighter);border-top:3px solid var(--el-color-primary)}.decision-brief :deep(.el-card__body)>div:last-child{border-right:0}.decision-brief .is-risk{border-top-color:var(--el-color-danger)}.decision-brief .is-next{border-top-color:var(--el-color-success)}.decision-brief strong{display:block;margin:5px 0;font-size:16px}.decision-brief small{color:var(--el-text-color-secondary);line-height:1.45}.card-head{display:flex;justify-content:space-between;align-items:center}.full-height{height:100%}.decision-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.decision-grid div{padding-bottom:9px;border-bottom:1px solid var(--el-border-color-lighter)}.decision-grid b{display:block;margin-top:4px}.decision-grid.two{grid-template-columns:1fr 1fr}.tag-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.muted{color:var(--el-text-color-secondary)}@media(max-width:900px){.summary-grid,.decision-brief :deep(.el-card__body){grid-template-columns:1fr 1fr}.summary-grid article{border-bottom:1px solid var(--el-border-color-lighter)}.decision-brief :deep(.el-card__body)>div:nth-child(2){border-right:0}.decision-brief :deep(.el-card__body)>div{border-bottom:1px solid var(--el-border-color-lighter)}.workspace-nav{overflow-x:auto;white-space:nowrap}.ticker-workspace :deep(.el-table){width:100%;overflow-x:auto}.ticker-workspace :deep(.el-table__body-wrapper),.ticker-workspace :deep(.el-table__header-wrapper){overflow-x:auto}}
+@media(max-width:560px){.summary-grid,.decision-brief :deep(.el-card__body){grid-template-columns:1fr}.decision-brief :deep(.el-card__body)>div{border-right:0}.decision-grid,.decision-grid.two{grid-template-columns:1fr}}
 </style>

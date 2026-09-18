@@ -98,13 +98,24 @@
       <div class="section-heading">
         <div>
           <h3>小盘候选复核</h3>
-          <p>共 {{ candidateTotal }} 个 A/B 候选；{{ candidateOrder === 'fundamental' ? '按基本面总分排序' : '按短线复核优先级排序' }}。评分有效日以每行悬浮说明为准。</p>
+          <p>当前候选全集 {{ candidateAvailability.total || candidateTotal }} 只；{{ candidateOrder === 'fundamental' ? '按基本面总分排序' : '按短线复核优先级排序' }}。候选存在不等于可形成交易计划。</p>
         </div>
-        <el-button link type="primary" @click="router.push('/discovery-candidates')">查看全部候选</el-button>
+        <div class="candidate-heading-actions">
+          <el-tag type="success" effect="plain">可行动 {{ candidateAvailability.eligible }}</el-tag>
+          <el-tag type="warning" effect="plain">仅研究 {{ candidateAvailability.research_only }}</el-tag>
+          <el-tag type="danger" effect="plain">阻断 {{ candidateAvailability.blocked }}</el-tag>
+          <el-button link type="primary" @click="router.push('/discovery-candidates')">查看全部候选</el-button>
+        </div>
       </div>
-      <el-table :data="candidates" v-loading="candidateLoading" border class="candidate-table" empty-text="暂无候选评分；请先执行小盘股扫描。">
+      <el-alert v-if="candidateAvailability.total > 0 && candidateAvailability.eligible === 0" type="warning" :closable="false" show-icon class="candidate-gate-alert" title="候选数据已就绪，但当前没有可形成新交易计划的标的">
+        <template #default>仍可继续研究 {{ candidateAvailability.research_only }} 只候选；被阻断的 {{ candidateAvailability.blocked }} 只需先补齐行情、财务或风险证据。</template>
+      </el-alert>
+      <el-table :data="candidates" v-loading="candidateLoading" border class="candidate-table" :empty-text="candidateTotal ? '当前筛选条件下没有候选' : '尚无候选批次；请先执行小盘股扫描。'">
         <el-table-column prop="ticker" label="标的" width="104">
           <template #default="{ row }"><strong>{{ row.ticker }}</strong></template>
+        </el-table-column>
+        <el-table-column label="研究门槛" width="104">
+          <template #default="{ row }"><el-tag size="small" :type="readinessTagType(row.research_readiness?.status)" effect="plain">{{ readinessLabel(row.research_readiness?.status) }}</el-tag></template>
         </el-table-column>
         <el-table-column label="基本面" width="112" align="right">
           <template #default="{ row }">
@@ -154,6 +165,7 @@ const candidateOrderOptions = [
 ]
 const candidates = ref<CandidateScore[]>([])
 const candidateTotal = ref(0)
+const candidateAvailability = reactive({ total: 0, eligible: 0, research_only: 0, blocked: 0 })
 const watchTargets = ref<WatchTarget[]>([])
 const watchTargetTotal = ref(0)
 const watchTargetsLoading = ref(false)
@@ -172,7 +184,6 @@ async function loadCandidates() {
         page_size: 10,
         sort_by: candidateOrder.value === 'fundamental' ? 'total_score' : 'review_priority_score',
         sort_order: 'desc',
-        exclude_research_readiness: 'blocked',
       },
     })
     candidates.value = response.data.data.items || []
@@ -181,6 +192,15 @@ async function loadCandidates() {
     ElMessage.error(err?.response?.data?.message || '加载小盘候选失败')
   } finally {
     candidateLoading.value = false
+  }
+}
+
+async function loadCandidateAvailability() {
+  try {
+    const response = await apiClient.get<ApiResponse<{ decision?: { availability?: { total: number; eligible: number; research_only: number; blocked: number } } }>>('/dashboard/summary')
+    Object.assign(candidateAvailability, response.data.data.decision?.availability || {})
+  } catch {
+    // The candidate table remains usable if the cached aggregate is unavailable.
   }
 }
 
@@ -205,6 +225,7 @@ async function load() {
       apiClient.get<ApiResponse<PageResult<MacroRelease>>>('/macro/releases', { params: { status: 'scheduled', from: todayShanghai(), page: 1, page_size: 6, sort: 'asc' } }),
       loadCandidates(),
       loadWatchTargets(),
+      loadCandidateAvailability(),
     ])
     Object.assign(market, marketResponse.data.data)
     macroEvents.value = macroResponse.data.data.items || []
@@ -224,6 +245,8 @@ function formatRatio(value?: number | null) { return Number.isFinite(value) ? `$
 function formatVolume(value?: number | null) { return Number.isFinite(value) ? Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '-' }
 function changeClass(value?: number | null) { return Number(value) > 0 ? 'is-up' : Number(value) < 0 ? 'is-down' : 'is-flat' }
 function gradeTagType(grade: string) { return grade === 'A' ? 'success' : grade === 'B' ? 'warning' : 'info' }
+function readinessLabel(value?: string) { return ({ ready: '可行动', research_only: '仅研究', blocked: '阻断' } as Record<string, string>)[value || ''] || '待核验' }
+function readinessTagType(value?: string) { return value === 'ready' ? 'success' : value === 'blocked' ? 'danger' : 'warning' }
 function technicalLabel(row: CandidateScore) { return technicalStatusLabel(row.technical?.status) }
 function technicalStatusLabel(value?: string) { return value === 'ready' ? '暂无突破' : value === 'data_insufficient' ? '技术历史不足' : '技术数据待补' }
 function liquidityLabel(value?: string) { return ({ normal: '正常', limited: '受限', low: '低流动性', unknown: '待评估' } as Record<string, string>)[value || 'unknown'] || value || '待评估' }
@@ -242,5 +265,5 @@ onMounted(load)
 </script>
 
 <style scoped>
-.page-header,.section-heading,.card-header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.page-header{margin-bottom:10px}.page-header h2,.section-heading h3{margin:0}.page-header p,.section-heading p,.card-header p,.temperature-card p{margin:3px 0 0;color:var(--el-text-color-secondary);font-size:12px}.strategy-alert{margin-bottom:10px}.strategy-alert :deep(.el-alert__content){display:flex;min-width:0;align-items:baseline;gap:10px}.strategy-alert :deep(.el-alert__title){flex:0 0 auto;font-weight:700}.strategy-alert :deep(.el-alert__description){min-width:0;margin:0;color:var(--el-text-color-regular);line-height:18px}.section-heading{align-items:center;margin-bottom:8px}.market-card{height:100%;margin-bottom:10px}.market-card :deep(.el-card__body){padding:10px 12px}.market-card-heading,.instrument{display:flex;justify-content:space-between;gap:8px}.market-card-heading small,.instrument small{color:var(--el-text-color-secondary)}.market-price{font-size:20px;font-weight:650;margin-top:5px;font-variant-numeric:tabular-nums}.market-price span{font-size:12px;font-weight:400;color:var(--el-text-color-secondary);margin-left:4px}.market-card-meta{margin-top:1px;font-size:11px;color:var(--el-text-color-secondary)}.return-grid,.temperature-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:6px}.return-grid small{display:block;color:var(--el-text-color-secondary);font-size:11px}.return-grid strong{display:block;margin-top:1px}.temperature-grid{grid-template-columns:repeat(2,1fr);font-size:12px;color:var(--el-text-color-secondary)}.temperature-grid strong{margin-left:4px;color:var(--el-text-color-primary)}.temperature-card p{overflow:hidden;margin-top:5px;text-overflow:ellipsis;white-space:nowrap}.two-column-section{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:4px}.card-header p{font-size:12px}.candidate-section{margin-top:12px}.candidate-table :deep(.el-table__cell){vertical-align:middle}.metric-help{font-weight:650;cursor:help}.tooltip-lines{display:grid;gap:5px;max-width:340px}.tooltip-lines strong{margin-top:3px}.sync-cell{display:grid;gap:4px}.sync-cell small{color:var(--el-text-color-secondary);font-size:11px}.is-up{color:var(--el-color-success)}.is-down{color:var(--el-color-danger)}.is-flat{color:var(--el-text-color-secondary)}@media (max-width:1100px){.strategy-alert :deep(.el-alert__content){display:block}.strategy-alert :deep(.el-alert__description){margin-top:2px}}@media (max-width:900px){.two-column-section{grid-template-columns:1fr}}@media (max-width:760px){.page-header,.section-heading,.card-header{display:grid}.page-header :deep(.el-space){flex-wrap:wrap}}
+.page-header,.section-heading,.card-header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.page-header{margin-bottom:10px}.page-header h2,.section-heading h3{margin:0}.page-header p,.section-heading p,.card-header p,.temperature-card p{margin:3px 0 0;color:var(--el-text-color-secondary);font-size:12px}.strategy-alert{margin-bottom:10px}.strategy-alert :deep(.el-alert__content){display:flex;min-width:0;align-items:baseline;gap:10px}.strategy-alert :deep(.el-alert__title){flex:0 0 auto;font-weight:700}.strategy-alert :deep(.el-alert__description){min-width:0;margin:0;color:var(--el-text-color-regular);line-height:18px}.section-heading{align-items:center;margin-bottom:8px}.market-card{height:100%;margin-bottom:10px}.market-card :deep(.el-card__body){padding:10px 12px}.market-card-heading,.instrument{display:flex;justify-content:space-between;gap:8px}.market-card-heading small,.instrument small{color:var(--el-text-color-secondary)}.market-price{font-size:20px;font-weight:650;margin-top:5px;font-variant-numeric:tabular-nums}.market-price span{font-size:12px;font-weight:400;color:var(--el-text-color-secondary);margin-left:4px}.market-card-meta{margin-top:1px;font-size:11px;color:var(--el-text-color-secondary)}.return-grid,.temperature-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:6px}.return-grid small{display:block;color:var(--el-text-color-secondary);font-size:11px}.return-grid strong{display:block;margin-top:1px}.temperature-grid{grid-template-columns:repeat(2,1fr);font-size:12px;color:var(--el-text-color-secondary)}.temperature-grid strong{margin-left:4px;color:var(--el-text-color-primary)}.temperature-card p{overflow:hidden;margin-top:5px;text-overflow:ellipsis;white-space:nowrap}.two-column-section{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:4px}.card-header p{font-size:12px}.candidate-section{margin-top:12px}.candidate-heading-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}.candidate-gate-alert{margin-bottom:8px}.candidate-table :deep(.el-table__cell){vertical-align:middle}.metric-help{font-weight:650;cursor:help}.tooltip-lines{display:grid;gap:5px;max-width:340px}.tooltip-lines strong{margin-top:3px}.sync-cell{display:grid;gap:4px}.sync-cell small{color:var(--el-text-color-secondary);font-size:11px}.is-up{color:var(--el-color-success)}.is-down{color:var(--el-color-danger)}.is-flat{color:var(--el-text-color-secondary)}@media (max-width:1100px){.strategy-alert :deep(.el-alert__content){display:block}.strategy-alert :deep(.el-alert__description){margin-top:2px}}@media (max-width:900px){.two-column-section{grid-template-columns:1fr}}@media (max-width:760px){.page-header,.section-heading,.card-header{display:grid}.candidate-heading-actions{justify-content:flex-start}.page-header :deep(.el-space){flex-wrap:wrap}}
 </style>

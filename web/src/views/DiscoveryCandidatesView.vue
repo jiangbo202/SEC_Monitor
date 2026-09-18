@@ -382,7 +382,15 @@
       </el-form>
     </el-card>
 
-    <el-table :data="rows" v-loading="loading" border empty-text="暂无候选" :default-sort="{ prop: 'total_score', order: 'descending' }" :size="candidateTableView === 'compact' ? 'small' : 'default'" class="candidate-table" :class="{ 'candidate-table-compact': candidateTableView === 'compact' }" @sort-change="onSortChange">
+    <el-card v-if="!loading && rows.length === 0" shadow="never" class="candidate-empty-state" :class="`is-${candidateEmptyState.kind}`">
+      <div>
+        <strong>{{ candidateEmptyState.title }}</strong>
+        <p>{{ candidateEmptyState.detail }}</p>
+      </div>
+      <el-button type="primary" plain @click="handleCandidateEmptyAction">{{ candidateEmptyState.action }}</el-button>
+    </el-card>
+
+    <el-table :data="rows" v-loading="loading" border :empty-text="candidateEmptyState.title" :default-sort="{ prop: 'total_score', order: 'descending' }" :size="candidateTableView === 'compact' ? 'small' : 'default'" class="candidate-table" :class="{ 'candidate-table-compact': candidateTableView === 'compact' }" @sort-change="onSortChange">
       <el-table-column prop="ticker" label="Ticker" :width="candidateTableView === 'compact' ? 92 : 128" sortable="custom">
         <template #default="{ row }">
           <div class="candidate-ticker-cell">
@@ -779,6 +787,23 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <div v-loading="loading" class="candidate-mobile-list">
+      <article v-for="row in rows" :key="row.ticker" class="candidate-mobile-card">
+        <div class="candidate-mobile-head">
+          <div><strong>{{ row.ticker }}</strong><span>{{ gradeLabel(row.grade) }} · {{ row.total_score }} 分</span></div>
+          <el-tag :type="readinessTagType(row.research_readiness?.status)" effect="plain">{{ readinessLabel(row.research_readiness?.status) }}</el-tag>
+        </div>
+        <div class="candidate-mobile-facts">
+          <span><small>主要事件</small>{{ row.technical?.signals?.[0]?.label || row.change_reasons?.[0]?.label || '暂无新触发' }}</span>
+          <span><small>价格阶段</small>{{ priceActionLabel(row.technical?.price_action?.phase) }}</span>
+          <span><small>交易状态</small>{{ tradeSetupLabel(row.technical?.trade_setup?.status) }}</span>
+          <span><small>证据日期</small>{{ formatDate(row.price_trade_date || row.score_effective_date) }}</span>
+        </div>
+        <p>{{ researchDecisionSummary(row) || '关键研究证据已满足当前门槛。' }}</p>
+        <div class="candidate-mobile-actions"><el-button type="primary" plain @click="router.push({ path: '/ticker-workspace', query: { ticker: row.ticker } })">研究工作台</el-button><el-button @click="openDetail(row)">管理详情</el-button><el-button v-if="!row.followed" :loading="watchingTicker === row.ticker" @click="addToCandidateWatches(row)">关注</el-button></div>
+      </article>
+    </div>
 
     <div class="pagination-row">
       <el-pagination
@@ -2184,6 +2209,24 @@ const candidateScopeLabel = computed(() => {
   if (filters.exclude_research_readiness.includes('blocked')) return '优先研究 + 继续观察'
   return '全部状态'
 })
+const hasExplicitCandidateFilters = computed(() => Boolean(
+  filters.ticker || filters.grade || filters.eligible_a || filters.eligible_b || filters.sector_category || filters.quality_tier ||
+  filters.change_status || filters.technical_signal || filters.research_readiness || filters.max_ev_sales != null ||
+  filters.min_net_cash_to_market_cap_pct != null || filters.price_freshness || filters.upcoming_earnings || filters.has_ten_b5_one ||
+  filters.followed || filters.exclude_quality_tags.length || filters.exclude_research_readiness.length !== 1 || filters.exclude_research_readiness[0] !== 'blocked'
+))
+const candidateEmptyState = computed(() => {
+  if (!health.value || health.value.status === 'missing' || health.value.total_candidates === 0) {
+    return { kind: 'data', title: '数据不足，尚无可判断的候选', detail: '当前候选批次缺失或尚未完成发布；请先检查同步状态。', action: '查看同步状态' }
+  }
+  if (hasExplicitCandidateFilters.value) {
+    return { kind: 'filter', title: '当前筛选没有匹配标的', detail: `候选批次共有 ${health.value.total_candidates} 只标的；清除筛选不会改变底层研究数据。`, action: '清除筛选' }
+  }
+  if ((health.value.ready_candidates || 0) === 0 && (health.value.research_only_candidates || 0) === 0 && (health.value.blocked_candidates || 0) > 0) {
+    return { kind: 'gated', title: '候选均被门控排除', detail: `${health.value.blocked_candidates || 0} 只标的因行情、证据或流动性条件暂缓；可切换到“暂缓”查看每只标的原因。`, action: '查看暂缓标的' }
+  }
+  return { kind: 'none', title: '当前没有符合条件的机会', detail: '候选批次可用，但当前默认研究范围内没有标的满足条件。', action: '查看全部状态' }
+})
 const sectorRows = computed(() => Object.entries(overview.value?.sector_counts || {})
   .map(([name, count]) => ({ name, count }))
   .sort((a, b) => b.count - a.count))
@@ -3316,6 +3359,24 @@ function reset() {
   filters.followed = false
   advancedFiltersVisible.value = false
   search()
+}
+
+function handleCandidateEmptyAction() {
+  switch (candidateEmptyState.value.kind) {
+    case 'data':
+      router.push('/discovery-logs')
+      break
+    case 'filter':
+      reset()
+      break
+    case 'gated':
+      setReadinessFilter('blocked')
+      break
+    default:
+      filters.research_readiness = ''
+      filters.exclude_research_readiness = []
+      search()
+  }
 }
 
 function quickFilterActive(kind: string) {
@@ -5123,6 +5184,13 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
+.candidate-empty-state { margin: 12px 0; border-left: 4px solid var(--el-color-info); }
+.candidate-empty-state :deep(.el-card__body) { display: flex; justify-content: space-between; align-items: center; gap: 18px; }
+.candidate-empty-state.is-data { border-left-color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
+.candidate-empty-state.is-gated { border-left-color: var(--el-color-warning); background: var(--el-color-warning-light-9); }
+.candidate-empty-state.is-filter { border-left-color: var(--el-color-primary); }
+.candidate-empty-state p { margin: 5px 0 0; color: var(--el-text-color-secondary); }
+
 .quick-filter-label {
   margin-right: 2px;
   color: var(--el-text-color-secondary);
@@ -5183,6 +5251,17 @@ onUnmounted(() => {
 .candidate-table-compact :deep(.el-table__row:hover td.el-table__cell) {
   background: var(--el-fill-color-light);
 }
+
+.candidate-mobile-list { display: none; }
+.candidate-mobile-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 12px; background: var(--el-bg-color); }
+.candidate-mobile-head, .candidate-mobile-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.candidate-mobile-head > div { display: flex; flex-direction: column; gap: 2px; }
+.candidate-mobile-head span, .candidate-mobile-card p { color: var(--el-text-color-secondary); font-size: 12px; }
+.candidate-mobile-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.candidate-mobile-facts span { display: flex; min-width: 0; flex-direction: column; font-weight: 600; }
+.candidate-mobile-facts small { color: var(--el-text-color-secondary); font-weight: 400; }
+.candidate-mobile-card p { margin: 0 0 10px; }
+.candidate-mobile-actions { justify-content: flex-start; }
 
 .candidate-ticker-cell,
 .candidate-actions,
@@ -5740,6 +5819,11 @@ onUnmounted(() => {
   }
 }
 
+@media (max-width: 900px) {
+  .candidate-table { display: none; }
+  .candidate-mobile-list { display: grid; gap: 10px; }
+}
+
 @media (max-width: 720px) {
   .operations-summary-grid,
   .operations-details,
@@ -5781,6 +5865,8 @@ onUnmounted(() => {
     align-items: flex-start;
     flex-direction: column;
   }
+
+  .candidate-empty-state :deep(.el-card__body) { align-items: flex-start; flex-direction: column; }
 
 }
 </style>

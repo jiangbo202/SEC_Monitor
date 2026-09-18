@@ -32,7 +32,7 @@
       <el-table-column label="标的" width="210">
         <template #default="{ row }">
           <div class="target-identity">
-            <el-link class="target-ticker" type="primary" @click="openDetail(row)">{{ row.ticker }}</el-link>
+            <el-link class="target-ticker" type="primary" @click="openWorkspace(row)">{{ row.ticker }}</el-link>
             <span class="target-company" :title="row.company_name">{{ row.company_name || '-' }}</span>
           </div>
         </template>
@@ -140,9 +140,30 @@
         </template>
       </el-table-column>
     </el-table>
+    <div v-loading="loading" class="target-mobile-list">
+      <article v-for="row in rows" :key="row.id" class="target-mobile-card">
+        <div class="target-mobile-head">
+          <div><el-link class="target-ticker" type="primary" @click="openWorkspace(row)">{{ row.ticker }}</el-link><span>{{ row.company_name || '-' }}</span></div>
+          <el-tag size="small" :type="syncStatusType(row.last_sync_status)" effect="plain">{{ syncStatusLabel(row.last_sync_status) }}</el-tag>
+        </div>
+        <div class="target-mobile-status">
+          <span><small>状态</small>{{ targetStatusLabel(row.status) }}</span>
+          <span><small>技术</small>{{ primaryTechnicalSignal(row.technical) }}</span>
+          <span><small>阶段</small>{{ priceActionLabel(row.technical?.price_action?.phase) }}</span>
+          <span><small>计划</small>{{ tradeSetupLabel(row.technical?.trade_setup?.status) }}</span>
+        </div>
+        <div class="target-mobile-event"><small>近期事件</small><span>{{ earningsPreviewLabel(earningsPreviewFor(row)) }}</span><small>同步 {{ formatCompactDateTime(row.last_sync_at) }}</small></div>
+        <div class="target-mobile-actions">
+          <el-button type="primary" plain @click="openWorkspace(row)">研究工作台</el-button>
+          <el-button :loading="syncingId === row.id" @click="syncTarget(row)">{{ t('common.sync') }}</el-button>
+          <el-button @click="openDetail(row)">管理详情</el-button>
+        </div>
+      </article>
+      <el-empty v-if="!loading && !rows.length" :description="t('pages.targets.empty')" />
+    </div>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? t('pages.targets.edit') : t('pages.targets.add')" width="520px">
+    <el-dialog v-model="dialogVisible" :title="editingId ? t('pages.targets.edit') : t('pages.targets.add')" width="min(520px, 94vw)">
       <el-form :model="form" label-width="110px">
         <el-form-item label="Ticker">
           <el-input v-model="form.ticker" placeholder="TSLA" @input="invalidateFundIdentity" @blur="lookupTicker">
@@ -200,7 +221,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="simulationVisible" title="交易计划模拟复盘" width="1120px" top="6vh">
+    <el-dialog v-model="simulationVisible" title="交易计划模拟复盘" width="min(1120px, 94vw)" top="6vh">
       <el-alert
         :title="simulationReport?.execution_convention || '日线模拟结果'"
         type="info"
@@ -243,7 +264,7 @@
       </el-table>
     </el-dialog>
 
-    <el-drawer v-model="detailVisible" :title="detailTarget ? `${detailTarget.ticker} ${t('common.details')}` : t('pages.targets.detail')" size="720px">
+    <el-drawer v-model="detailVisible" :title="detailTarget ? `${detailTarget.ticker} 管理详情` : t('pages.targets.detail')" size="min(960px, 100%)">
       <div v-if="detailTarget" class="target-detail">
         <el-alert
           v-if="detailTarget.last_sync_status === 'failed'"
@@ -915,6 +936,10 @@ async function handleTargetCommand(command: string, row: WatchTarget) {
   }
 }
 
+function openWorkspace(row: WatchTarget) {
+  return router.push({ path: '/ticker-workspace', query: { ticker: row.ticker } })
+}
+
 async function syncTarget(row: WatchTarget) {
   syncingId.value = row.id
   try {
@@ -1338,6 +1363,11 @@ function technicalSignalsTooltip(technical?: CandidateTechnicalAnalysis | null) 
   return technical?.signals?.map((signal) => signal.label).join('、') || '暂无突破'
 }
 
+function primaryTechnicalSignal(technical?: CandidateTechnicalAnalysis | null) {
+  if (technical?.status !== 'ready') return technical?.status === 'data_insufficient' ? '历史不足' : '待补行情'
+  return technical.signals?.[0]?.label || '暂无突破'
+}
+
 function priceActionLabel(phase?: string) {
   return ({ reversal_extension: '反转延伸', wedge_pop: '楔形突破', ema_crossback: '均线回踩', base_break: '平台突破', exhaustion_extension: '衰竭延伸', wedge_drop: '楔形跌破', unconfirmed: '阶段未确认', unavailable: '数据不足' } as Record<string, string>)[phase || ''] || '数据不足'
 }
@@ -1544,9 +1574,23 @@ onUnmounted(() => { if (targetAIPollingTimer !== undefined) window.clearTimeout(
   white-space: nowrap;
 }
 
+.target-mobile-list { display: none; }
+.target-mobile-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 12px; background: var(--el-bg-color); }
+.target-mobile-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.target-mobile-head > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.target-mobile-head span { color: var(--el-text-color-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.target-mobile-status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.target-mobile-status span { display: flex; flex-direction: column; min-width: 0; font-weight: 600; }
+.target-mobile-status small, .target-mobile-event small { color: var(--el-text-color-secondary); font-weight: 400; }
+.target-mobile-event { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 8px; background: var(--el-fill-color-light); border-radius: 6px; }
+.target-mobile-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+
 @media (max-width: 900px) {
-  .target-list-table :deep(.el-table__row) {
-    height: 40px;
-  }
+  .target-list-table { display: none; }
+  .target-mobile-list { display: grid; gap: 10px; }
+  .toolbar { display: flex; flex-wrap: wrap; }
+  .toolbar :deep(.el-form-item) { margin-right: 8px; }
+  .target-detail { overflow-x: hidden; }
+  .target-detail :deep(.el-descriptions__table) { table-layout: fixed; }
 }
 </style>

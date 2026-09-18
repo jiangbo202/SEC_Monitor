@@ -166,6 +166,7 @@
         <el-table-column label="公布值" width="168" align="right"><template #default="{ row }"><el-tooltip :content="publishedValueDescription(row)" placement="top"><strong :class="publishedValueClass(row)">{{ publishedValueLabel(row) }}</strong></el-tooltip></template></el-table-column>
         <el-table-column label="影响" width="118"><template #default="{ row }"><el-tooltip content="市场影响需要以公布值相对可追溯预测值的“意外程度”计算；当前未接入预测值，故不做利多/利空判断。" placement="top"><el-tag type="info" effect="plain">{{ impactLabel(row) }}</el-tag></el-tooltip></template></el-table-column>
 		<el-table-column label="重要性" width="118"><template #default="{ row }"><el-tooltip :content="row.market_importance ? 'Longbridge 市场日历重要性（星级）。' : '系统规则分级，不是官方评级。'" placement="top"><el-tag type="warning" effect="plain">{{ row.market_importance ? `${row.market_importance} 星` : importanceLabel(row.category) }}</el-tag></el-tooltip></template></el-table-column>
+		<el-table-column label="敏感资产 / 影响路径" min-width="250"><template #default="{ row }"><div class="macro-impact-cell"><strong>{{ macroImpactPath(row.category).factor }}</strong><span>{{ macroImpactPath(row.category).assets }}</span><small>规则映射，仅提示复核方向，不自动判断利多或利空</small></div></template></el-table-column>
 		<el-table-column label="公布时间（上海）" width="175"><template #default="{ row }"><el-tooltip :content="releaseTimeTooltip(row)" placement="top"><span>{{ releaseTimeLabel(row) }}</span></el-tooltip></template></el-table-column>
 		<el-table-column label="来源" width="105"><template #default="{ row }"><el-link :href="row.source_url" target="_blank" type="primary">{{ providerLabel(row.provider) }}</el-link></template></el-table-column>
       </el-table>
@@ -197,6 +198,24 @@ const categoryHistory = ref<MacroRelease[]>([])
 const trendCardRef = ref<HTMLElement>()
 const trendTooltip = ref<TrendTooltip | null>(null)
 const trendPalette = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#9254de', '#14b8a6', '#ec4899', '#64748b']
+
+function macroImpactPath(category: string) {
+  const paths: Record<string, { factor: string; assets: string }> = {
+    cpi: { factor: '通胀 → 利率预期 / 估值折现', assets: 'IWM、XLK、TLT、美元' },
+    ppi: { factor: '投入成本 → 企业利润率 / 通胀预期', assets: 'XLI、XLY、IWM、TLT' },
+    employment: { factor: '就业 → 增长与政策路径', assets: 'IWM、XLF、TLT、美元' },
+    initial_claims: { factor: '劳动力降温 → 增长与降息预期', assets: 'IWM、XLY、TLT' },
+    fomc: { factor: '政策利率 / 流动性 → 风险偏好', assets: '全市场；重点 IWM、XLK、XLF、TLT' },
+    treasury_yields: { factor: '无风险利率 → 估值与融资成本', assets: 'IWM、XLK、XLF、IYR' },
+    treasury_real_yields: { factor: '实际利率 → 长久期资产估值', assets: 'XLK、贵金属、IWM' },
+    gdp: { factor: '经济增长 → 周期股盈利预期', assets: 'XLI、XLF、XLY、IWM' },
+    retail_sales: { factor: '消费需求 → 可选消费盈利', assets: 'XLY、零售与消费类候选' },
+    petroleum_inventories: { factor: '库存变化 → 原油供需与能源利润', assets: 'XLE、油服与能源候选' },
+    housing_starts: { factor: '住房活动 → 利率敏感需求', assets: 'IYR、住宅建筑、建材' },
+    new_home_sales: { factor: '住房需求 → 地产与耐用品链条', assets: 'IYR、住宅建筑、家居' },
+  }
+  return paths[category] || { factor: '宏观增长 / 流动性条件变化', assets: 'IWM、行业 ETF 与相关监控标的' }
+}
 const latestReleases = computed(() => {
   const seen = new Set<string>()
   return latestItems.value.filter((release) => {
@@ -501,6 +520,8 @@ onMounted(load)
 .macro-latest-metric { margin-top: 4px; color: var(--el-text-color-primary); font-size: 13px; }
 .macro-latest-meta { margin-top: 8px; color: var(--el-text-color-secondary); font-size: 12px; }
 .macro-table-title { margin: 2px 0 10px; color: var(--el-text-color-primary); font-weight: 600; }
+.macro-impact-cell { display: grid; gap: 2px; line-height: 1.35; }
+.macro-impact-cell span, .macro-impact-cell small { color: var(--el-text-color-secondary); font-size: 12px; }
 .macro-published-value.is-up { color: var(--el-color-success); }
 .macro-published-value.is-down { color: var(--el-color-danger); }
 .macro-published-value.is-flat { color: var(--el-text-color-primary); }

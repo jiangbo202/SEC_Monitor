@@ -53,6 +53,9 @@ type AppHandler struct {
 	AIAnalysis             *service.AIAnalysisService
 	EarningsPreview        *service.EarningsPreviewService
 	Scheduler              SchedulerController
+	dashboardCacheMu       sync.Mutex
+	dashboardCache         DashboardSummary
+	dashboardCacheAt       time.Time
 	tickerEvaluationMu     sync.Mutex
 	tickerEvaluations      map[string]struct{}
 	insiderPlanBackfillMu  sync.Mutex

@@ -67,12 +67,36 @@ func BuildCandidateHealth(ctx context.Context, db *gorm.DB) (CandidateHealth, er
 		result.Issues = append(result.Issues, "no_current_published_prescreen_batch")
 		return result, nil
 	}
-	return BuildCandidateHealthForBatch(ctx, db, batch)
+	return buildCandidateHealthForBatch(ctx, db, batch, nil)
 }
 
 // BuildCandidateHealthForBatch calculates health for the exact batch archived
 // in a report, avoiding accidental mixing with a newer current batch.
 func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch UniverseBatch) (CandidateHealth, error) {
+	return buildCandidateHealthForBatch(ctx, db, batch, nil)
+}
+
+// BuildCandidateHealthWithReadiness reuses an already hydrated current-batch
+// candidate list. Dashboard aggregation needs both health counts and per-row
+// gate reasons; sharing the expensive hydration avoids scanning the full price
+// and financial history twice for a single page load.
+func BuildCandidateHealthWithReadiness(ctx context.Context, db *gorm.DB, readinessItems []CandidateScoreResult) (CandidateHealth, error) {
+	result := CandidateHealth{Status: CandidateHealthMissing, Issues: []string{}}
+	if db == nil {
+		return result, errors.New("database is required")
+	}
+	batch, ok, err := currentPublishedPrescreenBatch(ctx, db)
+	if err != nil {
+		return result, err
+	}
+	if !ok {
+		result.Issues = append(result.Issues, "no_current_published_prescreen_batch")
+		return result, nil
+	}
+	return buildCandidateHealthForBatch(ctx, db, batch, readinessItems)
+}
+
+func buildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch UniverseBatch, readinessItems []CandidateScoreResult) (CandidateHealth, error) {
 	result := CandidateHealth{Status: CandidateHealthMissing, Issues: []string{}}
 	if db == nil {
 		return result, errors.New("database is required")
@@ -123,9 +147,16 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 			result.Issues = append(result.Issues, fmt.Sprintf("pending_financial_recalculations:%d", pending))
 		}
 	}
-	priceFreshnessBySecurity, err := candidatePriceFreshnessBySecurity(ctx, db, batch, scores)
-	if err != nil {
-		return result, err
+	priceFreshnessBySecurity := make(map[uint]string, len(scores))
+	if readinessItems != nil {
+		for _, item := range readinessItems {
+			priceFreshnessBySecurity[item.SecurityID] = item.PriceFreshnessStatus
+		}
+	} else {
+		priceFreshnessBySecurity, err = candidatePriceFreshnessBySecurity(ctx, db, batch, scores)
+		if err != nil {
+			return result, err
+		}
 	}
 	insiderCoverageBySecurity, err := candidateInsiderCoverageBySecurity(ctx, db, financialBatchID, scores)
 	if err != nil {
@@ -157,16 +188,25 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 	if err != nil {
 		return result, err
 	}
+	financialsBySecurity := make(map[uint]FinancialMetricSnapshot, len(scores))
+	if len(securityIDs) > 0 {
+		var financials []FinancialMetricSnapshot
+		if err := db.WithContext(ctx).
+			Where("batch_id = ? AND security_id IN ?", financialBatchID, securityIDs).
+			Find(&financials).Error; err != nil {
+			return result, err
+		}
+		for _, financial := range financials {
+			financialsBySecurity[financial.SecurityID] = financial
+		}
+	}
 	for _, score := range scores {
 		if score.MarketCapUSD <= 0 {
 			result.MissingMarketCap++
 		}
-		var financial FinancialMetricSnapshot
-		err := db.WithContext(ctx).First(&financial, "batch_id = ? AND security_id = ?", financialBatchID, score.SecurityID).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && !financial.RevenueGrowthAvailable && !financial.RunwayAvailable) {
+		financial, found := financialsBySecurity[score.SecurityID]
+		if !found || (!financial.RevenueGrowthAvailable && !financial.RunwayAvailable) {
 			result.MissingFinancials++
-		} else if err != nil {
-			return result, err
 		}
 		coverage := insiderCoverageBySecurity[score.SecurityID]
 		if coverage.records > 0 {
@@ -241,11 +281,14 @@ func BuildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 		result.TechnicalHistoryRetryDue = due
 		result.TechnicalHistoryRetryDeferred = deferred
 	}
-	readinessPage, err := ListCandidateScores(ctx, db, CandidateScoreQuery{BatchID: batch.BatchID, Page: 1, PageSize: maxDiscoveryPageSize})
-	if err != nil {
-		return result, err
+	if readinessItems == nil {
+		readinessPage, readinessErr := ListCandidateScores(ctx, db, CandidateScoreQuery{BatchID: batch.BatchID, Page: 1, PageSize: maxDiscoveryPageSize})
+		if readinessErr != nil {
+			return result, readinessErr
+		}
+		readinessItems = readinessPage.Items
 	}
-	for _, item := range readinessPage.Items {
+	for _, item := range readinessItems {
 		switch item.ResearchReadiness.Status {
 		case CandidateResearchReadinessReady:
 			result.ReadyCandidates++
