@@ -622,14 +622,14 @@ type SECFilingSnapshot struct {
 
 type CapitalRiskSnapshot struct {
 	ID            uint      `json:"id"`
-	BatchID       string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_capital_risk_identity,priority:1;index"`
-	SecurityID    uint      `json:"security_id" gorm:"uniqueIndex:idx_capital_risk_identity,priority:2;index"`
+	BatchID       string    `json:"batch_id" gorm:"size:64;uniqueIndex:idx_capital_risk_identity,priority:1;index;index:idx_capital_risk_active_batch_security,priority:1"`
+	SecurityID    uint      `json:"security_id" gorm:"uniqueIndex:idx_capital_risk_identity,priority:2;index;index:idx_capital_risk_active_batch_security,priority:3"`
 	Kind          string    `json:"kind" gorm:"size:64;uniqueIndex:idx_capital_risk_identity,priority:3;index"`
 	Accession     string    `json:"accession" gorm:"size:32;uniqueIndex:idx_capital_risk_identity,priority:4;index"`
 	EffectiveAt   time.Time `json:"effective_at" gorm:"uniqueIndex:idx_capital_risk_identity,priority:5;index"`
 	AcceptedAt    time.Time `json:"accepted_at" gorm:"index"`
 	ActiveUntil   time.Time `json:"active_until" gorm:"index"`
-	Active        bool      `json:"active" gorm:"index"`
+	Active        bool      `json:"active" gorm:"index;index:idx_capital_risk_active_batch_security,priority:2"`
 	BlocksA       bool      `json:"blocks_a" gorm:"index"`
 	BlocksB       bool      `json:"blocks_b" gorm:"index"`
 	Severity      string    `json:"severity" gorm:"size:16;index"`

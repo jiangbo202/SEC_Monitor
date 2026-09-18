@@ -67,6 +67,21 @@ func TestDashboardSummaryReadsLocalSnapshotsOnly(t *testing.T) {
 	if len(response.Data.Monitoring.RecentFilings) != 1 || response.Data.Monitoring.RecentFilings[0].Ticker != "RKLB" {
 		t.Fatalf("recent filings=%+v", response.Data.Monitoring.RecentFilings)
 	}
+	if got := recorder.Header().Get("X-Dashboard-Cache"); got != "miss" {
+		t.Fatalf("first request cache=%q", got)
+	}
+
+	cachedRecorder := httptest.NewRecorder()
+	r.ServeHTTP(cachedRecorder, httptest.NewRequest(http.MethodGet, "/dashboard-summary", nil))
+	if got := cachedRecorder.Header().Get("X-Dashboard-Cache"); got != "hit" {
+		t.Fatalf("second request cache=%q", got)
+	}
+
+	forcedRecorder := httptest.NewRecorder()
+	r.ServeHTTP(forcedRecorder, httptest.NewRequest(http.MethodGet, "/dashboard-summary?refresh=1", nil))
+	if got := forcedRecorder.Header().Get("X-Dashboard-Cache"); got != "miss" {
+		t.Fatalf("forced request cache=%q", got)
+	}
 }
 
 func TestDashboardFreshnessUsesTradingCalendarAcrossWeekend(t *testing.T) {
@@ -104,5 +119,26 @@ func TestDashboardFreshnessExpiresAfterTwoMissedTradingSessions(t *testing.T) {
 	got := dashboardDataFreshness(t.Context(), db, "2026-08-20", "longbridge", &lastFetched, now)
 	if got.Status != "expired" || got.ExpectedTradeDate != "2026-08-24" {
 		t.Fatalf("freshness=%+v", got)
+	}
+}
+
+func TestDashboardCandidateGateSeparatesFallbackPriceFromUsableCandidate(t *testing.T) {
+	item := discovery.CandidateScoreResult{
+		CandidateScoreSnapshot: discovery.CandidateScoreSnapshot{Ticker: "TEST", MarketCapUSD: 120_000_000},
+		PriceCloseUSD:          4.25,
+		PriceFreshnessStatus:   discovery.PriceFreshnessPreviousTradingDay,
+		PriceQualityStatus:     discovery.QualityStatusValid,
+		ResearchReadiness:      discovery.CandidateResearchReadiness{Status: discovery.CandidateResearchReadinessReady},
+	}
+	reason, action := dashboardCandidateGate(item, false)
+	if reason != "行情仅到前一交易日" || action != "补齐最近完成交易日的有效收盘价" {
+		t.Fatalf("gate=(%q, %q)", reason, action)
+	}
+}
+
+func TestDashboardActionWorkflowMakesExitWorkExplicit(t *testing.T) {
+	priority, action, due := dashboardActionWorkflow(discovery.TradeSetupExitWarning)
+	if priority != "high" || action == "" || due != "开盘前" {
+		t.Fatalf("workflow=(%q, %q, %q)", priority, action, due)
 	}
 }

@@ -51,7 +51,11 @@ type CandidateScoreQuery struct {
 	// SkipPerformance keeps the default service behavior complete for callers
 	// that need it, while list endpoints can omit the presentation-only
 	// historical performance calculation in their compact view.
-	SkipPerformance         bool
+	SkipPerformance bool
+	// SkipTechnicalDetails omits the post-pagination MA200/detail hydration.
+	// Research readiness and investability still use the bounded 21-session
+	// market-quality window before pagination, so gating semantics are unchanged.
+	SkipTechnicalDetails    bool
 	UpcomingEarningsTickers []string
 	UpcomingEarningsOnly    bool
 	FollowedOnly            bool
@@ -436,7 +440,7 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 			return result, err
 		}
 	}
-	if !technicalNeeded {
+	if !technicalNeeded && !filter.SkipTechnicalDetails {
 		pageTechnicalPriceHistories, historyErr := candidateTechnicalPriceHistories(ctx, db, result.Items, technicalMA200LookbackDays)
 		if historyErr != nil {
 			return result, historyErr

@@ -1,6 +1,7 @@
 <template>
   <el-container class="app-shell">
-    <el-aside width="216px" class="sidebar">
+    <button class="mobile-nav-scrim" :class="{ 'is-visible': mobileNavOpen }" type="button" aria-label="关闭导航" @click="mobileNavOpen = false" />
+    <el-aside width="216px" class="sidebar" :class="{ 'is-mobile-open': mobileNavOpen }">
       <div class="brand">
         <el-icon><Monitor /></el-icon>
         <span>{{ t('app.title') }}</span>
@@ -44,7 +45,10 @@
     </el-aside>
     <el-container>
       <el-header height="48px" class="topbar">
-        <span>{{ t('app.topbar') }}</span>
+        <div class="topbar-title">
+          <el-button class="mobile-menu-button" circle aria-label="打开导航" @click="mobileNavOpen = true"><el-icon><MenuIcon /></el-icon></el-button>
+          <span>{{ t('app.topbar') }}</span>
+        </div>
         <div class="topbar-actions">
           <el-badge :value="unreadCount" :hidden="unreadCount === 0" :max="99" class="in-app-bell">
             <el-button circle :aria-label="'站内消息'" @click="openInbox"><el-icon><Bell /></el-icon></el-button>
@@ -93,9 +97,9 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Aim, Bell, Briefcase, Calendar, Coin, Collection, Compass, DataAnalysis, DataBoard, DataLine, Document, DocumentCopy, FirstAidKit, Histogram, MagicStick, Monitor, Notification, Odometer, Search, Setting, Tickets, Timer, TrendCharts, UserFilled, Warning } from '@element-plus/icons-vue'
+import { Aim, Bell, Briefcase, Calendar, Coin, Collection, Compass, DataAnalysis, DataBoard, DataLine, Document, DocumentCopy, FirstAidKit, Histogram, MagicStick, Menu as MenuIcon, Monitor, Notification, Odometer, Search, Setting, Tickets, Timer, TrendCharts, UserFilled, Warning } from '@element-plus/icons-vue'
 import { apiClient } from '@/api/client'
 import type { ApiResponse, InAppNotification, PageResult } from '@/api/types'
 import { useI18n } from '@/i18n'
@@ -103,12 +107,15 @@ import { useI18n } from '@/i18n'
 const { store, t } = useI18n()
 const router = useRouter()
 const inboxOpen = ref(false)
+const mobileNavOpen = ref(false)
 const inboxLoading = ref(false)
 const markingAllRead = ref(false)
 const showUnreadOnly = ref(false)
 const unreadCount = ref(0)
 const inboxItems = ref<InAppNotification[]>([])
 let unreadTimer: number | undefined
+
+watch(() => router.currentRoute.value.fullPath, () => { mobileNavOpen.value = false })
 
 async function loadUnreadCount() {
   const res = await apiClient.get<ApiResponse<{ unread_count: number }>>('/in-app-notifications/unread-count')

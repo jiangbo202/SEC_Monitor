@@ -10,6 +10,19 @@
       <div><span>公开市场卖出</span><strong class="negative">{{ summary.sales }}</strong><small>有成交价 {{ summary.priced_sales }} 笔 · {{ money(summary.sell_value_usd) }} · 计划内 {{ summary.planned_sales }}</small></div>
       <div><span>公开市场现金净额</span><strong :class="summary.net_value_usd >= 0 ? 'positive' : 'negative'">{{ signedMoney(summary.net_value_usd) }}</strong><small>仅含有成交价的 P/S 普通股交易；其他取得 {{ summary.other_acquisitions }} 笔、处置 {{ summary.other_dispositions }} 笔不计金额</small></div>
     </div>
+    <el-card v-if="rows.length" shadow="never" class="page-signal-card">
+      <template #header><div class="signal-heading"><strong>当前页信号聚合</strong><span>基于当前筛选结果的本页记录，不替代全量历史统计</span></div></template>
+      <div class="issuer-signal-grid">
+        <div v-for="item in issuerSignals" :key="item.ticker" class="issuer-signal">
+          <strong>{{ item.ticker }}</strong><span>{{ item.transactions }} 笔 · {{ item.people }} 位申报人</span>
+          <small>公开市场买入 {{ item.purchases }} / 卖出 {{ item.sales }} · 净额 <b :class="item.net >= 0 ? 'positive' : 'negative'">{{ signedMoney(item.net) }}</b></small>
+        </div>
+      </div>
+      <div class="role-signal-row"><span>角色分布</span><el-tag v-for="item in roleSignals" :key="item.role" size="small" effect="plain">{{ item.role }} {{ item.count }}</el-tag></div>
+      <el-alert v-if="notableSignals.length" type="warning" :closable="false" show-icon :title="`当前页有 ${notableSignals.length} 笔大额或非计划内公开市场交易值得优先复核`">
+        <template #default>{{ notableSignals.slice(0, 4).map(item => `${item.ticker} ${directionLabel(item)} ${money(item.value_usd)}`).join('；') }}</template>
+      </el-alert>
+    </el-card>
     <el-tabs v-model="activeTab" @tab-change="onTabChange">
       <el-tab-pane label="交易记录" name="transactions">
     <el-form :inline="true" :model="filters" class="toolbar compact-toolbar">
@@ -20,7 +33,7 @@
       <el-form-item label="10b5-1"><el-select class="plan-filter" v-model="filters.ten_b5_1_status" clearable placeholder="全部计划"><el-option label="已确认计划" value="confirmed" /><el-option label="可能关联" value="possible" /><el-option label="未披露计划" value="not_disclosed" /></el-select></el-form-item>
       <el-form-item><el-button type="primary" :loading="loading" @click="query">{{ t('common.query') }}</el-button><el-button @click="reset">重置</el-button></el-form-item>
     </el-form>
-    <el-table :data="rows" v-loading="loading" border empty-text="当前筛选范围内暂无已解析内幕交易">
+    <el-table class="insider-table" :data="rows" v-loading="loading" border empty-text="当前筛选范围内暂无已解析内幕交易">
       <el-table-column prop="transaction_date" label="交易日" width="112"><template #default="{ row }">{{ formatDate(row.transaction_date) }}</template></el-table-column>
       <el-table-column prop="ticker" label="Ticker" width="90" fixed><template #default="{ row }"><strong>{{ row.ticker || '-' }}</strong></template></el-table-column>
       <el-table-column label="申报人 / 职务" min-width="205" show-overflow-tooltip><template #default="{ row }"><div class="owner"><strong>{{ row.owner_name || '未披露' }}</strong><small>{{ roleLabel(row) }}</small></div></template></el-table-column>
@@ -33,6 +46,14 @@
       <el-table-column label="证券" width="88"><template #default="{ row }">{{ row.derivative ? '衍生品' : '普通股' }}</template></el-table-column>
       <el-table-column label="证据" width="78" fixed="right"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">SEC</el-link><span v-else>-</span></template></el-table-column>
     </el-table>
+    <div v-loading="loading" class="insider-mobile-list">
+      <article v-for="row in rows" :key="row.id" class="insider-mobile-card">
+        <div class="insider-mobile-head"><strong>{{ row.ticker || '-' }} · {{ directionLabel(row) }}</strong><el-tag :type="row.qualified ? 'success' : 'warning'" effect="plain">{{ row.qualified ? '计入研究' : '需复核' }}</el-tag></div>
+        <div class="owner"><strong>{{ row.owner_name || '未披露' }}</strong><small>{{ roleLabel(row) }}</small></div>
+        <div class="insider-mobile-facts"><span><small>交易日</small>{{ formatDate(row.transaction_date) }}</span><span><small>股数</small>{{ number(row.shares) }}</span><span><small>价格</small>{{ price(row.price_usd) }}</span><span><small>金额</small>{{ money(row.value_usd) }}</span></div>
+        <div class="insider-mobile-foot"><el-tag :type="planTagType(row)" effect="plain">{{ planLabel(row) }}</el-tag><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">SEC 原文</el-link></div>
+      </article>
+    </div>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />
       </el-tab-pane>
       <el-tab-pane label="10b5-1 计划" name="plans">
@@ -47,7 +68,7 @@
           <div class="coverage-detail">{{ planCoverageDetail }}</div>
         </el-alert>
         <el-alert class="plan-boundary" type="info" :closable="false" title="计划额度与剩余额度仅在公开文件明确披露时显示；未披露不代表额度为零。" />
-        <el-table :data="plans" v-loading="planLoading" border :empty-text="planEmptyText">
+        <el-table class="plan-table" :data="plans" v-loading="planLoading" border :empty-text="planEmptyText">
           <el-table-column prop="ticker" label="Ticker" width="88" fixed><template #default="{ row }"><strong>{{ row.ticker || '-' }}</strong></template></el-table-column>
           <el-table-column label="申报人 / 职务" min-width="190"><template #default="{ row }"><div class="owner"><strong>{{ row.owner_name }}</strong><small>{{ row.officer_title || '职务未披露' }}</small></div></template></el-table-column>
           <el-table-column label="采用日期" width="112"><template #default="{ row }">{{ formatDate(row.adoption_date) }}</template></el-table-column>
@@ -59,6 +80,14 @@
           <el-table-column label="最近执行" width="112"><template #default="{ row }">{{ formatDate(row.last_execution_date) }}</template></el-table-column>
           <el-table-column label="证据" width="88" fixed="right"><template #default="{ row }"><el-tooltip :content="row.evidence_summary || 'Form 4 结构化披露'"><el-link v-if="row.primary_source_url" :href="row.primary_source_url" target="_blank" type="primary">{{ row.primary_source_form || 'SEC' }}</el-link><span v-else>-</span></el-tooltip></template></el-table-column>
         </el-table>
+        <div v-loading="planLoading" class="insider-mobile-list">
+          <article v-for="row in plans" :key="row.id" class="insider-mobile-card">
+            <div class="insider-mobile-head"><strong>{{ row.ticker || '-' }} · {{ row.owner_name }}</strong><el-tag type="success" effect="plain">{{ planStatusLabel(row.status) }}</el-tag></div>
+            <span class="cell-note">{{ row.officer_title || '职务未披露' }}</span>
+            <div class="insider-mobile-facts"><span><small>采用日期</small>{{ formatDate(row.adoption_date) }}</span><span><small>已执行</small>{{ number(row.executed_shares) }}</span><span><small>披露金额</small>{{ money(row.executed_value_usd) }}</span><span><small>已知剩余</small>{{ row.remaining_shares_known ? number(row.remaining_shares) : '无法计算' }}</span></div>
+            <div class="insider-mobile-foot"><small>{{ row.evidence_summary || 'Form 4 结构化披露' }}</small><el-link v-if="row.primary_source_url" :href="row.primary_source_url" target="_blank" type="primary">{{ row.primary_source_form || 'SEC' }}</el-link></div>
+          </article>
+        </div>
         <el-pagination class="pagination" layout="total, prev, pager, next" :total="planTotal" :page-size="pageSize" v-model:current-page="planPage" @current-change="loadPlans" />
       </el-tab-pane>
     </el-tabs>
@@ -82,6 +111,26 @@ interface PlanBackfillResult { pending_form4_documents:number; parsed_form4_docu
 const emptySummary = ():Summary => ({ transactions:0, issuers:0, purchases:0, sales:0, priced_purchases:0, priced_sales:0, other_acquisitions:0, other_dispositions:0, planned_sales:0, buy_value_usd:0, sell_value_usd:0, net_value_usd:0 })
 const emptyPlanCoverage=():PlanCoverage=>({status:'pending',required_parser_version:'',scoped_transactions:0,parsed_transactions:0,confirmed_plan_transactions:0,registered_plans:0,coverage_pct:0})
 const { t } = useI18n(); const route = useRoute(); const activeTab=ref('transactions'); const loading = ref(false); const rows = ref<InsiderRow[]>([]); const total = ref(0); const page = ref(1); const pageSize = 20; const summary = reactive<Summary>(emptySummary()); const filters = reactive({ ticker:'', source:'', direction:'', qualified:'', ten_b5_1_status:'' }); const planLoading=ref(false); const plans=ref<InsiderPlan[]>([]); const planTotal=ref(0); const planPage=ref(1); const planFilters=reactive({ticker:'',source:'',status:''}); const planCoverage=reactive<PlanCoverage>(emptyPlanCoverage()); const backfillLoading=ref(false)
+const issuerSignals = computed(() => {
+  const grouped = new Map<string, { ticker:string; transactions:number; purchases:number; sales:number; net:number; owners:Set<string>; people:number }>()
+  for (const row of rows.value) {
+    const ticker = row.ticker || '-'
+    const item = grouped.get(ticker) || { ticker, transactions:0, purchases:0, sales:0, net:0, owners:new Set<string>(), people:0 }
+    item.transactions++
+    if (row.owner_name) item.owners.add(row.owner_name)
+    if (!row.derivative && row.transaction_code === 'P' && row.direction === 'buy') { item.purchases++; item.net += Number(row.value_usd || 0) }
+    if (!row.derivative && row.transaction_code === 'S' && row.direction === 'sell') { item.sales++; item.net -= Number(row.value_usd || 0) }
+    item.people = item.owners.size
+    grouped.set(ticker, item)
+  }
+  return [...grouped.values()].sort((a,b) => Math.abs(b.net)-Math.abs(a.net) || b.transactions-a.transactions).slice(0, 6)
+})
+const roleSignals = computed(() => {
+  const grouped = new Map<string, number>()
+  for (const row of rows.value) { const role = roleLabel(row); grouped.set(role, (grouped.get(role) || 0) + 1) }
+  return [...grouped.entries()].map(([role,count]) => ({role,count})).sort((a,b)=>b.count-a.count).slice(0,6)
+})
+const notableSignals = computed(() => rows.value.filter(row => !row.derivative && row.qualified && row.value_usd >= 100_000 && (row.transaction_code === 'P' || (row.transaction_code === 'S' && row.ten_b5_1_status !== 'confirmed'))))
 async function load() { loading.value = true; try { const res = await apiClient.get<ApiResponse<Result>>('/insider-transactions', { params:{ ...filters, page:page.value, page_size:pageSize } }); rows.value=res.data.data.items; total.value=res.data.data.total; Object.assign(summary, res.data.data.summary) } catch (err:any) { ElMessage.error(err?.response?.data?.message || '加载内幕交易事实失败') } finally { loading.value=false } }
 function query(){ page.value=1; return load() }
 function reset(){ Object.assign(filters,{ticker:'',source:'',direction:'',qualified:'',ten_b5_1_status:''}); query() }
@@ -123,5 +172,6 @@ onMounted(()=>{
 })
 </script>
 <style scoped>
-.metric-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-bg-color);margin-bottom:12px}.metric-strip>div{padding:12px 16px;display:grid;gap:2px;border-right:1px solid var(--el-border-color-lighter)}.metric-strip>div:last-child{border-right:0}.metric-strip span,.metric-strip small,.owner small,.cell-note{color:var(--el-text-color-secondary);font-size:12px}.metric-strip strong{font-size:24px;line-height:1.2}.positive{color:var(--el-color-success)}.negative{color:var(--el-color-danger)}.compact-toolbar{margin-bottom:12px}.compact-toolbar :deep(.el-form-item){margin-right:8px}.source-filter{width:128px}.direction-filter,.evidence-filter,.status-filter{width:120px}.plan-filter{width:136px}.owner{display:grid;gap:2px}.plan-coverage,.plan-boundary{margin-bottom:10px}.coverage-detail{color:var(--el-text-color-secondary);font-size:12px;margin-top:3px}@media(max-width:900px){.metric-strip{grid-template-columns:repeat(2,1fr)}.metric-strip>div:nth-child(2){border-right:0}}
+.metric-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-bg-color);margin-bottom:12px}.metric-strip>div{padding:12px 16px;display:grid;gap:2px;border-right:1px solid var(--el-border-color-lighter)}.metric-strip>div:last-child{border-right:0}.metric-strip span,.metric-strip small,.owner small,.cell-note{color:var(--el-text-color-secondary);font-size:12px}.metric-strip strong{font-size:24px;line-height:1.2}.positive{color:var(--el-color-success)}.negative{color:var(--el-color-danger)}.compact-toolbar{margin-bottom:12px}.compact-toolbar :deep(.el-form-item){margin-right:8px}.source-filter{width:128px}.direction-filter,.evidence-filter,.status-filter{width:120px}.plan-filter{width:136px}.owner{display:grid;gap:2px}.plan-coverage,.plan-boundary{margin-bottom:10px}.coverage-detail{color:var(--el-text-color-secondary);font-size:12px;margin-top:3px}.insider-mobile-list{display:none}.insider-mobile-card{border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:12px;background:var(--el-bg-color)}.insider-mobile-head,.insider-mobile-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}.insider-mobile-card>.owner{margin-top:8px}.insider-mobile-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}.insider-mobile-facts span{display:flex;flex-direction:column;font-weight:600}.insider-mobile-facts small,.insider-mobile-foot small{color:var(--el-text-color-secondary);font-weight:400}.insider-mobile-foot small{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:900px){.metric-strip{grid-template-columns:repeat(2,1fr)}.metric-strip>div:nth-child(2){border-right:0}.insider-table,.plan-table{display:none}.insider-mobile-list{display:grid;gap:10px}.compact-toolbar{display:flex;flex-wrap:wrap}.compact-toolbar :deep(.el-form-item){margin-right:6px}.source-filter,.direction-filter,.evidence-filter,.status-filter,.plan-filter{width:130px}}
+.page-signal-card{margin-bottom:12px}.signal-heading{display:flex;align-items:baseline;gap:8px}.signal-heading span,.issuer-signal span,.issuer-signal small,.role-signal-row>span{color:var(--el-text-color-secondary);font-size:12px}.issuer-signal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px}.issuer-signal{display:grid;gap:3px;padding:9px 10px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.role-signal-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0}.metric-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-bg-color);margin-bottom:12px}.metric-strip>div{padding:12px 16px;display:grid;gap:2px;border-right:1px solid var(--el-border-color-lighter)}.metric-strip>div:last-child{border-right:0}.metric-strip span,.metric-strip small,.owner small,.cell-note{color:var(--el-text-color-secondary);font-size:12px}.metric-strip strong{font-size:24px;line-height:1.2}.positive{color:var(--el-color-success)}.negative{color:var(--el-color-danger)}.compact-toolbar{margin-bottom:12px}.compact-toolbar :deep(.el-form-item){margin-right:8px}.source-filter{width:128px}.direction-filter,.evidence-filter,.status-filter{width:120px}.plan-filter{width:136px}.owner{display:grid;gap:2px}.plan-coverage,.plan-boundary{margin-bottom:10px}.coverage-detail{color:var(--el-text-color-secondary);font-size:12px;margin-top:3px}.insider-mobile-list{display:none}.insider-mobile-card{border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:12px;background:var(--el-bg-color)}.insider-mobile-head,.insider-mobile-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}.insider-mobile-card>.owner{margin-top:8px}.insider-mobile-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}.insider-mobile-facts span{display:flex;flex-direction:column;font-weight:600}.insider-mobile-facts small,.insider-mobile-foot small{color:var(--el-text-color-secondary);font-weight:400}.insider-mobile-foot small{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:900px){.metric-strip{grid-template-columns:repeat(2,1fr)}.metric-strip>div:nth-child(2){border-right:0}.insider-table,.plan-table{display:none}.insider-mobile-list{display:grid;gap:10px}.compact-toolbar{display:flex;flex-wrap:wrap}.compact-toolbar :deep(.el-form-item){margin-right:6px}.source-filter,.direction-filter,.evidence-filter,.status-filter,.plan-filter{width:130px}}
 </style>

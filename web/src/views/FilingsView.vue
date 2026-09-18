@@ -69,7 +69,7 @@
         <el-button class="filings-query-button" :loading="loading" @click="load">{{ t('common.query') }}</el-button>
       </div>
     </el-form>
-    <el-table :data="rows" v-loading="loading" border :empty-text="t('pages.filings.empty')" @sort-change="onSortChange">
+    <el-table class="filings-table" :data="rows" v-loading="loading" border :empty-text="t('pages.filings.empty')" @sort-change="onSortChange">
       <el-table-column prop="filing_type" :label="t('common.type')" width="140" sortable="custom">
         <template #default="{ row }">
           <div class="filing-type-cell">
@@ -101,6 +101,17 @@
           </div>
         </template>
       </el-table-column>
+      <el-table-column label="事件与论点影响" min-width="300">
+        <template #default="{ row }">
+          <div v-if="row.event" class="filing-event-cell">
+            <div><el-tag size="small" :type="eventPriorityType(row.event.priority)" effect="plain">{{ eventCategoryLabel(row.event.category) }}</el-tag><span v-if="row.event.item_codes?.length">8-K {{ row.event.item_codes.join(' / ') }}</span></div>
+            <strong>{{ row.event.fact || '事件事实待补充' }}</strong>
+            <span>{{ row.event.impact || '对研究论点的影响待复核' }}</span>
+            <small>下一步：{{ row.event.action || '阅读 SEC 原文并更新研究记录' }}</small>
+          </div>
+          <span v-else class="muted-text">尚未提炼事件；请阅读原文或手动运行 AI 分析</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="notification_status" :label="t('pages.filings.notification')" width="96" align="center">
         <template #default="{ row }">
           <el-tag v-if="row.notification_status" class="compact-status-tag" :type="notificationStatusType(row.notification_status)" effect="plain">
@@ -118,9 +129,20 @@
         </template>
       </el-table-column>
     </el-table>
+    <div v-loading="loading" class="filings-mobile-list">
+      <article v-for="row in rows" :key="row.id" class="filing-mobile-card">
+        <div class="filing-mobile-head"><strong>{{ row.ticker }} · {{ row.filing_type }}</strong><el-tag size="small" :type="filingImportance(row.filing_type).type" effect="plain">{{ filingImportance(row.filing_type).label }}</el-tag></div>
+        <span class="filing-mobile-company">{{ row.company_name || '-' }}</span>
+        <el-link class="filing-mobile-title" :href="row.filing_url" target="_blank" type="primary">{{ row.title || `${row.ticker} ${row.filing_type}` }}</el-link>
+        <div v-if="row.event" class="filing-mobile-event"><strong>{{ eventCategoryLabel(row.event.category) }}：{{ row.event.fact || '事件事实待补充' }}</strong><span>{{ row.event.impact || '论点影响待复核' }}</span><small>下一步：{{ row.event.action || '阅读 SEC 原文' }}</small></div>
+        <div class="filing-mobile-meta"><span>公告 {{ formatDateTime(row.published_at) }}</span><span>同步 {{ formatDateTime(row.pulled_at) }}</span><span>{{ row.notification_status ? notificationStatusLabel(row.notification_status) : t('status.unnotified') }}</span></div>
+        <div class="filing-mobile-actions"><el-button type="primary" plain @click="openAIAnalysis(row)">AI 分析</el-button><el-button @click="viewAIHistory(row)">分析记录</el-button><el-button tag="a" :href="row.filing_url" target="_blank">SEC 原文</el-button></div>
+      </article>
+      <el-empty v-if="!loading && !rows.length" :description="t('pages.filings.empty')" />
+    </div>
     <el-pagination class="pagination" layout="total, prev, pager, next" :total="total" :page-size="pageSize" v-model:current-page="page" @current-change="load" />
 
-    <el-dialog v-model="typeHelpVisible" :title="t('pages.filings.typeHelpTitle')" width="760px">
+    <el-dialog v-model="typeHelpVisible" :title="t('pages.filings.typeHelpTitle')" width="min(760px, 94vw)">
       <el-table :data="filingTypes" border height="460">
         <el-table-column prop="code" :label="t('common.type')" width="110" />
         <el-table-column prop="name" :label="t('pages.filings.typeName')" width="180" />
@@ -130,7 +152,7 @@
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="aiDialogVisible" :title="aiFiling ? `${aiFiling.ticker} · SEC 公告 AI 分析` : 'SEC 公告 AI 分析'" width="720px" destroy-on-close>
+    <el-dialog v-model="aiDialogVisible" :title="aiFiling ? `${aiFiling.ticker} · SEC 公告 AI 分析` : 'SEC 公告 AI 分析'" width="min(720px, 94vw)" destroy-on-close>
       <template v-if="aiFiling">
         <el-alert type="info" :closable="false" show-icon title="仅在确认后手动执行。后台将从已入库的 SEC 公告链接获取原文，连同链接和公告元数据发送给所选模型；本次请求及结果会留档。" />
         <el-descriptions :column="2" border size="small" style="margin-top:16px">
@@ -195,6 +217,12 @@ const filingTypes = computed<FilingTypeInfo[]>(() => filingTypeCatalog.map((item
   why: store.locale === 'en-US' ? item.enWhy : item.zhWhy,
   read: store.locale === 'en-US' ? item.enRead : item.zhRead
 })))
+
+function eventCategoryLabel(value?: string) {
+  return ({ financing: '融资与稀释', governance: '治理变化', earnings: '业绩与指引', transaction: '重大交易', listing: '上市状态', ownership: '持股变化', operations: '经营事件', risk: '风险事项' } as Record<string, string>)[value || ''] || value || '重大事件'
+}
+
+function eventPriorityType(value?: string) { return value === 'urgent' || value === 'critical' ? 'danger' : value === 'high' ? 'warning' : value === 'normal' ? 'primary' : 'info' }
 
 const loading = ref(false)
 const refreshing = ref(false)
@@ -532,6 +560,16 @@ watch(() => store.locale, () => {
   align-self: end;
 }
 
+.filings-mobile-list { display: none; }
+.filing-mobile-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 12px; background: var(--el-bg-color); }
+.filing-mobile-head, .filing-mobile-actions, .filing-mobile-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.filing-event-cell,.filing-mobile-event{display:grid;gap:4px}.filing-event-cell>div{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.filing-event-cell span,.filing-event-cell small,.filing-mobile-event span,.filing-mobile-event small{color:var(--el-text-color-secondary);font-size:12px}.filing-mobile-event{margin-top:8px;padding:9px;border-left:3px solid var(--el-color-primary);background:var(--el-fill-color-light)}
+.filing-mobile-head { justify-content: space-between; }
+.filing-mobile-company, .filing-mobile-meta { color: var(--el-text-color-secondary); font-size: 12px; }
+.filing-mobile-company, .filing-mobile-title { display: block; margin-top: 7px; }
+.filing-mobile-meta { margin-top: 9px; }
+.filing-mobile-actions { margin-top: 10px; }
+
 @media (max-width: 1180px) {
   .filings-toolbar-top {
     grid-template-columns: 200px minmax(0, 1fr);
@@ -560,5 +598,8 @@ watch(() => store.locale, () => {
   .filings-view-actions {
     justify-content: flex-start;
   }
+
+  .filings-table { display: none; }
+  .filings-mobile-list { display: grid; gap: 10px; }
 }
 </style>

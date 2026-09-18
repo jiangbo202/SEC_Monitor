@@ -22,12 +22,13 @@ import (
 // dashboard fan-out (including a 500-row IPO-company request) and makes a
 // partial local-data failure visible without blanking the complete page.
 type DashboardSummary struct {
-	GeneratedAt time.Time                  `json:"generated_at"`
-	Warnings    []string                   `json:"warnings"`
-	Preferences DashboardPreferences       `json:"preferences"`
-	Decision    DashboardDecisionSummary   `json:"decision"`
-	Monitoring  DashboardMonitoringSummary `json:"monitoring"`
-	Operations  DashboardOperationsSummary `json:"operations"`
+	GeneratedAt     time.Time                  `json:"generated_at"`
+	Warnings        []string                   `json:"warnings"`
+	Preferences     DashboardPreferences       `json:"preferences"`
+	Decision        DashboardDecisionSummary   `json:"decision"`
+	Monitoring      DashboardMonitoringSummary `json:"monitoring"`
+	Operations      DashboardOperationsSummary `json:"operations"`
+	candidateHealth *discovery.CandidateHealth
 }
 
 // DashboardPreferences remains in the existing local system-config store.
@@ -38,11 +39,12 @@ type DashboardPreferences struct {
 }
 
 type DashboardDecisionSummary struct {
-	Market    DashboardMarketSummary     `json:"market"`
-	Readiness DashboardDecisionReadiness `json:"readiness"`
-	Actions   []DashboardCandidateAction `json:"actions"`
-	Calendar  []DashboardCalendarItem    `json:"calendar"`
-	ReviewDue DashboardReviewDueSummary  `json:"review_due"`
+	Market       DashboardMarketSummary         `json:"market"`
+	Readiness    DashboardDecisionReadiness     `json:"readiness"`
+	Availability DashboardCandidateAvailability `json:"availability"`
+	Actions      []DashboardCandidateAction     `json:"actions"`
+	Calendar     []DashboardCalendarItem        `json:"calendar"`
+	ReviewDue    DashboardReviewDueSummary      `json:"review_due"`
 }
 
 type DashboardDecisionReadiness struct {
@@ -99,15 +101,47 @@ type DashboardMarketSeries struct {
 }
 
 type DashboardCandidateAction struct {
-	Ticker       string    `json:"ticker"`
-	CompanyName  string    `json:"company_name,omitempty"`
-	Status       string    `json:"status"`
-	EntryTrigger string    `json:"entry_trigger,omitempty"`
-	Reason       string    `json:"reason,omitempty"`
-	CloseUSD     float64   `json:"close_usd,omitempty"`
-	Score        int       `json:"score,omitempty"`
-	Grade        string    `json:"grade,omitempty"`
-	Since        time.Time `json:"since"`
+	Ticker         string    `json:"ticker"`
+	CompanyName    string    `json:"company_name,omitempty"`
+	Status         string    `json:"status"`
+	Priority       string    `json:"priority"`
+	Tradability    string    `json:"tradability"`
+	EntryTrigger   string    `json:"entry_trigger,omitempty"`
+	Reason         string    `json:"reason,omitempty"`
+	NextAction     string    `json:"next_action"`
+	DueLabel       string    `json:"due_label"`
+	EvidenceAsOf   string    `json:"evidence_as_of,omitempty"`
+	CloseUSD       float64   `json:"close_usd,omitempty"`
+	StopLossUSD    float64   `json:"stop_loss_usd,omitempty"`
+	RiskPct        float64   `json:"risk_pct,omitempty"`
+	TakeProfitLow  float64   `json:"take_profit_low_usd,omitempty"`
+	TakeProfitHigh float64   `json:"take_profit_high_usd,omitempty"`
+	Score          int       `json:"score,omitempty"`
+	Grade          string    `json:"grade,omitempty"`
+	Since          time.Time `json:"since"`
+}
+
+type DashboardCandidateAvailability struct {
+	Total        int                                  `json:"total"`
+	Eligible     int                                  `json:"eligible"`
+	ResearchOnly int                                  `json:"research_only"`
+	Blocked      int                                  `json:"blocked"`
+	Usable       []DashboardCandidateAvailabilityItem `json:"usable"`
+	Excluded     []DashboardCandidateAvailabilityItem `json:"excluded"`
+}
+
+type DashboardCandidateAvailabilityItem struct {
+	Ticker         string  `json:"ticker"`
+	CompanyName    string  `json:"company_name,omitempty"`
+	Grade          string  `json:"grade,omitempty"`
+	Score          int     `json:"score,omitempty"`
+	Readiness      string  `json:"readiness"`
+	PrimaryReason  string  `json:"primary_reason"`
+	NextAction     string  `json:"next_action"`
+	PriceFreshness string  `json:"price_freshness"`
+	PriceTradeDate string  `json:"price_trade_date,omitempty"`
+	CloseUSD       float64 `json:"close_usd,omitempty"`
+	ReviewPriority int     `json:"review_priority,omitempty"`
 }
 
 type DashboardCalendarItem struct {
@@ -162,6 +196,12 @@ type DashboardOperationsSummary struct {
 	DeadLetterBatches         int64                           `json:"dead_letter_batches"`
 }
 
+// Dashboard aggregation includes candidate research gates derived from a
+// sizeable local price-history snapshot. Keep a short process-local cache so
+// navigation and tab changes do not repeat that work. Explicit refreshes can
+// bypass it, and the small TTL bounds staleness from background syncs.
+const dashboardSummaryCacheTTL = 30 * time.Second
+
 // GetDashboardSummary is read-only. It never refreshes SEC, Longbridge,
 // Yahoo, or Telegram data; background tasks remain solely responsible for
 // provider I/O and this endpoint reads their local snapshots.
@@ -170,14 +210,24 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 		Error(c, errors.New("dashboard database is not configured"))
 		return
 	}
+	forceRefresh := c.Query("refresh") == "1" || strings.EqualFold(c.Query("refresh"), "true")
+	h.dashboardCacheMu.Lock()
+	defer h.dashboardCacheMu.Unlock()
+	if !forceRefresh && !h.dashboardCacheAt.IsZero() && time.Since(h.dashboardCacheAt) < dashboardSummaryCacheTTL {
+		c.Header("X-Dashboard-Cache", "hit")
+		OK(c, h.dashboardCache)
+		return
+	}
+	c.Header("X-Dashboard-Cache", "miss")
 	ctx := c.Request.Context()
 	now := time.Now().UTC()
 	result := DashboardSummary{
 		GeneratedAt: now,
 		Warnings:    []string{},
 		Decision: DashboardDecisionSummary{
-			Actions:  []DashboardCandidateAction{},
-			Calendar: []DashboardCalendarItem{},
+			Actions:      []DashboardCandidateAction{},
+			Calendar:     []DashboardCalendarItem{},
+			Availability: DashboardCandidateAvailability{Usable: []DashboardCandidateAvailabilityItem{}, Excluded: []DashboardCandidateAvailabilityItem{}},
 		},
 		Monitoring: DashboardMonitoringSummary{RecentFilings: []DashboardFiling{}, IPO: DashboardIPOSummary{Followed: []service.IPOCompanyItem{}}},
 		Operations: DashboardOperationsSummary{CriticalIssues: []service.OperationalIssue{}, Issues: []service.OperationalIssue{}, Tasks: []service.OperationalTaskStatus{}},
@@ -229,6 +279,9 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 	if err := h.loadDashboardCandidateActions(ctx, &result); err != nil {
 		addWarning("候选交易计划", err)
 	}
+	if err := h.loadDashboardCandidateAvailability(ctx, &result); err != nil {
+		addWarning("候选可用性", err)
+	}
 	if err := h.loadDashboardCalendar(ctx, now, &result); err != nil {
 		addWarning("事件日历", err)
 	}
@@ -256,11 +309,42 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 			}
 		}
 	}
-	result.Decision.Readiness = buildDashboardDecisionReadiness(ctx, h.DiscoveryDB, result.Decision.Market.Freshness, operationalReport)
+	result.Decision.Readiness = buildDashboardDecisionReadiness(ctx, h.DiscoveryDB, result.Decision.Market.Freshness, operationalReport, result.candidateHealth)
+	applyDashboardCandidateAvailability(&result.Decision.Readiness, result.Decision.Availability)
+	h.dashboardCache = result
+	h.dashboardCacheAt = time.Now().UTC()
 	OK(c, result)
 }
 
-func buildDashboardDecisionReadiness(ctx context.Context, db *gorm.DB, freshness DashboardDataFreshness, operations *service.OperationalReport) DashboardDecisionReadiness {
+// applyDashboardCandidateAvailability keeps pipeline readiness separate from
+// opportunity readiness. A healthy local snapshot can remain useful for
+// research even when every candidate is gated from a new trade plan.
+func applyDashboardCandidateAvailability(readiness *DashboardDecisionReadiness, availability DashboardCandidateAvailability) {
+	if readiness == nil || !readiness.ResearchUsable || availability.Total == 0 || availability.Eligible > 0 {
+		return
+	}
+	readiness.NewTradePlanAllowed = false
+	if readiness.Status == "ready" {
+		readiness.Status = "research_only"
+		readiness.Label = "数据可研究，暂无可行动候选"
+	}
+	readiness.Reasons = append(readiness.Reasons, DashboardDecisionReadinessItem{
+		Key:      "candidate_universe_gated",
+		Severity: "warning",
+		Title:    "候选均未通过交易门槛",
+		Detail:   fmt.Sprintf("当前 %d 只仅供研究、%d 只被阻断；数据管线可用，但不应据此形成新的交易计划", availability.ResearchOnly, availability.Blocked),
+		Action:   "discovery-candidates",
+	})
+}
+
+func (h *AppHandler) invalidateDashboardCache() {
+	h.dashboardCacheMu.Lock()
+	h.dashboardCacheAt = time.Time{}
+	h.dashboardCache = DashboardSummary{}
+	h.dashboardCacheMu.Unlock()
+}
+
+func buildDashboardDecisionReadiness(ctx context.Context, db *gorm.DB, freshness DashboardDataFreshness, operations *service.OperationalReport, preloadedHealth *discovery.CandidateHealth) DashboardDecisionReadiness {
 	result := DashboardDecisionReadiness{
 		Status: "ready", Label: "今日数据可用", ResearchUsable: true, NewTradePlanAllowed: true,
 		AsOf: freshness.AsOf, ExpectedTradeDate: freshness.ExpectedTradeDate, Reasons: []DashboardDecisionReadinessItem{},
@@ -292,7 +376,13 @@ func buildDashboardDecisionReadiness(ctx context.Context, db *gorm.DB, freshness
 		add("discovery_db_unavailable", "critical", "研究数据库不可用", "无法核对当前候选批次、价格覆盖与策略验证状态", "system-health")
 		return result
 	}
-	health, err := discovery.BuildCandidateHealth(ctx, db)
+	health := discovery.CandidateHealth{}
+	var err error
+	if preloadedHealth != nil {
+		health = *preloadedHealth
+	} else {
+		health, err = discovery.BuildCandidateHealth(ctx, db)
+	}
 	if err != nil {
 		block()
 		add("candidate_health_unavailable", "critical", "候选健康不可读", service.SanitizeSensitiveError(err.Error()), "system-health")
@@ -462,6 +552,7 @@ func (h *AppHandler) UpdateDashboardPreferences(c *gin.Context) {
 		Error(c, err)
 		return
 	}
+	h.invalidateDashboardCache()
 	OK(c, DashboardPreferences{HiddenModules: modules})
 }
 
@@ -539,7 +630,15 @@ func (h *AppHandler) loadDashboardCandidateActions(ctx context.Context, result *
 		if reason == "" {
 			reason = event.ExitReason
 		}
-		items = append(items, DashboardCandidateAction{Ticker: ticker, CompanyName: companyByTicker[ticker], Status: event.Status, EntryTrigger: event.EntryTrigger, Reason: reason, CloseUSD: event.CloseUSD, Score: score.TotalScore, Grade: score.Grade, Since: event.StartedAt})
+		priority, nextAction, dueLabel := dashboardActionWorkflow(event.Status)
+		items = append(items, DashboardCandidateAction{
+			Ticker: ticker, CompanyName: companyByTicker[ticker], Status: event.Status, Priority: priority,
+			Tradability: discovery.CandidateResearchReadinessReady, EntryTrigger: event.EntryTrigger, Reason: reason,
+			NextAction: nextAction, DueLabel: dueLabel, EvidenceAsOf: event.TradeDate,
+			CloseUSD: event.CloseUSD, StopLossUSD: event.StopLossUSD, RiskPct: event.RiskPct,
+			TakeProfitLow: event.TakeProfitZoneLowUSD, TakeProfitHigh: event.TakeProfitZoneHighUSD,
+			Score: score.TotalScore, Grade: score.Grade, Since: event.StartedAt,
+		})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		priority := func(status string) int {
@@ -577,6 +676,151 @@ func (h *AppHandler) loadDashboardCandidateActions(ctx context.Context, result *
 	}
 	result.Decision.ReviewDue = DashboardReviewDueSummary{Overdue: queue.OverdueCount, DueToday: queue.DueTodayCount, Upcoming: queue.UpcomingCount}
 	return nil
+}
+
+func dashboardActionWorkflow(status string) (priority, nextAction, dueLabel string) {
+	switch status {
+	case discovery.TradeSetupInvalidated:
+		return "critical", "停止新增风险，复核失效条件与退出计划", "开盘前"
+	case discovery.TradeSetupExitWarning:
+		return "high", "核对持仓与止损，决定减仓或退出", "开盘前"
+	default:
+		return "medium", "复核催化剂、入场条件与单笔风险预算", "下次交易前"
+	}
+}
+
+func (h *AppHandler) loadDashboardCandidateAvailability(ctx context.Context, result *DashboardSummary) error {
+	if h.DiscoveryDB == nil {
+		return nil
+	}
+	page, err := discovery.ListCandidateScores(ctx, h.DiscoveryDB, discovery.CandidateScoreQuery{Page: 1, PageSize: 200, SkipPerformance: true, SkipTechnicalDetails: true})
+	if err != nil {
+		return err
+	}
+	health, err := discovery.BuildCandidateHealthWithReadiness(ctx, h.DiscoveryDB, page.Items)
+	if err != nil {
+		return err
+	}
+	result.candidateHealth = &health
+	securityIDs := make([]uint, 0, len(page.Items))
+	for _, item := range page.Items {
+		securityIDs = append(securityIDs, item.SecurityID)
+	}
+	companyBySecurity := map[uint]string{}
+	if len(securityIDs) > 0 {
+		var securities []discovery.Security
+		if err := h.DiscoveryDB.WithContext(ctx).Where("id IN ?", securityIDs).Find(&securities).Error; err != nil {
+			return err
+		}
+		for _, security := range securities {
+			companyBySecurity[security.ID] = security.CompanyName
+		}
+	}
+	availability := DashboardCandidateAvailability{
+		Total: len(page.Items), Usable: []DashboardCandidateAvailabilityItem{}, Excluded: []DashboardCandidateAvailabilityItem{},
+	}
+	readinessByTicker := make(map[string]string, len(page.Items))
+	for _, item := range page.Items {
+		readiness := item.ResearchReadiness.Status
+		usable := readiness == discovery.CandidateResearchReadinessReady &&
+			item.PriceFreshnessStatus == discovery.PriceFreshnessCurrent &&
+			item.PriceQualityStatus == discovery.QualityStatusValid && item.MarketCapUSD > 0
+		if !usable && readiness == discovery.CandidateResearchReadinessReady {
+			readiness = discovery.CandidateResearchReadinessResearchOnly
+		}
+		readinessByTicker[item.Ticker] = readiness
+		reason, nextAction := dashboardCandidateGate(item, usable)
+		row := DashboardCandidateAvailabilityItem{
+			Ticker: item.Ticker, CompanyName: companyBySecurity[item.SecurityID], Grade: item.Grade,
+			Score: item.TotalScore, Readiness: readiness, PrimaryReason: reason, NextAction: nextAction,
+			PriceFreshness: item.PriceFreshnessStatus, CloseUSD: item.PriceCloseUSD, ReviewPriority: item.ReviewPriorityScore,
+		}
+		if item.PriceTradeDate != nil {
+			row.PriceTradeDate = item.PriceTradeDate.Format(time.DateOnly)
+		}
+		switch readiness {
+		case discovery.CandidateResearchReadinessReady:
+			availability.Eligible++
+			availability.Usable = append(availability.Usable, row)
+		case discovery.CandidateResearchReadinessBlocked:
+			availability.Blocked++
+			availability.Excluded = append(availability.Excluded, row)
+		default:
+			availability.ResearchOnly++
+			availability.Excluded = append(availability.Excluded, row)
+		}
+	}
+	sort.SliceStable(availability.Usable, func(i, j int) bool {
+		if availability.Usable[i].ReviewPriority != availability.Usable[j].ReviewPriority {
+			return availability.Usable[i].ReviewPriority > availability.Usable[j].ReviewPriority
+		}
+		return availability.Usable[i].Score > availability.Usable[j].Score
+	})
+	sort.SliceStable(availability.Excluded, func(i, j int) bool {
+		if availability.Excluded[i].Readiness != availability.Excluded[j].Readiness {
+			return availability.Excluded[i].Readiness == discovery.CandidateResearchReadinessBlocked
+		}
+		if availability.Excluded[i].ReviewPriority != availability.Excluded[j].ReviewPriority {
+			return availability.Excluded[i].ReviewPriority > availability.Excluded[j].ReviewPriority
+		}
+		return availability.Excluded[i].Score > availability.Excluded[j].Score
+	})
+	if len(availability.Usable) > 5 {
+		availability.Usable = availability.Usable[:5]
+	}
+	if len(availability.Excluded) > 8 {
+		availability.Excluded = availability.Excluded[:8]
+	}
+	result.Decision.Availability = availability
+	for index := range result.Decision.Actions {
+		if readiness, found := readinessByTicker[result.Decision.Actions[index].Ticker]; found {
+			result.Decision.Actions[index].Tradability = readiness
+			if readiness != discovery.CandidateResearchReadinessReady {
+				result.Decision.Actions[index].NextAction = "先解除数据或研究门控，再评估交易动作"
+			}
+		}
+	}
+	return nil
+}
+
+func dashboardCandidateGate(item discovery.CandidateScoreResult, usable bool) (string, string) {
+	if usable {
+		return "关键行情与研究证据可用", "形成可证伪论点，并核对技术信号与近期催化剂"
+	}
+	hasReason := func(want string) bool {
+		for _, reason := range item.ResearchReadiness.Reasons {
+			if reason == want {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case item.PriceFreshnessStatus == discovery.PriceFreshnessPreviousTradingDay:
+		return "行情仅到前一交易日", "补齐最近完成交易日的有效收盘价"
+	case item.PriceFreshnessStatus == discovery.PriceFreshnessStale:
+		return "行情已过期", "刷新并核验最近有效行情"
+	case item.PriceCloseUSD <= 0 || item.PriceFreshnessStatus == discovery.PriceFreshnessMissing:
+		return "缺少有效行情", "补齐最近有效收盘价"
+	case item.MarketCapUSD <= 0:
+		return "市值证据缺失", "核对股本与市值数据"
+	case hasReason("capital_risk_blocks_research"):
+		return "重大资本风险阻断", "复核反向拆股、持续经营等 SEC 原始证据"
+	case hasReason("investability_blocked"):
+		return "流动性条件阻断", "复核成交额与可参与上限"
+	case hasReason("financial_metrics_unavailable"), hasReason("financial_period_stale"):
+		return "财务证据缺失或过期", "核对最新 10-Q / 10-K 财务指标"
+	case hasReason("insider_source_unavailable"), hasReason("insider_coverage_missing"), hasReason("insider_coverage_partial"), hasReason("insider_coverage_unavailable"):
+		return "内幕交易证据未完整覆盖", "复核 Form 4 覆盖情况"
+	case hasReason("share_dilution_high"):
+		return "稀释风险较高", "复核股本变化与融资文件"
+	case hasReason("biotech_business_model_unconfirmed"), hasReason("biotech_business_model_review_due"):
+		return "业务模型待确认", "确认收入来源与可重复性"
+	case hasReason("investability_constrained"):
+		return "流动性受限", "复核流动性约束与风险预算"
+	default:
+		return "关键证据尚未满足门槛", "补齐待核验证据并重新评估"
+	}
 }
 
 func (h *AppHandler) loadDashboardCalendar(ctx context.Context, now time.Time, result *DashboardSummary) error {

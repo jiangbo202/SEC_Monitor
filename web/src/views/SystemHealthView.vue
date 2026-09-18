@@ -38,18 +38,27 @@
 
     <div class="dashboard-grid">
       <el-card shadow="never" class="dashboard-panel">
-        <template #header>{{ t('pages.systemHealth.issues') }}</template>
-        <div v-if="health?.issues?.length" class="health-alert-grid">
+        <template #header>当前需要处理 · {{ consolidatedIssues.length }} 项</template>
+        <div v-if="consolidatedIssues.length" class="health-alert-grid">
           <el-alert
-            v-for="item in health.issues"
-            :key="item.message"
-            :title="item.message"
+            v-for="item in consolidatedIssues"
+            :key="item.key"
+            :title="item.title"
+            :description="item.detail"
             :type="healthAlertType(item.level)"
             :closable="false"
             show-icon
-          />
+          >
+            <template #default>
+              <el-space wrap :size="6">
+                <el-tag v-if="item.category" size="small" type="info" effect="plain">影响：{{ issueImpact(item.category) }}</el-tag>
+                <el-tag v-if="item.category" size="small" :type="item.manual ? 'warning' : 'success'" effect="plain">{{ item.manual ? '需要人工确认' : '自动任务将继续重试' }}</el-tag>
+                <el-button v-if="item.action" type="primary" link @click="openSourceAction(item.action)">{{ t('pages.systemHealth.viewAction') }}</el-button>
+              </el-space>
+            </template>
+          </el-alert>
         </div>
-        <el-empty v-else :description="t('pages.systemHealth.noIssues')" />
+        <el-empty v-else description="系统与运行任务当前均无待处理项" />
       </el-card>
 
       <el-card shadow="never" class="dashboard-panel">
@@ -177,9 +186,10 @@
           </el-descriptions>
           <p class="operational-summary">{{ operational.summary }}</p>
           <div v-if="operational.issues.length" class="health-alert-grid">
-            <el-alert v-for="issue in operational.issues" :key="issue.key" :title="issue.title" :description="issue.detail" :type="healthAlertType(issue.severity)" :closable="false" show-icon>
+            <el-alert v-for="issue in operational.issues" :key="issue.key" :title="issue.title" :description="safeOperationalDetail(issue.detail)" :type="healthAlertType(issue.severity)" :closable="false" show-icon>
               <template #default>
 				<el-tag size="small" type="info" effect="plain">影响：{{ issueImpact(issue.category) }}</el-tag>
+				<el-tag size="small" :type="issueNeedsManualAction(issue.category) ? 'warning' : 'success'" effect="plain">{{ issueNeedsManualAction(issue.category) ? '需要人工确认' : '自动任务将继续重试' }}</el-tag>
                 <el-button v-if="issue.action" type="primary" link @click="openSourceAction(issue.action)">{{ t('pages.systemHealth.viewAction') }}</el-button>
               </template>
             </el-alert>
@@ -197,7 +207,7 @@
           </div>
         </template>
         <el-table :data="operational?.tasks || []" size="small" border :empty-text="t('pages.systemHealth.noScheduledTasks')">
-          <el-table-column prop="task_name" :label="t('common.task')" min-width="205" show-overflow-tooltip />
+          <el-table-column :label="t('common.task')" min-width="205" show-overflow-tooltip><template #default="{ row }">{{ taskBusinessLabel(row.task_name) }}</template></el-table-column>
           <el-table-column :label="t('common.status')" width="115">
             <template #default="{ row }">
               <el-tag :type="taskExecutionTagType(row)" effect="plain">{{ taskExecutionLabel(row) }}</el-tag>
@@ -230,7 +240,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
@@ -249,6 +259,11 @@ const notifyingOperational = ref(false)
 const latestCompaction = ref<SQLiteCompactionRun | null>(null)
 const cycleHealth = ref<CycleHealth | null>(null)
 const schedulerTimezone = ref('UTC')
+const consolidatedIssues = computed(() => {
+  const systemIssues = (health.value?.issues || []).map((item, index) => ({ key: `system-${index}`, title: item.message, detail: '', level: item.level, category: '', action: '', manual: false }))
+  const operationalIssues = (operational.value?.issues || []).map(issue => ({ key: issue.key, title: issue.title, detail: safeOperationalDetail(issue.detail), level: issue.severity, category: issue.category, action: issue.action || '', manual: issueNeedsManualAction(issue.category) }))
+  return [...systemIssues, ...operationalIssues]
+})
 
 async function load() {
   loading.value = true
@@ -401,6 +416,34 @@ function sourceStatusLabel(status: string) {
 function issueImpact(category: string) {
   const labels: Record<string, string> = { data: '研究数据可用性', provider: '外部数据更新', notification: '消息送达', scheduler: '自动运行', task: '自动运行', backup: '数据恢复', discovery: '候选研究完整性', technical_history: '技术指标完整性' }
   return labels[category] || '运行稳定性'
+}
+
+function issueNeedsManualAction(category: string) {
+  return ['backup', 'notification', 'data'].includes(category)
+}
+
+function safeOperationalDetail(value?: string) {
+  return (value || '')
+    .replace(/ipo_listing_reconcile_sync/g, 'IPO 上市状态核对')
+    .replace(/longbridge_watch_target_valuation_sync/g, '监控标的估值更新')
+    .replace(/operational_health_notification_sync/g, '运行健康通知')
+    .replace(/technical_history_backfill/g, '技术历史补齐')
+    .replace(/price_action_cycle_sync/g, '价格周期更新')
+    .replace(/\btrace(?:[_ -]?id)?\s*[:=]\s*[a-z0-9-]+/gi, '诊断编号已隐藏')
+    .replace(/\brequest(?:[_ -]?id)?\s*[:=]\s*[a-z0-9-]+/gi, '请求编号已隐藏')
+}
+
+function taskBusinessLabel(value: string) {
+  const labels: Record<string, string> = {
+    ipo_listing_reconcile_sync: 'IPO 上市状态核对',
+    longbridge_watch_target_valuation_sync: '监控标的估值更新',
+    operational_health_notification_sync: '运行健康通知',
+    sqlite_backup: 'SQLite 数据备份',
+    discovery_candidate_sync: '小盘候选扫描',
+    technical_history_backfill: '技术历史补齐',
+    price_action_cycle_sync: '价格周期更新',
+  }
+  return labels[value] || value.replace(/_/g, ' ')
 }
 
 function formatPct(value?: number | null) {

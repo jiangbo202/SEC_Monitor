@@ -43,6 +43,18 @@ body {
   border-right: 1px solid #dfe5ec;
 }
 
+.mobile-nav-scrim,
+.mobile-menu-button {
+  display: none;
+}
+
+.topbar-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
 .brand {
   height: 48px;
   display: flex;
@@ -458,6 +470,55 @@ h1 {
 }
 
 @media (max-width: 900px) {
+  .sidebar {
+    position: fixed;
+    z-index: 1201;
+    inset: 0 auto 0 0;
+    width: min(82vw, 280px) !important;
+    max-width: 280px;
+    box-shadow: 0 12px 36px rgb(15 23 42 / 22%);
+    transform: translateX(-105%);
+    visibility: hidden;
+    pointer-events: none;
+    transition: transform 180ms ease, visibility 180ms ease;
+  }
+
+  .sidebar.is-mobile-open {
+    transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .mobile-nav-scrim {
+    position: fixed;
+    z-index: 1200;
+    inset: 0;
+    display: block;
+    visibility: hidden;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: rgb(15 23 42 / 42%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease, visibility 180ms ease;
+  }
+
+  .mobile-nav-scrim.is-visible {
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .mobile-menu-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+
+  .topbar {
+    padding: 0 12px;
+  }
+
   .el-main {
     padding: 12px;
   }
