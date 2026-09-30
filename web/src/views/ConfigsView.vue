@@ -647,6 +647,10 @@
           <el-form-item :label="t('pages.configs.backupRetentionDays')">
             <el-input-number v-model="systemForm.backup_retention_days" :min="1" :max="365" />
           </el-form-item>
+          <el-form-item label="每目录备份预算 GiB">
+            <el-input-number v-model="systemForm.backup_max_gib" :min="0" :max="1048576" :precision="0" />
+            <span class="form-help">0 表示不启用容量清理；启用后在下次备份清理旧组，至少保留最近两组完整快照。本地与副本分别执行。</span>
+          </el-form-item>
           <el-form-item :label="t('pages.configs.operationHistoryRetentionDays')">
             <el-input-number v-model="systemForm.operation_history_retention_days" :min="7" :max="3650" />
             <span class="form-help">{{ t('pages.configs.operationHistoryRetentionHint') }}</span>
@@ -769,7 +773,7 @@ function applyRequestedSection(value: unknown) {
 }
 
 const secForm = reactive({ user_agent: '', initial_fetch_days: 30, sync_window_days: 30, max_fetch_count: 300, fetch_full_history: false })
-const systemForm = reactive({ data_retention_days: 30, storage_by_day: false, backup_retention_days: 7, operation_history_retention_days: 90, backup_dir: '', backup_replica_dir: '', storage_warning_pct: 80 })
+const systemForm = reactive({ data_retention_days: 30, storage_by_day: false, backup_retention_days: 7, backup_max_gib: 0, operation_history_retention_days: 90, backup_dir: '', backup_replica_dir: '', storage_warning_pct: 80 })
 const uiForm = reactive<{ default_locale: Locale }>({ default_locale: 'zh-CN' })
 const notificationForm = reactive({
   important_only: false,
@@ -1095,6 +1099,7 @@ async function load() {
     systemForm.data_retention_days = Number(configValue(configs, 'system.data_retention_days', '30'))
     systemForm.storage_by_day = configValue(configs, 'system.storage_by_day', 'false') === 'true'
 		systemForm.backup_retention_days = Number(configValue(configs, 'system.backup_retention_days', '7'))
+		systemForm.backup_max_gib = Number(configValue(configs, 'system.backup_max_gib', '0'))
 		systemForm.operation_history_retention_days = Number(configValue(configs, 'system.operation_history_retention_days', '90'))
     systemForm.backup_dir = configValue(configs, 'system.backup_dir', '')
     systemForm.backup_replica_dir = configValue(configs, 'system.backup_replica_dir', '')
@@ -1206,6 +1211,7 @@ async function save() {
       { key: 'system.data_retention_days', value: String(systemForm.data_retention_days), value_type: 'int', category: 'system', encrypted: false },
       { key: 'system.storage_by_day', value: String(systemForm.storage_by_day), value_type: 'bool', category: 'system', encrypted: false },
       { key: 'system.backup_retention_days', value: String(systemForm.backup_retention_days), value_type: 'int', category: 'system', encrypted: false },
+      { key: 'system.backup_max_gib', value: String(systemForm.backup_max_gib), value_type: 'int', category: 'system', encrypted: false },
 			{ key: 'system.operation_history_retention_days', value: String(systemForm.operation_history_retention_days), value_type: 'int', category: 'system', encrypted: false },
       { key: 'system.backup_dir', value: systemForm.backup_dir, value_type: 'string', category: 'system', encrypted: false },
       { key: 'system.backup_replica_dir', value: systemForm.backup_replica_dir, value_type: 'string', category: 'system', encrypted: false },

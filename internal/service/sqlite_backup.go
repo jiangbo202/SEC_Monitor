@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"sec_monitor/internal/model"
@@ -70,16 +72,20 @@ type SQLiteCompactionResult struct {
 // pair is required because SEC Monitor has separate operational and research
 // databases; a single file is not a recoverable application checkpoint.
 type SQLiteBackupHealth struct {
-	Directory       string                    `json:"directory"`
-	CompletePairs   int                       `json:"complete_pairs"`
-	IncompletePairs int                       `json:"incomplete_pairs"`
-	TotalBytes      int64                     `json:"total_bytes"`
-	LatestPairBytes int64                     `json:"latest_pair_bytes"`
-	LatestCompleted *time.Time                `json:"latest_completed,omitempty"`
-	Replica         SQLiteBackupReplicaHealth `json:"replica"`
+	DatabaseBytes       map[string]int64          `json:"database_bytes"`
+	CapacityBudgetBytes int64                     `json:"capacity_budget_bytes"`
+	CombinedBackupBytes int64                     `json:"combined_backup_bytes"`
+	Directory           string                    `json:"directory"`
+	CompletePairs       int                       `json:"complete_pairs"`
+	IncompletePairs     int                       `json:"incomplete_pairs"`
+	TotalBytes          int64                     `json:"total_bytes"`
+	LatestPairBytes     int64                     `json:"latest_pair_bytes"`
+	LatestCompleted     *time.Time                `json:"latest_completed,omitempty"`
+	Replica             SQLiteBackupReplicaHealth `json:"replica"`
 }
 
 type SQLiteBackupReplicaHealth struct {
+	FailureDomain   string     `json:"failure_domain"`
 	Enabled         bool       `json:"enabled"`
 	Directory       string     `json:"directory,omitempty"`
 	CompletePairs   int        `json:"complete_pairs"`
@@ -191,6 +197,17 @@ func (s *SQLiteBackupService) backupLocked(ctx context.Context) (SQLiteBackupRes
 		return result, err
 	}
 	result.Deleted, result.CompletedAt = deleted, time.Now().UTC()
+	budget, err := s.capacityBudget(ctx)
+	if err != nil {
+		return result, err
+	}
+	if budget > 0 {
+		n, err := pruneSQLiteBackupBudget(dir, budget)
+		result.Deleted += n
+		if err != nil {
+			return result, err
+		}
+	}
 	if replicaDir, replicaErr := s.replicaDirectory(ctx, dir); replicaErr != nil {
 		return result, replicaErr
 	} else if replicaDir != "" {
@@ -199,6 +216,13 @@ func (s *SQLiteBackupService) backupLocked(ctx context.Context) (SQLiteBackupRes
 			return result, replicateErr
 		}
 		result.ReplicaDirectory, result.ReplicaFiles, result.ReplicaDeleted = replicaDir, replicaFiles, replicaDeleted
+		if budget > 0 {
+			n, err := pruneSQLiteBackupBudget(replicaDir, budget)
+			result.ReplicaDeleted += n
+			if err != nil {
+				return result, err
+			}
+		}
 	}
 	return result, nil
 }
@@ -288,11 +312,22 @@ func (s *SQLiteBackupService) Health(ctx context.Context) (SQLiteBackupHealth, e
 		return SQLiteBackupHealth{}, err
 	}
 	health := SQLiteBackupHealth{Directory: dir, Replica: SQLiteBackupReplicaHealth{Status: "disabled"}}
+	health.DatabaseBytes = map[string]int64{}
+	for name, dsn := range map[string]string{"sec_monitor": s.mainDSN, "small_cap": s.discoveryDSN} {
+		if size, err := sqliteFileSize(sqlitePath(dsn)); err == nil {
+			health.DatabaseBytes[name] = size
+		}
+	}
+	health.CapacityBudgetBytes, err = s.capacityBudget(ctx)
+	if err != nil {
+		return health, err
+	}
 	local, err := scanSQLiteBackupDirectory(dir)
 	if err != nil {
 		return health, err
 	}
 	health.CompletePairs, health.IncompletePairs, health.TotalBytes, health.LatestPairBytes, health.LatestCompleted = local.CompletePairs, local.IncompletePairs, local.TotalBytes, local.LatestPairBytes, local.LatestCompleted
+	health.CombinedBackupBytes = health.TotalBytes
 	replicaDir, err := s.replicaDirectory(ctx, dir)
 	if err != nil {
 		return health, err
@@ -302,12 +337,21 @@ func (s *SQLiteBackupService) Health(ctx context.Context) (SQLiteBackupHealth, e
 		return health, nil
 	}
 	health.Replica.Enabled, health.Replica.Directory = true, replicaDir
+	health.Replica.FailureDomain = "unknown"
+	var localStat, replicaStat syscall.Stat_t
+	if syscall.Stat(dir, &localStat) == nil && syscall.Stat(replicaDir, &replicaStat) == nil {
+		health.Replica.FailureDomain = "different_filesystem"
+		if localStat.Dev == replicaStat.Dev {
+			health.Replica.FailureDomain = "same_filesystem"
+		}
+	}
 	replica, err := scanSQLiteBackupDirectory(replicaDir)
 	if err != nil {
 		health.Replica.Status, health.Replica.Reason = "unavailable", SanitizeSensitiveError(err.Error())
 		return health, nil
 	}
 	health.Replica.CompletePairs, health.Replica.IncompletePairs, health.Replica.TotalBytes, health.Replica.LatestPairBytes, health.Replica.LatestCompleted = replica.CompletePairs, replica.IncompletePairs, replica.TotalBytes, replica.LatestPairBytes, replica.LatestCompleted
+	health.CombinedBackupBytes += replica.TotalBytes
 	if replica.LatestCompleted == nil {
 		health.Replica.Status, health.Replica.Reason = "missing", "no complete external backup pair is available"
 	} else if replica.IncompletePairs > 0 {
@@ -798,7 +842,8 @@ func pruneSQLiteBackups(dir string, retentionDays int, now time.Time) (int, erro
 	cutoff := now.AddDate(0, 0, -retentionDays)
 	deleted := 0
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".db") {
+		_, _, known := parseSQLiteBackupName(entry.Name())
+		if entry.IsDir() || !known {
 			continue
 		}
 		info, infoErr := entry.Info()
@@ -811,6 +856,73 @@ func pruneSQLiteBackups(dir string, retentionDays int, now time.Time) (int, erro
 			}
 			deleted++
 		}
+	}
+	return deleted, nil
+}
+
+func (s *SQLiteBackupService) capacityBudget(ctx context.Context) (int64, error) {
+	if s.configs == nil {
+		return 0, nil
+	}
+	value, ok, err := s.configs.GetValue(ctx, "system.backup_max_gib")
+	if err != nil || !ok {
+		return 0, err
+	}
+	gib, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || gib < 0 || gib > 1048576 {
+		return 0, errors.New("backup_max_gib must be 0..1048576")
+	}
+	return gib << 30, nil
+}
+
+// Opt-in budget removes oldest complete pairs only, retaining the newest two.
+// Unknown files and incomplete pairs are never removed by the budget policy.
+func pruneSQLiteBackupBudget(dir string, budget int64) (int, error) {
+	if budget <= 0 {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	pairs := map[string][]string{}
+	sizes := map[string]int64{}
+	var total int64
+	for _, entry := range entries {
+		_, stamp, ok := parseSQLiteBackupName(entry.Name())
+		if !ok || entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return 0, err
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		pairs[stamp] = append(pairs[stamp], entry.Name())
+		sizes[stamp] += info.Size()
+		total += info.Size()
+	}
+	stamps := []string{}
+	for stamp, files := range pairs {
+		if len(files) == 2 {
+			stamps = append(stamps, stamp)
+		}
+	}
+	sort.Strings(stamps)
+	deleted := 0
+	for i, stamp := range stamps {
+		if total <= budget || i >= len(stamps)-2 {
+			break
+		}
+		for _, name := range pairs[stamp] {
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+		total -= sizes[stamp]
 	}
 	return deleted, nil
 }

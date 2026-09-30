@@ -50,7 +50,7 @@
         <div class="decision-readiness-tags">
           <el-tag :type="summary.decision.readiness.research_usable ? 'success' : 'danger'" effect="plain">研究{{ summary.decision.readiness.research_usable ? '可用' : '暂停' }}</el-tag>
           <el-tag :type="summary.decision.readiness.new_trade_plan_allowed ? 'success' : 'warning'" effect="plain">新交易计划{{ summary.decision.readiness.new_trade_plan_allowed ? '可形成' : '受限' }}</el-tag>
-          <el-tag effect="plain">效果验证 {{ effectivenessStatusLabel(summary.decision.readiness.effectiveness_status) }}</el-tag>
+          <el-tag effect="plain">评分历史样本 {{ effectivenessStatusLabel(summary.decision.readiness.effectiveness_status) }}</el-tag>
         </div>
       </div>
       <div v-if="summary.decision.readiness.reasons.length" class="decision-readiness-reasons">
@@ -104,15 +104,15 @@
               <div class="panel-header">
                 <span>候选可用性</span>
                 <div class="panel-header-actions">
-                  <el-tag type="success" effect="plain">可行动 {{ summary?.decision.availability?.eligible || 0 }}</el-tag>
-                  <el-tag type="warning" effect="plain">仅研究 {{ summary?.decision.availability?.research_only || 0 }}</el-tag>
+                  <el-tag type="success" effect="plain">可开仓 {{ summary?.decision.availability?.eligible || 0 }}</el-tag>
+                  <el-tag type="warning" effect="plain">研究观察 {{ summary?.decision.availability?.research_only || 0 }}</el-tag>
                   <el-tag type="danger" effect="plain">阻断 {{ summary?.decision.availability?.blocked || 0 }}</el-tag>
                   <el-link type="primary" @click="router.push('/discovery-candidates')">全部候选</el-link>
                 </div>
               </div>
             </template>
             <div v-if="availabilityUsable.length" class="availability-section">
-              <div class="availability-heading"><strong>当前可用标的</strong><span>行情与关键研究证据均满足形成新计划的门槛</span></div>
+              <div class="availability-heading"><strong>当前可开仓候选</strong><span>研究证据、当日行情与入场计划同时满足门槛</span></div>
               <div class="availability-list">
                 <button v-for="item in availabilityUsable" :key="item.ticker" class="availability-row is-usable" type="button" @click="openCandidate(item.ticker)">
                   <span class="availability-ticker">{{ item.ticker }} <small>{{ item.grade }} {{ item.score }}</small></span>
@@ -287,7 +287,7 @@ import type { ApiResponse } from '@/api/types'
 
 interface MarketSeries { symbol: string; label: string; close: number; change_1d_pct?: number | null }
 interface CandidateAction { ticker: string; company_name?: string; status: string; priority: string; tradability: string; entry_trigger?: string; reason?: string; next_action: string; due_label: string; evidence_as_of?: string; close_usd?: number; stop_loss_usd?: number; risk_pct?: number; take_profit_low_usd?: number; take_profit_high_usd?: number; score?: number; grade?: string; since: string }
-interface CandidateAvailabilityItem { ticker: string; company_name?: string; grade?: string; score?: number; readiness: string; primary_reason: string; next_action: string; price_freshness: string; price_trade_date?: string; close_usd?: number; review_priority?: number }
+interface CandidateAvailabilityItem { ticker: string; company_name?: string; grade?: string; score?: number; readiness: string; research_readiness: string; trade_setup_status?: string; primary_reason: string; next_action: string; price_freshness: string; price_trade_date?: string; close_usd?: number; review_priority?: number }
 interface CandidateAvailability { total: number; eligible: number; research_only: number; blocked: number; usable: CandidateAvailabilityItem[]; excluded: CandidateAvailabilityItem[] }
 interface CalendarItem { kind: string; scope: string; ticker?: string; title: string; at?: string | null; session?: string; link?: string }
 interface FilingItem { id: number; ticker: string; company_name: string; filing_type: string; title: string; filed_at: string }
@@ -327,8 +327,8 @@ const actionEmptyState = computed(() => {
   if ((summary.value?.decision.actions || []).length) return null
   const availability = summary.value?.decision.availability
   if (!availability || availability.total === 0) return { kind: 'data', title: '数据不足，暂时无法判断机会', detail: '当前没有可用候选批次或候选数据尚未完成同步。', action: '查看数据状态', route: '/discovery-logs' }
-  if (availability.eligible === 0 && availability.excluded.length > 0) return { kind: 'gated', title: '候选均被门控排除', detail: `当前 ${availability.research_only} 只仅供研究、${availability.blocked} 只被阻断；这不是“没有机会”，应先解除上方列出的行情或证据门控。`, action: '查看全部排除项', route: '/discovery-candidates' }
-  return { kind: 'none', title: '当前没有触发行动的机会', detail: `已有 ${availability.eligible} 只标的满足研究门槛，但尚未触发入场候选、离场预警或趋势失效。`, action: '打开策略观察池', route: '/strategy-pool' }
+  if (availability.eligible === 0 && availability.excluded.length > 0) return { kind: 'gated', title: '当前没有可开仓候选', detail: `当前 ${availability.research_only} 只处于研究或等待技术触发阶段、${availability.blocked} 只被证据门控阻断。`, action: '查看候选状态', route: '/strategy-pool' }
+  return { kind: 'none', title: '当前没有触发行动的机会', detail: `已有 ${availability.eligible} 只标的同时满足研究与入场门槛，但尚无新的行动事件。`, action: '打开策略观察池', route: '/strategy-pool' }
 })
 const earningsCoverageLabel = computed(() => {
   const monitoring = summary.value?.monitoring
@@ -395,7 +395,7 @@ function tradeStatusLabel(status: string) { return ({ entry_candidate: '入场�
 function tradeStatusType(status: string) { return status === 'entry_candidate' ? 'success' : status === 'exit_warning' ? 'warning' : 'danger' }
 function priorityLabel(value: string) { return ({ critical: '紧急', high: '高', medium: '中', low: '低' } as Record<string, string>)[value] || '中' }
 function priorityType(value: string) { return value === 'critical' ? 'danger' : value === 'high' ? 'warning' : value === 'medium' ? 'primary' : 'info' }
-function readinessLabel(value?: string) { return ({ ready: '可行动', research_only: '仅研究', blocked: '阻断' } as Record<string, string>)[value || ''] || '待核验' }
+function readinessLabel(value?: string) { return ({ ready: '可开仓', research_only: '研究观察', blocked: '阻断' } as Record<string, string>)[value || ''] || '待核验' }
 function readinessType(value?: string) { return value === 'ready' ? 'success' : value === 'blocked' ? 'danger' : 'warning' }
 function freshnessLabel(value?: string) { return ({ current: '当日行情', previous_trading_day: '前一交易日', stale: '行情过期', missing: '缺少行情', future: '日期异常' } as Record<string, string>)[value || ''] || '新鲜度未知' }
 function issueTagType(severity: string) { return severity === 'critical' || severity === 'danger' ? 'danger' : severity === 'warning' ? 'warning' : 'info' }
@@ -410,7 +410,7 @@ function marketFreshnessLabel(value?: string) { return ({ fresh: '数据新鲜',
 function taskStatusType(status: string) { return status === 'success' ? 'success' : status === 'failed' ? 'danger' : status === 'partial' ? 'warning' : 'info' }
 function taskStatusLabel(status?: string) { return ({ success: '成功', failed: '失败', partial: '部分完成', running: '运行中', interrupted: '已中断', idle: '等待运行', degraded: '降级完成' } as Record<string, string>)[status || ''] || '尚无记录' }
 function readinessReasonType(severity: string) { return severity === 'critical' || severity === 'danger' ? 'danger' : severity === 'warning' ? 'warning' : 'info' }
-function effectivenessStatusLabel(status?: string) { return ({ validated: '已验证', validating: '验证中', unverified: '未验证', unavailable: '不可读' } as Record<string, string>)[status || ''] || '未知' }
+function effectivenessStatusLabel(status?: string) { return ({ validated: '样本达标', validating: '积累中', unverified: '未达标', unavailable: '不可读' } as Record<string, string>)[status || ''] || '未知' }
 </script>
 
 <style scoped>

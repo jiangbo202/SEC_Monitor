@@ -70,7 +70,7 @@ func PendingAnalystRatingNotifications(ctx context.Context, db *gorm.DB, limit i
 		limit = 100
 	}
 	var rows []AnalystRatingSnapshot
-	if err := db.WithContext(ctx).
+	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).
 		Where("notification_status = ? AND change_summary <> ?", "pending", "").
 		Order("fetched_at ASC, id ASC").
 		Limit(limit).
@@ -114,7 +114,7 @@ func GetAnalystRating(ctx context.Context, db *gorm.DB, ticker string) (AnalystR
 	if symbol == "" {
 		return result, errors.New("ticker is required")
 	}
-	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeAnalystRatingProvider, symbol).Order("fetched_at DESC, id DESC").Limit(24).Find(&result.History).Error; err != nil {
+	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeAnalystRatingProvider, symbol).Order("fetched_at DESC, id DESC").Limit(24).Find(&result.History).Error; err != nil {
 		return result, err
 	}
 	if len(result.History) == 0 {
@@ -161,7 +161,7 @@ func refreshLongbridgeAnalystRating(ctx context.Context, db *gorm.DB, ticker, ci
 	if err != nil {
 		return result, fmt.Errorf("create Longbridge analyst rating client: %w", err)
 	}
-	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 25*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	rating, err := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.InstitutionRating, error) {
 		return client.InstitutionRating(callCtx, result.Ticker+".US")
@@ -315,7 +315,7 @@ func SyncCurrentCandidateLongbridgeAnalystRatings(ctx context.Context, db *gorm.
 
 func latestAnalystRatingSnapshot(ctx context.Context, db *gorm.DB, provider, ticker string) (*AnalystRatingSnapshot, error) {
 	var snapshot AnalystRatingSnapshot
-	err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", provider, ticker).Order("fetched_at DESC, id DESC").First(&snapshot).Error
+	err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", provider, ticker).Order("fetched_at DESC, id DESC").First(&snapshot).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -340,6 +340,7 @@ func analystRatingSecurityID(ctx context.Context, db *gorm.DB, ticker, cik strin
 
 func analystRatingSnapshotFromLongbridge(ticker string, securityID uint, rating *lbfundamental.InstitutionRating, now time.Time) AnalystRatingSnapshot {
 	snapshot := AnalystRatingSnapshot{SecurityID: securityID, Provider: longbridgeAnalystRatingProvider, Ticker: ticker, Status: AnalystRatingStatusNoCoverage, FetchedAt: now}
+	snapshot.IdentityCounterID = issuerCounterID(ticker)
 	if rating == nil {
 		snapshot.SnapshotHash = analystRatingHash(snapshot)
 		return snapshot
@@ -398,7 +399,7 @@ func analystRecommendationLabel(value lbfundamental.InstitutionRecommend) string
 
 func analystRatingHash(value AnalystRatingSnapshot) string {
 	parts := []string{value.Provider, value.Ticker, value.Status, value.Recommendation, fmt.Sprintf("%d", value.StrongBuyCount), fmt.Sprintf("%d", value.BuyCount), fmt.Sprintf("%d", value.HoldCount), fmt.Sprintf("%d", value.UnderperformCount), fmt.Sprintf("%d", value.SellCount), fmt.Sprintf("%d", value.NoOpinionCount), fmt.Sprintf("%d", value.AnalystCount), fmt.Sprintf("%d", value.TargetAverageMicros), fmt.Sprintf("%d", value.TargetHighMicros), fmt.Sprintf("%d", value.TargetLowMicros), fmt.Sprintf("%d", value.ReferencePriceMicros), value.Currency}
-	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	sum := sha256.Sum256([]byte(value.IdentityCounterID + "|" + strings.Join(parts, "|")))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -449,7 +450,11 @@ func newLongbridgeAnalystRatingSDKClient(appKey, appSecret, accessToken string) 
 }
 
 func (c *longbridgeAnalystRatingSDKClient) InstitutionRating(ctx context.Context, symbol string) (*lbfundamental.InstitutionRating, error) {
-	return c.fundamental.InstitutionRating(ctx, symbol)
+	id, err := explicitUSStockCounterID(symbol)
+	if err != nil {
+		return nil, err
+	}
+	return c.fundamental.InstitutionRating(ctx, id)
 }
 
 // sortAnalystRatingSnapshotsNewest first is kept explicit for tests and API

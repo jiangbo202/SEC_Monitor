@@ -55,3 +55,35 @@ func MarkLongbridgeResearchSuccess(ctx context.Context, db *gorm.DB, family, tic
 	row := LongbridgeResearchRefreshState{Ticker: ticker, Family: strings.TrimSpace(family), LastAttemptAt: now, LastSuccessAt: &now, Status: "success"}
 	return db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "ticker"}, {Name: "family"}}, DoUpdates: clause.AssignmentColumns([]string{"last_attempt_at", "last_success_at", "status", "updated_at"})}).Create(&row).Error
 }
+
+// Attempts, including failures and successful empty responses, participate
+// in rotation so a permanently uncovered high-score ticker cannot starve others.
+func MergeLongbridgeResearchAttempts(ctx context.Context, db *gorm.DB, family string, last map[string]time.Time) error {
+	if !db.Migrator().HasTable(&LongbridgeResearchRefreshState{}) {
+		return nil
+	}
+	var rows []LongbridgeResearchRefreshState
+	if err := db.WithContext(ctx).Where("family = ?", family).Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.LastAttemptAt.After(last[row.Ticker]) {
+			last[row.Ticker] = row.LastAttemptAt
+		}
+	}
+	return nil
+}
+
+func MarkLongbridgeResearchAttempt(ctx context.Context, db *gorm.DB, family, ticker string, now time.Time) error {
+	row := LongbridgeResearchRefreshState{Ticker: normalizeAnalystRatingTicker(ticker), Family: family, LastAttemptAt: now, Status: "attempted"}
+	return db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "ticker"}, {Name: "family"}}, DoUpdates: clause.AssignmentColumns([]string{"last_attempt_at", "status", "updated_at"})}).Create(&row).Error
+}
+
+func longbridgeEPSNoCoverageCached(ctx context.Context, db *gorm.DB, ticker string, now time.Time) (bool, error) {
+	if !db.Migrator().HasTable(&LongbridgeResearchRefreshState{}) {
+		return false, nil
+	}
+	var count int64
+	err := db.WithContext(ctx).Model(&LongbridgeResearchRefreshState{}).Where("ticker = ? AND family = ? AND last_success_at >= ?", ticker, "eps_no_coverage", now.Add(-7*24*time.Hour)).Count(&count).Error
+	return count > 0, err
+}

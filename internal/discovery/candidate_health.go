@@ -380,6 +380,7 @@ type candidateInsiderCoverage struct {
 	records        int
 	qualified      bool
 	coverageStatus string
+	checkedAt      time.Time
 }
 
 func candidateInsiderCoverageBySecurity(ctx context.Context, db *gorm.DB, securityBatchID string, scores []CandidateScoreSnapshot) (map[uint]candidateInsiderCoverage, error) {
@@ -409,6 +410,7 @@ func candidateInsiderCoverageBySecurity(ctx context.Context, db *gorm.DB, securi
 		for _, row := range coverageRows {
 			coverage := result[row.SecurityID]
 			coverage.coverageStatus = row.Status
+			coverage.checkedAt = row.CheckedAt
 			result[row.SecurityID] = coverage
 		}
 	}
@@ -461,32 +463,14 @@ func candidatePriceFreshnessBySecurity(ctx context.Context, db *gorm.DB, batch U
 }
 
 func candidateInsiderDataAvailable(ctx context.Context, db *gorm.DB, marketBatch UniverseBatch) (bool, error) {
-	available, err := sourceVersionsContainPrefix(marketBatch.SourceVersionsJSON, "insiders:")
-	if err != nil || available || strings.TrimSpace(marketBatch.UniverseSourceVersion) == "" {
-		return available, err
-	}
-	var securityBatch UniverseBatch
-	if err := db.WithContext(ctx).First(&securityBatch, "batch_id = ?", marketBatch.UniverseSourceVersion).Error; err != nil {
-		return false, err
-	}
-	return sourceVersionsContainPrefix(securityBatch.SourceVersionsJSON, "insiders:")
+	versions, err := insiderLineageVersions(ctx, db, marketBatch)
+	return len(versions) > 0, err
 }
 
 func candidateInsiderCoverageExpected(ctx context.Context, db *gorm.DB, marketBatch UniverseBatch) (bool, error) {
-	payload := marketBatch.SourceVersionsJSON
-	if strings.TrimSpace(marketBatch.UniverseSourceVersion) != "" {
-		var securityBatch UniverseBatch
-		if err := db.WithContext(ctx).First(&securityBatch, "batch_id = ?", marketBatch.UniverseSourceVersion).Error; err != nil {
-			return false, err
-		}
-		payload = securityBatch.SourceVersionsJSON
-	}
-	if strings.TrimSpace(payload) == "" {
-		return false, nil
-	}
-	var versions []SourceVersion
-	if err := json.Unmarshal([]byte(payload), &versions); err != nil {
-		return false, fmt.Errorf("decode source versions: %w", err)
+	versions, err := insiderLineageVersions(ctx, db, marketBatch)
+	if err != nil {
+		return false, err
 	}
 	for _, version := range versions {
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(version.Source)), "insiders:") && strings.Contains(strings.ToLower(version.Version), InsiderCoverageVersion) {
@@ -494,6 +478,49 @@ func candidateInsiderCoverageExpected(ctx context.Context, db *gorm.DB, marketBa
 		}
 	}
 	return false, nil
+}
+
+// Incremental security batches copy coverage but used to omit its source
+// version. Follow only explicit batch lineage (never ticker heuristics).
+func insiderLineageVersions(ctx context.Context, db *gorm.DB, batch UniverseBatch) ([]SourceVersion, error) {
+	seen := map[string]bool{}
+	for depth := 0; depth < 64; depth++ {
+		if seen[batch.BatchID] {
+			return nil, fmt.Errorf("cyclic insider batch lineage")
+		}
+		seen[batch.BatchID] = true
+		var versions []SourceVersion
+		if strings.TrimSpace(batch.SourceVersionsJSON) != "" {
+			if err := json.Unmarshal([]byte(batch.SourceVersionsJSON), &versions); err != nil {
+				return nil, err
+			}
+		}
+		var found []SourceVersion
+		next := ""
+		for _, v := range versions {
+			if strings.HasPrefix(v.Source, "insiders:") {
+				found = append(found, v)
+			}
+			if v.Source == "security-universe:incremental-base" {
+				next = v.Version
+			}
+		}
+		if len(found) > 0 {
+			return found, nil
+		}
+		if next == "" && batch.Kind == BatchKindPrescreen {
+			next = batch.UniverseSourceVersion
+		}
+		if next == "" {
+			return nil, nil
+		}
+		var parent UniverseBatch
+		if err := db.WithContext(ctx).First(&parent, "batch_id = ?", next).Error; err != nil {
+			return nil, err
+		}
+		batch = parent
+	}
+	return nil, fmt.Errorf("insider batch lineage exceeds 64 generations")
 }
 
 func sourceVersionsContainPrefix(payload, prefix string) (bool, error) {

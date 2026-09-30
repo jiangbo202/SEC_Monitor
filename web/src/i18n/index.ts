@@ -63,7 +63,7 @@ const messages = {
       edit: '编辑',
       enabled: '已启用',
       error: '错误',
-      filingDate: 'Filing Date',
+      filingDate: '申报日期',
       filings: '公告',
       finishTime: '结束时间',
       history: '历史',

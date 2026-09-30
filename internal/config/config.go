@@ -74,6 +74,7 @@ type DiscoveryConfig struct {
 	AutoTechnicalHistoryWarmup                  bool
 	MinPublishCoveragePct                       float64
 	TaskTimeoutMin                              int
+	InsiderStageTimeoutMin                      int
 	DownloadIdleTimeoutSec                      int
 	SECBulkCacheTTLHours                        int
 	CacheRetentionDays                          int
@@ -158,6 +159,7 @@ func Load() Config {
 			AutoTechnicalHistoryWarmup:                  boolOrDefault("SMALL_CAP_AUTO_TECHNICAL_HISTORY_WARMUP", true),
 			MinPublishCoveragePct:                       floatOrDefault("SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT", 85),
 			TaskTimeoutMin:                              positiveIntOrDefault("SMALL_CAP_TASK_TIMEOUT_MINUTES", 60),
+			InsiderStageTimeoutMin:                      positiveIntOrDefault("SMALL_CAP_INSIDER_STAGE_TIMEOUT_MINUTES", 90),
 			DownloadIdleTimeoutSec:                      positiveIntOrDefault("SMALL_CAP_DOWNLOAD_IDLE_TIMEOUT_SECONDS", 90),
 			SECBulkCacheTTLHours:                        positiveIntOrDefault("SMALL_CAP_SEC_BULK_CACHE_TTL_HOURS", 12),
 			CacheRetentionDays:                          positiveIntOrDefault("SMALL_CAP_CACHE_RETENTION_DAYS", 14),

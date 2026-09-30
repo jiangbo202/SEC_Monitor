@@ -7,7 +7,7 @@
     <el-form :model="filters" class="toolbar filings-toolbar">
       <div class="filings-toolbar-top">
         <el-form-item :label="t('pages.filings.savedViews')" class="saved-view-item">
-          <el-select fit-input-width v-model="activeSavedView" clearable @change="applySavedView">
+          <el-select fit-input-width v-model="activeSavedView" clearable :placeholder="store.locale === 'en-US' ? 'Select' : '请选择'" @change="applySavedView">
             <el-option v-for="item in savedViews" :key="item.name" :label="item.name" :value="item.name" />
           </el-select>
         </el-form-item>
@@ -24,7 +24,7 @@
         </div>
       </div>
       <div class="filings-filter-grid">
-        <el-form-item label="Ticker"><el-input v-model="filters.ticker" clearable /></el-form-item>
+        <el-form-item :label="store.locale === 'en-US' ? 'Ticker' : '代码'"><el-input v-model="filters.ticker" clearable /></el-form-item>
         <el-form-item :label="t('common.company')"><el-input v-model="filters.company_name" clearable /></el-form-item>
         <el-form-item>
           <template #label>
@@ -60,7 +60,7 @@
         <el-form-item :label="t('pages.filings.start')"><el-date-picker v-model="filters.date_from" type="date" value-format="YYYY-MM-DD" /></el-form-item>
         <el-form-item :label="t('pages.filings.end')"><el-date-picker v-model="filters.date_to" type="date" value-format="YYYY-MM-DD" /></el-form-item>
         <el-form-item :label="t('pages.filings.notification')">
-          <el-select fit-input-width v-model="filters.notification_status" clearable>
+          <el-select fit-input-width v-model="filters.notification_status" clearable :placeholder="store.locale === 'en-US' ? 'Select' : '请选择'">
             <el-option :label="t('status.success')" value="success" />
             <el-option :label="t('status.failed')" value="failed" />
             <el-option :label="t('status.unnotified')" value="unnotified" />
@@ -80,7 +80,7 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="ticker" label="Ticker" width="100" sortable="custom" />
+      <el-table-column prop="ticker" :label="store.locale === 'en-US' ? 'Ticker' : '代码'" width="100" sortable="custom" />
       <el-table-column prop="company_name" :label="t('common.companyName')" min-width="180" show-overflow-tooltip />
       <el-table-column prop="filing_date" :label="t('common.filingDate')" width="140" sortable="custom">
         <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
@@ -222,7 +222,7 @@ function eventCategoryLabel(value?: string) {
   return ({ financing: '融资与稀释', governance: '治理变化', earnings: '业绩与指引', transaction: '重大交易', listing: '上市状态', ownership: '持股变化', operations: '经营事件', risk: '风险事项' } as Record<string, string>)[value || ''] || value || '重大事件'
 }
 
-function eventPriorityType(value?: string) { return value === 'urgent' || value === 'critical' ? 'danger' : value === 'high' ? 'warning' : value === 'normal' ? 'primary' : 'info' }
+function eventPriorityType(value?: string) { return value === 'urgent' || value === 'critical' ? 'danger' : value === 'high' || value === '高' ? 'warning' : value === 'normal' || value === '中' || value === '低' ? 'primary' : 'info' }
 
 const loading = ref(false)
 const refreshing = ref(false)

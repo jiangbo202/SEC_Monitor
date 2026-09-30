@@ -18,6 +18,10 @@ const candidateEffectivenessMinimumSignalDates = 5
 const candidateEffectivenessRoundTripCostPct = 0.5
 
 type CandidateEffectivenessReport struct {
+	ValidationScope              string                          `json:"validation_scope"`
+	ProspectiveStatus            string                          `json:"prospective_status"`
+	ProspectiveWindows           []CandidateEffectivenessWindow  `json:"prospective_windows"`
+	Rolling90DayWindows          []CandidateEffectivenessWindow  `json:"rolling_90_day_windows"`
 	GeneratedAt                  time.Time                       `json:"generated_at"`
 	Status                       string                          `json:"status"`
 	StatusDetail                 string                          `json:"status_detail"`
@@ -84,6 +88,7 @@ type CandidateEffectivenessWindow struct {
 }
 
 type candidateCohortSeed struct {
+	RecordedAt time.Time
 	CandidateScoreSnapshot
 	SignalEventID   uint
 	EventType       string
@@ -97,6 +102,7 @@ type candidateCohortSeed struct {
 
 func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEffectivenessReport, error) {
 	report := CandidateEffectivenessReport{
+		ValidationScope: "historical_observation_not_execution_or_out_of_sample_proof", ProspectiveStatus: "unverified",
 		GeneratedAt: time.Now().UTC(), BenchmarkTicker: "IWM", Status: "unverified",
 		StatusDetail: "尚无达到持有期的有效样本，评分仅用于研究排序", MinimumSampleCount: candidateEffectivenessMinimumSamples,
 		BenchmarkHistoryStatus: "missing", BenchmarkHistoryRequiredDays: technicalMA200LookbackDays,
@@ -149,6 +155,35 @@ func BuildCandidateEffectiveness(ctx context.Context, db *gorm.DB) (CandidateEff
 	}
 	if err := hydrateCandidateEffectivenessDimensions(ctx, db, seeds); err != nil {
 		return report, err
+	}
+	// Backfilled/replayed signals are excluded from forward observational
+	// evidence. This is not a fitted-model out-of-sample profitability claim.
+	prospective := []candidateCohortSeed{}
+	rolling := []candidateCohortSeed{}
+	asOf := report.GeneratedAt
+	if date, err := time.Parse(time.DateOnly, expectedDate); err == nil {
+		asOf = date
+	}
+	for _, seed := range seeds {
+		if !seed.RecordedAt.IsZero() && !seed.BaselineDate.IsZero() && !seed.RecordedAt.Before(seed.BaselineDate) && !seed.RecordedAt.After(seed.BaselineDate.Add(48*time.Hour)) {
+			prospective = append(prospective, seed)
+			if !seed.BaselineDate.Before(asOf.AddDate(0, 0, -90)) {
+				rolling = append(rolling, seed)
+			}
+		}
+	}
+	report.ProspectiveWindows, _, err = buildCandidateCohortWindows(ctx, db, prospective, report.BenchmarkTicker)
+	if err != nil {
+		return report, err
+	}
+	report.Rolling90DayWindows, _, err = buildCandidateCohortWindows(ctx, db, rolling, report.BenchmarkTicker)
+	if err != nil {
+		return report, err
+	}
+	for _, window := range report.ProspectiveWindows {
+		if window.HorizonDays == 20 {
+			report.ProspectiveStatus = window.VerificationStatus
+		}
 	}
 	if err := attachCandidateOutcomeTracking(ctx, db, seeds, &report); err != nil {
 		return report, err
@@ -250,6 +285,7 @@ func signalEventCohortSeeds(ctx context.Context, db *gorm.DB) ([]candidateCohort
 			continue
 		}
 		seeds = append(seeds, candidateCohortSeed{
+			RecordedAt: event.CreatedAt,
 			CandidateScoreSnapshot: CandidateScoreSnapshot{
 				BatchID: event.BatchID, SecurityID: event.SecurityID, Ticker: event.Ticker, Grade: event.Grade,
 				TotalScore: event.TotalScore, ScoringVersion: event.ScoringVersion,

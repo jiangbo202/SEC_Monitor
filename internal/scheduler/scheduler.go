@@ -661,8 +661,14 @@ func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 		_, err := s.operationalHealth.Notify(ctx)
 		return err
 	case macroCalendarSyncTaskName:
-		_, err := s.macroCalendar.SyncOfficialBEA(ctx)
-		return err
+		result, err := s.macroCalendar.SyncOfficialBEA(ctx)
+		if err != nil {
+			return err
+		}
+		if len(result.Warnings) > 0 {
+			return service.PartialTask(strings.Join(result.Warnings, "；"))
+		}
+		return nil
 	case institutionalHoldingsSyncTaskName:
 		result, err := s.institutionalHoldings.Sync(ctx)
 		if err != nil {

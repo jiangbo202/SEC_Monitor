@@ -538,6 +538,14 @@ func deriveFilingEvent(filing model.Filing) FilingEventSummary {
 		}
 		return FilingEventSummary{ItemCodes: items, Category: "待解析", Fact: "8-K 具体事项尚未识别", Impact: "当前仅确认公司提交了即时报告，不能据此判断事件方向或严重程度。", Action: "打开 SEC 原文，确认 Item 编号、事实发生日和附件内容", Priority: "待定", Status: "pending"}
 	}
+	switch form {
+	case "4", "4/A":
+		return FilingEventSummary{Category: "内幕交易", Fact: "公司内幕人的持股变动已向 SEC 申报", Impact: "文件可能包含买入、卖出、授予、行权或税务处置；未核对交易代码前不能判断方向。", Action: "核对申报人职务、交易代码、A/D 标识、数量、价格及直接/间接持有", Priority: "中", Status: "identified"}
+	case "144", "144/A":
+		return FilingEventSummary{Category: "潜在减持", Fact: "限制性或控制性证券的拟出售通知已提交", Impact: "Form 144 表示拟出售安排，不等于交易已经完成；需结合数量、窗口与后续 Form 4 核验。", Action: "核对拟售数量、经纪商、预计出售日、近三月成交量及后续实际成交披露", Priority: "中", Status: "identified"}
+	case "425", "425/A":
+		return FilingEventSummary{Category: "并购沟通", Fact: "并购或要约相关书面沟通材料已提交", Impact: "材料可能更新交易理由、条款或股东沟通，但不代表交易已经获批或完成。", Action: "核对交易对手、交换或现金条款、关键条件、投票日与反垄断进度", Priority: "高", Status: "identified"}
+	}
 	if strings.HasPrefix(form, "S-1") || strings.HasPrefix(form, "S-3") || strings.HasPrefix(form, "424B") {
 		return FilingEventSummary{Category: "融资与股本", Fact: "证券发行或注册文件已提交", Impact: "可能涉及融资和股本稀释；注册或招股文件不等于已经完成发行。", Action: "核对证券类型、发行规模、价格、生效状态及承销安排", Priority: "高", Status: "identified"}
 	}

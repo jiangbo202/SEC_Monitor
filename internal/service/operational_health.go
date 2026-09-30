@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"sec_monitor/internal/discovery"
@@ -26,6 +27,7 @@ const (
 	// Docker volume before a user notices. This is a warning, not automatic
 	// deletion: retention remains an explicit user-controlled setting.
 	operationalBackupCapacityWarningBytes int64 = 50 << 30
+	operationalReportCacheTTL                   = 30 * time.Second
 )
 
 // OperationalIssue is an actionable, locally computed observation. Routes are
@@ -41,51 +43,63 @@ type OperationalIssue struct {
 }
 
 type OperationalTaskStatus struct {
-	TaskName            string     `json:"task_name"`
-	Enabled             bool       `json:"enabled"`
-	Running             bool       `json:"running"`
-	LastStatus          string     `json:"last_status"`
-	LastRunAt           *time.Time `json:"last_run_at,omitempty"`
-	NextRunAt           *time.Time `json:"next_run_at,omitempty"`
-	RunningSince        *time.Time `json:"running_since,omitempty"`
-	ConsecutiveFailures int        `json:"consecutive_failures"`
-	RetryNotBefore      *time.Time `json:"retry_not_before,omitempty"`
-	ExpectedWithinMins  int        `json:"expected_within_mins"`
+	WindowDays          int              `json:"window_days"`
+	WindowCounts        map[string]int64 `json:"window_counts"`
+	TaskName            string           `json:"task_name"`
+	Enabled             bool             `json:"enabled"`
+	Running             bool             `json:"running"`
+	LastStatus          string           `json:"last_status"`
+	LastRunAt           *time.Time       `json:"last_run_at,omitempty"`
+	NextRunAt           *time.Time       `json:"next_run_at,omitempty"`
+	RunningSince        *time.Time       `json:"running_since,omitempty"`
+	ConsecutiveFailures int              `json:"consecutive_failures"`
+	RetryNotBefore      *time.Time       `json:"retry_not_before,omitempty"`
+	ExpectedWithinMins  int              `json:"expected_within_mins"`
 }
 
 type OperationalReport struct {
-	GeneratedAt               time.Time               `json:"generated_at"`
-	Status                    string                  `json:"status"`
-	Issues                    []OperationalIssue      `json:"issues"`
-	Tasks                     []OperationalTaskStatus `json:"tasks"`
-	RetryableTargets          int64                   `json:"retryable_targets"`
-	DeferredTargets           int64                   `json:"deferred_targets"`
-	CompanyProfileRetryDue    int64                   `json:"company_profile_retry_due"`
-	MarketPriceRecovery       int                     `json:"market_price_recovery"`
-	MarketPriceLocalCurrent   int                     `json:"market_price_local_current"`
-	PriceActionTargetDate     string                  `json:"price_action_target_date,omitempty"`
-	PriceActionCurrent        int                     `json:"price_action_current"`
-	PriceActionStale          int                     `json:"price_action_stale"`
-	PriceActionMissing        int                     `json:"price_action_missing"`
-	LowCoverageProviders      int64                   `json:"low_coverage_providers"`
-	SlowSECTargets            int64                   `json:"slow_sec_targets"`
-	SlowDiscoverySteps        int                     `json:"slow_discovery_steps"`
-	ProviderWarnings          int64                   `json:"provider_warnings"`
-	OpenDataQualityIncidents  int64                   `json:"open_data_quality_incidents"`
-	TechnicalHistoryPending   int64                   `json:"technical_history_pending"`
-	TechnicalHistoryRetryDue  int64                   `json:"technical_history_retry_due"`
-	TechnicalHistoryDeferred  int64                   `json:"technical_history_deferred"`
-	TechnicalHistoryWaiting   int64                   `json:"technical_history_waiting"`
-	TechnicalHistoryManual    int64                   `json:"technical_history_manual_review"`
-	OutcomeTrackingStatus     string                  `json:"outcome_tracking_status,omitempty"`
-	OutcomeTracked            int                     `json:"outcome_tracked"`
-	OutcomeMature             int                     `json:"outcome_mature"`
-	OutcomePending            int                     `json:"outcome_pending"`
-	OutcomeBenchmarkMissing   int                     `json:"outcome_benchmark_missing"`
-	OutcomeLastEvaluatedAt    *time.Time              `json:"outcome_last_evaluated_at,omitempty"`
-	FailedNotificationBatches int64                   `json:"failed_notification_batches"`
-	DeadLetterBatches         int64                   `json:"dead_letter_batches"`
-	Summary                   string                  `json:"summary"`
+	NotificationDelivery      map[string]NotificationDeliveryHealth `json:"notification_delivery"`
+	GeneratedAt               time.Time                             `json:"generated_at"`
+	Status                    string                                `json:"status"`
+	Issues                    []OperationalIssue                    `json:"issues"`
+	Tasks                     []OperationalTaskStatus               `json:"tasks"`
+	RetryableTargets          int64                                 `json:"retryable_targets"`
+	DeferredTargets           int64                                 `json:"deferred_targets"`
+	CompanyProfileRetryDue    int64                                 `json:"company_profile_retry_due"`
+	MarketPriceRecovery       int                                   `json:"market_price_recovery"`
+	MarketPriceLocalCurrent   int                                   `json:"market_price_local_current"`
+	PriceActionTargetDate     string                                `json:"price_action_target_date,omitempty"`
+	PriceActionCurrent        int                                   `json:"price_action_current"`
+	PriceActionStale          int                                   `json:"price_action_stale"`
+	PriceActionMissing        int                                   `json:"price_action_missing"`
+	LowCoverageProviders      int64                                 `json:"low_coverage_providers"`
+	SlowSECTargets            int64                                 `json:"slow_sec_targets"`
+	SlowDiscoverySteps        int                                   `json:"slow_discovery_steps"`
+	ProviderWarnings          int64                                 `json:"provider_warnings"`
+	OpenDataQualityIncidents  int64                                 `json:"open_data_quality_incidents"`
+	TechnicalHistoryPending   int64                                 `json:"technical_history_pending"`
+	TechnicalHistoryRetryDue  int64                                 `json:"technical_history_retry_due"`
+	TechnicalHistoryDeferred  int64                                 `json:"technical_history_deferred"`
+	TechnicalHistoryWaiting   int64                                 `json:"technical_history_waiting"`
+	TechnicalHistoryManual    int64                                 `json:"technical_history_manual_review"`
+	OutcomeTrackingStatus     string                                `json:"outcome_tracking_status,omitempty"`
+	OutcomeTracked            int                                   `json:"outcome_tracked"`
+	OutcomeMature             int                                   `json:"outcome_mature"`
+	OutcomePending            int                                   `json:"outcome_pending"`
+	OutcomeBenchmarkMissing   int                                   `json:"outcome_benchmark_missing"`
+	OutcomeLastEvaluatedAt    *time.Time                            `json:"outcome_last_evaluated_at,omitempty"`
+	FailedNotificationBatches int64                                 `json:"failed_notification_batches"`
+	DeadLetterBatches         int64                                 `json:"dead_letter_batches"`
+	Summary                   string                                `json:"summary"`
+}
+
+type NotificationDeliveryHealth struct {
+	WindowDays       int        `json:"window_days"`
+	AttemptedBatches int64      `json:"attempted_batches"`
+	SentBatches      int64      `json:"sent_batches"`
+	FailedBatches    int64      `json:"failed_batches"`
+	LastSentAt       *time.Time `json:"last_sent_at,omitempty"`
+	Status           string     `json:"status"`
 }
 
 type OperationalAlertResult struct {
@@ -101,6 +115,10 @@ type OperationalHealthService struct {
 	configs     *ConfigService
 	backup      *SQLiteBackupService
 	batches     *NotificationBatchService
+	cacheMu     sync.RWMutex
+	cacheAt     time.Time
+	cache       OperationalReport
+	buildMu     sync.Mutex
 }
 
 func NewOperationalHealthService(db, discoveryDB *gorm.DB, notifier telegram.Notifier, configs *ConfigService) *OperationalHealthService {
@@ -124,7 +142,42 @@ func (s *OperationalHealthService) WithBackup(backup *SQLiteBackupService) *Oper
 }
 
 func (s *OperationalHealthService) Report(ctx context.Context) (OperationalReport, error) {
-	return s.ReportAt(ctx, time.Now().UTC())
+	if s == nil {
+		return OperationalReport{}, errors.New("operational health service is not configured")
+	}
+	s.cacheMu.RLock()
+	cachedAt, cached := s.cacheAt, s.cache
+	s.cacheMu.RUnlock()
+	if !cachedAt.IsZero() && time.Since(cachedAt) < operationalReportCacheTTL {
+		return cached, nil
+	}
+	s.buildMu.Lock()
+	defer s.buildMu.Unlock()
+	s.cacheMu.RLock()
+	cachedAt, cached = s.cacheAt, s.cache
+	s.cacheMu.RUnlock()
+	if !cachedAt.IsZero() && time.Since(cachedAt) < operationalReportCacheTTL {
+		return cached, nil
+	}
+	report, err := s.ReportAt(ctx, time.Now().UTC())
+	if err != nil {
+		return report, err
+	}
+	s.cacheMu.Lock()
+	s.cacheAt, s.cache = time.Now().UTC(), report
+	s.cacheMu.Unlock()
+	return report, nil
+}
+
+// Invalidate drops the short read cache after an explicit task or maintenance
+// action. Scheduled changes are still bounded by the small TTL.
+func (s *OperationalHealthService) Invalidate() {
+	if s == nil {
+		return
+	}
+	s.cacheMu.Lock()
+	s.cacheAt, s.cache = time.Time{}, OperationalReport{}
+	s.cacheMu.Unlock()
 }
 
 func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) (OperationalReport, error) {
@@ -135,6 +188,24 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	var tasks []model.TaskConfig
 	if err := s.db.WithContext(ctx).Order("task_name ASC").Find(&tasks).Error; err != nil {
 		return report, err
+	}
+	type taskCount struct {
+		TaskName string
+		Status   string
+		Count    int64
+	}
+	var counts []taskCount
+	if s.db.Migrator().HasTable(&model.TaskExecution{}) {
+		if err := s.db.WithContext(ctx).Model(&model.TaskExecution{}).Select("task_name, status, COUNT(*) AS count").Where("started_at >= ?", now.Add(-14*24*time.Hour)).Group("task_name, status").Scan(&counts).Error; err != nil {
+			return report, err
+		}
+	}
+	countByTask := map[string]map[string]int64{}
+	for _, row := range counts {
+		if countByTask[row.TaskName] == nil {
+			countByTask[row.TaskName] = map[string]int64{}
+		}
+		countByTask[row.TaskName][row.Status] = row.Count
 	}
 	var latestDiscoveryRun discovery.DiscoverySyncRun
 	if s.discoveryDB != nil {
@@ -147,6 +218,7 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 		task = reconcileFullDiscoveryTaskStatus(task, latestDiscoveryRun)
 		expected := taskExpectedWithin(task.TaskName)
 		report.Tasks = append(report.Tasks, OperationalTaskStatus{
+			WindowDays: 14, WindowCounts: countByTask[task.TaskName],
 			TaskName: task.TaskName, Enabled: task.Enabled, Running: task.Running, LastStatus: task.LastStatus, LastRunAt: task.LastRunAt, NextRunAt: task.NextRunAt,
 			RunningSince: task.RunningSince, ConsecutiveFailures: task.ConsecutiveFailures, RetryNotBefore: task.RetryNotBefore, ExpectedWithinMins: int(expected.Minutes()),
 		})
@@ -196,6 +268,39 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	}
 	if err := s.reportMacroCoverage(ctx, &report, tasks, now); err != nil {
 		return report, err
+	}
+	report.NotificationDelivery = map[string]NotificationDeliveryHealth{}
+	if s.db.Migrator().HasTable(&model.NotificationBatch{}) {
+		type deliveryCount struct {
+			Channel    string
+			Attempted  int64
+			Sent       int64
+			Failed     int64
+			LastSentAt string
+		}
+		var rows []deliveryCount
+		if err := s.db.WithContext(ctx).Model(&model.NotificationBatch{}).
+			Select("channel, SUM(CASE WHEN last_attempt_at IS NOT NULL OR sent_at IS NOT NULL THEN 1 ELSE 0 END) AS attempted, SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent, SUM(CASE WHEN status IN ('failed','dead_letter') THEN 1 ELSE 0 END) AS failed, COALESCE(MAX(sent_at), '') AS last_sent_at").
+			Where("created_at >= ? AND channel <> ?", now.Add(-14*24*time.Hour), "").Group("channel").Scan(&rows).Error; err != nil {
+			return report, err
+		}
+		for _, row := range rows {
+			status := "unverified"
+			if row.Sent > 0 {
+				status = "observed_delivery"
+			}
+			if row.Failed > 0 {
+				status = "attention"
+			}
+			var lastSentAt *time.Time
+			for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999Z07:00", "2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05.999999999", time.DateTime} {
+				if parsed, err := time.Parse(layout, row.LastSentAt); err == nil {
+					lastSentAt = &parsed
+					break
+				}
+			}
+			report.NotificationDelivery[row.Channel] = NotificationDeliveryHealth{14, row.Attempted, row.Sent, row.Failed, lastSentAt, status}
+		}
 	}
 
 	if err := s.db.WithContext(ctx).Model(&model.SyncRunDetail{}).Where("status = ? AND retryable = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", "failed", true, now).Count(&report.RetryableTargets).Error; err != nil {
@@ -280,7 +385,7 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 					return report, err
 				}
 			}
-			if report.TechnicalHistoryPending > 0 {
+			if report.TechnicalHistoryPending > report.TechnicalHistoryWaiting {
 				severity := "warning"
 				title := "候选技术历史正在自动补齐"
 				if report.TechnicalHistoryDeferred > 0 || report.TechnicalHistoryManual > 0 {
@@ -454,6 +559,15 @@ func (s *OperationalHealthService) reportMacroCoverage(ctx context.Context, repo
 	}
 	if !macroRan {
 		return nil
+	}
+	for _, category := range []string{"employment", "cpi", "ppi", "fomc"} {
+		var count int64
+		if err := s.db.WithContext(ctx).Model(&model.MacroRelease{}).Where("category = ? AND status = ? AND scheduled_at > ? AND scheduled_at <= ?", category, MacroReleaseScheduled, now, now.Add(45*24*time.Hour)).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			report.addIssue("macro_schedule_coverage:"+category, "macro", "warning", "未来宏观日历覆盖待核验", category+" 未来 45 天尚无已核验计划；日历为空不代表没有事件风险，请复核官方发布日历。", "macro-calendar", now)
+		}
 	}
 	for _, item := range []struct {
 		category string

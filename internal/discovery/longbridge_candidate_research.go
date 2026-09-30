@@ -133,7 +133,7 @@ func GetCandidateMarketResearch(ctx context.Context, db *gorm.DB, ticker string)
 	if symbol == "" {
 		return result, errors.New("ticker is required")
 	}
-	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("fetched_at DESC, id DESC").Limit(24).Find(&result.EPSForecast.History).Error; err != nil {
+	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("fetched_at DESC, id DESC").Limit(24).Find(&result.EPSForecast.History).Error; err != nil {
 		return result, err
 	}
 	if len(result.EPSForecast.History) == 0 {
@@ -148,10 +148,10 @@ func GetCandidateMarketResearch(ctx context.Context, db *gorm.DB, ticker string)
 	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("alert_time DESC, id DESC").Limit(20).Find(&result.Anomalies).Error; err != nil {
 		return result, err
 	}
-	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, percent_of_shares DESC, id DESC").Limit(50).Find(&result.InstitutionalHolders).Error; err != nil {
+	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, percent_of_shares DESC, id DESC").Limit(50).Find(&result.InstitutionalHolders).Error; err != nil {
 		return result, err
 	}
-	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, position_ratio DESC, id DESC").Limit(50).Find(&result.FundHolders).Error; err != nil {
+	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, position_ratio DESC, id DESC").Limit(50).Find(&result.FundHolders).Error; err != nil {
 		return result, err
 	}
 	latest := time.Time{}
@@ -241,10 +241,10 @@ func GetTickerInstitutionalHoldingHistory(ctx context.Context, db *gorm.DB, tick
 		return result, errors.New("ticker is required")
 	}
 	result.Ticker = symbol
-	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, holder_name ASC, id DESC").Find(&result.InstitutionalHolders).Error; err != nil {
+	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, holder_name ASC, id DESC").Find(&result.InstitutionalHolders).Error; err != nil {
 		return result, err
 	}
-	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, fund_name ASC, id DESC").Find(&result.FundHolders).Error; err != nil {
+	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, fund_name ASC, id DESC").Find(&result.FundHolders).Error; err != nil {
 		return result, err
 	}
 	if len(result.InstitutionalHolders) == 0 && len(result.FundHolders) == 0 {
@@ -285,43 +285,55 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 	}
 	securityID := analystRatingSecurityID(ctx, db, result.Ticker, cik)
 	now := options.Now().UTC()
-	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	symbol := result.Ticker + ".US"
 	var requestErrors []error
-
-	if forecast, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.ForecastEps, error) {
-		return client.ForecastEps(callCtx, symbol)
-	}); fetchErr != nil {
-		requestErrors = append(requestErrors, fmt.Errorf("EPS forecast: %w", fetchErr))
-		result.Warnings = append(result.Warnings, "EPS 预期："+SanitizeLongbridgeCandidateResearchError(fetchErr))
-	} else if latest, ok := latestForecastEpsItem(forecast); ok {
-		snapshot := epsForecastSnapshotFromLongbridge(result.Ticker, securityID, latest, now)
-		previous, lookupErr := latestEPSForecastSnapshot(ctx, db, snapshot.Ticker)
-		if lookupErr != nil {
-			return result, lookupErr
-		}
-		if previous != nil && previous.SnapshotHash == snapshot.SnapshotHash {
-			result.EPSFetched = true
+	noEPS, cacheErr := longbridgeEPSNoCoverageCached(ctx, db, result.Ticker, now)
+	if cacheErr != nil {
+		return result, cacheErr
+	}
+	if noEPS {
+		result.Warnings = append(result.Warnings, "EPS 预期：暂无覆盖（7 日能力缓存）")
+	} else {
+		if forecast, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.ForecastEps, error) {
+			return client.ForecastEps(callCtx, symbol)
+		}); fetchErr != nil {
+			requestErrors = append(requestErrors, fmt.Errorf("EPS forecast: %w", fetchErr))
+			result.Warnings = append(result.Warnings, "EPS 预期："+SanitizeLongbridgeCandidateResearchError(fetchErr))
+		} else if latest, ok := latestForecastEpsItem(forecast); ok {
+			snapshot := epsForecastSnapshotFromLongbridge(result.Ticker, securityID, latest, now)
+			previous, lookupErr := latestEPSForecastSnapshot(ctx, db, snapshot.Ticker)
+			if lookupErr != nil {
+				return result, lookupErr
+			}
+			if previous != nil && previous.SnapshotHash == snapshot.SnapshotHash {
+				result.EPSFetched = true
+			} else {
+				if previous != nil {
+					snapshot.ChangeSummary = epsForecastChangeSummary(*previous, snapshot)
+					if snapshot.ChangeSummary != "" {
+						snapshot.NotificationStatus = "pending"
+					}
+				}
+				if snapshot.NotificationStatus == "" {
+					snapshot.NotificationStatus = "not_applicable"
+				}
+				if err := db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&snapshot).Error; err != nil {
+					return result, fmt.Errorf("save EPS forecast snapshot: %w", err)
+				}
+				result.EPSFetched = true
+				result.EPSChanged = snapshot.ChangeSummary != ""
+				result.EPSChangeSummary = snapshot.ChangeSummary
+			}
 		} else {
-			if previous != nil {
-				snapshot.ChangeSummary = epsForecastChangeSummary(*previous, snapshot)
-				if snapshot.ChangeSummary != "" {
-					snapshot.NotificationStatus = "pending"
+			result.Warnings = append(result.Warnings, "EPS 预期：Longbridge 暂无覆盖")
+			if db.Migrator().HasTable(&LongbridgeResearchRefreshState{}) {
+				if err := MarkLongbridgeResearchSuccess(ctx, db, "eps_no_coverage", result.Ticker, now); err != nil {
+					return result, err
 				}
 			}
-			if snapshot.NotificationStatus == "" {
-				snapshot.NotificationStatus = "not_applicable"
-			}
-			if err := db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&snapshot).Error; err != nil {
-				return result, fmt.Errorf("save EPS forecast snapshot: %w", err)
-			}
-			result.EPSFetched = true
-			result.EPSChanged = snapshot.ChangeSummary != ""
-			result.EPSChangeSummary = snapshot.ChangeSummary
 		}
-	} else {
-		result.Warnings = append(result.Warnings, "EPS 预期：Longbridge 暂无覆盖")
 	}
 
 	if anomalies, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbmarket.AnomalyResponse, error) { return client.Anomaly(callCtx, "US") }); fetchErr != nil {
@@ -381,7 +393,7 @@ func latestForecastEpsItem(value *lbfundamental.ForecastEps) (lbfundamental.Fore
 
 func latestEPSForecastSnapshot(ctx context.Context, db *gorm.DB, ticker string) (*EPSForecastSnapshot, error) {
 	var row EPSForecastSnapshot
-	err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, ticker).Order("fetched_at DESC, id DESC").First(&row).Error
+	err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, ticker).Order("fetched_at DESC, id DESC").First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -393,13 +405,14 @@ func latestEPSForecastSnapshot(ctx context.Context, db *gorm.DB, ticker string) 
 
 func epsForecastSnapshotFromLongbridge(ticker string, securityID uint, item lbfundamental.ForecastEpsItem, now time.Time) EPSForecastSnapshot {
 	row := EPSForecastSnapshot{SecurityID: securityID, Provider: longbridgeCandidateResearchProvider, Ticker: ticker, ForecastStartDate: item.ForecastStartDate, ForecastEndDate: item.ForecastEndDate, Mean: decimalFloat(item.ForecastEpsMean), Median: decimalFloat(item.ForecastEpsMedian), Low: decimalFloat(item.ForecastEpsLowest), High: decimalFloat(item.ForecastEpsHighest), InstitutionTotal: int(item.InstitutionTotal), InstitutionUp: int(item.InstitutionUp), InstitutionDown: int(item.InstitutionDown), FetchedAt: now}
+	row.IdentityCounterID = issuerCounterID(ticker)
 	row.SnapshotHash = epsForecastHash(row)
 	return row
 }
 
 func epsForecastHash(row EPSForecastSnapshot) string {
 	values := []string{row.Provider, row.Ticker, row.ForecastStartDate.UTC().Format(time.RFC3339), row.ForecastEndDate.UTC().Format(time.RFC3339), floatText(row.Mean), floatText(row.Median), floatText(row.Low), floatText(row.High), fmt.Sprintf("%d", row.InstitutionTotal), fmt.Sprintf("%d", row.InstitutionUp), fmt.Sprintf("%d", row.InstitutionDown)}
-	sum := sha256.Sum256([]byte(strings.Join(values, "|")))
+	sum := sha256.Sum256([]byte(row.IdentityCounterID + "|" + strings.Join(values, "|")))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -457,7 +470,10 @@ func saveLongbridgeInstitutionalHolders(ctx context.Context, db *gorm.DB, securi
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	err := db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}, {Name: "ticker"}, {Name: "holder_name"}, {Name: "report_date"}}, DoUpdates: clause.AssignmentColumns([]string{"security_id", "institution_type", "percent_of_shares", "shares_changed", "source_url", "fetched_at", "updated_at"})}).Create(&rows).Error
+	for i := range rows {
+		rows[i].IdentityCounterID = issuerCounterID(ticker)
+	}
+	err := db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}, {Name: "ticker"}, {Name: "holder_name"}, {Name: "report_date"}}, DoUpdates: clause.AssignmentColumns([]string{"identity_counter_id", "security_id", "institution_type", "percent_of_shares", "shares_changed", "source_url", "fetched_at", "updated_at"})}).Create(&rows).Error
 	return len(rows), err
 }
 
@@ -476,7 +492,10 @@ func saveLongbridgeFundHolders(ctx context.Context, db *gorm.DB, securityID uint
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	err := db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}, {Name: "ticker"}, {Name: "fund_code"}, {Name: "report_date"}}, DoUpdates: clause.AssignmentColumns([]string{"security_id", "fund_symbol", "fund_name", "currency", "position_ratio", "source_url", "fetched_at", "updated_at"})}).Create(&rows).Error
+	for i := range rows {
+		rows[i].IdentityCounterID = issuerCounterID(ticker)
+	}
+	err := db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}, {Name: "ticker"}, {Name: "fund_code"}, {Name: "report_date"}}, DoUpdates: clause.AssignmentColumns([]string{"identity_counter_id", "security_id", "fund_symbol", "fund_name", "currency", "position_ratio", "source_url", "fetched_at", "updated_at"})}).Create(&rows).Error
 	return len(rows), err
 }
 
@@ -500,6 +519,9 @@ func SyncCurrentCandidateLongbridgeMarketResearch(ctx context.Context, db *gorm.
 		}
 	}
 	now := time.Now().UTC()
+	if err := MergeLongbridgeResearchAttempts(ctx, db, LongbridgeRefreshFamilyMarketResearch, lastFetched); err != nil {
+		return result, err
+	}
 	fresh, freshErr := FreshLongbridgeResearchTickers(ctx, db, LongbridgeRefreshFamilyMarketResearch, now)
 	if freshErr != nil {
 		return result, freshErr
@@ -515,6 +537,9 @@ func SyncCurrentCandidateLongbridgeMarketResearch(ctx context.Context, db *gorm.
 	}
 	for _, ticker := range tickers {
 		result.Attempted++
+		if err := MarkLongbridgeResearchAttempt(ctx, db, LongbridgeRefreshFamilyMarketResearch, ticker, now); err != nil {
+			return result, err
+		}
 		refreshed, refreshErr := RefreshLongbridgeCandidateMarketResearch(ctx, db, cfg, ticker, "")
 		if refreshErr != nil {
 			result.Failed++
@@ -626,14 +651,26 @@ func newLongbridgeCandidateResearchSDKClient(appKey, appSecret, accessToken stri
 	return &longbridgeCandidateResearchSDKClient{fundamental: fundamental, market: market}, nil
 }
 func (c *longbridgeCandidateResearchSDKClient) ForecastEps(ctx context.Context, symbol string) (*lbfundamental.ForecastEps, error) {
-	return c.fundamental.ForecastEps(ctx, symbol)
+	id, err := explicitUSStockCounterID(symbol)
+	if err != nil {
+		return nil, err
+	}
+	return c.fundamental.ForecastEps(ctx, id)
 }
 func (c *longbridgeCandidateResearchSDKClient) Anomaly(ctx context.Context, market string) (*lbmarket.AnomalyResponse, error) {
 	return c.market.Anomaly(ctx, market)
 }
 func (c *longbridgeCandidateResearchSDKClient) Shareholder(ctx context.Context, symbol string) (*lbfundamental.ShareholderList, error) {
-	return c.fundamental.Shareholder(ctx, symbol)
+	id, err := explicitUSStockCounterID(symbol)
+	if err != nil {
+		return nil, err
+	}
+	return c.fundamental.Shareholder(ctx, id)
 }
 func (c *longbridgeCandidateResearchSDKClient) FundHolder(ctx context.Context, symbol string) (*lbfundamental.FundHolders, error) {
-	return c.fundamental.FundHolder(ctx, symbol)
+	id, err := explicitUSStockCounterID(symbol)
+	if err != nil {
+		return nil, err
+	}
+	return c.fundamental.FundHolder(ctx, id)
 }

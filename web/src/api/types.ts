@@ -1923,6 +1923,10 @@ export interface CandidateEffectivenessCohort {
 }
 
 export interface CandidateEffectivenessReport {
+	validation_scope?: string
+	prospective_status?: string
+	prospective_windows?: CandidateEffectivenessWindow[]
+	rolling_90_day_windows?: CandidateEffectivenessWindow[]
   generated_at: string
   status: 'unverified' | 'validating' | 'validated' | string
   status_detail: string
@@ -2184,6 +2188,9 @@ export interface SystemHealthIssue {
 }
 
 export interface SQLiteBackupHealth {
+	 database_bytes?: Record<string, number>
+	 capacity_budget_bytes?: number
+	 combined_backup_bytes?: number
   directory: string
   complete_pairs: number
   incomplete_pairs: number
@@ -2191,6 +2198,7 @@ export interface SQLiteBackupHealth {
   latest_pair_bytes: number
   latest_completed?: string | null
   replica: {
+	 failure_domain?: string
     enabled: boolean
     directory?: string
     complete_pairs: number
@@ -2338,6 +2346,8 @@ export interface OperationalIssue {
 }
 
 export interface OperationalTaskStatus {
+	window_days?: number
+	window_counts?: Record<string, number>
   task_name: string
   enabled: boolean
   running: boolean
@@ -2350,6 +2360,7 @@ export interface OperationalTaskStatus {
 }
 
 export interface OperationalReport {
+	notification_delivery?: Record<string, { window_days: number; attempted_batches: number; sent_batches: number; failed_batches: number; status: string; last_sent_at?: string }>
   generated_at: string
   status: 'ok' | 'warning' | 'critical' | string
   issues: OperationalIssue[]
