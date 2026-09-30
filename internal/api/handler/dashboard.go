@@ -61,6 +61,7 @@ type DashboardDecisionReadiness struct {
 
 type DashboardDecisionReadinessItem struct {
 	Key      string `json:"key"`
+	Domain   string `json:"domain,omitempty"`
 	Severity string `json:"severity"`
 	Title    string `json:"title"`
 	Detail   string `json:"detail"`
@@ -131,17 +132,19 @@ type DashboardCandidateAvailability struct {
 }
 
 type DashboardCandidateAvailabilityItem struct {
-	Ticker         string  `json:"ticker"`
-	CompanyName    string  `json:"company_name,omitempty"`
-	Grade          string  `json:"grade,omitempty"`
-	Score          int     `json:"score,omitempty"`
-	Readiness      string  `json:"readiness"`
-	PrimaryReason  string  `json:"primary_reason"`
-	NextAction     string  `json:"next_action"`
-	PriceFreshness string  `json:"price_freshness"`
-	PriceTradeDate string  `json:"price_trade_date,omitempty"`
-	CloseUSD       float64 `json:"close_usd,omitempty"`
-	ReviewPriority int     `json:"review_priority,omitempty"`
+	Ticker            string  `json:"ticker"`
+	CompanyName       string  `json:"company_name,omitempty"`
+	Grade             string  `json:"grade,omitempty"`
+	Score             int     `json:"score,omitempty"`
+	Readiness         string  `json:"readiness"`
+	ResearchReadiness string  `json:"research_readiness"`
+	TradeSetupStatus  string  `json:"trade_setup_status,omitempty"`
+	PrimaryReason     string  `json:"primary_reason"`
+	NextAction        string  `json:"next_action"`
+	PriceFreshness    string  `json:"price_freshness"`
+	PriceTradeDate    string  `json:"price_trade_date,omitempty"`
+	CloseUSD          float64 `json:"close_usd,omitempty"`
+	ReviewPriority    int     `json:"review_priority,omitempty"`
 }
 
 type DashboardCalendarItem struct {
@@ -211,12 +214,30 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 		return
 	}
 	forceRefresh := c.Query("refresh") == "1" || strings.EqualFold(c.Query("refresh"), "true")
-	h.dashboardCacheMu.Lock()
-	defer h.dashboardCacheMu.Unlock()
-	if !forceRefresh && !h.dashboardCacheAt.IsZero() && time.Since(h.dashboardCacheAt) < dashboardSummaryCacheTTL {
-		c.Header("X-Dashboard-Cache", "hit")
-		OK(c, h.dashboardCache)
-		return
+	if !forceRefresh {
+		h.dashboardCacheMu.RLock()
+		cachedAt, cached := h.dashboardCacheAt, h.dashboardCache
+		h.dashboardCacheMu.RUnlock()
+		if !cachedAt.IsZero() && time.Since(cachedAt) < dashboardSummaryCacheTTL {
+			c.Header("X-Dashboard-Cache", "hit")
+			OK(c, cached)
+			return
+		}
+	}
+	// Coalesce cold refreshes without holding the cache lock while the database
+	// aggregate is built. Cached readers remain fast even when one refresh is
+	// performing the more expensive candidate/effectiveness queries.
+	h.dashboardBuildMu.Lock()
+	defer h.dashboardBuildMu.Unlock()
+	if !forceRefresh {
+		h.dashboardCacheMu.RLock()
+		cachedAt, cached := h.dashboardCacheAt, h.dashboardCache
+		h.dashboardCacheMu.RUnlock()
+		if !cachedAt.IsZero() && time.Since(cachedAt) < dashboardSummaryCacheTTL {
+			c.Header("X-Dashboard-Cache", "hit")
+			OK(c, cached)
+			return
+		}
 	}
 	c.Header("X-Dashboard-Cache", "miss")
 	ctx := c.Request.Context()
@@ -295,11 +316,14 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 		} else {
 			operationalReport = &report
 			result.Operations.Status = report.Status
-			result.Operations.Issues = report.Issues
+			result.Operations.Issues = make([]service.OperationalIssue, 0, len(report.Issues))
+			for _, issue := range report.Issues {
+				result.Operations.Issues = append(result.Operations.Issues, dashboardOperationalIssueSummary(issue))
+			}
 			result.Operations.Tasks = report.Tasks
 			result.Operations.FailedNotificationBatches = report.FailedNotificationBatches
 			result.Operations.DeadLetterBatches = report.DeadLetterBatches
-			for _, issue := range report.Issues {
+			for _, issue := range result.Operations.Issues {
 				// Delivery failures are a user-facing blind spot even when the
 				// health service otherwise classifies the queue as warning. Keep
 				// them in the intentionally small landing-page banner set.
@@ -311,8 +335,10 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 	}
 	result.Decision.Readiness = buildDashboardDecisionReadiness(ctx, h.DiscoveryDB, result.Decision.Market.Freshness, operationalReport, result.candidateHealth)
 	applyDashboardCandidateAvailability(&result.Decision.Readiness, result.Decision.Availability)
+	h.dashboardCacheMu.Lock()
 	h.dashboardCache = result
 	h.dashboardCacheAt = time.Now().UTC()
+	h.dashboardCacheMu.Unlock()
 	OK(c, result)
 }
 
@@ -330,6 +356,7 @@ func applyDashboardCandidateAvailability(readiness *DashboardDecisionReadiness, 
 	}
 	readiness.Reasons = append(readiness.Reasons, DashboardDecisionReadinessItem{
 		Key:      "candidate_universe_gated",
+		Domain:   "candidate",
 		Severity: "warning",
 		Title:    "候选均未通过交易门槛",
 		Detail:   fmt.Sprintf("当前 %d 只仅供研究、%d 只被阻断；数据管线可用，但不应据此形成新的交易计划", availability.ResearchOnly, availability.Blocked),
@@ -350,7 +377,7 @@ func buildDashboardDecisionReadiness(ctx context.Context, db *gorm.DB, freshness
 		AsOf: freshness.AsOf, ExpectedTradeDate: freshness.ExpectedTradeDate, Reasons: []DashboardDecisionReadinessItem{},
 	}
 	add := func(key, severity, title, detail, action string) {
-		result.Reasons = append(result.Reasons, DashboardDecisionReadinessItem{Key: key, Severity: severity, Title: title, Detail: detail, Action: action})
+		result.Reasons = append(result.Reasons, DashboardDecisionReadinessItem{Key: key, Domain: dashboardReadinessDomain(key), Severity: severity, Title: title, Detail: detail, Action: action})
 	}
 	researchOnly := func() {
 		if result.Status == "ready" {
@@ -424,11 +451,115 @@ func buildDashboardDecisionReadiness(ctx context.Context, db *gorm.DB, freshness
 			if issue.Severity != "critical" && issue.Severity != "danger" {
 				continue
 			}
-			block()
-			add("operational:"+issue.Key, "critical", issue.Title, issue.Detail, issue.Action)
+			domain := dashboardOperationalEvidenceDomain(issue)
+			if domain != "market" && domain != "candidate" && domain != "strategy_validation" {
+				continue
+			}
+			// A failed background run does not invalidate a still-fresh persisted
+			// snapshot. Freshness, candidate evidence and effectiveness above are
+			// the authoritative gates; this item only warns which domain may fail
+			// to advance on the next scheduled refresh.
+			item := dashboardOperationalIssueSummary(issue)
+			result.Reasons = append(result.Reasons, DashboardDecisionReadinessItem{
+				Key: "operational:" + issue.Key, Domain: domain, Severity: "warning",
+				Title: item.Title, Detail: item.Detail, Action: item.Action,
+			})
 		}
 	}
 	return result
+}
+
+func dashboardReadinessDomain(key string) string {
+	switch {
+	case strings.HasPrefix(key, "market_"):
+		return "market"
+	case strings.HasPrefix(key, "candidate_") || key == "discovery_db_unavailable" || key == "technical_history_pending":
+		return "candidate"
+	case strings.HasPrefix(key, "effectiveness_"):
+		return "strategy_validation"
+	default:
+		return "operations"
+	}
+}
+
+func dashboardOperationalEvidenceDomain(issue service.OperationalIssue) string {
+	key := strings.ToLower(issue.Key)
+	switch {
+	case strings.Contains(key, "ipo"):
+		return "ipo"
+	case strings.Contains(key, "notification"):
+		return "notification"
+	case strings.Contains(key, "market_trend"), strings.Contains(key, "us_futures"):
+		return "market"
+	case strings.Contains(key, "price_action"), strings.Contains(key, "strategy_outcome"):
+		return "strategy_validation"
+	case strings.Contains(key, "small_cap"), strings.Contains(key, "candidate"), strings.Contains(key, "technical_history"):
+		return "candidate"
+	case strings.Contains(key, "sec_filing"), strings.Contains(key, "watch_target"):
+		return "sec_watchlist"
+	default:
+		return "operations"
+	}
+}
+
+func dashboardOperationalIssueSummary(issue service.OperationalIssue) service.OperationalIssue {
+	result := issue
+	if issue.Key == "technical_history_retry_queue" {
+		result.Detail = truncateDashboardText(service.SanitizeSensitiveError(issue.Detail), 180)
+		return result
+	}
+	domain := dashboardOperationalEvidenceDomain(issue)
+	switch domain {
+	case "ipo":
+		result.Title = "IPO 新申报扫描异常"
+		result.Detail = "仅影响 IPO EFFECT 等新申报发现；常规 SEC 公告与普通候选研究仍按各自快照判断。系统将按调度策略继续重试。"
+	case "notification":
+		result.Title = "通知投递需要处理"
+		result.Detail = "研究数据仍可查看，但部分提醒可能延迟；请在通知记录核对失败批次。"
+	case "market":
+		result.Title = "市场数据后台更新异常"
+		result.Detail = "仅影响后续市场快照推进；当前页面会继续按已落库行情的交易日和新鲜度独立判断。"
+	case "candidate":
+		result.Title = "候选研究后台更新异常"
+		result.Detail = "仅影响后续候选或技术历史补齐；当前候选仍按各自证据完整度与行情新鲜度判断。"
+	case "strategy_validation":
+		result.Title = "策略验证后台更新异常"
+		result.Detail = "可能影响策略效果或价格周期的后续推进；当前验证状态仍以已落库结果为准。"
+	case "sec_watchlist":
+		result.Title = "监控标的研究更新异常"
+		result.Detail = "仅影响对应监控标的的后续 SEC 或研究补充，不扩大为全局交易阻断。"
+	default:
+		result.Detail = truncateDashboardText(service.SanitizeSensitiveError(issue.Detail), 180)
+	}
+	return result
+}
+
+func dashboardOperationalReportSummary(report service.OperationalReport) service.OperationalReport {
+	report.Issues = append([]service.OperationalIssue(nil), report.Issues...)
+	titles := make([]string, 0, len(report.Issues))
+	for index, issue := range report.Issues {
+		report.Issues[index] = dashboardOperationalIssueSummary(issue)
+		if len(titles) < 3 {
+			titles = append(titles, report.Issues[index].Title)
+		}
+	}
+	status := map[string]string{"ok": "正常", "warning": "需关注", "critical": "严重"}[report.Status]
+	if status == "" {
+		status = report.Status
+	}
+	report.Summary = fmt.Sprintf("状态：%s；当前 %d 项待办。", status, len(report.Issues))
+	if len(titles) > 0 {
+		report.Summary += "优先处理：" + strings.Join(titles, "；") + "。"
+	}
+	return report
+}
+
+func truncateDashboardText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len([]rune(value)) <= limit {
+		return value
+	}
+	return string([]rune(value)[:limit]) + "…"
 }
 
 func dashboardDataFreshness(ctx context.Context, discoveryDB *gorm.DB, tradeDate, source string, lastFetched *time.Time, now time.Time) DashboardDataFreshness {
@@ -587,7 +718,9 @@ func (h *AppHandler) loadDashboardCandidateActions(ctx context.Context, result *
 		return nil
 	}
 	var events []discovery.TradeSetupStatusEvent
-	if err := h.DiscoveryDB.WithContext(ctx).Order("ticker ASC, started_at DESC, id DESC").Limit(500).Find(&events).Error; err != nil {
+	// History is context only. Today actions are rebuilt from the current
+	// technical snapshot below, never from old transition prices.
+	if err := h.DiscoveryDB.WithContext(ctx).Where("trade_date = ?", dashboardLatestTradeDate(result.Decision.Market)).Order("ticker ASC, started_at DESC, id DESC").Limit(500).Find(&events).Error; err != nil {
 		return err
 	}
 	latest := map[string]discovery.TradeSetupStatusEvent{}
@@ -693,7 +826,7 @@ func (h *AppHandler) loadDashboardCandidateAvailability(ctx context.Context, res
 	if h.DiscoveryDB == nil {
 		return nil
 	}
-	page, err := discovery.ListCandidateScores(ctx, h.DiscoveryDB, discovery.CandidateScoreQuery{Page: 1, PageSize: 200, SkipPerformance: true, SkipTechnicalDetails: true})
+	page, err := discovery.ListCandidateScores(ctx, h.DiscoveryDB, discovery.CandidateScoreQuery{Page: 1, PageSize: 200, SkipPerformance: true})
 	if err != nil {
 		return err
 	}
@@ -716,27 +849,55 @@ func (h *AppHandler) loadDashboardCandidateAvailability(ctx context.Context, res
 			companyBySecurity[security.ID] = security.CompanyName
 		}
 	}
+	result.Decision.Actions = []DashboardCandidateAction{}
 	availability := DashboardCandidateAvailability{
 		Total: len(page.Items), Usable: []DashboardCandidateAvailabilityItem{}, Excluded: []DashboardCandidateAvailabilityItem{},
 	}
 	readinessByTicker := make(map[string]string, len(page.Items))
 	for _, item := range page.Items {
-		readiness := item.ResearchReadiness.Status
-		usable := readiness == discovery.CandidateResearchReadinessReady &&
+		researchReadiness := item.ResearchReadiness.Status
+		researchUsable := researchReadiness == discovery.CandidateResearchReadinessReady &&
 			item.PriceFreshnessStatus == discovery.PriceFreshnessCurrent &&
 			item.PriceQualityStatus == discovery.QualityStatusValid && item.MarketCapUSD > 0
-		if !usable && readiness == discovery.CandidateResearchReadinessReady {
+		if !researchUsable && researchReadiness == discovery.CandidateResearchReadinessReady {
+			researchReadiness = discovery.CandidateResearchReadinessResearchOnly
+		}
+		setup := item.Technical.TradeSetup
+		setupStatus := setup.Status
+		if item.PriceTradeDate == nil || item.Technical.TradeDate != item.PriceTradeDate.Format(time.DateOnly) {
+			setupStatus = ""
+		}
+		tradeReady := researchUsable && setupStatus == discovery.TradeSetupEntryCandidate
+		readiness := researchReadiness
+		if researchReadiness == discovery.CandidateResearchReadinessReady && !tradeReady {
 			readiness = discovery.CandidateResearchReadinessResearchOnly
 		}
 		readinessByTicker[item.Ticker] = readiness
-		reason, nextAction := dashboardCandidateGate(item, usable)
+		reason, nextAction := dashboardCandidateGate(item, researchUsable, setupStatus)
 		row := DashboardCandidateAvailabilityItem{
 			Ticker: item.Ticker, CompanyName: companyBySecurity[item.SecurityID], Grade: item.Grade,
-			Score: item.TotalScore, Readiness: readiness, PrimaryReason: reason, NextAction: nextAction,
+			Score: item.TotalScore, Readiness: readiness, ResearchReadiness: researchReadiness, TradeSetupStatus: setupStatus, PrimaryReason: reason, NextAction: nextAction,
 			PriceFreshness: item.PriceFreshnessStatus, CloseUSD: item.PriceCloseUSD, ReviewPriority: item.ReviewPriorityScore,
 		}
 		if item.PriceTradeDate != nil {
 			row.PriceTradeDate = item.PriceTradeDate.Format(time.DateOnly)
+		}
+		// Exit/invalidated states matter only for explicitly followed candidates.
+		// An unfollowed historical failure is not a daily urgent trading task.
+		if (tradeReady || (item.Followed && (setupStatus == discovery.TradeSetupExitWarning || setupStatus == discovery.TradeSetupInvalidated))) && item.PriceFreshnessStatus == discovery.PriceFreshnessCurrent {
+			priority, action, due := dashboardActionWorkflow(setupStatus)
+			since := time.Time{}
+			if setup.StatusSince != nil {
+				since = *setup.StatusSince
+			}
+			result.Decision.Actions = append(result.Decision.Actions, DashboardCandidateAction{
+				Ticker: item.Ticker, CompanyName: row.CompanyName, Status: setupStatus, Priority: priority,
+				Tradability: readiness, EntryTrigger: setup.EntryTrigger, Reason: setup.ExitReason,
+				NextAction: action, DueLabel: due, EvidenceAsOf: row.PriceTradeDate, Since: since,
+				CloseUSD: item.Technical.CloseUSD, StopLossUSD: setup.StopLossUSD, RiskPct: setup.RiskPct,
+				TakeProfitLow: setup.TakeProfitZoneLowUSD, TakeProfitHigh: setup.TakeProfitZoneHighUSD,
+				Score: item.TotalScore, Grade: item.Grade,
+			})
 		}
 		switch readiness {
 		case discovery.CandidateResearchReadinessReady:
@@ -772,10 +933,22 @@ func (h *AppHandler) loadDashboardCandidateAvailability(ctx context.Context, res
 		availability.Excluded = availability.Excluded[:8]
 	}
 	result.Decision.Availability = availability
+	sort.SliceStable(result.Decision.Actions, func(i, j int) bool {
+		if result.Decision.Actions[i].Priority != result.Decision.Actions[j].Priority {
+			return result.Decision.Actions[i].Priority < result.Decision.Actions[j].Priority
+		}
+		if result.Decision.Actions[i].Score != result.Decision.Actions[j].Score {
+			return result.Decision.Actions[i].Score > result.Decision.Actions[j].Score
+		}
+		return result.Decision.Actions[i].Ticker < result.Decision.Actions[j].Ticker
+	})
+	if len(result.Decision.Actions) > 8 {
+		result.Decision.Actions = result.Decision.Actions[:8]
+	}
 	for index := range result.Decision.Actions {
 		if readiness, found := readinessByTicker[result.Decision.Actions[index].Ticker]; found {
 			result.Decision.Actions[index].Tradability = readiness
-			if readiness != discovery.CandidateResearchReadinessReady {
+			if readiness != discovery.CandidateResearchReadinessReady && result.Decision.Actions[index].Status != discovery.TradeSetupExitWarning && result.Decision.Actions[index].Status != discovery.TradeSetupInvalidated {
 				result.Decision.Actions[index].NextAction = "先解除数据或研究门控，再评估交易动作"
 			}
 		}
@@ -783,9 +956,20 @@ func (h *AppHandler) loadDashboardCandidateAvailability(ctx context.Context, res
 	return nil
 }
 
-func dashboardCandidateGate(item discovery.CandidateScoreResult, usable bool) (string, string) {
-	if usable {
-		return "关键行情与研究证据可用", "形成可证伪论点，并核对技术信号与近期催化剂"
+func dashboardCandidateGate(item discovery.CandidateScoreResult, researchUsable bool, tradeSetupStatus string) (string, string) {
+	if researchUsable {
+		switch tradeSetupStatus {
+		case discovery.TradeSetupEntryCandidate:
+			return "研究证据与入场计划均已就绪", "复核催化剂、仓位与止损后形成交易计划"
+		case discovery.TradeSetupInvalidated:
+			return "研究证据可用，但原交易计划已失效", "停止新增风险，重新建立可证伪的入场与退出条件"
+		case discovery.TradeSetupExitWarning:
+			return "研究证据可用，但当前存在离场预警", "先核对持仓、止损和退出条件，不形成新开仓计划"
+		case discovery.TradeSetupWatching:
+			return "研究证据可用，尚未触发入场条件", "继续观察技术触发、成交量与近期催化剂"
+		default:
+			return "研究证据可用，交易计划尚未更新", "等待最新日线生成交易计划后再判断是否开仓"
+		}
 	}
 	hasReason := func(want string) bool {
 		for _, reason := range item.ResearchReadiness.Reasons {
@@ -810,7 +994,7 @@ func dashboardCandidateGate(item discovery.CandidateScoreResult, usable bool) (s
 		return "流动性条件阻断", "复核成交额与可参与上限"
 	case hasReason("financial_metrics_unavailable"), hasReason("financial_period_stale"):
 		return "财务证据缺失或过期", "核对最新 10-Q / 10-K 财务指标"
-	case hasReason("insider_source_unavailable"), hasReason("insider_coverage_missing"), hasReason("insider_coverage_partial"), hasReason("insider_coverage_unavailable"):
+	case hasReason("insider_source_unavailable"), hasReason("insider_coverage_missing"), hasReason("insider_coverage_partial"), hasReason("insider_coverage_unavailable"), hasReason("insider_coverage_stale"):
 		return "内幕交易证据未完整覆盖", "复核 Form 4 覆盖情况"
 	case hasReason("share_dilution_high"):
 		return "稀释风险较高", "复核股本变化与融资文件"
@@ -841,12 +1025,42 @@ func (h *AppHandler) loadDashboardCalendar(ctx context.Context, now time.Time, r
 		items = append(items, DashboardCalendarItem{Kind: "earnings", Scope: "candidate", Ticker: item.Ticker, Title: item.Ticker + " 小盘候选财报预告", At: item.ReportAt, Session: item.Session, Link: "/discovery-candidates"})
 	}
 	var macro []model.MacroRelease
-	if err := h.DB.WithContext(ctx).Where("status = ? AND scheduled_at >= ? AND scheduled_at <= ?", service.MacroReleaseScheduled, now, until).Order("market_importance DESC, scheduled_at ASC").Limit(8).Find(&macro).Error; err != nil {
+	if err := h.DB.WithContext(ctx).Where("status = ? AND scheduled_at >= ? AND scheduled_at <= ?", service.MacroReleaseScheduled, now, until).Order("market_importance DESC, scheduled_at ASC").Limit(18).Find(&macro).Error; err != nil {
 		return err
 	}
+	macroItems := make([]DashboardCalendarItem, 0, 8)
+	macroKeys := map[string]struct{}{}
 	for _, item := range macro {
-		items = append(items, DashboardCalendarItem{Kind: "macro", Scope: "macro", Title: item.Title, At: item.ScheduledAt, Link: "/macro-calendar"})
+		title := service.NormalizeMacroTitle(item.Title)
+		if item.Category == "fomc" && item.ScheduledAt != nil {
+			nearby := -1
+			for index, existing := range macroItems {
+				if existing.At != nil && item.ScheduledAt.Sub(*existing.At).Abs() <= 72*time.Hour {
+					nearby = index
+					break
+				}
+			}
+			if nearby >= 0 {
+				if item.ScheduledAt.After(*macroItems[nearby].At) {
+					macroItems[nearby] = DashboardCalendarItem{Kind: "macro", Scope: "macro", Title: title, At: item.ScheduledAt, Link: "/macro-calendar"}
+				}
+				continue
+			}
+		}
+		key := item.CanonicalEventKey
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(item.Category + ":" + title + ":" + item.ScheduledAt.UTC().Format(time.DateOnly)))
+		}
+		if _, exists := macroKeys[key]; exists {
+			continue
+		}
+		macroKeys[key] = struct{}{}
+		macroItems = append(macroItems, DashboardCalendarItem{Kind: "macro", Scope: "macro", Title: title, At: item.ScheduledAt, Link: "/macro-calendar"})
+		if len(macroItems) == 8 {
+			break
+		}
 	}
+	items = append(items, macroItems...)
 	if h.IPO != nil {
 		followed := true
 		companies, err := h.IPO.ListCompanies(ctx, service.IPOCompanyFilter{Followed: &followed, IncludeEnded: true, Page: 1, PageSize: 6}, now)

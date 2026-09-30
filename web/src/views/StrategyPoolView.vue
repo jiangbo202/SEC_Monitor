@@ -101,8 +101,8 @@
           <p>当前候选全集 {{ candidateAvailability.total || candidateTotal }} 只；{{ candidateOrder === 'fundamental' ? '按基本面总分排序' : '按短线复核优先级排序' }}。候选存在不等于可形成交易计划。</p>
         </div>
         <div class="candidate-heading-actions">
-          <el-tag type="success" effect="plain">可行动 {{ candidateAvailability.eligible }}</el-tag>
-          <el-tag type="warning" effect="plain">仅研究 {{ candidateAvailability.research_only }}</el-tag>
+          <el-tag type="success" effect="plain">可开仓 {{ candidateAvailability.eligible }}</el-tag>
+          <el-tag type="warning" effect="plain">研究观察 {{ candidateAvailability.research_only }}</el-tag>
           <el-tag type="danger" effect="plain">阻断 {{ candidateAvailability.blocked }}</el-tag>
           <el-button link type="primary" @click="router.push('/discovery-candidates')">查看全部候选</el-button>
         </div>
@@ -115,7 +115,7 @@
           <template #default="{ row }"><strong>{{ row.ticker }}</strong></template>
         </el-table-column>
         <el-table-column label="研究门槛" width="104">
-          <template #default="{ row }"><el-tag size="small" :type="readinessTagType(row.research_readiness?.status)" effect="plain">{{ readinessLabel(row.research_readiness?.status) }}</el-tag></template>
+          <template #default="{ row }"><el-tag size="small" :type="readinessTagType(candidateDecisionStatus(row))" effect="plain">{{ readinessLabel(candidateDecisionStatus(row)) }}</el-tag></template>
         </el-table-column>
         <el-table-column label="基本面" width="112" align="right">
           <template #default="{ row }">
@@ -222,13 +222,13 @@ async function load() {
   try {
     const [marketResponse, macroResponse] = await Promise.all([
       apiClient.get<ApiResponse<MarketTrendResponse>>('/market-trend', { params: { history_days: 30 } }),
-      apiClient.get<ApiResponse<PageResult<MacroRelease>>>('/macro/releases', { params: { status: 'scheduled', from: todayShanghai(), page: 1, page_size: 6, sort: 'asc' } }),
+      apiClient.get<ApiResponse<PageResult<MacroRelease>>>('/macro/releases', { params: { status: 'scheduled', from: todayShanghai(), page: 1, page_size: 18, sort: 'asc' } }),
       loadCandidates(),
       loadWatchTargets(),
       loadCandidateAvailability(),
     ])
     Object.assign(market, marketResponse.data.data)
-    macroEvents.value = macroResponse.data.data.items || []
+    macroEvents.value = compactMacroEvents(macroResponse.data.data.items || []).slice(0, 6)
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '加载策略观察池失败')
   } finally {
@@ -238,6 +238,30 @@ async function load() {
 
 function formatDateTime(value?: string | null) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '尚未同步' }
 function todayShanghai() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()) }
+function compactMacroEvents(items: MacroRelease[]) {
+  const result: MacroRelease[] = []
+  const positions = new Map<string, number>()
+  for (const source of items) {
+    const title = (source.title || '').replace(/^n\s*ews(?:\s+release)?[:\s-]*/i, '').replace(/\s+/g, ' ').trim()
+    const item = { ...source, title }
+    const scheduled = item.scheduled_at ? new Date(item.scheduled_at) : null
+    const nearbyFOMCIndex = item.category === 'fomc' && scheduled
+      ? result.findIndex(existing => existing.category === 'fomc' && existing.scheduled_at && Math.abs(scheduled.getTime() - new Date(existing.scheduled_at).getTime()) <= 72 * 60 * 60 * 1000)
+      : -1
+    const family = item.canonical_event_key || `${item.category}:${title.toLowerCase()}:${item.scheduled_at || ''}`
+    const priorIndex = nearbyFOMCIndex >= 0 ? nearbyFOMCIndex : positions.get(family)
+    if (priorIndex === undefined) {
+      positions.set(family, result.length)
+      result.push(item)
+      continue
+    }
+    const prior = result[priorIndex]
+    const priorAt = prior.scheduled_at ? new Date(prior.scheduled_at) : null
+    const sameEventWindow = item.category === 'fomc' && scheduled && priorAt && Math.abs(scheduled.getTime() - priorAt.getTime()) <= 72 * 60 * 60 * 1000
+    if (sameEventWindow && scheduled.getTime() > priorAt.getTime()) result[priorIndex] = item
+  }
+  return result.sort((left, right) => new Date(left.scheduled_at || 0).getTime() - new Date(right.scheduled_at || 0).getTime())
+}
 function formatPrice(value?: number | null) { return Number.isFinite(value) ? Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-' }
 function formatUSD(value?: number | null) { return Number.isFinite(value) ? `$${Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '-' }
 function formatPct(value?: number | null) { return Number.isFinite(value) ? `${Number(value) > 0 ? '+' : ''}${Number(value).toFixed(2)}%` : '-' }
@@ -245,8 +269,14 @@ function formatRatio(value?: number | null) { return Number.isFinite(value) ? `$
 function formatVolume(value?: number | null) { return Number.isFinite(value) ? Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '-' }
 function changeClass(value?: number | null) { return Number(value) > 0 ? 'is-up' : Number(value) < 0 ? 'is-down' : 'is-flat' }
 function gradeTagType(grade: string) { return grade === 'A' ? 'success' : grade === 'B' ? 'warning' : 'info' }
-function readinessLabel(value?: string) { return ({ ready: '可行动', research_only: '仅研究', blocked: '阻断' } as Record<string, string>)[value || ''] || '待核验' }
-function readinessTagType(value?: string) { return value === 'ready' ? 'success' : value === 'blocked' ? 'danger' : 'warning' }
+function candidateDecisionStatus(row: CandidateScore) {
+  const research = row.research_readiness?.status
+  if (research === 'blocked') return 'blocked'
+  if (research !== 'ready') return 'research_only'
+  return row.technical?.trade_setup?.status === 'entry_candidate' ? 'trade_ready' : 'research_ready'
+}
+function readinessLabel(value?: string) { return ({ trade_ready: '可开仓', research_ready: '研究就绪', research_only: '仅研究', blocked: '阻断' } as Record<string, string>)[value || ''] || '待核验' }
+function readinessTagType(value?: string) { return value === 'trade_ready' ? 'success' : value === 'blocked' ? 'danger' : value === 'research_ready' ? 'primary' : 'warning' }
 function technicalLabel(row: CandidateScore) { return technicalStatusLabel(row.technical?.status) }
 function technicalStatusLabel(value?: string) { return value === 'ready' ? '暂无突破' : value === 'data_insufficient' ? '技术历史不足' : '技术数据待补' }
 function liquidityLabel(value?: string) { return ({ normal: '正常', limited: '受限', low: '低流动性', unknown: '待评估' } as Record<string, string>)[value || 'unknown'] || value || '待评估' }

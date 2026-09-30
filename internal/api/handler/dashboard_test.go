@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
+	"sec_monitor/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
@@ -130,9 +132,53 @@ func TestDashboardCandidateGateSeparatesFallbackPriceFromUsableCandidate(t *test
 		PriceQualityStatus:     discovery.QualityStatusValid,
 		ResearchReadiness:      discovery.CandidateResearchReadiness{Status: discovery.CandidateResearchReadinessReady},
 	}
-	reason, action := dashboardCandidateGate(item, false)
+	reason, action := dashboardCandidateGate(item, false, "")
 	if reason != "行情仅到前一交易日" || action != "补齐最近完成交易日的有效收盘价" {
 		t.Fatalf("gate=(%q, %q)", reason, action)
+	}
+}
+
+func TestDashboardCandidateGateRequiresCurrentEntryPlanForTradeReady(t *testing.T) {
+	item := discovery.CandidateScoreResult{
+		CandidateScoreSnapshot: discovery.CandidateScoreSnapshot{Ticker: "TEST", MarketCapUSD: 120_000_000},
+		PriceCloseUSD:          4.25, PriceFreshnessStatus: discovery.PriceFreshnessCurrent,
+		PriceQualityStatus: discovery.QualityStatusValid,
+		ResearchReadiness:  discovery.CandidateResearchReadiness{Status: discovery.CandidateResearchReadinessReady},
+	}
+	reason, _ := dashboardCandidateGate(item, true, discovery.TradeSetupInvalidated)
+	if reason != "研究证据可用，但原交易计划已失效" {
+		t.Fatalf("reason=%q", reason)
+	}
+	reason, _ = dashboardCandidateGate(item, true, discovery.TradeSetupEntryCandidate)
+	if reason != "研究证据与入场计划均已就绪" {
+		t.Fatalf("reason=%q", reason)
+	}
+}
+
+func TestDashboardOperationalIPOFaultDoesNotBelongToDecisionEvidence(t *testing.T) {
+	issue := service.OperationalIssue{Key: "task_failed:ipo_radar_sync", Severity: "critical", Title: "调度任务失败", Detail: "raw provider error", Action: "scheduler"}
+	if got := dashboardOperationalEvidenceDomain(issue); got != "ipo" {
+		t.Fatalf("domain=%q", got)
+	}
+	summary := dashboardOperationalIssueSummary(issue)
+	if strings.Contains(summary.Detail, "raw provider error") || !strings.Contains(summary.Detail, "普通候选研究") {
+		t.Fatalf("summary=%+v", summary)
+	}
+}
+
+func TestDashboardOperationalReportSummaryHidesRawProviderError(t *testing.T) {
+	report := dashboardOperationalReportSummary(service.OperationalReport{
+		Status: "critical",
+		Issues: []service.OperationalIssue{{
+			Key: "task_failed:ipo_radar_sync", Severity: "critical", Title: "调度任务失败",
+			Detail: `Get "https://www.sec.gov": context deadline exceeded trace_id=secret`,
+		}},
+	})
+	if strings.Contains(report.Summary, "https://") || strings.Contains(report.Issues[0].Detail, "trace_id") {
+		t.Fatalf("raw technical error leaked: summary=%q issue=%+v", report.Summary, report.Issues[0])
+	}
+	if report.Issues[0].Title != "IPO 新申报扫描异常" {
+		t.Fatalf("title=%q", report.Issues[0].Title)
 	}
 }
 

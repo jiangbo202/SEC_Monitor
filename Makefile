@@ -1,4 +1,4 @@
-.PHONY: start stop restart status logs backend frontend test lint build docker-build docker-up docker-down docker-logs docker-discovery-sync docker-discovery-incremental-sync docker-discovery-market-sync
+.PHONY: start stop restart status logs backend frontend test lint build docker-build docker-up docker-down docker-logs docker-discovery-sync docker-discovery-incremental-sync docker-discovery-market-sync benchmark-dashboard
 
 start:
 	./scripts/local.sh start
@@ -33,6 +33,9 @@ build:
 
 docker-build:
 	docker build -t sec-monitor:local .
+
+benchmark-dashboard:
+	node scripts/benchmark-dashboard.mjs
 
 docker-up:
 	./scripts/local.sh stop

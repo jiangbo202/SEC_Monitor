@@ -13,6 +13,31 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestBackupCapacityBudgetPreservesNewestPairsAndForeignFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, stamp := range []string{"20260901T000000Z", "20260902T000000Z", "20260903T000000Z"} {
+		for _, name := range []string{"sec_monitor", "small_cap"} {
+			if err := os.WriteFile(filepath.Join(dir, name+"-"+stamp+".db"), []byte("12345"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, name := range []string{"foreign.db", "small_cap-20260904T000000Z.db"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("keep"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := pruneSQLiteBackupBudget(dir, 1)
+	if err != nil || deleted != 2 {
+		t.Fatalf("deleted=%d %v", deleted, err)
+	}
+	for _, name := range []string{"foreign.db", "small_cap-20260904T000000Z.db", "sec_monitor-20260902T000000Z.db", "small_cap-20260903T000000Z.db"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestSQLiteBackupServiceCreatesVerifiedSnapshotsAndPrunesExpiredFiles(t *testing.T) {
 	dir := t.TempDir()
 	mainPath := filepath.Join(dir, "sec_monitor.db")
@@ -38,7 +63,7 @@ func TestSQLiteBackupServiceCreatesVerifiedSnapshotsAndPrunesExpiredFiles(t *tes
 	if err := os.MkdirAll(backupDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	oldBackup := filepath.Join(backupDir, "old.db")
+	oldBackup := filepath.Join(backupDir, "sec_monitor-20200101T000000Z.db")
 	if err := os.WriteFile(oldBackup, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}

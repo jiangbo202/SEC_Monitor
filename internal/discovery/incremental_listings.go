@@ -216,6 +216,12 @@ func (c *Coordinator) SyncIncrementalListings(ctx context.Context, input Increme
 	}
 	baseVersion := SourceVersion{Source: "security-universe:incremental-base", Version: previous.BatchID, SHA256: previous.ContentSHA256, EffectiveAt: now}
 	versions := append([]SourceVersion{baseVersion}, input.SourceVersions...)
+	// Preserve provenance for the coverage rows copied from the base universe.
+	insiderVersions, lineageErr := insiderLineageVersions(ctx, c.DB, previous)
+	if lineageErr != nil {
+		return result, lineageErr
+	}
+	versions = append(versions, insiderVersions...)
 	versions = append(versions, SourceVersion{Source: "capital-events:incremental-submissions", Version: baseHash + "+" + CapitalRiskPolicyVersion, SHA256: baseHash, EffectiveAt: now}, overrideVersion)
 	versions, err = alignSourceVersionsToBatchDate(date, versions)
 	if err != nil {

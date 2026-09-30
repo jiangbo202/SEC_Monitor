@@ -1917,7 +1917,7 @@
       <el-alert :type="effectiveness?.status === 'validated' ? 'success' : 'warning'" :closable="false" show-icon class="summary-alert"
         :title="effectivenessNotice" />
       <div class="effectiveness-toolbar">
-        <span>只读取本地日线；净收益按往返成本 {{ formatPct(effectiveness?.assumed_round_trip_cost_pct) }} 估算。</span>
+        <span>只读取本地日线；净收益按往返成本 {{ formatPct(effectiveness?.assumed_round_trip_cost_pct) }} 估算。历史样本达标不代表样本外收益或实际成交已验证。</span>
         <el-space><el-button size="small" :loading="effectivenessReplayLoading" @click="replayEffectiveness">历史回放</el-button><el-button size="small" type="primary" plain :loading="effectivenessRefreshing" @click="refreshEffectiveness">推进验证</el-button></el-space>
       </div>
       <el-descriptions :column="3" border size="small" class="effectiveness-readiness">
@@ -1945,6 +1945,10 @@
         <el-descriptions-item label="距离验证门槛" :span="3">
           还差 {{ effectiveness?.remaining_sample_count || 0 }} 个20日样本 · {{ effectiveness?.remaining_signal_dates || 0 }} 个独立信号日 · {{ effectiveness?.remaining_benchmark_count || 0 }} 个 IWM 配对
         </el-descriptions-item>
+      </el-descriptions>
+      <el-descriptions :column="2" border class="summary-alert">
+        <el-descriptions-item label="前向观察 · 20 日成熟样本">{{ effectiveness?.prospective_windows?.find(w => w.horizon_days === 20)?.sample_count || 0 }}</el-descriptions-item>
+        <el-descriptions-item label="最近 90 天前向 · 20 日成熟样本">{{ effectiveness?.rolling_90_day_windows?.find(w => w.horizon_days === 20)?.sample_count || 0 }}</el-descriptions-item>
       </el-descriptions>
       <el-table :data="effectiveness?.cohorts || []" border empty-text="暂无可评估候选">
         <el-table-column prop="grade" label="Cohort" width="100"><template #default="{ row }">{{ effectivenessCohortLabel(row.grade) }}</template></el-table-column>

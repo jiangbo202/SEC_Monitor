@@ -182,6 +182,8 @@ func (s *MacroCalendarService) List(ctx context.Context, filter MacroReleaseFilt
 	query := s.db.WithContext(ctx).Model(&model.MacroRelease{})
 	if status := strings.TrimSpace(filter.Status); status != "" {
 		query = query.Where("status = ?", status)
+	} else {
+		query = query.Where("status <> ?", "cancelled")
 	}
 	if category := strings.TrimSpace(filter.Category); category != "" {
 		query = query.Where("category = ?", category)
@@ -229,8 +231,12 @@ func (s *MacroCalendarService) List(ctx context.Context, filter MacroReleaseFilt
 	}
 	result.Items = make([]MacroReleaseItem, 0, len(releases))
 	for _, release := range releases {
+		release.Title = NormalizeMacroTitle(release.Title)
 		if release.CanonicalEventKey == "" {
 			release.CanonicalEventKey = canonicalMacroEventKey(release.Category, release.Title, release.ScheduledAt)
+		}
+		if release.MarketImportance == 0 {
+			release.MarketImportance = macroMarketImportance(release.Category, release.Title)
 		}
 		item := MacroReleaseItem{MacroRelease: release, Observations: []model.MacroObservation{}, RelatedSources: []MacroReleaseSource{}}
 		if err := s.db.WithContext(ctx).Where("release_id = ?", release.ID).Order("indicator_code ASC").Find(&item.Observations).Error; err != nil {
@@ -384,14 +390,21 @@ func (s *MacroCalendarService) upsertRelease(ctx context.Context, event beaSched
 		return existing, false, err
 	}
 	now := s.now().UTC()
+	title := NormalizeMacroTitle(event.Title)
+	importance := macroMarketImportance(event.Category, title)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		row := model.MacroRelease{Provider: provider, Category: event.Category, CanonicalEventKey: canonicalMacroEventKey(event.Category, event.Title, &event.ScheduledAt), Title: event.Title, ReferencePeriod: event.ReferencePeriod, ReleaseStage: event.ReleaseStage, Status: MacroReleaseScheduled, ScheduledAt: &event.ScheduledAt, SourceURL: event.SourceURL, FetchedAt: now}
+		row := model.MacroRelease{Provider: provider, Category: event.Category, CanonicalEventKey: canonicalMacroEventKey(event.Category, title, &event.ScheduledAt), Title: title, ReferencePeriod: event.ReferencePeriod, ReleaseStage: event.ReleaseStage, Status: MacroReleaseScheduled, ScheduledAt: &event.ScheduledAt, SourceURL: event.SourceURL, FetchedAt: now, MarketImportance: importance}
 		if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 			return row, false, err
 		}
 		return row, true, nil
 	}
-	if err := s.db.WithContext(ctx).Model(&existing).Updates(map[string]any{"category": event.Category, "canonical_event_key": canonicalMacroEventKey(event.Category, event.Title, &event.ScheduledAt), "title": event.Title, "reference_period": event.ReferencePeriod, "release_stage": event.ReleaseStage, "scheduled_at": &event.ScheduledAt, "fetched_at": now}).Error; err != nil {
+	updates := map[string]any{"category": event.Category, "canonical_event_key": canonicalMacroEventKey(event.Category, title, &event.ScheduledAt), "title": title, "reference_period": event.ReferencePeriod, "release_stage": event.ReleaseStage, "scheduled_at": &event.ScheduledAt, "fetched_at": now, "market_importance": importance}
+	if existing.Status == "cancelled" && event.ScheduledAt.After(now) {
+		updates["status"] = MacroReleaseScheduled
+		updates["last_error"] = ""
+	}
+	if err := s.db.WithContext(ctx).Model(&existing).Updates(updates).Error; err != nil {
 		return existing, false, err
 	}
 	if err := s.db.WithContext(ctx).First(&existing, existing.ID).Error; err != nil {
@@ -893,6 +906,18 @@ func (s *MacroCalendarService) syncOfficialFOMC(ctx context.Context, result *Mac
 		return fmt.Errorf("parse FOMC calendar: %w", err)
 	}
 	result.ScheduledFound += len(events)
+	// Reconcile only a successfully parsed non-empty future set; retain audit rows.
+	if len(events) > 0 {
+		urls := make([]string, 0, len(events))
+		for _, event := range events {
+			urls = append(urls, event.SourceURL)
+		}
+		if err := s.db.WithContext(ctx).Model(&model.MacroRelease{}).
+			Where("provider = ? AND category = ? AND status = ? AND scheduled_at > ? AND source_url LIKE ? AND source_url NOT IN ?", MacroProviderFederalReserve, "fomc", MacroReleaseScheduled, s.now().UTC(), s.fomcScheduleURL+"#fomc-%", urls).
+			Updates(map[string]any{"status": "cancelled", "last_error": "已撤销：不属于当年官方 FOMC 日历", "fetched_at": s.now().UTC()}).Error; err != nil {
+			return err
+		}
+	}
 	for _, event := range events {
 		_, saved, err := s.upsertRelease(ctx, event)
 		if err != nil {
@@ -1370,14 +1395,17 @@ func parseFOMCSchedule(raw, baseURL string, now time.Time) ([]beaScheduleEvent, 
 		start = strings.Index(text, strconv.Itoa(year)+" Meeting")
 	}
 	if start < 0 {
-		return nil, nil
+		return nil, fmt.Errorf("FOMC calendar missing current-year section %d", year)
 	}
 	section := text[start:]
-	if next := strings.Index(section[4:], strconv.Itoa(year+1)+" FOMC Meetings"); next >= 0 {
-		section = section[:next+4]
+	// The official page lists previous years immediately after the current
+	// year, not necessarily year+1. Stop at ANY next year heading.
+	if next := regexp.MustCompile(`\b20\d{2}\s+(?:FOMC Meetings|Meetings)\b`).FindStringIndex(section[4:]); next != nil {
+		section = section[:next[0]+4]
 	}
 	matches := macroFOMCDate.FindAllStringSubmatch(section, -1)
 	result := make([]beaScheduleEvent, 0, len(matches))
+	seen := map[string]bool{}
 	for _, match := range matches {
 		month, ok := macroMonthNumber(match[1])
 		if !ok {
@@ -1389,6 +1417,10 @@ func parseFOMCSchedule(raw, baseURL string, now time.Time) ([]beaScheduleEvent, 
 			continue
 		}
 		sourceURL := baseURL + "#" + url.QueryEscape("fomc-"+scheduledAt.Format("20060102"))
+		if seen[sourceURL] {
+			continue
+		}
+		seen[sourceURL] = true
 		result = append(result, beaScheduleEvent{Provider: MacroProviderFederalReserve, Category: "fomc", Title: "FOMC 会议与政策声明", ReferencePeriod: scheduledAt.In(location).Format("2006-01-02"), ReleaseStage: "meeting", ScheduledAt: scheduledAt, SourceURL: sourceURL})
 	}
 	sort.Slice(result, func(left, right int) bool { return result[left].ScheduledAt.Before(result[right].ScheduledAt) })
@@ -2024,6 +2056,7 @@ func macroBEACategory(text string) (string, string, bool) {
 
 var (
 	macroWhitespace         = regexp.MustCompile(`\s+`)
+	macroLeadingNews        = regexp.MustCompile(`(?i)^n\s*ews(?:\s+release)?[:\s-]*`)
 	macroDateTime           = regexp.MustCompile(`(?i)(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})\s+(\d{1,2}):(\d{2})\s*(a\.m\.|p\.m\.|am|pm)`)
 	macroReference          = regexp.MustCompile(`(?i)(January|February|March|April|May|June|July|August|September|October|November|December)\s+20\d{2}|([1-4](?:st|nd|rd|th)?\s+Quarter\s+20\d{2})`)
 	macroPercentAfter       = regexp.MustCompile(`(?i)(?:increased|decreased|rose|fell)\s+(?:\$[\d,.]+\s+\([^)]*?\)\s+)?(?:at an annual rate of\s+)?([0-9]+(?:\.[0-9]+)?)\s+percent`)
@@ -2069,7 +2102,24 @@ func macroReleaseTitle(text string) string {
 	if match := macroDateTime.FindStringIndex(text); match != nil {
 		text = strings.TrimSpace(text[match[1]:])
 	}
-	return text
+	return NormalizeMacroTitle(text)
+}
+
+// NormalizeMacroTitle removes source-site artifacts while preserving the
+// economically meaningful release title for calendar presentation.
+func NormalizeMacroTitle(value string) string {
+	return strings.TrimSpace(macroLeadingNews.ReplaceAllString(normalizeMacroText(value), ""))
+}
+
+func macroMarketImportance(category, title string) int {
+	switch canonicalMacroEventFamily(category, title) {
+	case "fomc", "cpi", "employment", "personal_income_outlays":
+		return 3
+	case "ppi", "gdp", "retail_sales", "jolts", "initial_claims":
+		return 2
+	default:
+		return 1
+	}
 }
 
 func macroReferencePeriod(title string) string {

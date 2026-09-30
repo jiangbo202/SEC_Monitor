@@ -92,7 +92,7 @@ func recommendCandidateResearchNextStep(readiness CandidateResearchReadiness, te
 		case hasReason("financial_metrics_unavailable"), hasReason("financial_period_stale"):
 			result.Action = "核对最新 10-Q / 10-K 财务指标"
 			result.Rationale = "收入增长或现金 runway 证据缺失/过期，先确认最新财务期再更新研究判断。"
-		case hasReason("insider_source_unavailable"), hasReason("insider_coverage_missing"), hasReason("insider_coverage_partial"), hasReason("insider_coverage_unavailable"):
+		case hasReason("insider_source_unavailable"), hasReason("insider_coverage_missing"), hasReason("insider_coverage_partial"), hasReason("insider_coverage_unavailable"), hasReason("insider_coverage_stale"):
 			result.Action = "复核 Form 4 覆盖情况"
 			result.Rationale = "内幕交易证据未完整覆盖，不能把“未发现买入”解释为“没有买入”。"
 		case hasReason("share_dilution_high"):
@@ -301,6 +301,11 @@ func buildCandidateResearchReadiness(item CandidateScoreResult, metric Financial
 	} else if insiderAvailable {
 		result.InsiderEvidenceStatus = "legacy_no_coverage"
 	}
+	if insiderCoverageExpected && !insiderCoverage.checkedAt.IsZero() && asOf.Sub(insiderCoverage.checkedAt) > 10*24*time.Hour {
+		researchOnly = true
+		result.InsiderEvidenceStatus = "coverage_stale"
+		add("insider_coverage_stale")
+	}
 	if item.BusinessModel.Model == CandidateBusinessModelUnknown && item.SectorCategory == "生物医药" {
 		researchOnly = true
 		add("biotech_business_model_unconfirmed")
@@ -398,6 +403,10 @@ func buildCandidateEvidenceCompleteness(item CandidateScoreResult, metric Financ
 			needsReview = true
 			add("insider_coverage_unavailable")
 		}
+	}
+	if insiderCoverageExpected && !insiderCoverage.checkedAt.IsZero() && asOf.Sub(insiderCoverage.checkedAt) > 10*24*time.Hour {
+		needsReview = true
+		add("insider_coverage_stale")
 	}
 	if item.SectorCategory == "生物医药" {
 		if item.BusinessModel.Model == CandidateBusinessModelUnknown {

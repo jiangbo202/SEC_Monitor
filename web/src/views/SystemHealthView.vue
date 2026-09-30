@@ -5,33 +5,35 @@
         <h1>{{ t('pages.systemHealth.title') }}</h1>
         <p class="page-subtitle">{{ t('pages.systemHealth.subtitle') }}</p>
       </div>
-      <el-button :loading="loading" type="primary" @click="load">{{ t('pages.systemHealth.refresh') }}</el-button>
+      <el-button :loading="loading" type="primary" @click="load(true)">{{ t('pages.systemHealth.refresh') }}</el-button>
     </div>
 
     <div class="kpi-grid">
       <el-card shadow="never" class="kpi-card">
         <div class="metric">
           <span>{{ t('common.status') }}</span>
-          <strong>{{ health?.status === 'ok' && operational?.status === 'ok' ? t('pages.systemHealth.statusOk') : t('pages.systemHealth.statusWarning') }}</strong>
+          <strong>{{ summary ? (summary.status === 'ok' ? t('pages.systemHealth.statusOk') : t('pages.systemHealth.statusWarning')) : '读取中' }}</strong>
           <span v-if="operational?.tasks.some(task => task.enabled && task.last_status === 'partial')">有任务部分完成，请查看下方运行健康</span>
         </div>
       </el-card>
       <el-card shadow="never" class="kpi-card">
         <div class="metric">
           <span>{{ t('pages.systemHealth.targets') }}</span>
-          <strong>{{ health?.enabled_targets || 0 }} / {{ health?.target_total || 0 }}</strong>
+          <strong>{{ summary ? `${summary.enabled_targets} / ${summary.target_total}` : '读取中' }}</strong>
         </div>
       </el-card>
       <el-card shadow="never" class="kpi-card">
         <div class="metric">
           <span>{{ t('pages.systemHealth.filings') }}</span>
-          <strong>{{ health?.filing_total || 0 }}</strong>
+          <strong>{{ summary?.filing_total ?? '读取中' }}</strong>
         </div>
       </el-card>
       <el-card shadow="never" class="kpi-card">
         <div class="metric">
           <span>{{ t('pages.systemHealth.notificationFailures') }}</span>
-          <strong>{{ health?.notification_failures || 0 }}</strong>
+          <strong>{{ summary?.notification_failures ?? '读取中' }}</strong>
+			<span v-if="health && !health.telegram_enabled">Telegram 未启用；零失败不等于已验证投递</span>
+			<span v-for="(channel, name) in operational?.notification_delivery || {}" :key="name">{{ name }} · 14 日投递批次 {{ channel.sent_batches }} / {{ channel.attempted_batches }} · {{ channel.failed_batches }} 失败</span>
         </div>
       </el-card>
     </div>
@@ -64,11 +66,11 @@
       <el-card shadow="never" class="dashboard-panel">
         <template #header>{{ t('pages.systemHealth.database') }}</template>
         <el-descriptions :column="1" border>
-          <el-descriptions-item :label="t('common.type')">{{ health?.database_type || '-' }}</el-descriptions-item>
-          <el-descriptions-item :label="t('pages.systemHealth.databaseSize')">{{ formatBytes(health?.database_size_bytes || 0) }}</el-descriptions-item>
-          <el-descriptions-item label="Path">{{ health?.database_path || '-' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('common.type')">{{ health?.database_type || (loading ? '读取中' : '-') }}</el-descriptions-item>
+          <el-descriptions-item :label="t('pages.systemHealth.databaseSize')">{{ health ? formatBytes(health.database_size_bytes) : (loading ? '读取中' : '-') }}</el-descriptions-item>
+          <el-descriptions-item label="路径">{{ health?.database_path || (loading ? '读取中' : '-') }}</el-descriptions-item>
           <el-descriptions-item :label="t('pages.systemHealth.storageUsage')">
-            {{ health?.storage ? `${health.storage.used_pct}% · ${formatBytes(health.storage.used_bytes)} / ${formatBytes(health.storage.total_bytes)}` : '-' }}
+            {{ health?.storage ? `${health.storage.used_pct}% · ${formatBytes(health.storage.used_bytes)} / ${formatBytes(health.storage.total_bytes)}` : (loading ? '读取中' : '-') }}
           </el-descriptions-item>
         </el-descriptions>
       </el-card>
@@ -87,6 +89,7 @@
           <span>{{ formatDateTime(health.latest_sync.started_at) }}</span>
           <span>{{ t('pages.dashboard.newFilings', { count: health.latest_sync.new_filings }) }}</span>
         </div>
+        <el-skeleton v-else-if="loading" :rows="2" animated />
         <el-empty v-else :description="t('pages.dashboard.noSyncRuns')" />
       </el-card>
 
@@ -97,6 +100,9 @@
           <span>{{ formatDateTime(health.backup.latest_completed) }}</span>
           <span>{{ t('pages.systemHealth.backupPairs', { count: health.backup.complete_pairs }) }}</span>
 			<span>备份占用 {{ formatBytes(health.backup.total_bytes) }}（最新一组 {{ formatBytes(health.backup.latest_pair_bytes) }}）</span>
+			<span v-for="(bytes, name) in health.backup.database_bytes || {}" :key="name">{{ name }} 数据库 {{ formatBytes(bytes) }}</span>
+			<span>本地及副本合计 {{ formatBytes(health.backup.combined_backup_bytes || health.backup.total_bytes) }} · 每目录容量预算 {{ health.backup.capacity_budget_bytes ? formatBytes(health.backup.capacity_budget_bytes) : '未启用' }}</span>
+			<span v-if="health.backup.replica?.enabled">副本故障域：{{ health.backup.replica.failure_domain === 'same_filesystem' ? '同一文件系统，不具备异盘容灾' : health.backup.replica.failure_domain === 'different_filesystem' ? '不同文件系统，仍需验证异地恢复' : '尚未确认' }}</span>
           <span v-if="health.backup.incomplete_pairs">{{ t('pages.systemHealth.backupIncompletePairs', { count: health.backup.incomplete_pairs }) }}</span>
           <span><el-tag :type="health.backup.replica?.status === 'ready' ? 'info' : 'warning'" effect="plain">备份副本 {{ health.backup.replica?.enabled ? (health.backup.replica.status === 'ready' ? '文件齐全' : '需处理') : '未配置' }}</el-tag></span>
           <span v-if="health.backup.replica?.latest_completed">最近副本 {{ formatDateTime(health.backup.replica.latest_completed) }} · {{ health.backup.replica.complete_pairs }} 组（同盘目录不等于异地容灾）</span>
@@ -111,6 +117,7 @@
 			<el-button size="small" type="warning" :loading="compacting" @click="compactDatabases">{{ t('pages.systemHealth.compactDatabases') }}</el-button>
 			<span v-if="latestCompaction?.id">{{ t('pages.systemHealth.lastCompaction', { status: latestCompaction.status, time: formatDateTime(latestCompaction.started_at), size: formatBytes(compactionReclaimedBytes(latestCompaction)) }) }}</span>
         </div>
+		<el-skeleton v-else-if="loading" :rows="3" animated />
 		<div v-else>
 			<el-empty :description="t('pages.systemHealth.noBackup')" />
 			<el-button size="small" type="warning" :loading="compacting" @click="compactDatabases">{{ t('pages.systemHealth.compactDatabases') }}</el-button>
@@ -144,16 +151,16 @@
       <el-card shadow="never" class="dashboard-panel panel-wide">
         <template #header><div class="panel-heading-action"><span>价格周期运行健康</span><el-button link type="primary" @click="router.push({name:'price-action-cycle',query:{tab:'rules'}})">查看规则</el-button></div></template>
         <el-descriptions :column="4" border size="small">
-          <el-descriptions-item label="阶段覆盖"><el-tag :type="cycleCoverageTagType(cycleHealth)" effect="plain">{{ cycleHealth ? `${cycleHealth.ready_count}/${cycleHealth.scope_count} · ${cycleHealth.coverage_pct.toFixed(1)}%` : '-' }}</el-tag></el-descriptions-item>
-          <el-descriptions-item label="正式版本">{{ cycleHealth?.active_rule_version || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="IWM 历史">{{ cycleHealth ? `${cycleRuntimeStatusLabel(cycleHealth.iwm_status)} · ${cycleHealth.iwm_sample_days} 日` : '-' }}</el-descriptions-item>
-          <el-descriptions-item label="效果状态">{{ cycleValidationStatusLabel(cycleHealth?.effectiveness_status) }}</el-descriptions-item>
-          <el-descriptions-item label="OHLC 缺失">{{ cycleHealth?.ohlc_missing_count || 0 }}</el-descriptions-item>
-          <el-descriptions-item label="复权阻断">{{ cycleHealth?.adjustment_blocked_count || 0 }}</el-descriptions-item>
-          <el-descriptions-item label="最近回放">{{ formatDateTime(cycleHealth?.last_replay_at) }} · {{ cycleRuntimeStatusLabel(cycleHealth?.last_replay_status) }}</el-descriptions-item>
-          <el-descriptions-item label="结果推进">{{ cycleHealth?.effectiveness_latest_date || '-' }} / IWM {{ cycleHealth?.iwm_latest_trade_date || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="当日结论">{{ cycleHealth ? `${cycleHealth.scope_current_count}/${cycleHealth.scope_count}` : '-' }}</el-descriptions-item>
-          <el-descriptions-item label="结论滞后"><el-tag :type="cycleHealth?.scope_stale_count ? 'warning' : 'success'" effect="plain">{{ cycleHealth?.scope_stale_count || 0 }}</el-tag></el-descriptions-item>
+          <el-descriptions-item label="阶段覆盖"><el-tag :type="cycleHealth ? cycleCoverageTagType(cycleHealth) : 'info'" effect="plain">{{ cycleHealth ? `${cycleHealth.ready_count}/${cycleHealth.scope_count} · ${cycleHealth.coverage_pct.toFixed(1)}%` : (loading ? '读取中' : '-') }}</el-tag></el-descriptions-item>
+          <el-descriptions-item label="正式版本">{{ cycleHealth?.active_rule_version || (loading ? '读取中' : '-') }}</el-descriptions-item>
+          <el-descriptions-item label="IWM 历史">{{ cycleHealth ? `${cycleRuntimeStatusLabel(cycleHealth.iwm_status)} · ${cycleHealth.iwm_sample_days} 日` : (loading ? '读取中' : '-') }}</el-descriptions-item>
+          <el-descriptions-item label="效果状态">{{ cycleHealth ? cycleValidationStatusLabel(cycleHealth.effectiveness_status) : (loading ? '读取中' : '尚无记录') }}</el-descriptions-item>
+          <el-descriptions-item label="OHLC 缺失">{{ cycleHealth?.ohlc_missing_count ?? (loading ? '读取中' : '-') }}</el-descriptions-item>
+          <el-descriptions-item label="复权阻断">{{ cycleHealth?.adjustment_blocked_count ?? (loading ? '读取中' : '-') }}</el-descriptions-item>
+          <el-descriptions-item label="最近回放">{{ cycleHealth ? `${formatDateTime(cycleHealth.last_replay_at)} · ${cycleRuntimeStatusLabel(cycleHealth.last_replay_status)}` : (loading ? '读取中' : '-') }}</el-descriptions-item>
+          <el-descriptions-item label="结果推进">{{ cycleHealth ? `${cycleHealth.effectiveness_latest_date || '-'} / IWM ${cycleHealth.iwm_latest_trade_date || '-'}` : (loading ? '读取中' : '-') }}</el-descriptions-item>
+          <el-descriptions-item label="当日结论">{{ cycleHealth ? `${cycleHealth.scope_current_count}/${cycleHealth.scope_count}` : (loading ? '读取中' : '-') }}</el-descriptions-item>
+          <el-descriptions-item label="结论滞后"><el-tag :type="cycleHealth ? (cycleHealth.scope_stale_count ? 'warning' : 'success') : 'info'" effect="plain">{{ cycleHealth?.scope_stale_count ?? (loading ? '读取中' : '-') }}</el-tag></el-descriptions-item>
         </el-descriptions>
       </el-card>
 
@@ -216,6 +223,7 @@
           <el-table-column :label="t('pages.systemHealth.lastExecution')" width="185">
             <template #default="{ row }">{{ formatDateTime(row.last_run_at) }}</template>
           </el-table-column>
+			<el-table-column label="14 日运行窗口" min-width="230"><template #default="{ row }">成功 {{ row.window_counts?.success || 0 }} · 覆盖降级 {{ row.window_counts?.degraded || 0 }} · 部分 {{ row.window_counts?.partial || 0 }} · 失败 {{ row.window_counts?.failed || 0 }}</template></el-table-column>
           <el-table-column :label="t('pages.systemHealth.nextExecution')" width="185">
             <template #default="{ row }">
               <span v-if="row.enabled && row.next_run_at">{{ formatScheduledDateTime(row.next_run_at) }}</span>
@@ -249,11 +257,13 @@ import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
 type CycleHealth = { scope_count:number; ready_count:number; coverage_pct:number; ohlc_missing_count:number; adjustment_blocked_count:number; iwm_status:string; iwm_sample_days:number; iwm_latest_trade_date:string; active_rule_version:string; last_replay_status:string; last_replay_at?:string; effectiveness_status:string; effectiveness_latest_date:string; scope_current_count:number; scope_stale_count:number; scope_missing_count:number }
+type HealthSummary = { generated_at:string; status:string; target_total:number; enabled_targets:number; filing_total:number; notification_failures:number; issues:Array<{key:string; title:string; detail:string; severity:string; category:string; action?:string}> }
 const router = useRouter()
 const loading = ref(false)
 const verifyingBackup = ref(false)
 const compacting = ref(false)
 const health = ref<SystemHealth | null>(null)
+const summary = ref<HealthSummary | null>(null)
 const operational = ref<OperationalReport | null>(null)
 const notifyingOperational = ref(false)
 const latestCompaction = ref<SQLiteCompactionRun | null>(null)
@@ -261,25 +271,32 @@ const cycleHealth = ref<CycleHealth | null>(null)
 const schedulerTimezone = ref('UTC')
 const consolidatedIssues = computed(() => {
   const systemIssues = (health.value?.issues || []).map((item, index) => ({ key: `system-${index}`, title: item.message, detail: '', level: item.level, category: '', action: '', manual: false }))
-  const operationalIssues = (operational.value?.issues || []).map(issue => ({ key: issue.key, title: issue.title, detail: safeOperationalDetail(issue.detail), level: issue.severity, category: issue.category, action: issue.action || '', manual: issueNeedsManualAction(issue.category) }))
+  const sourceIssues = operational.value?.issues || summary.value?.issues || []
+  const operationalIssues = sourceIssues.map(issue => ({ key: issue.key, title: issue.title, detail: safeOperationalDetail(issue.detail), level: issue.severity, category: issue.category, action: issue.action || '', manual: issueNeedsManualAction(issue.category) }))
   return [...systemIssues, ...operationalIssues]
 })
 
-async function load() {
+async function load(force = false) {
   loading.value = true
   try {
-    const [healthRes, operationalRes, compactionRes, schedulerConfigsRes, cycleHealthRes] = await Promise.all([
+    try {
+      const summaryRes = await apiClient.get<ApiResponse<HealthSummary>>('/system-health/summary')
+      summary.value = summaryRes.data.data
+    } catch {
+      // Keep loading the independent detail cards when the fast summary fails.
+    }
+    const [healthRes, operationalRes, compactionRes, schedulerConfigsRes, cycleHealthRes] = await Promise.allSettled([
       apiClient.get<ApiResponse<SystemHealth>>('/system-health'),
       apiClient.get<ApiResponse<OperationalReport>>('/operational-health'),
       apiClient.get<ApiResponse<SQLiteCompactionRun>>('/system/databases/latest-compaction'),
       apiClient.get<ApiResponse<SystemConfig[]>>('/system-configs?category=scheduler'),
-      apiClient.get<ApiResponse<CycleHealth>>('/price-action-cycle/health')
+      apiClient.get<ApiResponse<CycleHealth>>('/price-action-cycle/health', { params: force ? { refresh: 1 } : undefined })
     ])
-    health.value = healthRes.data.data
-    operational.value = operationalRes.data.data
-    latestCompaction.value = compactionRes.data.data?.id ? compactionRes.data.data : null
-    schedulerTimezone.value = schedulerConfigsRes.data.data.find((item) => item.config_key === 'scheduler.timezone')?.config_value || 'UTC'
-    cycleHealth.value = cycleHealthRes.data.data
+    if (healthRes.status === 'fulfilled') health.value = healthRes.value.data.data
+    if (operationalRes.status === 'fulfilled') operational.value = operationalRes.value.data.data
+    if (compactionRes.status === 'fulfilled') latestCompaction.value = compactionRes.value.data.data?.id ? compactionRes.value.data.data : null
+    if (schedulerConfigsRes.status === 'fulfilled') schedulerTimezone.value = schedulerConfigsRes.value.data.data.find((item) => item.config_key === 'scheduler.timezone')?.config_value || 'UTC'
+    if (cycleHealthRes.status === 'fulfilled') cycleHealth.value = cycleHealthRes.value.data.data
   } finally {
     loading.value = false
   }
@@ -435,11 +452,33 @@ function safeOperationalDetail(value?: string) {
 
 function taskBusinessLabel(value: string) {
   const labels: Record<string, string> = {
+    candidate_notification_sync: '候选通知',
+    institutional_holdings_sync: '机构持仓更新',
+    ipo_lifecycle_reconcile_sync: 'IPO 生命周期核对',
     ipo_listing_reconcile_sync: 'IPO 上市状态核对',
+    ipo_offering_reconcile_sync: 'IPO 发行进度核对',
+    ipo_radar_sync: 'IPO 新申报扫描',
+    longbridge_candidate_option_research_sync: '候选期权研究更新',
+    longbridge_candidate_research_sync: '候选市场研究更新',
+    longbridge_candidate_valuation_sync: '候选估值研究更新',
+    longbridge_watch_target_option_research_sync: '监控标的期权研究更新',
+    longbridge_watch_target_research_sync: '监控标的市场研究更新',
     longbridge_watch_target_valuation_sync: '监控标的估值更新',
+    macro_calendar_sync: '宏观日历更新',
+    market_trend_sync: '市场趋势更新',
+    notification_retry_sync: '失败通知重试',
+    operation_history_cleanup: '运行历史清理',
     operational_health_notification_sync: '运行健康通知',
+    price_action_cycle_replay: '价格周期回放',
+    sec_filing_sync: 'SEC 公告增量同步',
+    small_cap_discovery_full_sync: '小盘候选全量扫描',
+    small_cap_discovery_sync: '小盘候选增量扫描',
     sqlite_backup: 'SQLite 数据备份',
-    discovery_candidate_sync: '小盘候选扫描',
+    sqlite_recovery_drill: 'SQLite 恢复演练',
+    trade_setup_notification_sync: '交易计划通知',
+    us_futures_sync: '美股期货更新',
+    watch_target_earnings_sync: '监控标的财报日历更新',
+    watch_target_market_sync: '监控标的行情更新',
     technical_history_backfill: '技术历史补齐',
     price_action_cycle_sync: '价格周期更新',
   }

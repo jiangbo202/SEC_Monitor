@@ -665,6 +665,9 @@ func (s *DiscoverySyncService) SyncEnabledWatchTargetMarketResearch(ctx context.
 			latestByTicker[strings.ToUpper(strings.TrimSpace(target.Ticker))] = cached.EPSForecast.Latest.FetchedAt
 		}
 	}
+	if err := discovery.MergeLongbridgeResearchAttempts(ctx, s.db, discovery.LongbridgeRefreshFamilyMarketResearch, latestByTicker); err != nil {
+		return result, err
+	}
 	sort.SliceStable(targets, func(left, right int) bool {
 		leftAt, leftOK := latestByTicker[strings.ToUpper(strings.TrimSpace(targets[left].Ticker))]
 		rightAt, rightOK := latestByTicker[strings.ToUpper(strings.TrimSpace(targets[right].Ticker))]
@@ -684,6 +687,9 @@ func (s *DiscoverySyncService) SyncEnabledWatchTargetMarketResearch(ctx context.
 			continue
 		}
 		result.Attempted++
+		if err := discovery.MarkLongbridgeResearchAttempt(ctx, s.db, discovery.LongbridgeRefreshFamilyMarketResearch, target.Ticker, time.Now().UTC()); err != nil {
+			return result, err
+		}
 		refreshed, refreshErr := discovery.RefreshLongbridgeCandidateMarketResearch(ctx, s.db, cfg, target.Ticker, target.CIK)
 		if refreshErr != nil {
 			result.Failed++
@@ -764,6 +770,9 @@ func (s *DiscoverySyncService) SyncEnabledWatchTargetValuationResearch(ctx conte
 			latestByTicker[strings.ToUpper(strings.TrimSpace(target.Ticker))] = cached.Latest.FetchedAt
 		}
 	}
+	if err := discovery.MergeLongbridgeResearchAttempts(ctx, s.db, discovery.LongbridgeRefreshFamilyValuation, latestByTicker); err != nil {
+		return result, err
+	}
 	sort.SliceStable(targets, func(left, right int) bool {
 		leftAt, leftOK := latestByTicker[strings.ToUpper(strings.TrimSpace(targets[left].Ticker))]
 		rightAt, rightOK := latestByTicker[strings.ToUpper(strings.TrimSpace(targets[right].Ticker))]
@@ -783,6 +792,9 @@ func (s *DiscoverySyncService) SyncEnabledWatchTargetValuationResearch(ctx conte
 			continue
 		}
 		result.Attempted++
+		if err := discovery.MarkLongbridgeResearchAttempt(ctx, s.db, discovery.LongbridgeRefreshFamilyValuation, target.Ticker, time.Now().UTC()); err != nil {
+			return result, err
+		}
 		refreshed, refreshErr := discovery.RefreshLongbridgeCandidateValuationResearch(ctx, s.db, cfg, target.Ticker, target.CIK)
 		if refreshErr != nil {
 			result.Failed++
@@ -1615,7 +1627,11 @@ func (s *DiscoverySyncService) discoverySecurityWorkflowContext(ctx context.Cont
 	if stageTimeout <= 0 {
 		stageTimeout = time.Hour
 	}
-	workflowCtx, cancel := context.WithTimeout(ctx, 4*stageTimeout)
+	workflowBudget := 4 * stageTimeout
+	if insiderBudget := insiderStageTimeout(cfg, stageTimeout); insiderBudget > stageTimeout {
+		workflowBudget += insiderBudget - stageTimeout
+	}
+	workflowCtx, cancel := context.WithTimeout(ctx, workflowBudget)
 	return workflowCtx, cancel, nil
 }
 
@@ -2646,7 +2662,7 @@ func (s *DiscoverySyncService) buildRunnerWithPolicyBinding(forceLivePriceFetch 
 		Clock:                       time.Now,
 		PolicyBinding:               policyBinding,
 		SecurityStageTimeout:        timeout,
-		SecurityInsiderStageTimeout: timeout,
+		SecurityInsiderStageTimeout: insiderStageTimeout(cfg, timeout),
 		SecurityArtifactDir:         downloader.CacheDir,
 		SecurityArtifactTTL:         discoveryCacheTTL(cfg),
 	}
@@ -2677,6 +2693,17 @@ func (s *DiscoverySyncService) buildRunnerWithPolicyBinding(forceLivePriceFetch 
 		PolicyBinding:         policyBinding,
 	}
 	return productionDiscoveryRunner{security: security, market: market}, nil
+}
+
+func insiderStageTimeout(cfg config.DiscoveryConfig, fallback time.Duration) time.Duration {
+	if cfg.InsiderStageTimeoutMin <= 0 {
+		return fallback
+	}
+	// A provider stage remains bounded even when a malformed config is supplied.
+	if cfg.InsiderStageTimeoutMin > 180 {
+		return 180 * time.Minute
+	}
+	return time.Duration(cfg.InsiderStageTimeoutMin) * time.Minute
 }
 
 func (s *DiscoverySyncService) buildPriceProvider(cfg config.DiscoveryConfig, downloader *discovery.Downloader, calendar discovery.MarketCalendar) (discovery.PriceProvider, error, error) {

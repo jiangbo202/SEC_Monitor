@@ -53,9 +53,14 @@ type AppHandler struct {
 	AIAnalysis             *service.AIAnalysisService
 	EarningsPreview        *service.EarningsPreviewService
 	Scheduler              SchedulerController
-	dashboardCacheMu       sync.Mutex
+	dashboardCacheMu       sync.RWMutex
+	dashboardBuildMu       sync.Mutex
 	dashboardCache         DashboardSummary
 	dashboardCacheAt       time.Time
+	cycleHealthCacheMu     sync.RWMutex
+	cycleHealthBuildMu     sync.Mutex
+	cycleHealthCache       discovery.PriceActionCycleHealth
+	cycleHealthCacheAt     time.Time
 	tickerEvaluationMu     sync.Mutex
 	tickerEvaluations      map[string]struct{}
 	insiderPlanBackfillMu  sync.Mutex
@@ -779,6 +784,29 @@ func (h *AppHandler) GetPriceActionCycleShadowComparison(c *gin.Context) {
 }
 
 func (h *AppHandler) GetPriceActionCycleHealth(c *gin.Context) {
+	force := c.Query("refresh") == "1"
+	if !force {
+		h.cycleHealthCacheMu.RLock()
+		cachedAt, cached := h.cycleHealthCacheAt, h.cycleHealthCache
+		h.cycleHealthCacheMu.RUnlock()
+		if !cachedAt.IsZero() && time.Since(cachedAt) < 30*time.Second {
+			c.Header("X-Cycle-Health-Cache", "hit")
+			OK(c, cached)
+			return
+		}
+	}
+	h.cycleHealthBuildMu.Lock()
+	defer h.cycleHealthBuildMu.Unlock()
+	if !force {
+		h.cycleHealthCacheMu.RLock()
+		cachedAt, cached := h.cycleHealthCacheAt, h.cycleHealthCache
+		h.cycleHealthCacheMu.RUnlock()
+		if !cachedAt.IsZero() && time.Since(cachedAt) < 30*time.Second {
+			c.Header("X-Cycle-Health-Cache", "hit")
+			OK(c, cached)
+			return
+		}
+	}
 	scope, err := h.priceActionCycleScope(c.Request.Context())
 	if err != nil {
 		Error(c, err)
@@ -789,7 +817,18 @@ func (h *AppHandler) GetPriceActionCycleHealth(c *gin.Context) {
 		Error(c, err)
 		return
 	}
+	h.cycleHealthCacheMu.Lock()
+	h.cycleHealthCache, h.cycleHealthCacheAt = result, time.Now().UTC()
+	h.cycleHealthCacheMu.Unlock()
+	c.Header("X-Cycle-Health-Cache", "miss")
 	OK(c, result)
+}
+
+func (h *AppHandler) invalidateCycleHealthCache() {
+	h.cycleHealthCacheMu.Lock()
+	h.cycleHealthCacheAt = time.Time{}
+	h.cycleHealthCache = discovery.PriceActionCycleHealth{}
+	h.cycleHealthCacheMu.Unlock()
 }
 
 func (h *AppHandler) priceActionCycleScope(ctx context.Context) ([]discovery.PriceActionReplayScope, error) {
@@ -2706,6 +2745,13 @@ func systemConfigChangeRequiresSchedulerReload(input []service.ConfigInput) bool
 }
 
 func (h *AppHandler) RunTask(c *gin.Context) {
+	defer func() {
+		h.invalidateDashboardCache()
+		h.invalidateCycleHealthCache()
+		if h.OperationalHealth != nil {
+			h.OperationalHealth.Invalidate()
+		}
+	}()
 	if h.Scheduler != nil {
 		task, err := h.Tasks.Get(c.Request.Context(), uintParam(c, "id"))
 		if err != nil {
@@ -2751,7 +2797,6 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 	var notificationFailures int64
 	var failedNotificationBatches int64
 	var deadLetterBatches int64
-	var unstableTasks []model.TaskConfig
 	_ = h.DB.WithContext(c.Request.Context()).Model(&model.WatchTarget{}).Count(&targetTotal).Error
 	_ = h.DB.WithContext(c.Request.Context()).Model(&model.WatchTarget{}).Where("status = ?", "enabled").Count(&enabledTargets).Error
 	_ = h.DB.WithContext(c.Request.Context()).Model(&model.Filing{}).Count(&filingTotal).Error
@@ -2759,7 +2804,6 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 	_ = h.DB.WithContext(c.Request.Context()).Model(&model.NotificationBatch{}).Where("status = ?", "failed").Count(&failedNotificationBatches).Error
 	_ = h.DB.WithContext(c.Request.Context()).Model(&model.NotificationBatch{}).Where("status = ?", "dead_letter").Count(&deadLetterBatches).Error
 	notificationFailures += failedNotificationBatches + deadLetterBatches
-	_ = h.DB.WithContext(c.Request.Context()).Where("consecutive_failures >= ?", 3).Order("consecutive_failures DESC, task_name ASC").Find(&unstableTasks).Error
 
 	var latestSync model.SyncRun
 	_ = h.DB.WithContext(c.Request.Context()).Order("started_at DESC, id DESC").First(&latestSync).Error
@@ -2804,9 +2848,6 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 		if usedPct >= warningPct {
 			issues = append(issues, gin.H{"level": "warning", "message": fmt.Sprintf("数据库所在磁盘已使用 %d%%，达到 %d%% 告警阈值", usedPct, warningPct)})
 		}
-	}
-	for _, task := range unstableTasks {
-		issues = append(issues, gin.H{"level": "warning", "message": fmt.Sprintf("调度任务 %s 已连续失败 %d 次：%s", task.TaskName, task.ConsecutiveFailures, task.LastErrorMessage)})
 	}
 	encryptionHealth := h.Configs.EncryptionHealth()
 	backupHealth := service.SQLiteBackupHealth{}
@@ -2878,6 +2919,49 @@ func (h *AppHandler) ListHealth(c *gin.Context) {
 	})
 }
 
+// ListHealthSummary is the stable, inexpensive first paint for the health
+// page. Detailed database, backup, provider and scheduler tables load after
+// this response, so the UI never renders not-yet-loaded values as real zeros.
+func (h *AppHandler) ListHealthSummary(c *gin.Context) {
+	if h.DB == nil || h.OperationalHealth == nil {
+		Error(c, errors.New("system health is not configured"))
+		return
+	}
+	ctx := c.Request.Context()
+	var targetTotal, enabledTargets, filingTotal, notificationFailures int64
+	if err := h.DB.WithContext(ctx).Model(&model.WatchTarget{}).Count(&targetTotal).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	if err := h.DB.WithContext(ctx).Model(&model.WatchTarget{}).Where("status = ?", "enabled").Count(&enabledTargets).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	if err := h.DB.WithContext(ctx).Model(&model.Filing{}).Count(&filingTotal).Error; err != nil {
+		Error(c, err)
+		return
+	}
+	_ = h.DB.WithContext(ctx).Model(&model.NotificationLog{}).Where("status = ?", "failed").Count(&notificationFailures).Error
+	var failedBatches, deadLetterBatches int64
+	_ = h.DB.WithContext(ctx).Model(&model.NotificationBatch{}).Where("status = ?", "failed").Count(&failedBatches).Error
+	_ = h.DB.WithContext(ctx).Model(&model.NotificationBatch{}).Where("status = ?", "dead_letter").Count(&deadLetterBatches).Error
+	notificationFailures += failedBatches + deadLetterBatches
+	report, err := h.OperationalHealth.Report(ctx)
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	issues := make([]service.OperationalIssue, 0, len(report.Issues))
+	for _, issue := range report.Issues {
+		issues = append(issues, dashboardOperationalIssueSummary(issue))
+	}
+	OK(c, gin.H{
+		"generated_at": report.GeneratedAt, "status": report.Status, "issues": issues,
+		"target_total": targetTotal, "enabled_targets": enabledTargets,
+		"filing_total": filingTotal, "notification_failures": notificationFailures,
+	})
+}
+
 // GetOperationalHealth returns a read-only operational report assembled from
 // persisted task, retry-queue, and provider state. It never calls SEC or a
 // market-data provider.
@@ -2891,7 +2975,7 @@ func (h *AppHandler) GetOperationalHealth(c *gin.Context) {
 		Error(c, err)
 		return
 	}
-	OK(c, report)
+	OK(c, dashboardOperationalReportSummary(report))
 }
 
 func (h *AppHandler) NotifyOperationalHealth(c *gin.Context) {
@@ -2902,12 +2986,14 @@ func (h *AppHandler) NotifyOperationalHealth(c *gin.Context) {
 	result, err := h.OperationalHealth.Notify(c.Request.Context())
 	if err != nil {
 		if errors.Is(err, service.ErrTaskSkipped) {
+			result.Report = dashboardOperationalReportSummary(result.Report)
 			OK(c, result)
 			return
 		}
 		Error(c, err)
 		return
 	}
+	result.Report = dashboardOperationalReportSummary(result.Report)
 	OK(c, result)
 }
 

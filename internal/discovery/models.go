@@ -108,6 +108,7 @@ type CompanyProfileSnapshot struct {
 // valid observation for small and micro-cap issuers, not a synchronisation
 // failure.
 type AnalystRatingSnapshot struct {
+	IdentityCounterID     string     `json:"identity_counter_id,omitempty" gorm:"size:96"`
 	ID                    uint       `json:"id"`
 	SecurityID            uint       `json:"security_id" gorm:"index"`
 	Provider              string     `json:"provider" gorm:"size:32;uniqueIndex:idx_analyst_rating_provider_ticker_hash,priority:1;index"`
@@ -138,6 +139,7 @@ type AnalystRatingSnapshot struct {
 // EPSForecastSnapshot is an immutable provider-issued consensus EPS snapshot.
 // It is research context only and never contributes to the fundamental score.
 type EPSForecastSnapshot struct {
+	IdentityCounterID  string    `json:"identity_counter_id,omitempty" gorm:"size:96"`
 	ID                 uint      `json:"id"`
 	SecurityID         uint      `json:"security_id" gorm:"index"`
 	Provider           string    `json:"provider" gorm:"size:32;uniqueIndex:idx_eps_forecast_provider_ticker_hash,priority:1;index"`
@@ -178,52 +180,55 @@ type MarketAnomalySnapshot struct {
 
 // InstitutionalHolderSnapshot preserves a reported major-holder position.
 type InstitutionalHolderSnapshot struct {
-	ID              uint      `json:"id"`
-	SecurityID      uint      `json:"security_id" gorm:"index"`
-	Provider        string    `json:"provider" gorm:"size:32;uniqueIndex:idx_institutional_holder_identity,priority:1;index"`
-	Ticker          string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_institutional_holder_identity,priority:2;index"`
-	HolderName      string    `json:"holder_name" gorm:"size:255;uniqueIndex:idx_institutional_holder_identity,priority:3"`
-	InstitutionType string    `json:"institution_type" gorm:"size:128"`
-	PercentOfShares *float64  `json:"percent_of_shares,omitempty"`
-	SharesChanged   *float64  `json:"shares_changed,omitempty"`
-	ReportDate      string    `json:"report_date" gorm:"size:32;uniqueIndex:idx_institutional_holder_identity,priority:4;index"`
-	SourceURL       string    `json:"source_url" gorm:"size:2048"`
-	FetchedAt       time.Time `json:"fetched_at" gorm:"index"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	IdentityCounterID string    `json:"identity_counter_id,omitempty" gorm:"size:96"`
+	ID                uint      `json:"id"`
+	SecurityID        uint      `json:"security_id" gorm:"index"`
+	Provider          string    `json:"provider" gorm:"size:32;uniqueIndex:idx_institutional_holder_identity,priority:1;index"`
+	Ticker            string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_institutional_holder_identity,priority:2;index"`
+	HolderName        string    `json:"holder_name" gorm:"size:255;uniqueIndex:idx_institutional_holder_identity,priority:3"`
+	InstitutionType   string    `json:"institution_type" gorm:"size:128"`
+	PercentOfShares   *float64  `json:"percent_of_shares,omitempty"`
+	SharesChanged     *float64  `json:"shares_changed,omitempty"`
+	ReportDate        string    `json:"report_date" gorm:"size:32;uniqueIndex:idx_institutional_holder_identity,priority:4;index"`
+	SourceURL         string    `json:"source_url" gorm:"size:2048"`
+	FetchedAt         time.Time `json:"fetched_at" gorm:"index"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // FundHolderSnapshot records a fund or ETF's disclosed portfolio weight.
 type FundHolderSnapshot struct {
-	ID            uint      `json:"id"`
-	SecurityID    uint      `json:"security_id" gorm:"index"`
-	Provider      string    `json:"provider" gorm:"size:32;uniqueIndex:idx_fund_holder_identity,priority:1;index"`
-	Ticker        string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_fund_holder_identity,priority:2;index"`
-	FundCode      string    `json:"fund_code" gorm:"size:64;uniqueIndex:idx_fund_holder_identity,priority:3"`
-	FundSymbol    string    `json:"fund_symbol" gorm:"size:96"`
-	FundName      string    `json:"fund_name" gorm:"size:255"`
-	Currency      string    `json:"currency" gorm:"size:16"`
-	PositionRatio float64   `json:"position_ratio"`
-	ReportDate    string    `json:"report_date" gorm:"size:32;uniqueIndex:idx_fund_holder_identity,priority:4;index"`
-	SourceURL     string    `json:"source_url" gorm:"size:2048"`
-	FetchedAt     time.Time `json:"fetched_at" gorm:"index"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	IdentityCounterID string    `json:"identity_counter_id,omitempty" gorm:"size:96"`
+	ID                uint      `json:"id"`
+	SecurityID        uint      `json:"security_id" gorm:"index"`
+	Provider          string    `json:"provider" gorm:"size:32;uniqueIndex:idx_fund_holder_identity,priority:1;index"`
+	Ticker            string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_fund_holder_identity,priority:2;index"`
+	FundCode          string    `json:"fund_code" gorm:"size:64;uniqueIndex:idx_fund_holder_identity,priority:3"`
+	FundSymbol        string    `json:"fund_symbol" gorm:"size:96"`
+	FundName          string    `json:"fund_name" gorm:"size:255"`
+	Currency          string    `json:"currency" gorm:"size:16"`
+	PositionRatio     float64   `json:"position_ratio"`
+	ReportDate        string    `json:"report_date" gorm:"size:32;uniqueIndex:idx_fund_holder_identity,priority:4;index"`
+	SourceURL         string    `json:"source_url" gorm:"size:2048"`
+	FetchedAt         time.Time `json:"fetched_at" gorm:"index"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // LongbridgeValuationSnapshot keeps a provider-issued valuation research
 // payload (history, industry percentiles and peers) separate from the local
 // SEC-derived valuation used by the candidate workflow.
 type LongbridgeValuationSnapshot struct {
-	ID            uint      `json:"id"`
-	SecurityID    uint      `json:"security_id" gorm:"index"`
-	Provider      string    `json:"provider" gorm:"size:32;uniqueIndex:idx_longbridge_valuation_provider_ticker_hash,priority:1;index"`
-	Ticker        string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_longbridge_valuation_provider_ticker_hash,priority:2;index"`
-	SnapshotHash  string    `json:"snapshot_hash" gorm:"size:64;uniqueIndex:idx_longbridge_valuation_provider_ticker_hash,priority:3"`
-	PayloadJSON   string    `json:"-" gorm:"type:text"`
-	ChangeSummary string    `json:"change_summary" gorm:"type:text"`
-	FetchedAt     time.Time `json:"fetched_at" gorm:"index"`
-	CreatedAt     time.Time `json:"created_at"`
+	IdentityCounterID string    `json:"identity_counter_id,omitempty" gorm:"size:96"`
+	ID                uint      `json:"id"`
+	SecurityID        uint      `json:"security_id" gorm:"index"`
+	Provider          string    `json:"provider" gorm:"size:32;uniqueIndex:idx_longbridge_valuation_provider_ticker_hash,priority:1;index"`
+	Ticker            string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_longbridge_valuation_provider_ticker_hash,priority:2;index"`
+	SnapshotHash      string    `json:"snapshot_hash" gorm:"size:64;uniqueIndex:idx_longbridge_valuation_provider_ticker_hash,priority:3"`
+	PayloadJSON       string    `json:"-" gorm:"type:text"`
+	ChangeSummary     string    `json:"change_summary" gorm:"type:text"`
+	FetchedAt         time.Time `json:"fetched_at" gorm:"index"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // OptionResearchSnapshot stores one compact, daily options/short-interest

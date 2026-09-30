@@ -165,7 +165,7 @@ func GetCandidateValuationResearch(ctx context.Context, db *gorm.DB, ticker stri
 		return result, errors.New("ticker is required")
 	}
 	var rows []LongbridgeValuationSnapshot
-	if err := db.WithContext(ctx).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("fetched_at DESC, id DESC").Limit(12).Find(&rows).Error; err != nil {
+	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("fetched_at DESC, id DESC").Limit(12).Find(&rows).Error; err != nil {
 		return result, err
 	}
 	for _, row := range rows {
@@ -296,6 +296,9 @@ func SyncCurrentCandidateLongbridgeValuationResearch(ctx context.Context, db *go
 		}
 	}
 	now := time.Now().UTC()
+	if err := MergeLongbridgeResearchAttempts(ctx, db, LongbridgeRefreshFamilyValuation, lastFetched); err != nil {
+		return result, err
+	}
 	fresh, freshErr := FreshLongbridgeResearchTickers(ctx, db, LongbridgeRefreshFamilyValuation, now)
 	if freshErr != nil {
 		return result, freshErr
@@ -311,6 +314,9 @@ func SyncCurrentCandidateLongbridgeValuationResearch(ctx context.Context, db *go
 	}
 	for _, ticker := range tickers {
 		result.Attempted++
+		if err := MarkLongbridgeResearchAttempt(ctx, db, LongbridgeRefreshFamilyValuation, ticker, now); err != nil {
+			return result, err
+		}
 		refreshed, refreshErr := RefreshLongbridgeCandidateValuationResearch(ctx, db, cfg, ticker, "")
 		if refreshErr != nil {
 			result.Failed++
@@ -349,7 +355,7 @@ func refreshLongbridgeCandidateValuationResearch(ctx context.Context, db *gorm.D
 	if err != nil {
 		return result, err
 	}
-	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	symbol := result.Ticker + ".US"
 	valuation, valuationErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.ValuationData, error) {
@@ -383,9 +389,10 @@ func refreshLongbridgeCandidateValuationResearch(ctx context.Context, db *gorm.D
 	securityID := analystRatingSecurityID(ctx, db, result.Ticker, cik)
 	now := options.Now().UTC()
 	row := LongbridgeValuationSnapshot{SecurityID: securityID, Provider: longbridgeCandidateResearchProvider, Ticker: result.Ticker, PayloadJSON: string(encoded), FetchedAt: now}
-	row.SnapshotHash = valuationResearchHash(row.PayloadJSON)
+	row.IdentityCounterID = issuerCounterID(result.Ticker)
+	row.SnapshotHash = valuationResearchHash(row.IdentityCounterID + "|" + row.PayloadJSON)
 	var previous LongbridgeValuationSnapshot
-	lookupErr := db.WithContext(ctx).Where("provider = ? AND ticker = ?", row.Provider, row.Ticker).Order("fetched_at DESC, id DESC").First(&previous).Error
+	lookupErr := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", row.Provider, row.Ticker).Order("fetched_at DESC, id DESC").First(&previous).Error
 	if lookupErr == nil && previous.SnapshotHash == row.SnapshotHash {
 		result.Cached, result.Message = true, "估值研究数据与本地最新快照一致。"
 		return result, nil
@@ -498,11 +505,23 @@ func newLongbridgeValuationResearchSDKClient(appKey, appSecret, accessToken stri
 	return &longbridgeValuationResearchSDKClient{fundamental: client}, nil
 }
 func (c *longbridgeValuationResearchSDKClient) Valuation(ctx context.Context, symbol string) (*lbfundamental.ValuationData, error) {
-	return c.fundamental.Valuation(ctx, symbol)
+	id, err := explicitUSStockCounterID(symbol)
+	if err != nil {
+		return nil, err
+	}
+	return c.fundamental.Valuation(ctx, id)
 }
 func (c *longbridgeValuationResearchSDKClient) IndustryValuation(ctx context.Context, symbol string) (*lbfundamental.IndustryValuationList, error) {
-	return c.fundamental.IndustryValuation(ctx, symbol)
+	id, err := explicitUSStockCounterID(symbol)
+	if err != nil {
+		return nil, err
+	}
+	return c.fundamental.IndustryValuation(ctx, id)
 }
 func (c *longbridgeValuationResearchSDKClient) IndustryValuationDist(ctx context.Context, symbol string) (*lbfundamental.IndustryValuationDist, error) {
-	return c.fundamental.IndustryValuationDist(ctx, symbol)
+	id, err := explicitUSStockCounterID(symbol)
+	if err != nil {
+		return nil, err
+	}
+	return c.fundamental.IndustryValuationDist(ctx, id)
 }

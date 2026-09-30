@@ -10,6 +10,37 @@ import (
 	"sec_monitor/internal/model"
 )
 
+func TestOperationalWindowsAndDeliveryEvidenceAreBounded(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().UTC()
+	if err := db.AutoMigrate(&model.TaskExecution{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.TaskConfig{TaskName: "research_window", CronExpr: "0 0 * * *", LastStatus: "success"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []model.TaskExecution{{TaskName: "research_window", Status: "success", StartedAt: now.Add(-time.Hour)}, {TaskName: "research_window", Status: "degraded", StartedAt: now.Add(-2 * time.Hour)}, {TaskName: "research_window", Status: "failed", StartedAt: now.Add(-15 * 24 * time.Hour)}} {
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&model.NotificationBatch{Channel: "telegram", Status: "sent", SentAt: &now, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := NewOperationalHealthService(db, nil, nil, nil)
+	report, err := svc.ReportAt(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := report.Tasks[0].WindowCounts
+	if counts["success"] != 1 || counts["degraded"] != 1 || counts["failed"] != 0 {
+		t.Fatalf("counts=%v", counts)
+	}
+	if report.NotificationDelivery["telegram"].SentBatches != 1 || report.NotificationDelivery["telegram"].LastSentAt == nil {
+		t.Fatalf("delivery=%+v", report.NotificationDelivery)
+	}
+}
+
 func TestOperationalHealthReportAndNotificationDedup(t *testing.T) {
 	db := testDB(t)
 	now := time.Now().UTC()

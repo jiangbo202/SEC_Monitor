@@ -13,6 +13,46 @@ import (
 
 type macroRoundTripper map[string]string
 
+func TestFOMCReconciliationExcludesPreviousYearsAndRetainsAuditRows(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	body := `<h2>2026 FOMC Meetings</h2><p>October 27-28 December 8-9</p><h2>2025 FOMC Meetings</h2><p>October 28-29 December 9-10</p><h2>2024 FOMC Meetings</h2><p>November 6-7</p>`
+	rows, err := parseFOMCSchedule(body, "https://fed.test/calendar", now)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("dates=%+v err=%v", rows, err)
+	}
+	if rows[0].ReferencePeriod != "2026-10-28" || rows[1].ReferencePeriod != "2026-12-09" {
+		t.Fatalf("wrong year dates %+v", rows)
+	}
+	db := testDB(t)
+	if err := db.AutoMigrate(&model.MacroRelease{}, &model.MacroObservation{}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewMacroCalendarService(db)
+	svc.now = func() time.Time { return now }
+	svc.fomcScheduleURL = "https://fed.test/calendar"
+	svc.client = macroRoundTripper{svc.fomcScheduleURL: body}
+	badDate := time.Date(2026, 11, 7, 19, 0, 0, 0, time.UTC)
+	bad := model.MacroRelease{Provider: MacroProviderFederalReserve, Category: "fomc", Title: "bad historical date", Status: MacroReleaseScheduled, ScheduledAt: &badDate, SourceURL: svc.fomcScheduleURL + "#fomc-20261107"}
+	if err := db.Create(&bad).Error; err != nil {
+		t.Fatal(err)
+	}
+	result := MacroCalendarSyncResult{}
+	if err := svc.syncOfficialFOMC(context.Background(), &result); err != nil {
+		t.Fatal(err)
+	}
+	var stored model.MacroRelease
+	if err := db.First(&stored, bad.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "cancelled" || stored.LastError == "" {
+		t.Fatalf("audit row %+v", stored)
+	}
+	page, err := svc.List(context.Background(), MacroReleaseFilter{})
+	if err != nil || page.Total != 2 {
+		t.Fatalf("calendar=%+v %v", page, err)
+	}
+}
+
 func (r macroRoundTripper) Do(request *http.Request) (*http.Response, error) {
 	body, ok := r[request.URL.String()]
 	if !ok {
@@ -134,6 +174,18 @@ func TestCanonicalMacroEventKeyKeepsGDPSeparateFromPersonalIncome(t *testing.T) 
 	key := canonicalMacroEventKey("gdp", "GDP (Third Estimate), Industries, Corporate Profits, State GDP, and State Personal Income", &at)
 	if key != "gdp:2026-04-09" {
 		t.Fatalf("GDP canonical key=%q", key)
+	}
+}
+
+func TestNormalizeMacroTitleAndImportance(t *testing.T) {
+	if got := NormalizeMacroTitle(" N ews Release: Consumer Price Index "); got != "Consumer Price Index" {
+		t.Fatalf("normalized title=%q", got)
+	}
+	if got := macroMarketImportance("fomc", "FOMC Statement"); got != 3 {
+		t.Fatalf("FOMC importance=%d", got)
+	}
+	if got := macroMarketImportance("durable_goods", "Durable Goods"); got != 1 {
+		t.Fatalf("durable goods importance=%d", got)
 	}
 }
 

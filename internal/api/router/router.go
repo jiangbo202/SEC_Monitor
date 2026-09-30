@@ -309,6 +309,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.POST("/notification-batches/requeue-failed", app.RequeueFailedNotificationBatches)
 
 		api.GET("/system-health", app.ListHealth)
+		api.GET("/system-health/summary", app.ListHealthSummary)
 		api.GET("/operational-health", app.GetOperationalHealth)
 		api.POST("/operational-health/notify", app.NotifyOperationalHealth)
 		api.POST("/system/backups/verify", app.VerifyLatestSQLiteBackup)
