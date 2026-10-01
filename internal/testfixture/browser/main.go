@@ -83,6 +83,17 @@ func main() {
 	r.GET("/api/system-configs", func(c *gin.Context) { handler.OK(c, []any{}) })
 	r.GET("/api/in-app-notifications/unread-count", func(c *gin.Context) { handler.OK(c, gin.H{"unread_count": 1}) })
 	r.GET("/api/in-app-notifications", func(c *gin.Context) {
+		mu.Lock()
+		insiders := scenario == "inbox-insiders"
+		mu.Unlock()
+		if insiders {
+			items := []gin.H{}
+			for i, target := range []struct{ ticker, tab string }{{"TEST", "transactions"}, {"ALT", "transactions"}, {"ALT", "plans"}, {"TEST", "plans"}} {
+				items = append(items, gin.H{"id": i + 1, "ticker": target.ticker, "title": "回归通知：" + target.ticker + " " + target.tab, "source": "insider_trading", "link": "/insider-trading?ticker=" + target.ticker + "&tab=" + target.tab, "created_at": time.Now().UTC(), "read_at": time.Now().UTC()})
+			}
+			handler.OK(c, gin.H{"items": items, "total": len(items)})
+			return
+		}
 		handler.OK(c, gin.H{"items": []gin.H{{"id": 1, "ticker": "ALT", "title": "回归通知：核对 ALT", "source": "technical_signal", "link": "/ticker-workspace?ticker=ALT", "created_at": time.Now().UTC(), "read_at": time.Now().UTC()}}, "total": 1})
 	})
 	r.GET("/api/ticker-evaluations", func(c *gin.Context) { handler.OK(c, gin.H{"items": []any{}, "total": 0}) })
@@ -90,7 +101,19 @@ func main() {
 		handler.OK(c, gin.H{"items": []gin.H{{"ticker": c.Query("ticker"), "title": c.Query("ticker") + " 原文证据", "filing_type": "8-K", "filing_date": "2026-08-28", "filing_url": "https://www.sec.gov/Archives/fixture"}}, "total": 1})
 	})
 	r.GET("/api/insider-transactions", func(c *gin.Context) {
+		mu.Lock()
+		insiders := scenario == "inbox-insiders"
+		mu.Unlock()
+		if insiders {
+			ticker := c.Query("ticker")
+			handler.OK(c, gin.H{"items": []gin.H{{"id": 1, "ticker": ticker, "owner_name": ticker + " 交易申报人", "transaction_date": "2026-09-29", "direction": "buy", "transaction_code": "P", "shares": 100, "price_usd": 12, "value_usd": 1200, "qualified": true}}, "total": 1, "summary": gin.H{"transactions": 1, "issuers": 1, "purchases": 1}})
+			return
+		}
 		handler.OK(c, gin.H{"items": []any{}, "total": 0, "summary": gin.H{"transactions": 0}})
+	})
+	r.GET("/api/insider-trading-plans", func(c *gin.Context) {
+		ticker := c.Query("ticker")
+		handler.OK(c, gin.H{"items": []gin.H{{"id": 1, "ticker": ticker, "owner_name": ticker + " 计划申报人", "status": "active", "adoption_date": "2026-09-01"}}, "total": 1, "coverage": gin.H{"status": "complete", "coverage_pct": 100}})
 	})
 	r.GET("/api/ai/analyses", func(c *gin.Context) { handler.OK(c, gin.H{"items": []any{}, "total": 0}) })
 	r.GET("/api/watch-targets", func(c *gin.Context) {
