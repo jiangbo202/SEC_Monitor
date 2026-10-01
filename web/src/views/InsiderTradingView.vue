@@ -94,7 +94,7 @@
   </section>
 </template>
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
@@ -131,11 +131,41 @@ const roleSignals = computed(() => {
   return [...grouped.entries()].map(([role,count]) => ({role,count})).sort((a,b)=>b.count-a.count).slice(0,6)
 })
 const notableSignals = computed(() => rows.value.filter(row => !row.derivative && row.qualified && row.value_usd >= 100_000 && (row.transaction_code === 'P' || (row.transaction_code === 'S' && row.ten_b5_1_status !== 'confirmed'))))
-async function load() { loading.value = true; try { const res = await apiClient.get<ApiResponse<Result>>('/insider-transactions', { params:{ ...filters, page:page.value, page_size:pageSize } }); rows.value=res.data.data.items; total.value=res.data.data.total; Object.assign(summary, res.data.data.summary) } catch (err:any) { ElMessage.error(err?.response?.data?.message || '加载内幕交易事实失败') } finally { loading.value=false } }
+let transactionRequest = 0
+let planRequest = 0
+async function load() {
+  const request = ++transactionRequest
+  loading.value = true
+  try {
+    const res = await apiClient.get<ApiResponse<Result>>('/insider-transactions', { params:{ ...filters, page:page.value, page_size:pageSize } })
+    if (request !== transactionRequest) return
+    rows.value = res.data.data.items
+    total.value = res.data.data.total
+    Object.assign(summary, emptySummary(), res.data.data.summary)
+  } catch (err:any) {
+    if (request === transactionRequest) ElMessage.error(err?.response?.data?.message || '加载内幕交易事实失败')
+  } finally {
+    if (request === transactionRequest) loading.value = false
+  }
+}
 function query(){ page.value=1; return load() }
 function reset(){ Object.assign(filters,{ticker:'',source:'',direction:'',qualified:'',ten_b5_1_status:''}); query() }
-async function loadPlans(){ planLoading.value=true; try{ const res=await apiClient.get<ApiResponse<PlanResult>>('/insider-trading-plans',{params:{...planFilters,page:planPage.value,page_size:pageSize}}); plans.value=res.data.data.items; planTotal.value=res.data.data.total; Object.assign(planCoverage,res.data.data.coverage||emptyPlanCoverage()) }catch(err:any){ ElMessage.error(err?.response?.data?.message||'加载 10b5-1 计划失败') }finally{ planLoading.value=false } }
-function queryPlans(){planPage.value=1;return loadPlans()} function resetPlans(){Object.assign(planFilters,{ticker:'',source:'',status:''});queryPlans()} function onTabChange(name:string|number){if(name==='plans'&&!plans.value.length)loadPlans()}
+async function loadPlans(){
+  const request = ++planRequest
+  planLoading.value=true
+  try {
+    const res=await apiClient.get<ApiResponse<PlanResult>>('/insider-trading-plans',{params:{...planFilters,page:planPage.value,page_size:pageSize}})
+    if (request !== planRequest) return
+    plans.value=res.data.data.items
+    planTotal.value=res.data.data.total
+    Object.assign(planCoverage,emptyPlanCoverage(),res.data.data.coverage)
+  } catch(err:any) {
+    if (request === planRequest) ElMessage.error(err?.response?.data?.message||'加载 10b5-1 计划失败')
+  } finally {
+    if (request === planRequest) planLoading.value=false
+  }
+}
+function queryPlans(){planPage.value=1;return loadPlans()} function resetPlans(){Object.assign(planFilters,{ticker:'',source:'',status:''});queryPlans()} function onTabChange(name:string|number){if(name==='plans'&&!plans.value.length&&!planLoading.value)loadPlans()}
 async function backfillPlans(){
   try{ await ElMessageBox.confirm('将只扫描当前小盘候选和启用监控标的中尚未被新版解析器覆盖的 SEC Form 4，并补查相关 Form 144。首次运行可能需要数分钟。','扫描 10b5-1 历史原文',{confirmButtonText:'开始扫描',cancelButtonText:'取消',type:'warning'}) }catch{return}
   backfillLoading.value=true
@@ -159,17 +189,31 @@ const planCoverageDetail=computed(()=>{ const counts=`已解析 ${number(planCov
 const planEmptyText=computed(()=>planCoverage.status==='pending'?'等待新版 10b5-1 数据解析，当前空列表不代表没有计划':planCoverage.status==='partial'?'当前仅完成部分解析，空列表不能作为“没有计划”的结论':'当前范围暂无采用日期明确的 10b5-1 计划')
 function formatDateTime(value?:string){if(!value)return '-'; const date=new Date(value); return Number.isNaN(date.getTime())?'-':date.toLocaleString('zh-CN',{hour12:false})}
 function exclusionLabel(value:string){ const labels:Record<string,string>={missing_price:'缺少成交价',derivative:'衍生证券交易',not_open_market:'非公开市场交易',role_not_qualified:'申报人身份不在当前口径'}; return labels[value]||value||'未满足当前研究口径，请核对 SEC 原文' }
-onMounted(()=>{
+watch(() => [route.query.ticker, route.query.tab], () => {
   const state=insiderRouteState(route.query)
+  // Query-only navigation reuses this view. Discard both old result sets and
+  // invalidate in-flight requests before switching the issuer or tab.
+  transactionRequest++
+  planRequest++
+  loading.value=false
+  planLoading.value=false
+  rows.value=[]
+  plans.value=[]
+  total.value=0
+  planTotal.value=0
+  page.value=1
+  planPage.value=1
+  Object.assign(summary,emptySummary())
+  Object.assign(planCoverage,emptyPlanCoverage())
+  Object.assign(filters,{ticker:state.transactionTicker,source:'',direction:'',qualified:'',ten_b5_1_status:''})
+  Object.assign(planFilters,{ticker:state.planTicker,source:'',status:''})
   activeTab.value=state.tab
-  if(state.tab==='plans'){
-    planFilters.ticker=state.planTicker
-    void loadPlans()
-  }else if(state.transactionTicker){
-    filters.ticker=state.transactionTicker
-  }
-  load()
-})
+  if(state.tab==='plans') void loadPlans()
+  // The top-level transaction summary remains scoped to the linked issuer,
+  // even when the notification opens the plan tab.
+  filters.ticker=state.transactionTicker || state.planTicker
+  void load()
+}, { immediate: true })
 </script>
 <style scoped>
 .metric-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-bg-color);margin-bottom:12px}.metric-strip>div{padding:12px 16px;display:grid;gap:2px;border-right:1px solid var(--el-border-color-lighter)}.metric-strip>div:last-child{border-right:0}.metric-strip span,.metric-strip small,.owner small,.cell-note{color:var(--el-text-color-secondary);font-size:12px}.metric-strip strong{font-size:24px;line-height:1.2}.positive{color:var(--el-color-success)}.negative{color:var(--el-color-danger)}.compact-toolbar{margin-bottom:12px}.compact-toolbar :deep(.el-form-item){margin-right:8px}.source-filter{width:128px}.direction-filter,.evidence-filter,.status-filter{width:120px}.plan-filter{width:136px}.owner{display:grid;gap:2px}.plan-coverage,.plan-boundary{margin-bottom:10px}.coverage-detail{color:var(--el-text-color-secondary);font-size:12px;margin-top:3px}.insider-mobile-list{display:none}.insider-mobile-card{border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:12px;background:var(--el-bg-color)}.insider-mobile-head,.insider-mobile-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}.insider-mobile-card>.owner{margin-top:8px}.insider-mobile-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}.insider-mobile-facts span{display:flex;flex-direction:column;font-weight:600}.insider-mobile-facts small,.insider-mobile-foot small{color:var(--el-text-color-secondary);font-weight:400}.insider-mobile-foot small{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:900px){.metric-strip{grid-template-columns:repeat(2,1fr)}.metric-strip>div:nth-child(2){border-right:0}.insider-table,.plan-table{display:none}.insider-mobile-list{display:grid;gap:10px}.compact-toolbar{display:flex;flex-wrap:wrap}.compact-toolbar :deep(.el-form-item){margin-right:6px}.source-filter,.direction-filter,.evidence-filter,.status-filter,.plan-filter{width:130px}}
