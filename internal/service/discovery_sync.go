@@ -498,6 +498,17 @@ func (s *DiscoverySyncService) RefreshLongbridgeCandidateMarketResearch(ctx cont
 	return result, err
 }
 
+func (s *DiscoverySyncService) RefreshInstitutionalOwnership(ctx context.Context, ticker string) (discovery.OwnershipRefreshResult, error) {
+	if s == nil || s.db == nil {
+		return discovery.OwnershipRefreshResult{}, errors.New("discovery sync service is not configured")
+	}
+	cfg, err := s.appliedDiscoveryConfig(ctx)
+	if err != nil {
+		return discovery.OwnershipRefreshResult{}, err
+	}
+	return discovery.RefreshInstitutionalOwnership(ctx, s.db, cfg, ticker)
+}
+
 func (s *DiscoverySyncService) RefreshLongbridgeCandidateValuationResearch(ctx context.Context, ticker, cik string) (discovery.ValuationResearchRefreshResult, error) {
 	if s == nil || s.db == nil {
 		return discovery.ValuationResearchRefreshResult{}, errors.New("discovery sync service is not configured")

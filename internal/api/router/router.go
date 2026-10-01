@@ -212,6 +212,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.GET("/discovery/fair-values/:ticker", app.GetDiscoveryTickerFairValue)
 		api.POST("/discovery/valuation-research/:ticker/refresh", app.RefreshDiscoveryTickerValuationResearch)
 		api.GET("/discovery/institutional-holdings/:ticker", app.GetDiscoveryTickerInstitutionalHoldings)
+		api.POST("/discovery/institutional-holdings/:ticker/refresh", app.RefreshDiscoveryInstitutionalOwnership)
 		api.GET("/discovery/options/:ticker", app.GetDiscoveryOptionResearch)
 		api.POST("/discovery/options/:ticker/refresh", app.RefreshDiscoveryOptionResearch)
 		api.GET("/discovery/trade-setup-history/:ticker", app.GetDiscoveryTickerTradeSetupHistory)

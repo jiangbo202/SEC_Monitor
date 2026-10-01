@@ -779,7 +779,7 @@
       <el-table-column label="操作" :width="candidateTableView === 'compact' ? 148 : 210" fixed="right">
         <template #default="{ row }">
           <div class="candidate-actions">
-            <el-button link type="primary" :loading="detailLoadingTicker === row.ticker" @click="openDetail(row)">详情</el-button>
+            <el-button link type="primary" :loading="detailLoadingTicker === row.ticker" @click="openDetail(row)">标的详情</el-button>
             <el-button link type="primary" @click="router.push({ path: '/ticker-workspace', query: { ticker: row.ticker } })">研究台</el-button>
             <span v-if="row.followed" class="candidate-followed-text">已关注</span>
             <el-button v-else link type="primary" :loading="watchingTicker === row.ticker" @click="addToCandidateWatches(row)">关注</el-button>
@@ -801,7 +801,7 @@
           <span><small>证据日期</small>{{ formatDate(row.price_trade_date || row.score_effective_date) }}</span>
         </div>
         <p>{{ researchDecisionSummary(row) || '关键研究证据已满足当前门槛。' }}</p>
-        <div class="candidate-mobile-actions"><el-button type="primary" plain @click="router.push({ path: '/ticker-workspace', query: { ticker: row.ticker } })">研究工作台</el-button><el-button @click="openDetail(row)">管理详情</el-button><el-button v-if="!row.followed" :loading="watchingTicker === row.ticker" @click="addToCandidateWatches(row)">关注</el-button></div>
+        <div class="candidate-mobile-actions"><el-button type="primary" plain @click="router.push({ path: '/ticker-workspace', query: { ticker: row.ticker } })">研究工作台</el-button><el-button @click="openDetail(row)">标的详情</el-button><el-button v-if="!row.followed" :loading="watchingTicker === row.ticker" @click="addToCandidateWatches(row)">关注</el-button></div>
       </article>
     </div>
 
@@ -1036,589 +1036,584 @@
       </template>
     </el-dialog>
 
-    <el-drawer v-model="detailVisible" title="候选证据链" size="720px">
+    <el-drawer v-model="detailVisible" :title="candidateDetail ? `${candidateDetail.score.ticker} · 标的详情` : '标的详情'" size="min(960px, 100%)">
       <div v-if="candidateDetail" class="candidate-detail">
-        <nav class="candidate-detail-nav" aria-label="候选详情快捷定位">
-          <span class="candidate-detail-nav-label">阅读顺序</span>
-          <el-button link type="primary" @click="scrollCandidateDetailSection('summary')">决策摘要</el-button>
-          <el-button link type="primary" @click="scrollCandidateDetailSection('latest')">最新变化</el-button>
-          <el-button link type="primary" @click="scrollCandidateDetailSection('fundamentals')">基本面与风险</el-button>
-          <el-button link type="primary" @click="scrollCandidateDetailSection('research')">深度研究</el-button>
-          <el-button link type="primary" @click="scrollCandidateDetailSection('audit')">数据审计</el-button>
-        </nav>
-        <el-card id="candidate-detail-summary" shadow="never" class="detail-order-10">
-          <template #header>研究摘要</template>
-          <div class="detail-summary-grid">
-            <div>
-              <div class="detail-summary-title">值得关注</div>
-              <el-space wrap>
-                <el-tag v-for="signal in candidatePositiveSignals(candidateDetail)" :key="signal" type="success" effect="plain">{{ signal }}</el-tag>
-              </el-space>
-            </div>
-            <div>
-              <div class="detail-summary-title">需要谨慎</div>
-              <el-space wrap>
-                <el-tag v-for="risk in candidateRiskSignals(candidateDetail)" :key="risk" :type="risk === '暂无明显风险' ? 'info' : 'warning'" effect="plain">{{ risk }}</el-tag>
-              </el-space>
-            </div>
-          </div>
-        </el-card>
-        <el-card shadow="never" class="detail-order-20">
-          <template #header>
-            <div class="card-header-actions">
-              <span>建议下一步（研究工作流）</span>
-              <el-tag :type="researchNextStepTagType(candidateDetail.research_next_step?.priority)" effect="plain">
-                {{ researchNextStepPriorityLabel(candidateDetail.research_next_step?.priority) }}
-              </el-tag>
-            </div>
-          </template>
-          <el-alert
-            :type="researchNextStepAlertType(candidateDetail.research_next_step?.priority)"
-            :closable="false"
-            show-icon
-            :title="candidateDetail.research_next_step?.action || '阅读近期 SEC 文件并设定研究论点'"
-            :description="candidateDetail.research_next_step?.rationale || '先确认催化剂、可证伪判断与失效条件；本提示仅用于研究流程，不构成投资建议。'"
-          />
-          <div v-if="candidateDetail.research_next_step?.reasons?.length" class="research-next-step-reasons">
-            <el-tag v-for="reason in candidateDetail.research_next_step.reasons" :key="reason" size="small" type="info" effect="plain">{{ readinessReasonLabel(reason) }}</el-tag>
-          </div>
-        </el-card>
-        <el-descriptions :column="2" border class="detail-order-30 candidate-detail-identity">
-          <el-descriptions-item label="Ticker">{{ candidateDetail.score.ticker }}</el-descriptions-item>
-          <el-descriptions-item label="公司">{{ candidateDetail.security.company_name }}</el-descriptions-item>
-          <el-descriptions-item label="研究结论">{{ readinessLabel(candidateDetail.research_readiness?.status) }}</el-descriptions-item>
-          <el-descriptions-item label="总分">{{ candidateDetail.score.total_score }}</el-descriptions-item>
-          <el-descriptions-item label="入选画像">{{ gradeLabel(candidateDetail.score.grade) }}</el-descriptions-item>
-          <el-descriptions-item label="市值">{{ formatUSD(candidateDetail.score.market_cap_usd) }}</el-descriptions-item>
-          <el-descriptions-item label="SIC" :span="2">{{ candidateDetail.security.sic || '-' }}</el-descriptions-item>
-        </el-descriptions>
-
-        <el-card shadow="never" class="candidate-ai-card detail-order-220">
-          <template #header><div class="card-header-actions"><span>AI 研判（手动）</span><el-space><el-select fit-input-width v-model="candidateAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="candidateAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!candidateAIProvider || !candidateAIPromptTemplate" :loading="candidateAIGenerating" @click="generateCandidateAI">生成研判</el-button></el-space></div></template>
-          <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
-          <template v-else-if="candidateAIAnalyses.length"><el-select fit-input-width v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><el-alert v-if="activeCandidateAIAnalysis?.validation_warning" type="warning" :closable="false" show-icon title="模型输出未通过结构校验，系统已安全降级为证据不足。" style="margin-bottom:12px" /><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><AIAnalysisResult :result="activeCandidateAIAnalysis?.structured_result" :content="activeCandidateAIAnalysis?.content" /></div></template></template>
-          <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
-          <el-alert v-show="activeCandidateAIAnalysis?.status === 'queued' || activeCandidateAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
-        </el-card>
-
-        <el-card v-if="candidateDetail.company_profile" shadow="never" class="detail-order-190">
-          <template #header>
-            <div class="card-header-actions">
-              <span>公司概览（SEC + Longbridge）</span>
-              <el-button size="small" :loading="companyProfileRefreshing" @click="refreshCandidateCompanyProfile">刷新公司资料</el-button>
-            </div>
-          </template>
-          <el-descriptions :column="2" border size="small">
-            <el-descriptions-item label="公司">{{ candidateDetail.company_profile.company_name || candidateDetail.security.company_name || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="交易所">{{ candidateDetail.company_profile.exchange || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="CIK">{{ candidateDetail.company_profile.cik || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="注册州/地区">{{ candidateDetail.company_profile.state_of_incorporation || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="SEC 行业（SIC）" :span="2">
-              {{ candidateDetail.company_profile.sic_description || (candidateDetail.company_profile.sic ? `SIC ${candidateDetail.company_profile.sic}` : '-') }}
-            </el-descriptions-item>
-            <el-descriptions-item label="业务概览" :span="2">{{ candidateDetail.company_profile.business_summary }}</el-descriptions-item>
-            <el-descriptions-item v-if="candidateDetail.company_profile.website" label="官网"><a :href="companyProfileWebsiteURL(candidateDetail.company_profile.website)" target="_blank" rel="noopener">{{ candidateDetail.company_profile.website }}</a></el-descriptions-item>
-            <el-descriptions-item v-if="candidateDetail.company_profile.founded" label="成立时间">{{ candidateDetail.company_profile.founded }}</el-descriptions-item>
-            <el-descriptions-item v-if="candidateDetail.company_profile.listing_date" label="上市时间">{{ candidateDetail.company_profile.listing_date }}</el-descriptions-item>
-            <el-descriptions-item v-if="candidateDetail.company_profile.market" label="上市市场">{{ candidateDetail.company_profile.market }}</el-descriptions-item>
-            <el-descriptions-item v-if="candidateDetail.company_profile.employees" label="员工数">{{ candidateDetail.company_profile.employees }}</el-descriptions-item>
-            <el-descriptions-item v-if="candidateDetail.company_profile.manager" label="管理者">{{ candidateDetail.company_profile.manager }}</el-descriptions-item>
-            <el-descriptions-item v-if="candidateDetail.company_profile.year_end" label="财年截止日">{{ candidateDetail.company_profile.year_end }}</el-descriptions-item>
-            <el-descriptions-item v-if="candidateDetail.company_profile.address" label="公司地址" :span="2">{{ candidateDetail.company_profile.address }}</el-descriptions-item>
-            <el-descriptions-item label="来源" :span="2">
-              {{ candidateDetail.company_profile.summary_source }}<span v-if="candidateDetail.company_profile.profile_fetched_at"> · Longbridge 更新于 {{ formatDateTime(candidateDetail.company_profile.profile_fetched_at) }}</span><span v-else-if="candidateDetail.company_profile.metadata_as_of"> · SEC 同步于 {{ formatDateTime(candidateDetail.company_profile.metadata_as_of) }}</span>
-            </el-descriptions-item>
+        <StockDetailLayout :ticker="candidateDetail.score.ticker" :company-name="candidateDetail.security.company_name" context-label="小盘候选" :opened="detailVisible" @change="onCandidateDetailSectionChange">
+        <template #actions><el-button size="small" @click="router.push({ path: '/ticker-workspace', query: { ticker: candidateDetail.score.ticker } })">研究工作台</el-button></template>
+        <template #overview>
+          <StockDataStatus label="公司资料" :data="candidateDetail.company_profile" />
+          <el-descriptions :column="2" border class=" candidate-detail-identity">
+            <el-descriptions-item label="Ticker">{{ candidateDetail.score.ticker }}</el-descriptions-item>
+            <el-descriptions-item label="公司">{{ candidateDetail.security.company_name }}</el-descriptions-item>
+            <el-descriptions-item label="研究结论">{{ readinessLabel(candidateDetail.research_readiness?.status) }}</el-descriptions-item>
+            <el-descriptions-item label="总分">{{ candidateDetail.score.total_score }}</el-descriptions-item>
+            <el-descriptions-item label="入选画像">{{ gradeLabel(candidateDetail.score.grade) }}</el-descriptions-item>
+            <el-descriptions-item label="市值">{{ formatUSD(candidateDetail.score.market_cap_usd) }}</el-descriptions-item>
+            <el-descriptions-item label="SIC" :span="2">{{ candidateDetail.security.sic || '-' }}</el-descriptions-item>
           </el-descriptions>
-        </el-card>
-
-        <el-card id="candidate-detail-research" shadow="never" class="detail-order-160">
-          <template #header>市场一致目标价与合理价值情景</template>
-          <el-alert type="warning" :closable="false" show-icon title="不提供 Longbridge “公允价值”结论：市场一致目标价与本地历史估值情景必须分开阅读，均不构成投资建议。" />
-          <template v-if="candidateDetail.fair_value?.status === 'available'">
-            <el-descriptions :column="3" border size="small" style="margin-top: 12px">
-              <el-descriptions-item label="参考收盘价">{{ formatFairValuePrice(candidateDetail.fair_value.reference_price, candidateDetail.fair_value.currency) }}<span v-if="candidateDetail.fair_value.reference_price_date"> · {{ candidateDetail.fair_value.reference_price_date }}</span></el-descriptions-item>
-              <el-descriptions-item label="市场一致目标价（平均）">{{ formatFairValuePrice(candidateDetail.fair_value.market_consensus_target, candidateDetail.fair_value.currency) }}</el-descriptions-item>
-              <el-descriptions-item label="目标价相对空间">{{ formatForecastNumber(candidateDetail.fair_value.market_consensus_upside_pct, '%') }}</el-descriptions-item>
-              <el-descriptions-item label="市场目标价区间" :span="2">{{ formatFairValuePrice(candidateDetail.fair_value.market_consensus_low, candidateDetail.fair_value.currency) }} - {{ formatFairValuePrice(candidateDetail.fair_value.market_consensus_high, candidateDetail.fair_value.currency) }}</el-descriptions-item>
-              <el-descriptions-item label="机构覆盖数">{{ candidateDetail.fair_value.analyst_count || '-' }}</el-descriptions-item>
-              <el-descriptions-item v-if="candidateDetail.fair_value.local_historical_scenario" label="本地历史倍数情景（低 / 中 / 高）" :span="3">
-                {{ formatFairValuePrice(candidateDetail.fair_value.local_historical_scenario.low, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(candidateDetail.fair_value.local_historical_scenario.mid, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(candidateDetail.fair_value.local_historical_scenario.high, candidateDetail.fair_value.currency) }}（{{ candidateDetail.fair_value.local_historical_scenario.metrics }} 个可用指标等权）
-              </el-descriptions-item>
-              <el-descriptions-item label="本地参考价来源" :span="3">{{ candidateDetail.fair_value.reference_price_source || '-' }}</el-descriptions-item>
-            </el-descriptions>
-            <div v-if="candidateDetail.fair_value.metric_scenarios.length" class="analyst-rating-provenance-title">本地计算输入与过程</div>
-            <el-table v-if="candidateDetail.fair_value.metric_scenarios.length" :data="candidateDetail.fair_value.metric_scenarios" size="small" border>
-              <el-table-column prop="metric" label="指标" width="75" />
-              <el-table-column label="当前倍数" width="100" align="right"><template #default="{ row }">{{ formatForecastNumber(row.current_multiple) }}</template></el-table-column>
-              <el-table-column label="历史低 / 中 / 高" min-width="180" align="right"><template #default="{ row }">{{ formatForecastNumber(row.historical_low) }} / {{ formatForecastNumber(row.historical_mid) }} / {{ formatForecastNumber(row.historical_high) }}</template></el-table-column>
-              <el-table-column label="推导价格低 / 中 / 高" min-width="210" align="right"><template #default="{ row }">{{ formatFairValuePrice(row.price_low, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(row.price_mid, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(row.price_high, candidateDetail.fair_value.currency) }}</template></el-table-column>
-            </el-table>
-            <el-alert type="info" :closable="false" style="margin-top: 12px" :title="candidateDetail.fair_value.methodology" :description="candidateDetail.fair_value.message" />
-          </template>
-          <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="candidateDetail.fair_value?.message || '尚缺机构目标价或可用估值倍数，无法计算本地历史估值情景。'" />
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-170">
-          <template #header><div class="card-header-actions"><span>估值历史与同业比较（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.valuation_research?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.valuation_research?.quality?.quality_status) }}</el-tag></span><el-button size="small" :loading="valuationResearchRefreshing" @click="refreshCandidateValuationResearch">刷新估值研究</el-button></div></template>
-          <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="小盘与亏损公司可能缺少 PE、同业或历史覆盖；此数据仅用于研究比较，绝不作为候选硬筛选。" />
-          <template v-if="candidateDetail.valuation_research?.latest">
-            <el-table :data="valuationMetricRows(candidateDetail.valuation_research.latest)" size="small" border style="margin-top: 12px">
-              <el-table-column prop="metric" label="指标" width="80" />
-              <el-table-column label="当前" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.current) }}</template></el-table-column>
-              <el-table-column label="历史低 / 中 / 高" min-width="210" align="right"><template #default="{ row }">{{ formatForecastNumber(row.low) }} / {{ formatForecastNumber(row.median) }} / {{ formatForecastNumber(row.high) }}</template></el-table-column>
-              <el-table-column label="行业分位" width="150"><template #default="{ row }">{{ valuationPercentileText(row.percentile) }}</template></el-table-column>
-              <el-table-column label="历史点数" width="100" align="right"><template #default="{ row }">{{ row.history.length }}</template></el-table-column>
-            </el-table>
-            <el-alert v-if="candidateDetail.valuation_research.latest.change_summary" type="warning" :closable="false" style="margin-top: 12px" :title="`估值快照变化：${candidateDetail.valuation_research.latest.change_summary}`" />
-			<div class="analyst-rating-provenance-title">自身历史分位（跨快照 / 提供方历史）</div>
-			<el-table :data="candidateDetail.valuation_research.framework?.self_history || []" size="small" border empty-text="至少需要 5 个历史点">
-			  <el-table-column prop="metric" label="指标" width="90" /><el-table-column label="当前" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.current) }}</template></el-table-column><el-table-column label="自身历史分位" width="140" align="right"><template #default="{ row }">{{ row.percentile == null ? '-' : `${row.percentile.toFixed(1)}%` }}</template></el-table-column><el-table-column prop="observations" label="样本" width="90" align="right" /><el-table-column label="状态" min-width="110"><template #default="{ row }">{{ row.status === 'available' ? '可用' : '样本不足' }}</template></el-table-column>
-			</el-table>
-			<div class="analyst-rating-provenance-title">固定同业比较 <small>版本 {{ candidateDetail.valuation_research.framework?.peer_set_version || '-' }} · {{ candidateDetail.valuation_research.framework?.peer_set_as_of ? formatDateTime(candidateDetail.valuation_research.framework.peer_set_as_of) : '-' }}</small></div>
-			<el-alert type="info" :closable="false" :title="candidateDetail.valuation_research.framework?.peer_set_policy || '固定同业集合，防止不同批次样本漂移。'" />
-			<el-table :data="candidateDetail.valuation_research.framework?.peers || []" size="small" border empty-text="Longbridge 暂无可固定的同业覆盖">
-              <el-table-column prop="symbol" label="代码" width="110" />
-              <el-table-column prop="name" label="公司" min-width="200" show-overflow-tooltip />
-              <el-table-column label="PE" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.pe) }}</template></el-table-column>
-              <el-table-column label="PB" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.pb) }}</template></el-table-column>
-              <el-table-column label="PS" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.ps) }}</template></el-table-column>
-			  <el-table-column label="收入增速" width="105" align="right"><template #default="{ row }">{{ formatPct(row.revenue_growth_pct) }}</template></el-table-column>
-			  <el-table-column label="毛利率" width="95" align="right"><template #default="{ row }">{{ formatPct(row.gross_margin_pct) }}</template></el-table-column>
-			  <el-table-column label="现金跑道" width="105" align="right"><template #default="{ row }">{{ row.cash_runway_months == null ? '-' : `${row.cash_runway_months.toFixed(1)}月` }}</template></el-table-column>
-			  <el-table-column label="基本面覆盖" width="105"><template #default="{ row }">{{ portfolioCoverageLabel(row.fundamental_coverage) }}</template></el-table-column>
-            </el-table>
-          </template>
-          <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="candidateDetail.valuation_research?.message || '尚未同步 Longbridge 估值研究'" />
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-60">
-          <template #header>
-            <div class="card-header-actions">
-              <span>市场预期、异动与机构持仓（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.market_research?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.market_research?.quality?.quality_status) }}</el-tag></span>
-              <el-button size="small" :loading="marketResearchRefreshing" @click="refreshCandidateMarketResearch">刷新 P1 市场研究</el-button>
+          <el-card id="candidate-detail-summary" shadow="never">
+            <template #header>研究摘要</template>
+            <div class="detail-summary-grid">
+              <div>
+                <div class="detail-summary-title">值得关注</div>
+                <el-space wrap>
+                  <el-tag v-for="signal in candidatePositiveSignals(candidateDetail)" :key="signal" type="success" effect="plain">{{ signal }}</el-tag>
+                </el-space>
+              </div>
+              <div>
+                <div class="detail-summary-title">需要谨慎</div>
+                <el-space wrap>
+                  <el-tag v-for="risk in candidateRiskSignals(candidateDetail)" :key="risk" :type="risk === '暂无明显风险' ? 'info' : 'warning'" effect="plain">{{ risk }}</el-tag>
+                </el-space>
+              </div>
             </div>
-          </template>
-          <el-alert type="info" :closable="false" show-icon title="这些是独立研究补充，不计入基本面总分。市场异动只会在 72 小时内增加短线复核优先级。" class="business-model-alert" />
-          <template v-if="candidateDetail.market_research?.eps_forecast?.latest">
-            <el-descriptions :column="3" border size="small" style="margin-top: 12px">
-              <el-descriptions-item label="EPS 预期中位数">{{ formatForecastNumber(candidateDetail.market_research.eps_forecast.latest.median) }}</el-descriptions-item>
-              <el-descriptions-item label="EPS 预期区间">{{ formatForecastRange(candidateDetail.market_research.eps_forecast.latest) }}</el-descriptions-item>
-              <el-descriptions-item label="上修 / 下修机构">{{ candidateDetail.market_research.eps_forecast.latest.institution_up }} / {{ candidateDetail.market_research.eps_forecast.latest.institution_down }}（共 {{ candidateDetail.market_research.eps_forecast.latest.institution_total }}）</el-descriptions-item>
-              <el-descriptions-item label="快照时间">{{ formatDateTime(candidateDetail.market_research.eps_forecast.latest.fetched_at) }}</el-descriptions-item>
-              <el-descriptions-item label="预期变化" :span="2">{{ candidateDetail.market_research.eps_forecast.latest.change_summary || '与上一快照无有效变化，或尚无可比较历史。' }}</el-descriptions-item>
-			  <el-descriptions-item label="同周期修正方向"><el-tag :type="epsRevisionTagType(candidateDetail.market_research.eps_revision?.direction)" effect="plain">{{ epsRevisionLabel(candidateDetail.market_research.eps_revision?.direction) }}</el-tag></el-descriptions-item>
-			  <el-descriptions-item label="中位数修正幅度">{{ formatPerformance(candidateDetail.market_research.eps_revision?.median_change_pct) }}</el-descriptions-item>
-			  <el-descriptions-item label="修正广度">{{ formatPerformance(candidateDetail.market_research.eps_revision?.revision_breadth_pct) }}</el-descriptions-item>
-            </el-descriptions>
-          </template>
-          <el-alert v-else type="info" :closable="false" show-icon style="margin-top: 12px" :title="candidateDetail.market_research?.eps_forecast?.message || '尚未同步 EPS 市场预期'" />
-		  <el-alert v-if="candidateDetail.market_research?.earnings_surprise?.status !== 'available'" type="info" :closable="false" show-icon style="margin-top: 12px" title="业绩预期差暂不计算" :description="candidateDetail.market_research?.earnings_surprise?.message" />
-
-          <div class="analyst-rating-provenance-title">近期市场异动（最多 20 条）</div>
-          <el-table :data="candidateDetail.market_research?.anomalies || []" size="small" border empty-text="暂无 Longbridge 异动记录">
-            <el-table-column prop="alert_name" label="异动类型" min-width="150" />
-            <el-table-column label="内容" min-width="180"><template #default="{ row }">{{ anomalyValues(row.values_json) }}</template></el-table-column>
-            <el-table-column label="方向" width="90"><template #default="{ row }"><el-tag :type="row.emotion === 1 ? 'success' : row.emotion === 2 ? 'danger' : 'info'" effect="plain">{{ anomalyEmotionLabel(row.emotion) }}</el-tag></template></el-table-column>
-            <el-table-column label="发生时间" width="170"><template #default="{ row }">{{ formatDateTime(row.alert_time) }}</template></el-table-column>
-          </el-table>
-
-          <div class="analyst-rating-provenance-title">机构股东增减持</div>
-          <el-table :data="candidateDetail.market_research?.institutional_holders || []" size="small" border empty-text="暂无 Longbridge 机构股东数据">
-            <el-table-column prop="holder_name" label="机构" min-width="200" show-overflow-tooltip />
-            <el-table-column prop="institution_type" label="类型" min-width="115" />
-            <el-table-column label="持股比例" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.percent_of_shares, '%') }}</template></el-table-column>
-            <el-table-column label="持股变化" width="120" align="right"><template #default="{ row }">{{ formatForecastNumber(row.shares_changed) }}</template></el-table-column>
-            <el-table-column prop="report_date" label="报告日" width="115" />
-          </el-table>
-
-          <div class="analyst-rating-provenance-title">基金 / ETF 持仓</div>
-          <el-table :data="candidateDetail.market_research?.fund_holders || []" size="small" border empty-text="暂无 Longbridge 基金持仓数据">
-            <el-table-column prop="fund_name" label="基金" min-width="220" show-overflow-tooltip />
-            <el-table-column prop="fund_symbol" label="代码" width="110" />
-            <el-table-column label="持仓权重" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.position_ratio, '%') }}</template></el-table-column>
-            <el-table-column prop="report_date" label="报告日" width="115" />
-          </el-table>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-180">
-          <template #header>
-            <div class="card-header-actions">
-              <span>机构与分析师共识（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.analyst_rating?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.analyst_rating?.quality?.quality_status) }}</el-tag></span>
-              <el-button size="small" :loading="analystRatingRefreshing" @click="refreshCandidateAnalystRating">刷新分析师评级</el-button>
+          </el-card>
+          <el-card shadow="never">
+            <template #header>
+              <div class="card-header-actions">
+                <span>建议下一步（研究工作流）</span>
+                <el-tag :type="researchNextStepTagType(candidateDetail.research_next_step?.priority)" effect="plain">
+                  {{ researchNextStepPriorityLabel(candidateDetail.research_next_step?.priority) }}
+                </el-tag>
+              </div>
+            </template>
+            <el-alert
+              :type="researchNextStepAlertType(candidateDetail.research_next_step?.priority)"
+              :closable="false"
+              show-icon
+              :title="candidateDetail.research_next_step?.action || '阅读近期 SEC 文件并设定研究论点'"
+              :description="candidateDetail.research_next_step?.rationale || '先确认催化剂、可证伪判断与失效条件；本提示仅用于研究流程，不构成投资建议。'"
+            />
+            <div v-if="candidateDetail.research_next_step?.reasons?.length" class="research-next-step-reasons">
+              <el-tag v-for="reason in candidateDetail.research_next_step.reasons" :key="reason" size="small" type="info" effect="plain">{{ readinessReasonLabel(reason) }}</el-tag>
             </div>
-          </template>
-          <template v-if="candidateDetail.analyst_rating?.latest?.status === 'available'">
-            <el-descriptions :column="3" border size="small">
-              <el-descriptions-item label="共识评级"><el-tag :type="analystRecommendationTagType(candidateDetail.analyst_rating.latest.recommendation)" effect="plain">{{ analystRecommendationLabel(candidateDetail.analyst_rating.latest.recommendation) }}</el-tag></el-descriptions-item>
-              <el-descriptions-item label="覆盖数">{{ candidateDetail.analyst_rating.latest.analyst_count }}</el-descriptions-item>
-              <el-descriptions-item label="数据源">{{ candidateDetail.analyst_rating.latest.provider }}</el-descriptions-item>
-              <el-descriptions-item label="市场一致目标价（平均）">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_average_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
-              <el-descriptions-item label="目标价区间">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_low_micros, candidateDetail.analyst_rating.latest.currency) }} - {{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_high_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
-              <el-descriptions-item label="参考收盘价">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.reference_price_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
-              <el-descriptions-item label="评级分布" :span="3">强烈买入 {{ candidateDetail.analyst_rating.latest.strong_buy_count }} · 买入 {{ candidateDetail.analyst_rating.latest.buy_count }} · 持有 {{ candidateDetail.analyst_rating.latest.hold_count }} · 跑输 {{ candidateDetail.analyst_rating.latest.underperform_count }} · 卖出 {{ candidateDetail.analyst_rating.latest.sell_count }}</el-descriptions-item>
-              <el-descriptions-item label="提供方更新时间" :span="3">{{ analystProviderTimeText(candidateDetail.analyst_rating.latest) }}</el-descriptions-item>
-            </el-descriptions>
-            <div class="analyst-rating-provenance-title">结果溯源明细</div>
-            <el-table :data="analystRatingProvenanceRows(candidateDetail.analyst_rating.latest)" size="small" border class="analyst-rating-provenance-table">
-              <el-table-column prop="result" label="分析结果" min-width="125" />
-              <el-table-column prop="value" label="当前值" min-width="170" show-overflow-tooltip />
-              <el-table-column prop="source" label="数据来源 / 原始聚合字段" min-width="255" show-overflow-tooltip />
-              <el-table-column prop="providerUpdatedAt" label="提供方时间" width="150" show-overflow-tooltip />
-              <el-table-column prop="fetchedAt" label="本地同步时间" width="170" />
-              <el-table-column prop="note" label="说明" min-width="200" show-overflow-tooltip />
-            </el-table>
-            <div v-if="candidateDetail.analyst_rating.history?.length > 1" class="analyst-rating-provenance-title">快照变更历史（仅在聚合值变化时新增）</div>
-            <el-table v-if="candidateDetail.analyst_rating.history?.length > 1" :data="candidateDetail.analyst_rating.history.slice(0, 12)" size="small" border class="score-history-table" style="margin-top: 12px">
-              <el-table-column label="同步时间" width="170"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
-              <el-table-column label="评级" width="110"><template #default="{ row }">{{ analystRecommendationLabel(row.recommendation) }}</template></el-table-column>
-              <el-table-column prop="analyst_count" label="覆盖数" width="85" align="right" />
-              <el-table-column label="平均目标价" width="130" align="right"><template #default="{ row }">{{ formatAnalystPrice(row.target_average_micros, row.currency) }}</template></el-table-column>
-              <el-table-column prop="change_summary" label="有效变化" min-width="180" show-overflow-tooltip />
-            </el-table>
-          </template>
-          <el-alert v-else type="info" :closable="false" show-icon :title="candidateDetail.analyst_rating?.message || '尚未同步分析师共识'" description="小盘股可能没有公开分析师覆盖；这不是 SEC、财务或行情数据缺失。可手动刷新当前标的，不会重跑候选工作流。" />
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-110">
-          <template #header>流动性条件（研究用）</template>
-          <el-alert :type="investabilityAlertType(candidateDetail.investability?.status)" :closable="false" show-icon :title="investabilityDetailTitle(candidateDetail.investability)" :description="investabilityDetailDescription(candidateDetail.investability)" />
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-130">
-          <template #header>股本稀释趋势（SEC）</template>
-          <el-alert :type="dilutionAlertType(candidateDetail.dilution_trend?.status)" :closable="false" show-icon :title="dilutionDetailTitle(candidateDetail.dilution_trend)" :description="dilutionTooltipLines(candidateDetail.dilution_trend).slice(1).join('；')" />
-        </el-card>
-
-        <el-card id="candidate-detail-audit" shadow="never" class="detail-order-230">
-          <template #header>评分拆解</template>
-          <el-alert type="info" :closable="false" show-icon :title="candidateDetail.scoring_rubric.disclaimer" class="business-model-alert" />
-          <el-descriptions :column="3" border size="small" style="margin-bottom: 12px">
-            <el-descriptions-item label="公式" :span="3">{{ candidateDetail.scoring_rubric.formula }}</el-descriptions-item>
-            <el-descriptions-item label="评分版本">{{ candidateDetail.scoring_rubric.version }}</el-descriptions-item>
-            <el-descriptions-item label="内容指纹">{{ candidateDetail.scoring_rubric.content_sha256?.slice(0, 12) || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="当前总分">{{ candidateDetail.score.total_score }} / {{ candidateDetail.scoring_rubric.max_score }}</el-descriptions-item>
-          </el-descriptions>
-          <el-table :data="candidateDetail.scoring_rubric.dimensions" size="small" border>
-            <el-table-column prop="label" label="维度" width="110" />
-            <el-table-column label="本次得分" width="100" align="right"><template #default="{ row }"><strong>{{ scoringDimensionValue(candidateDetail.score, row.key) }} / {{ row.max_points }}</strong></template></el-table-column>
-            <el-table-column label="权重" width="80" align="right"><template #default="{ row }">{{ row.weight_pct }}%</template></el-table-column>
-            <el-table-column label="分值映射" min-width="260"><template #default="{ row }">{{ scoringRulesText(row.rules) }}</template></el-table-column>
-            <el-table-column prop="evidence" label="证据来源" min-width="210" show-overflow-tooltip />
-          </el-table>
-          <div class="criteria-note">{{ candidateDetail.scoring_rubric.grade_rule_note }}</div>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-240">
-          <template #header>评分历史与入选事件</template>
-          <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="仅比较已发布候选批次；分数变化不等于基本面变化，请结合下方的变化原因与证据溯源复核。" />
-          <el-table :data="candidateDetail.score_history || []" size="small" border class="score-history-table" empty-text="仅有当前评分批次，暂无可比历史">
-            <el-table-column prop="effective_date" label="有效日" width="115" />
-            <el-table-column prop="grade" label="入选画像" width="150"><template #default="{ row }"><el-tag :type="gradeTagType(row.grade)" effect="plain">{{ gradeLabel(row.grade) }}</el-tag></template></el-table-column>
-            <el-table-column prop="total_score" label="总分" width="75" align="right" />
-            <el-table-column label="较前批" width="90" align="right"><template #default="{ row }">{{ scoreHistoryDelta(row.score_delta) }}</template></el-table-column>
-            <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="changeStatusTagType(row.change_status)" effect="plain">{{ changeStatusLabel(row.change_status) }}</el-tag></template></el-table-column>
-            <el-table-column label="核心变化" min-width="230" show-overflow-tooltip><template #default="{ row }">{{ scoreHistoryReasonSummary(row.change_reasons) }}</template></el-table-column>
-            <el-table-column prop="scoring_version" label="评分版本" width="150" show-overflow-tooltip />
-          </el-table>
-          <div v-if="candidateDetail.signal_events?.length" class="signal-event-history">
-            <div class="signal-event-heading">不可变入选事件</div>
-            <el-timeline>
-              <el-timeline-item v-for="event in candidateDetail.signal_events" :key="event.id" type="success" :timestamp="formatDate(event.signal_date)">
-                {{ candidateSignalEventLabel(event.event_type) }} · {{ gradeLabel(event.grade) }} · {{ event.total_score }} 分
-                <span v-if="event.baseline_trade_date">（锚定价 {{ formatPrice(event.baseline_close_micros / 1_000_000, 'USD') }}，{{ formatDate(event.baseline_trade_date) }}，{{ priceSourceLabel(event.price_source) }}）</span>
-              </el-timeline-item>
-            </el-timeline>
-          </div>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-200">
-          <template #header>赛道解释</template>
-          <el-descriptions :column="2" border size="small">
-            <el-descriptions-item label="分类">{{ candidateDetail.sector.category }}</el-descriptions-item>
-            <el-descriptions-item label="标签">{{ candidateDetail.sector.label }}</el-descriptions-item>
-            <el-descriptions-item label="SIC">{{ candidateDetail.sector.sic || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="赛道分">{{ candidateDetail.sector.score }}/10</el-descriptions-item>
-            <el-descriptions-item label="说明" :span="2">{{ candidateDetail.sector.rationale }}</el-descriptions-item>
-          </el-descriptions>
-        </el-card>
-
-        <el-card v-if="candidateDetail.sector.category === '生物医药'" shadow="never" class="detail-order-210">
-          <template #header>
-            <div class="detail-card-header-action">
-              <span>生物医药业务模型</span>
-              <el-button link type="primary" @click="openBusinessModelEditor">确认/更新</el-button>
-            </div>
-          </template>
-          <el-alert
-            v-if="candidateDetail.business_model.requires_review"
-            type="warning"
-            :closable="false"
-            show-icon
-            title="业务模型尚需人工确认；该标的研究结论为“继续观察”。"
-            class="business-model-alert"
-          />
-          <el-descriptions :column="2" border size="small">
-            <el-descriptions-item label="模型">{{ businessModelLabel(candidateDetail.business_model.model) }}</el-descriptions-item>
-            <el-descriptions-item label="可重复收入">{{ candidateDetail.business_model.revenue_repeatable_confirmed ? '已确认' : '未确认' }}</el-descriptions-item>
-            <el-descriptions-item label="收入分上限">{{ candidateDetail.business_model.revenue_score_cap }}/30</el-descriptions-item>
-            <el-descriptions-item label="复查日期">{{ formatDate(candidateDetail.business_model.review_due_at) }}</el-descriptions-item>
-            <el-descriptions-item label="依据" :span="2">{{ candidateDetail.business_model.reason || candidateDetail.business_model.revenue_score_cap_reason || '-' }}</el-descriptions-item>
-            <el-descriptions-item v-if="candidateDetail.business_model.source_url" label="来源" :span="2"><el-link :href="candidateDetail.business_model.source_url" target="_blank" type="primary">打开来源</el-link></el-descriptions-item>
-          </el-descriptions>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-250">
-          <template #header>数据质量</template>
-          <el-space wrap>
-            <el-tag v-for="(value, key) in candidateDetail.data_quality" :key="key" :type="value === 'valid' ? 'success' : 'warning'" effect="plain">
-              {{ key }}: {{ value }}
-            </el-tag>
-          </el-space>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-260">
-          <template #header>证据溯源（当前候选批次）</template>
-          <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="此处仅展示生成当前候选所使用的本地快照，不会在打开详情时请求 SEC 或行情接口。" />
-          <el-descriptions :column="2" border size="small" class="lineage-batch-meta">
-            <el-descriptions-item label="评分批次"><el-text truncated>{{ candidateDetail.data_lineage?.score_batch_id || candidateDetail.batch_id || '-' }}</el-text></el-descriptions-item>
-            <el-descriptions-item label="证据批次"><el-text truncated>{{ candidateDetail.data_lineage?.evidence_batch_id || '-' }}</el-text></el-descriptions-item>
-            <el-descriptions-item label="批次有效日">{{ candidateDetail.data_lineage?.batch_effective_date || '-' }}</el-descriptions-item>
-          </el-descriptions>
-          <el-table :data="candidateDetail.data_lineage?.items || []" size="small" border class="lineage-table" empty-text="暂无证据溯源记录">
-            <el-table-column prop="label" label="证据" width="120" />
-            <el-table-column prop="source" label="来源" min-width="190" show-overflow-tooltip />
-            <el-table-column prop="as_of" label="截至" width="120"><template #default="{ row }">{{ row.as_of || '-' }}</template></el-table-column>
-            <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="lineageStatusTagType(row.status)" effect="plain">{{ lineageStatusLabel(row.status) }}</el-tag></template></el-table-column>
-            <el-table-column prop="detail" label="说明" min-width="240" show-overflow-tooltip />
-          </el-table>
-        </el-card>
-
-        <el-card id="candidate-detail-fundamentals" shadow="never" class="detail-order-90">
-          <template #header>财务证据</template>
-          <el-descriptions v-if="candidateDetail.financial" :column="2" border size="small">
-            <el-descriptions-item label="季度收入 YoY">{{ formatPct(candidateDetail.financial.quarterly_revenue_yoy_pct) }}</el-descriptions-item>
-            <el-descriptions-item label="季度收入 QoQ">{{ formatPct(candidateDetail.financial.quarterly_revenue_qoq_pct) }}</el-descriptions-item>
-            <el-descriptions-item label="年度收入 YoY">{{ formatPct(candidateDetail.financial.annual_revenue_yoy_pct) }}</el-descriptions-item>
-            <el-descriptions-item label="年度收入环比">{{ formatPct(candidateDetail.financial.annual_revenue_qoq_pct) }}</el-descriptions-item>
-            <el-descriptions-item label="现金 Runway">{{ formatMonths(candidateDetail.financial.cash_runway_months) }}</el-descriptions-item>
-            <el-descriptions-item label="毛利率">{{ candidateDetail.financial.gross_margin_available ? formatPct(candidateDetail.financial.gross_margin_pct) : '-' }}</el-descriptions-item>
-            <el-descriptions-item label="质量标记">{{ financialQualityFlagsLabel(candidateDetail.financial.quality_flags_json) }}</el-descriptions-item>
-          </el-descriptions>
-          <el-empty v-else description="暂无财务证据" />
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-100">
-          <template #header>估值快照（SEC + 本地价格）</template>
-          <el-alert v-if="candidateDetail.valuation.status !== 'ready'" type="info" :closable="false" show-icon :title="valuationReasonText(candidateDetail.valuation.reasons) || '部分估值证据不足，相关倍数已显示为 N/A。'" class="business-model-alert" />
-          <el-descriptions :column="2" border size="small">
-            <el-descriptions-item label="市值">{{ formatUSD(candidateDetail.valuation.market_cap_usd) }}</el-descriptions-item>
-            <el-descriptions-item label="企业价值 EV">{{ formatUSD(candidateDetail.valuation.enterprise_value_usd) }}</el-descriptions-item>
-            <el-descriptions-item label="现金及短投">{{ formatUSD(candidateDetail.valuation.cash_usd) }}</el-descriptions-item>
-            <el-descriptions-item label="总债务">{{ formatUSD(candidateDetail.valuation.total_debt_usd) }}</el-descriptions-item>
-            <el-descriptions-item label="TTM 收入">{{ formatUSD(candidateDetail.valuation.ttm_revenue_usd) }}</el-descriptions-item>
-            <el-descriptions-item label="TTM 毛利">{{ formatUSD(candidateDetail.valuation.ttm_gross_profit_usd) }}</el-descriptions-item>
-            <el-descriptions-item label="EV/Sales">{{ formatMultiple(candidateDetail.valuation.ev_sales) }}</el-descriptions-item>
-            <el-descriptions-item label="EV/Gross Profit">{{ formatMultiple(candidateDetail.valuation.ev_gross_profit) }}</el-descriptions-item>
-            <el-descriptions-item label="P/S">{{ formatMultiple(candidateDetail.valuation.price_to_sales) }}</el-descriptions-item>
-            <el-descriptions-item label="净现金/市值">{{ formatPct(fractionToPct(candidateDetail.valuation.net_cash_to_market_cap)) }}</el-descriptions-item>
-            <el-descriptions-item label="价格日期">{{ formatDate(candidateDetail.valuation.price_trade_date) }}</el-descriptions-item>
-            <el-descriptions-item label="财务期末">{{ formatDate(candidateDetail.valuation.financial_period_end) }}</el-descriptions-item>
-          </el-descriptions>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-150">
-          <ProfitHistoryChart :history="candidateDetail.profit_history" />
-        </el-card>
-
-        <el-card id="candidate-detail-latest" shadow="never" class="detail-order-50">
-          <template #header>技术分析（独立研究信号，不计入基本面总分）</template>
-          <el-alert
-            v-if="candidateDetail.technical.status !== 'ready'"
-            type="warning"
-            :closable="false"
-            show-icon
-            :title="technicalStatusDescription(candidateDetail.technical)"
-          />
-          <template v-else>
-            <div class="technical-signal-row">
-              <el-space wrap>
-						<el-tag :type="tradeSetupTagType(candidateDetail.technical.trade_setup.status)" effect="plain">{{ tradeSetupLabel(candidateDetail.technical.trade_setup.status) }}</el-tag>
-                <el-tag v-for="signal in candidateDetail.technical.signals" :key="signal.kind" type="success" effect="plain">{{ signal.label }}</el-tag>
-                <el-tag v-if="!candidateDetail.technical.signals.length" type="info" effect="plain">暂无突破信号</el-tag>
-              </el-space>
-            </div>
+          </el-card>
+          <el-card v-if="candidateDetail.company_profile" shadow="never">
+            <template #header>
+              <div class="card-header-actions">
+                <span>公司概览</span>
+                <el-button size="small" :loading="companyProfileRefreshing" @click="refreshCandidateCompanyProfile">刷新公司资料</el-button>
+              </div>
+            </template>
             <el-descriptions :column="2" border size="small">
-              <el-descriptions-item label="价格日期">{{ formatDate(candidateDetail.technical.trade_date) }}</el-descriptions-item>
-              <el-descriptions-item label="有效样本">{{ candidateDetail.technical.sample_days }}/{{ candidateDetail.technical.required_sample_days }} 个交易日</el-descriptions-item>
-              <el-descriptions-item label="收盘价">{{ formatPrice(candidateDetail.technical.close_usd, 'USD') }}</el-descriptions-item>
-              <el-descriptions-item label="20 日均线">{{ formatPrice(candidateDetail.technical.ma20_usd, 'USD') }}（{{ formatPerformance(candidateDetail.technical.distance_to_ma20_pct) }}）</el-descriptions-item>
-              <el-descriptions-item label="50 日均线">{{ candidateDetail.technical.ma50_usd > 0 ? formatPrice(candidateDetail.technical.ma50_usd, 'USD') : '历史不足' }}</el-descriptions-item>
-              <el-descriptions-item label="200 日均线">{{ candidateDetail.technical.ma200_available ? formatPrice(candidateDetail.technical.ma200_usd, 'USD') : '历史不足（需至少 200 个有效交易日）' }}</el-descriptions-item>
-              <el-descriptions-item label="前 20 日最高收盘价">{{ formatPrice(candidateDetail.technical.prior_20d_high_usd, 'USD') }}（{{ formatPerformance(candidateDetail.technical.distance_to_20d_high_pct) }}）</el-descriptions-item>
-              <el-descriptions-item label="量比">{{ formatRatio(candidateDetail.technical.volume_ratio_20) }}（20 日均量 {{ formatVolume(candidateDetail.technical.average_volume_20) }}）</el-descriptions-item>
-              <el-descriptions-item label="相对 IWM（20 日）">{{ relativeStrengthSummary(candidateDetail.technical) }}</el-descriptions-item>
-              <el-descriptions-item label="相对 IWM（60 日）">{{ relativeStrengthSummary(candidateDetail.technical, 60) }}</el-descriptions-item>
-              <el-descriptions-item label="研究事件锚定价（日线近似）">{{ anchoredVWAPSummary(candidateDetail.technical) }}</el-descriptions-item>
-              <el-descriptions-item label="锚定事件">{{ anchoredVWAPEventSummary(candidateDetail.technical) }}</el-descriptions-item>
-								<el-descriptions-item label="RSI(14)">{{ formatIndicator(candidateDetail.technical.oscillator?.rsi_14) }}</el-descriptions-item>
-								<el-descriptions-item label="KDJ(9,3,3)">{{ formatKDJ(candidateDetail.technical) }}</el-descriptions-item>
-								<el-descriptions-item label="动能判断" :span="2">
-									<el-space wrap :size="6">
-										<el-tag :type="oscillatorTagType(candidateDetail.technical.oscillator?.signal)" effect="plain">{{ candidateDetail.technical.oscillator?.label || '历史不足' }}</el-tag>
-										<span class="history-source">{{ candidateDetail.technical.oscillator?.reasons?.join('；') || '至少需要 15 个有效交易日' }}</span>
-									</el-space>
-								</el-descriptions-item>
-						<el-descriptions-item label="价格阶段"><el-tag :type="priceActionTagType(candidateDetail.technical.price_action?.phase)" effect="plain">{{ priceActionLabel(candidateDetail.technical.price_action?.phase) }}</el-tag></el-descriptions-item>
-						<el-descriptions-item label="阶段置信度">{{ candidateDetail.technical.price_action?.status === 'ready' ? `${candidateDetail.technical.price_action.confidence}%` : '-' }}</el-descriptions-item>
-						<el-descriptions-item label="阶段证据" :span="2">{{ priceActionEvidenceText(candidateDetail.technical.price_action) }}</el-descriptions-item>
-						<el-descriptions-item label="下一确认" :span="2">{{ candidateDetail.technical.price_action?.next_confirmation || '-' }}</el-descriptions-item>
-						<el-descriptions-item label="失效条件" :span="2">{{ candidateDetail.technical.price_action?.invalidation || '-' }}</el-descriptions-item>
-						<el-descriptions-item label="交易计划状态">{{ tradeSetupLabel(candidateDetail.technical.trade_setup.status) }}</el-descriptions-item>
-						<el-descriptions-item label="当前状态开始于">{{ formatDateTime(candidateDetail.technical.trade_setup.status_since) }}</el-descriptions-item>
-						<el-descriptions-item label="入场触发">{{ candidateDetail.technical.trade_setup.entry_trigger || '等待触发条件' }}</el-descriptions-item>
-						<el-descriptions-item label="计划止损">{{ formatTradeStop(candidateDetail.technical) }}</el-descriptions-item>
-						<el-descriptions-item label="20% - 30% 目标区">{{ formatTradeTarget(candidateDetail.technical) }}</el-descriptions-item>
-						<el-descriptions-item label="离场规则" :span="2">{{ candidateDetail.technical.trade_setup.exit_reason || '收盘跌破 MA20 时减仓；跌破 MA50 时趋势失效' }}</el-descriptions-item>
-						<el-descriptions-item label="计划依据" :span="2">{{ candidateDetail.technical.trade_setup.reasons.join('；') || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="公司">{{ candidateDetail.company_profile.company_name || candidateDetail.security.company_name || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="交易所">{{ candidateDetail.company_profile.exchange || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="CIK">{{ candidateDetail.company_profile.cik || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="注册州/地区">{{ candidateDetail.company_profile.state_of_incorporation || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="SEC 行业（SIC）" :span="2">
+                {{ candidateDetail.company_profile.sic_description || (candidateDetail.company_profile.sic ? `SIC ${candidateDetail.company_profile.sic}` : '-') }}
+              </el-descriptions-item>
+              <el-descriptions-item label="业务概览" :span="2">{{ candidateDetail.company_profile.business_summary }}</el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.company_profile.website" label="官网"><a :href="companyProfileWebsiteURL(candidateDetail.company_profile.website)" target="_blank" rel="noopener">{{ candidateDetail.company_profile.website }}</a></el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.company_profile.founded" label="成立时间">{{ candidateDetail.company_profile.founded }}</el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.company_profile.listing_date" label="上市时间">{{ candidateDetail.company_profile.listing_date }}</el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.company_profile.market" label="上市市场">{{ candidateDetail.company_profile.market }}</el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.company_profile.employees" label="员工数">{{ candidateDetail.company_profile.employees }}</el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.company_profile.manager" label="管理者">{{ candidateDetail.company_profile.manager }}</el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.company_profile.year_end" label="财年截止日">{{ candidateDetail.company_profile.year_end }}</el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.company_profile.address" label="公司地址" :span="2">{{ candidateDetail.company_profile.address }}</el-descriptions-item>
+              <el-descriptions-item label="来源" :span="2">
+                {{ candidateDetail.company_profile.summary_source }}<span v-if="candidateDetail.company_profile.profile_fetched_at"> · Longbridge 更新于 {{ formatDateTime(candidateDetail.company_profile.profile_fetched_at) }}</span><span v-else-if="candidateDetail.company_profile.metadata_as_of"> · SEC 同步于 {{ formatDateTime(candidateDetail.company_profile.metadata_as_of) }}</span>
+              </el-descriptions-item>
             </el-descriptions>
-            <div class="trade-setup-history">
-              <div class="technical-history-title">交易计划状态历史（仅记录状态变化）</div>
-              <el-timeline v-if="candidateDetail.trade_setup_history?.length" class="trade-setup-timeline">
-                <el-timeline-item v-for="event in candidateDetail.trade_setup_history" :key="event.id" :timestamp="formatDateTime(event.started_at)" :type="tradeSetupTagType(event.status)">
-                  <strong>{{ tradeSetupLabel(event.status) }}</strong>
-                  <span v-if="event.previous_status">（由 {{ tradeSetupLabel(event.previous_status) }} 变更）</span>
-                  <div class="trade-setup-event-detail">收盘 {{ formatPrice(event.close_usd, 'USD') }} · 止损 {{ formatPrice(event.stop_loss_usd, 'USD') }} · {{ event.entry_trigger || event.exit_reason || '等待触发条件' }}</div>
-                  <div v-if="event.reasons?.length" class="trade-setup-event-detail">{{ event.reasons.join('；') }}</div>
+          </el-card>
+        </template>
+        <template #technical>
+          <StockDataStatus label="行情技术" :data="candidateDetail.technical" />
+          <el-card id="candidate-detail-latest" shadow="never">
+            <template #header>技术信号与价格历史</template>
+            <el-alert
+              v-if="candidateDetail.technical.status !== 'ready'"
+              type="warning"
+              :closable="false"
+              show-icon
+              :title="technicalStatusDescription(candidateDetail.technical)"
+            />
+            <template v-else>
+              <div class="technical-signal-row">
+                <el-space wrap>
+              <el-tag :type="tradeSetupTagType(candidateDetail.technical.trade_setup.status)" effect="plain">{{ tradeSetupLabel(candidateDetail.technical.trade_setup.status) }}</el-tag>
+                  <el-tag v-for="signal in candidateDetail.technical.signals" :key="signal.kind" type="success" effect="plain">{{ signal.label }}</el-tag>
+                  <el-tag v-if="!candidateDetail.technical.signals.length" type="info" effect="plain">暂无突破信号</el-tag>
+                </el-space>
+              </div>
+              <el-descriptions :column="2" border size="small">
+                <el-descriptions-item label="价格日期">{{ formatDate(candidateDetail.technical.trade_date) }}</el-descriptions-item>
+                <el-descriptions-item label="有效样本">{{ candidateDetail.technical.sample_days }}/{{ candidateDetail.technical.required_sample_days }} 个交易日</el-descriptions-item>
+                <el-descriptions-item label="收盘价">{{ formatPrice(candidateDetail.technical.close_usd, 'USD') }}</el-descriptions-item>
+                <el-descriptions-item label="20 日均线">{{ formatPrice(candidateDetail.technical.ma20_usd, 'USD') }}（{{ formatPerformance(candidateDetail.technical.distance_to_ma20_pct) }}）</el-descriptions-item>
+                <el-descriptions-item label="50 日均线">{{ candidateDetail.technical.ma50_usd > 0 ? formatPrice(candidateDetail.technical.ma50_usd, 'USD') : '历史不足' }}</el-descriptions-item>
+                <el-descriptions-item label="200 日均线">{{ candidateDetail.technical.ma200_available ? formatPrice(candidateDetail.technical.ma200_usd, 'USD') : '历史不足（需至少 200 个有效交易日）' }}</el-descriptions-item>
+                <el-descriptions-item label="前 20 日最高收盘价">{{ formatPrice(candidateDetail.technical.prior_20d_high_usd, 'USD') }}（{{ formatPerformance(candidateDetail.technical.distance_to_20d_high_pct) }}）</el-descriptions-item>
+                <el-descriptions-item label="量比">{{ formatRatio(candidateDetail.technical.volume_ratio_20) }}（20 日均量 {{ formatVolume(candidateDetail.technical.average_volume_20) }}）</el-descriptions-item>
+                <el-descriptions-item label="相对 IWM（20 日）">{{ relativeStrengthSummary(candidateDetail.technical) }}</el-descriptions-item>
+                <el-descriptions-item label="相对 IWM（60 日）">{{ relativeStrengthSummary(candidateDetail.technical, 60) }}</el-descriptions-item>
+                <el-descriptions-item label="研究事件锚定价（日线近似）">{{ anchoredVWAPSummary(candidateDetail.technical) }}</el-descriptions-item>
+                <el-descriptions-item label="锚定事件">{{ anchoredVWAPEventSummary(candidateDetail.technical) }}</el-descriptions-item>
+                  <el-descriptions-item label="RSI(14)">{{ formatIndicator(candidateDetail.technical.oscillator?.rsi_14) }}</el-descriptions-item>
+                  <el-descriptions-item label="KDJ(9,3,3)">{{ formatKDJ(candidateDetail.technical) }}</el-descriptions-item>
+                  <el-descriptions-item label="动能判断" :span="2">
+                    <el-space wrap :size="6">
+                      <el-tag :type="oscillatorTagType(candidateDetail.technical.oscillator?.signal)" effect="plain">{{ candidateDetail.technical.oscillator?.label || '历史不足' }}</el-tag>
+                      <span class="history-source">{{ candidateDetail.technical.oscillator?.reasons?.join('；') || '至少需要 15 个有效交易日' }}</span>
+                    </el-space>
+                  </el-descriptions-item>
+              <el-descriptions-item label="价格阶段"><el-tag :type="priceActionTagType(candidateDetail.technical.price_action?.phase)" effect="plain">{{ priceActionLabel(candidateDetail.technical.price_action?.phase) }}</el-tag></el-descriptions-item>
+              <el-descriptions-item label="阶段置信度">{{ candidateDetail.technical.price_action?.status === 'ready' ? `${candidateDetail.technical.price_action.confidence}%` : '-' }}</el-descriptions-item>
+              <el-descriptions-item label="阶段证据" :span="2">{{ priceActionEvidenceText(candidateDetail.technical.price_action) }}</el-descriptions-item>
+              <el-descriptions-item label="下一确认" :span="2">{{ candidateDetail.technical.price_action?.next_confirmation || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="失效条件" :span="2">{{ candidateDetail.technical.price_action?.invalidation || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="交易计划状态">{{ tradeSetupLabel(candidateDetail.technical.trade_setup.status) }}</el-descriptions-item>
+              <el-descriptions-item label="当前状态开始于">{{ formatDateTime(candidateDetail.technical.trade_setup.status_since) }}</el-descriptions-item>
+              <el-descriptions-item label="入场触发">{{ candidateDetail.technical.trade_setup.entry_trigger || '等待触发条件' }}</el-descriptions-item>
+              <el-descriptions-item label="计划止损">{{ formatTradeStop(candidateDetail.technical) }}</el-descriptions-item>
+              <el-descriptions-item label="20% - 30% 目标区">{{ formatTradeTarget(candidateDetail.technical) }}</el-descriptions-item>
+              <el-descriptions-item label="离场规则" :span="2">{{ candidateDetail.technical.trade_setup.exit_reason || '收盘跌破 MA20 时减仓；跌破 MA50 时趋势失效' }}</el-descriptions-item>
+              <el-descriptions-item label="计划依据" :span="2">{{ candidateDetail.technical.trade_setup.reasons.join('；') || '-' }}</el-descriptions-item>
+              </el-descriptions>
+              <div class="trade-setup-history">
+                <div class="technical-history-title">交易计划状态历史（仅记录状态变化）</div>
+                <el-timeline v-if="candidateDetail.trade_setup_history?.length" class="trade-setup-timeline">
+                  <el-timeline-item v-for="event in candidateDetail.trade_setup_history" :key="event.id" :timestamp="formatDateTime(event.started_at)" :type="tradeSetupTagType(event.status)">
+                    <strong>{{ tradeSetupLabel(event.status) }}</strong>
+                    <span v-if="event.previous_status">（由 {{ tradeSetupLabel(event.previous_status) }} 变更）</span>
+                    <div class="trade-setup-event-detail">收盘 {{ formatPrice(event.close_usd, 'USD') }} · 止损 {{ formatPrice(event.stop_loss_usd, 'USD') }} · {{ event.entry_trigger || event.exit_reason || '等待触发条件' }}</div>
+                    <div v-if="event.reasons?.length" class="trade-setup-event-detail">{{ event.reasons.join('；') }}</div>
+                  </el-timeline-item>
+                </el-timeline>
+                <el-empty v-else :image-size="44" description="尚未记录状态变化；下次日线同步后会建立当前状态基线。" />
+              </div>
+            </template>
+            <el-alert
+              v-if="technicalHistoryHasLaterRows"
+              type="info"
+              :closable="false"
+              show-icon
+              class="technical-history-asof-alert"
+              :title="`当前发布批次的价格与技术信号均截至 ${formatDate(candidateDetail.technical.trade_date)}；图表中之后的本地日线仅供后续观察，不参与当前批次评分或技术信号。`"
+            />
+              <TechnicalPriceHistoryChart :ticker="candidateDetail.score.ticker" :rows="candidateDetail.technical_history || []" :technical="candidateDetail.technical" />
+          </el-card>
+          <el-card shadow="never">
+            <template #header>流动性条件（研究用）</template>
+            <el-alert :type="investabilityAlertType(candidateDetail.investability?.status)" :closable="false" show-icon :title="investabilityDetailTitle(candidateDetail.investability)" :description="investabilityDetailDescription(candidateDetail.investability)" />
+          </el-card>
+          <el-card shadow="never"><template #header>近期市场异动</template>
+            <p class="history-source">最多 20 条；异动仅作短线复核线索，不计入基本面总分。</p>
+            <el-table :data="candidateDetail.market_research?.anomalies || []" size="small" border empty-text="暂无 Longbridge 异动记录">
+              <el-table-column prop="alert_name" label="异动类型" min-width="150" />
+              <el-table-column label="内容" min-width="180"><template #default="{ row }">{{ anomalyValues(row.values_json) }}</template></el-table-column>
+              <el-table-column label="方向" width="90"><template #default="{ row }"><el-tag :type="row.emotion === 1 ? 'success' : row.emotion === 2 ? 'danger' : 'info'" effect="plain">{{ anomalyEmotionLabel(row.emotion) }}</el-tag></template></el-table-column>
+              <el-table-column label="发生时间" width="170"><template #default="{ row }">{{ formatDateTime(row.alert_time) }}</template></el-table-column>
+            </el-table>
+
+  </el-card>
+        </template>
+        <template #fundamentals>
+          <StockDataStatus label="财务历史" :data="candidateDetail.profit_history" />
+          <el-card id="candidate-detail-fundamentals" shadow="never">
+            <template #header>财务证据</template>
+            <el-descriptions v-if="candidateDetail.financial" :column="2" border size="small">
+              <el-descriptions-item label="季度收入 YoY">{{ formatPct(candidateDetail.financial.quarterly_revenue_yoy_pct) }}</el-descriptions-item>
+              <el-descriptions-item label="季度收入 QoQ">{{ formatPct(candidateDetail.financial.quarterly_revenue_qoq_pct) }}</el-descriptions-item>
+              <el-descriptions-item label="年度收入 YoY">{{ formatPct(candidateDetail.financial.annual_revenue_yoy_pct) }}</el-descriptions-item>
+              <el-descriptions-item label="年度收入环比">{{ formatPct(candidateDetail.financial.annual_revenue_qoq_pct) }}</el-descriptions-item>
+              <el-descriptions-item label="现金 Runway">{{ formatMonths(candidateDetail.financial.cash_runway_months) }}</el-descriptions-item>
+              <el-descriptions-item label="毛利率">{{ candidateDetail.financial.gross_margin_available ? formatPct(candidateDetail.financial.gross_margin_pct) : '-' }}</el-descriptions-item>
+              <el-descriptions-item label="质量标记">{{ financialQualityFlagsLabel(candidateDetail.financial.quality_flags_json) }}</el-descriptions-item>
+            </el-descriptions>
+            <el-empty v-else description="暂无财务证据" />
+          </el-card>
+          <el-card shadow="never">
+            <ProfitHistoryChart :history="candidateDetail.profit_history" />
+          </el-card>
+          <el-card shadow="never">
+            <template #header>融资/稀释风险</template>
+            <el-alert
+              v-if="candidateDetail.capital_risk_summary?.total_events"
+              :type="candidateDetail.capital_risk_summary?.active_events ? 'warning' : 'info'"
+              :closable="false"
+              show-icon
+              class="capital-risk-summary"
+              :title="capitalRiskSummaryTitle(candidateDetail)"
+              :description="capitalRiskSummaryDescription(candidateDetail)"
+            />
+            <el-table :data="candidateDetail.capital_risks" size="small" border empty-text="暂无当前或近 180 日融资风险">
+              <el-table-column prop="effective_at" label="日期" width="120"><template #default="{ row }">{{ formatDate(row.effective_at) }}</template></el-table-column>
+              <el-table-column prop="kind" label="类型" width="140" />
+              <el-table-column prop="severity" label="严重度" width="90" />
+              <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
+              <el-table-column label="阻断" width="120"><template #default="{ row }">A: {{ row.blocks_a ? '是' : '否' }} / B: {{ row.blocks_b ? '是' : '否' }}</template></el-table-column>
+            </el-table>
+          </el-card>
+          <el-card shadow="never">
+            <template #header>股本稀释趋势（SEC）</template>
+            <el-alert :type="dilutionAlertType(candidateDetail.dilution_trend?.status)" :closable="false" show-icon :title="dilutionDetailTitle(candidateDetail.dilution_trend)" :description="dilutionTooltipLines(candidateDetail.dilution_trend).slice(1).join('；')" />
+          </el-card>
+          <el-card shadow="never">
+            <template #header>赛道解释</template>
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="分类">{{ candidateDetail.sector.category }}</el-descriptions-item>
+              <el-descriptions-item label="标签">{{ candidateDetail.sector.label }}</el-descriptions-item>
+              <el-descriptions-item label="SIC">{{ candidateDetail.sector.sic || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="赛道分">{{ candidateDetail.sector.score }}/10</el-descriptions-item>
+              <el-descriptions-item label="说明" :span="2">{{ candidateDetail.sector.rationale }}</el-descriptions-item>
+            </el-descriptions>
+          </el-card>
+          <el-card v-if="candidateDetail.sector.category === '生物医药'" shadow="never">
+            <template #header>
+              <div class="detail-card-header-action">
+                <span>生物医药业务模型</span>
+                <el-button link type="primary" @click="openBusinessModelEditor">确认/更新</el-button>
+              </div>
+            </template>
+            <el-alert
+              v-if="candidateDetail.business_model.requires_review"
+              type="warning"
+              :closable="false"
+              show-icon
+              title="业务模型尚需人工确认；该标的研究结论为“继续观察”。"
+              class="business-model-alert"
+            />
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="模型">{{ businessModelLabel(candidateDetail.business_model.model) }}</el-descriptions-item>
+              <el-descriptions-item label="可重复收入">{{ candidateDetail.business_model.revenue_repeatable_confirmed ? '已确认' : '未确认' }}</el-descriptions-item>
+              <el-descriptions-item label="收入分上限">{{ candidateDetail.business_model.revenue_score_cap }}/30</el-descriptions-item>
+              <el-descriptions-item label="复查日期">{{ formatDate(candidateDetail.business_model.review_due_at) }}</el-descriptions-item>
+              <el-descriptions-item label="依据" :span="2">{{ candidateDetail.business_model.reason || candidateDetail.business_model.revenue_score_cap_reason || '-' }}</el-descriptions-item>
+              <el-descriptions-item v-if="candidateDetail.business_model.source_url" label="来源" :span="2"><el-link :href="candidateDetail.business_model.source_url" target="_blank" type="primary">打开来源</el-link></el-descriptions-item>
+            </el-descriptions>
+          </el-card>
+        </template>
+        <template #events>
+          <el-card shadow="never">
+            <template #header>近期 SEC 公告</template>
+            <el-table :data="candidateDetail.recent_filings || []" size="small" border empty-text="暂无近期公告">
+              <el-table-column prop="filing_date" label="日期" width="120">
+                <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
+              </el-table-column>
+              <el-table-column prop="filing_type" label="类型" width="90" />
+              <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
+              <el-table-column label="链接" width="80">
+                <template #default="{ row }">
+                  <el-link v-if="row.filing_url" :href="row.filing_url" target="_blank" type="primary">打开</el-link>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+          <el-card shadow="never">
+            <template #header>内幕交易</template>
+            <el-alert
+              v-if="candidateDetail.insider_coverage"
+              :type="insiderCoverageAlertType(candidateDetail.insider_coverage.status)"
+              :closable="false"
+              show-icon
+              class="business-model-alert"
+              :title="insiderCoverageTitle(candidateDetail.insider_coverage)"
+              :description="insiderCoverageDescription(candidateDetail.insider_coverage)"
+            />
+            <el-alert v-else type="info" :closable="false" show-icon class="business-model-alert" title="本批次未保留 Form 4 覆盖明细" description="请完成一次新的小盘股安全宇宙同步后，再将“无内幕交易”视为覆盖结论。" />
+            <el-table :data="candidateDetail.insiders" size="small" border empty-text="暂无内幕交易">
+              <el-table-column prop="transaction_date" label="日期" width="120"><template #default="{ row }">{{ formatDate(row.transaction_date) }}</template></el-table-column>
+              <el-table-column prop="owner_name" label="人员" min-width="120" />
+              <el-table-column prop="role" label="角色" width="90" />
+              <el-table-column prop="transaction_code" label="代码" width="70" />
+              <el-table-column label="10b5-1" width="112"><template #default="{ row }"><el-tooltip :disabled="!row.ten_b5_1_evidence" :content="row.ten_b5_1_evidence"><el-tag :type="row.is_10b5_1 ? 'success' : row.ten_b5_1_status === 'possible' ? 'warning' : 'info'" effect="plain">{{ row.is_10b5_1 ? '计划内' : row.ten_b5_1_status === 'possible' ? '待核验' : '未披露' }}</el-tag></el-tooltip></template></el-table-column>
+              <el-table-column prop="qualified" label="合格" width="70"><template #default="{ row }"><el-tag :type="row.qualified ? 'success' : 'info'" effect="plain">{{ row.qualified ? '是' : '否' }}</el-tag></template></el-table-column>
+            </el-table>
+          </el-card>
+          <el-card shadow="never">
+            <template #header>研究事件与催化剂时间线</template>
+            <el-alert type="info" :closable="false" show-icon title="绿色为 SEC 已发生事实；橙色为用户计划中的催化剂。用户判断必须同时填写日期和来源，才标记为资料完整。" class="business-model-alert" />
+            <el-table :data="candidateDetail.catalysts || []" size="small" border empty-text="暂无研究事件或催化剂">
+              <el-table-column prop="event_date" label="日期" width="112"><template #default="{ row }">{{ formatDate(row.event_date) }}</template></el-table-column>
+              <el-table-column label="性质" width="112"><template #default="{ row }"><el-tag :type="row.evidence_type === 'fact' ? 'success' : 'warning'" effect="plain">{{ row.evidence_type === 'fact' ? '事实事件' : '用户判断' }}</el-tag></template></el-table-column>
+              <el-table-column label="类型" width="126"><template #default="{ row }">{{ catalystEventLabel(row.event_type) }}</template></el-table-column>
+              <el-table-column prop="title" label="内容" min-width="260" show-overflow-tooltip />
+              <el-table-column label="证据" width="130"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">{{ row.source }}</el-link><span v-else>{{ row.source }}</span></template></el-table-column>
+              <el-table-column label="状态" width="106"><template #default="{ row }"><el-tag :type="row.quality?.quality_status === 'valid' ? 'success' : 'warning'" effect="plain">{{ catalystTimingLabel(row.timing_status) }}</el-tag></template></el-table-column>
+            </el-table>
+          </el-card>
+        </template>
+        <template #ownership>
+          <el-card shadow="never">
+            <template #header><div class="card-header-actions"><span>主要机构持仓变化</span><el-button size="small" :loading="candidateOwnershipRefreshing" @click="refreshCandidateOwnership">刷新主要机构历史</el-button></div></template>
+            <div v-loading="candidateOwnershipLoading">
+              <InstitutionalOwnershipHistory v-if="candidateOwnership" :history="candidateOwnership" />
+              <el-alert v-else type="info" :closable="false" :title="candidateOwnershipError || '正在读取本地机构持仓历史…'" />
+            </div>
+            <div class="analyst-rating-provenance-title">基金 / ETF：每次披露的组合权重</div>
+            <el-table :data="candidateDetail.market_research?.fund_holders || []" size="small" border empty-text="暂无 Longbridge 基金持仓数据">
+              <el-table-column prop="fund_name" label="基金" min-width="220" show-overflow-tooltip />
+              <el-table-column prop="fund_symbol" label="代码" width="110" />
+              <el-table-column label="组合权重" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.position_ratio, '%') }}</template></el-table-column>
+              <el-table-column prop="report_date" label="报告日" width="115" />
+            </el-table>
+
+            <el-alert type="info" :closable="false" title="基金组合权重不可与公司持股比例相加；未覆盖或未续披露不等于零持仓。" style="margin-top:12px" />
+          </el-card>
+        </template>
+        <template #valuation>
+          <StockDataStatus label="分析师共识" :data="candidateDetail.analyst_rating?.latest" />
+          <StockDataStatus label="估值研究" :data="candidateDetail.valuation_research?.latest" />
+          <el-card shadow="never">
+            <template #header>
+              <div class="card-header-actions">
+                <span>分析师共识 <el-tag size="small" :type="researchQualityTagType(candidateDetail.analyst_rating?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.analyst_rating?.quality?.quality_status) }}</el-tag></span>
+                <el-button size="small" :loading="analystRatingRefreshing" @click="refreshCandidateAnalystRating">刷新分析师评级</el-button>
+              </div>
+            </template>
+            <template v-if="candidateDetail.analyst_rating?.latest?.status === 'available'">
+              <el-descriptions :column="3" border size="small">
+                <el-descriptions-item label="共识评级"><el-tag :type="analystRecommendationTagType(candidateDetail.analyst_rating.latest.recommendation)" effect="plain">{{ analystRecommendationLabel(candidateDetail.analyst_rating.latest.recommendation) }}</el-tag></el-descriptions-item>
+                <el-descriptions-item label="覆盖数">{{ candidateDetail.analyst_rating.latest.analyst_count }}</el-descriptions-item>
+                <el-descriptions-item label="数据源">{{ candidateDetail.analyst_rating.latest.provider }}</el-descriptions-item>
+                <el-descriptions-item label="市场一致目标价（平均）">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_average_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
+                <el-descriptions-item label="目标价区间">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_low_micros, candidateDetail.analyst_rating.latest.currency) }} - {{ formatAnalystPrice(candidateDetail.analyst_rating.latest.target_high_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
+                <el-descriptions-item label="参考收盘价">{{ formatAnalystPrice(candidateDetail.analyst_rating.latest.reference_price_micros, candidateDetail.analyst_rating.latest.currency) }}</el-descriptions-item>
+                <el-descriptions-item label="评级分布" :span="3">强烈买入 {{ candidateDetail.analyst_rating.latest.strong_buy_count }} · 买入 {{ candidateDetail.analyst_rating.latest.buy_count }} · 持有 {{ candidateDetail.analyst_rating.latest.hold_count }} · 跑输 {{ candidateDetail.analyst_rating.latest.underperform_count }} · 卖出 {{ candidateDetail.analyst_rating.latest.sell_count }}</el-descriptions-item>
+                <el-descriptions-item label="提供方更新时间" :span="3">{{ analystProviderTimeText(candidateDetail.analyst_rating.latest) }}</el-descriptions-item>
+              </el-descriptions>
+              <div class="analyst-rating-provenance-title">结果溯源明细</div>
+              <el-table :data="analystRatingProvenanceRows(candidateDetail.analyst_rating.latest)" size="small" border class="analyst-rating-provenance-table">
+                <el-table-column prop="result" label="分析结果" min-width="125" />
+                <el-table-column prop="value" label="当前值" min-width="170" show-overflow-tooltip />
+                <el-table-column prop="source" label="数据来源 / 原始聚合字段" min-width="255" show-overflow-tooltip />
+                <el-table-column prop="providerUpdatedAt" label="提供方时间" width="150" show-overflow-tooltip />
+                <el-table-column prop="fetchedAt" label="本地同步时间" width="170" />
+                <el-table-column prop="note" label="说明" min-width="200" show-overflow-tooltip />
+              </el-table>
+              <div v-if="candidateDetail.analyst_rating.history?.length > 1" class="analyst-rating-provenance-title">快照变更历史（仅在聚合值变化时新增）</div>
+              <el-table v-if="candidateDetail.analyst_rating.history?.length > 1" :data="candidateDetail.analyst_rating.history.slice(0, 12)" size="small" border class="score-history-table" style="margin-top: 12px">
+                <el-table-column label="同步时间" width="170"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
+                <el-table-column label="评级" width="110"><template #default="{ row }">{{ analystRecommendationLabel(row.recommendation) }}</template></el-table-column>
+                <el-table-column prop="analyst_count" label="覆盖数" width="85" align="right" />
+                <el-table-column label="平均目标价" width="130" align="right"><template #default="{ row }">{{ formatAnalystPrice(row.target_average_micros, row.currency) }}</template></el-table-column>
+                <el-table-column prop="change_summary" label="有效变化" min-width="180" show-overflow-tooltip />
+              </el-table>
+            </template>
+            <el-alert v-else type="info" :closable="false" show-icon :title="candidateDetail.analyst_rating?.message || '尚未同步分析师共识'" description="小盘股可能没有公开分析师覆盖；这不是 SEC、财务或行情数据缺失。可手动刷新当前标的，不会重跑候选工作流。" />
+          </el-card>
+          <el-card id="candidate-detail-research" shadow="never">
+            <template #header>目标价与估值情景</template>
+            <el-alert type="warning" :closable="false" show-icon title="不提供 Longbridge “公允价值”结论：市场一致目标价与本地历史估值情景必须分开阅读，均不构成投资建议。" />
+            <template v-if="candidateDetail.fair_value?.status === 'available'">
+              <el-descriptions :column="3" border size="small" style="margin-top: 12px">
+                <el-descriptions-item label="参考收盘价">{{ formatFairValuePrice(candidateDetail.fair_value.reference_price, candidateDetail.fair_value.currency) }}<span v-if="candidateDetail.fair_value.reference_price_date"> · {{ candidateDetail.fair_value.reference_price_date }}</span></el-descriptions-item>
+                <el-descriptions-item label="市场一致目标价（平均）">{{ formatFairValuePrice(candidateDetail.fair_value.market_consensus_target, candidateDetail.fair_value.currency) }}</el-descriptions-item>
+                <el-descriptions-item label="目标价相对空间">{{ formatForecastNumber(candidateDetail.fair_value.market_consensus_upside_pct, '%') }}</el-descriptions-item>
+                <el-descriptions-item label="市场目标价区间" :span="2">{{ formatFairValuePrice(candidateDetail.fair_value.market_consensus_low, candidateDetail.fair_value.currency) }} - {{ formatFairValuePrice(candidateDetail.fair_value.market_consensus_high, candidateDetail.fair_value.currency) }}</el-descriptions-item>
+                <el-descriptions-item label="机构覆盖数">{{ candidateDetail.fair_value.analyst_count || '-' }}</el-descriptions-item>
+                <el-descriptions-item v-if="candidateDetail.fair_value.local_historical_scenario" label="本地历史倍数情景（低 / 中 / 高）" :span="3">
+                  {{ formatFairValuePrice(candidateDetail.fair_value.local_historical_scenario.low, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(candidateDetail.fair_value.local_historical_scenario.mid, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(candidateDetail.fair_value.local_historical_scenario.high, candidateDetail.fair_value.currency) }}（{{ candidateDetail.fair_value.local_historical_scenario.metrics }} 个可用指标等权）
+                </el-descriptions-item>
+                <el-descriptions-item label="本地参考价来源" :span="3">{{ candidateDetail.fair_value.reference_price_source || '-' }}</el-descriptions-item>
+              </el-descriptions>
+              <div v-if="candidateDetail.fair_value.metric_scenarios.length" class="analyst-rating-provenance-title">本地计算输入与过程</div>
+              <el-table v-if="candidateDetail.fair_value.metric_scenarios.length" :data="candidateDetail.fair_value.metric_scenarios" size="small" border>
+                <el-table-column prop="metric" label="指标" width="75" />
+                <el-table-column label="当前倍数" width="100" align="right"><template #default="{ row }">{{ formatForecastNumber(row.current_multiple) }}</template></el-table-column>
+                <el-table-column label="历史低 / 中 / 高" min-width="180" align="right"><template #default="{ row }">{{ formatForecastNumber(row.historical_low) }} / {{ formatForecastNumber(row.historical_mid) }} / {{ formatForecastNumber(row.historical_high) }}</template></el-table-column>
+                <el-table-column label="推导价格低 / 中 / 高" min-width="210" align="right"><template #default="{ row }">{{ formatFairValuePrice(row.price_low, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(row.price_mid, candidateDetail.fair_value.currency) }} / {{ formatFairValuePrice(row.price_high, candidateDetail.fair_value.currency) }}</template></el-table-column>
+              </el-table>
+              <el-alert type="info" :closable="false" style="margin-top: 12px" :title="candidateDetail.fair_value.methodology" :description="candidateDetail.fair_value.message" />
+            </template>
+            <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="candidateDetail.fair_value?.message || '尚缺机构目标价或可用估值倍数，无法计算本地历史估值情景。'" />
+          </el-card>
+          <el-card shadow="never">
+            <template #header>估值快照（SEC + 本地价格）</template>
+            <el-alert v-if="candidateDetail.valuation.status !== 'ready'" type="info" :closable="false" show-icon :title="valuationReasonText(candidateDetail.valuation.reasons) || '部分估值证据不足，相关倍数已显示为 N/A。'" class="business-model-alert" />
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="市值">{{ formatUSD(candidateDetail.valuation.market_cap_usd) }}</el-descriptions-item>
+              <el-descriptions-item label="企业价值 EV">{{ formatUSD(candidateDetail.valuation.enterprise_value_usd) }}</el-descriptions-item>
+              <el-descriptions-item label="现金及短投">{{ formatUSD(candidateDetail.valuation.cash_usd) }}</el-descriptions-item>
+              <el-descriptions-item label="总债务">{{ formatUSD(candidateDetail.valuation.total_debt_usd) }}</el-descriptions-item>
+              <el-descriptions-item label="TTM 收入">{{ formatUSD(candidateDetail.valuation.ttm_revenue_usd) }}</el-descriptions-item>
+              <el-descriptions-item label="TTM 毛利">{{ formatUSD(candidateDetail.valuation.ttm_gross_profit_usd) }}</el-descriptions-item>
+              <el-descriptions-item label="EV/Sales">{{ formatMultiple(candidateDetail.valuation.ev_sales) }}</el-descriptions-item>
+              <el-descriptions-item label="EV/Gross Profit">{{ formatMultiple(candidateDetail.valuation.ev_gross_profit) }}</el-descriptions-item>
+              <el-descriptions-item label="P/S">{{ formatMultiple(candidateDetail.valuation.price_to_sales) }}</el-descriptions-item>
+              <el-descriptions-item label="净现金/市值">{{ formatPct(fractionToPct(candidateDetail.valuation.net_cash_to_market_cap)) }}</el-descriptions-item>
+              <el-descriptions-item label="价格日期">{{ formatDate(candidateDetail.valuation.price_trade_date) }}</el-descriptions-item>
+              <el-descriptions-item label="财务期末">{{ formatDate(candidateDetail.valuation.financial_period_end) }}</el-descriptions-item>
+            </el-descriptions>
+          </el-card>
+          <el-card shadow="never">
+            <template #header><div class="card-header-actions"><span>估值历史与同业比较（Longbridge） <el-tag size="small" :type="researchQualityTagType(candidateDetail.valuation_research?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.valuation_research?.quality?.quality_status) }}</el-tag></span><el-button size="small" :loading="valuationResearchRefreshing" @click="refreshCandidateValuationResearch">刷新估值研究</el-button></div></template>
+            <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="小盘与亏损公司可能缺少 PE、同业或历史覆盖；此数据仅用于研究比较，绝不作为候选硬筛选。" />
+            <template v-if="candidateDetail.valuation_research?.latest">
+              <el-table :data="valuationMetricRows(candidateDetail.valuation_research.latest)" size="small" border style="margin-top: 12px">
+                <el-table-column prop="metric" label="指标" width="80" />
+                <el-table-column label="当前" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.current) }}</template></el-table-column>
+                <el-table-column label="历史低 / 中 / 高" min-width="210" align="right"><template #default="{ row }">{{ formatForecastNumber(row.low) }} / {{ formatForecastNumber(row.median) }} / {{ formatForecastNumber(row.high) }}</template></el-table-column>
+                <el-table-column label="行业分位" width="150"><template #default="{ row }">{{ valuationPercentileText(row.percentile) }}</template></el-table-column>
+                <el-table-column label="历史点数" width="100" align="right"><template #default="{ row }">{{ row.history.length }}</template></el-table-column>
+              </el-table>
+              <el-alert v-if="candidateDetail.valuation_research.latest.change_summary" type="warning" :closable="false" style="margin-top: 12px" :title="`估值快照变化：${candidateDetail.valuation_research.latest.change_summary}`" />
+        <div class="analyst-rating-provenance-title">自身历史分位（跨快照 / 提供方历史）</div>
+        <el-table :data="candidateDetail.valuation_research.framework?.self_history || []" size="small" border empty-text="至少需要 5 个历史点">
+          <el-table-column prop="metric" label="指标" width="90" /><el-table-column label="当前" width="110" align="right"><template #default="{ row }">{{ formatForecastNumber(row.current) }}</template></el-table-column><el-table-column label="自身历史分位" width="140" align="right"><template #default="{ row }">{{ row.percentile == null ? '-' : `${row.percentile.toFixed(1)}%` }}</template></el-table-column><el-table-column prop="observations" label="样本" width="90" align="right" /><el-table-column label="状态" min-width="110"><template #default="{ row }">{{ row.status === 'available' ? '可用' : '样本不足' }}</template></el-table-column>
+        </el-table>
+        <div class="analyst-rating-provenance-title">固定同业比较 <small>版本 {{ candidateDetail.valuation_research.framework?.peer_set_version || '-' }} · {{ candidateDetail.valuation_research.framework?.peer_set_as_of ? formatDateTime(candidateDetail.valuation_research.framework.peer_set_as_of) : '-' }}</small></div>
+        <el-alert type="info" :closable="false" :title="candidateDetail.valuation_research.framework?.peer_set_policy || '固定同业集合，防止不同批次样本漂移。'" />
+        <el-table :data="candidateDetail.valuation_research.framework?.peers || []" size="small" border empty-text="Longbridge 暂无可固定的同业覆盖">
+                <el-table-column prop="symbol" label="代码" width="110" />
+                <el-table-column prop="name" label="公司" min-width="200" show-overflow-tooltip />
+                <el-table-column label="PE" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.pe) }}</template></el-table-column>
+                <el-table-column label="PB" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.pb) }}</template></el-table-column>
+                <el-table-column label="PS" width="95" align="right"><template #default="{ row }">{{ formatForecastNumber(row.ps) }}</template></el-table-column>
+          <el-table-column label="收入增速" width="105" align="right"><template #default="{ row }">{{ formatPct(row.revenue_growth_pct) }}</template></el-table-column>
+          <el-table-column label="毛利率" width="95" align="right"><template #default="{ row }">{{ formatPct(row.gross_margin_pct) }}</template></el-table-column>
+          <el-table-column label="现金跑道" width="105" align="right"><template #default="{ row }">{{ row.cash_runway_months == null ? '-' : `${row.cash_runway_months.toFixed(1)}月` }}</template></el-table-column>
+          <el-table-column label="基本面覆盖" width="105"><template #default="{ row }">{{ portfolioCoverageLabel(row.fundamental_coverage) }}</template></el-table-column>
+              </el-table>
+            </template>
+            <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="candidateDetail.valuation_research?.message || '尚未同步 Longbridge 估值研究'" />
+          </el-card>
+          <el-card shadow="never">
+            <template #header>
+              <div class="card-header-actions">
+                <span>EPS 市场预期 <el-tag size="small" :type="researchQualityTagType(candidateDetail.market_research?.quality?.quality_status)" effect="plain">{{ researchQualityLabel(candidateDetail.market_research?.quality?.quality_status) }}</el-tag></span>
+                <el-button size="small" :loading="marketResearchRefreshing" @click="refreshCandidateMarketResearch">刷新市场研究</el-button>
+              </div>
+            </template>
+            <el-alert type="info" :closable="false" show-icon title="这些是独立研究补充，不计入基本面总分。市场异动只会在 72 小时内增加短线复核优先级。" class="business-model-alert" />
+            <template v-if="candidateDetail.market_research?.eps_forecast?.latest">
+              <el-descriptions :column="3" border size="small" style="margin-top: 12px">
+                <el-descriptions-item label="EPS 预期中位数">{{ formatForecastNumber(candidateDetail.market_research.eps_forecast.latest.median) }}</el-descriptions-item>
+                <el-descriptions-item label="EPS 预期区间">{{ formatForecastRange(candidateDetail.market_research.eps_forecast.latest) }}</el-descriptions-item>
+                <el-descriptions-item label="上修 / 下修机构">{{ candidateDetail.market_research.eps_forecast.latest.institution_up }} / {{ candidateDetail.market_research.eps_forecast.latest.institution_down }}（共 {{ candidateDetail.market_research.eps_forecast.latest.institution_total }}）</el-descriptions-item>
+                <el-descriptions-item label="快照时间">{{ formatDateTime(candidateDetail.market_research.eps_forecast.latest.fetched_at) }}</el-descriptions-item>
+                <el-descriptions-item label="预期变化" :span="2">{{ candidateDetail.market_research.eps_forecast.latest.change_summary || '与上一快照无有效变化，或尚无可比较历史。' }}</el-descriptions-item>
+          <el-descriptions-item label="同周期修正方向"><el-tag :type="epsRevisionTagType(candidateDetail.market_research.eps_revision?.direction)" effect="plain">{{ epsRevisionLabel(candidateDetail.market_research.eps_revision?.direction) }}</el-tag></el-descriptions-item>
+          <el-descriptions-item label="中位数修正幅度">{{ formatPerformance(candidateDetail.market_research.eps_revision?.median_change_pct) }}</el-descriptions-item>
+          <el-descriptions-item label="修正广度">{{ formatPerformance(candidateDetail.market_research.eps_revision?.revision_breadth_pct) }}</el-descriptions-item>
+              </el-descriptions>
+            </template>
+            <el-alert v-else type="info" :closable="false" show-icon style="margin-top: 12px" :title="candidateDetail.market_research?.eps_forecast?.message || '尚未同步 EPS 市场预期'" />
+        <el-alert v-if="candidateDetail.market_research?.earnings_surprise?.status !== 'available'" type="info" :closable="false" show-icon style="margin-top: 12px" title="业绩预期差暂不计算" :description="candidateDetail.market_research?.earnings_surprise?.message" />
+
+
+          </el-card>
+        </template>
+        <template #research>
+          <el-card shadow="never">
+            <template #header>预期差研究卡（用户论点，不是系统事实）</template>
+            <el-alert type="info" :closable="false" show-icon title="SEC 公告、财务和融资证据在其他分区独立展示；以下内容均由用户维护，需通过后续公告或数据验证。" class="business-model-alert" />
+            <template v-if="candidateDetail.research">
+              <el-descriptions :column="1" border size="small">
+                <el-descriptions-item label="公司论点"><el-tag effect="plain">{{ companyThesisStatusLabel(candidateDetail.research.company_thesis_status) }}</el-tag></el-descriptions-item>
+                <el-descriptions-item label="证券研究就绪度"><el-tag :type="securityReadinessTagType(candidateDetail.research.security_readiness)" effect="plain">{{ securityReadinessLabel(candidateDetail.research.security_readiness) }}</el-tag></el-descriptions-item>
+                <el-descriptions-item label="当前研究动作">{{ researchActionLabel(candidateDetail.research.research_action) }}</el-descriptions-item>
+                <el-descriptions-item label="动作阈值">{{ candidateDetail.research.action_threshold || '-' }}<small v-if="candidateDetail.research.action_threshold">（{{ thresholdOriginLabel(candidateDetail.research.threshold_origin) }}）</small></el-descriptions-item>
+                <el-descriptions-item label="判断依据">{{ candidateDetail.research.decision_rationale || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="市场当前担忧">{{ candidateDetail.research.market_concern || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="可证伪判断">{{ candidateDetail.research.falsifiable_judgment || candidateDetail.research.thesis || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="下个催化剂">{{ candidateDetail.research.catalyst || '-' }}{{ candidateDetail.research.catalyst_date ? `（${formatDate(candidateDetail.research.catalyst_date)}）` : '' }}</el-descriptions-item>
+                <el-descriptions-item label="催化剂来源"><el-link v-if="candidateDetail.research.catalyst_source" :href="candidateDetail.research.catalyst_source" target="_blank" type="primary">打开来源</el-link><span v-else>-</span></el-descriptions-item>
+                <el-descriptions-item label="失效条件">{{ candidateDetail.research.invalidation || '-' }}</el-descriptions-item>
+              </el-descriptions>
+              <el-collapse v-if="candidateDetail.research_versions?.length" class="research-version-history">
+                <el-collapse-item :title="`备忘录版本历史（${candidateDetail.research_versions.length} 条，仅保留最近 20 条）`" name="versions">
+                  <el-table :data="candidateDetail.research_versions" size="small" border max-height="260">
+                    <el-table-column prop="version" label="版本" width="72" />
+                    <el-table-column prop="created_at" label="保存时间" width="130"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
+                    <el-table-column prop="author" label="作者" width="110" />
+                    <el-table-column label="公司论点" width="110"><template #default="{ row }">{{ companyThesisStatusLabel(row.company_thesis_status) }}</template></el-table-column>
+                    <el-table-column label="证券就绪度" width="110"><template #default="{ row }">{{ securityReadinessLabel(row.security_readiness) }}</template></el-table-column>
+                    <el-table-column label="研究动作" width="120"><template #default="{ row }">{{ researchActionLabel(row.research_action) }}</template></el-table-column>
+                    <el-table-column prop="falsifiable_judgment" label="可证伪判断" min-width="220" show-overflow-tooltip />
+                    <el-table-column prop="invalidation" label="失效条件" min-width="180" show-overflow-tooltip />
+                  </el-table>
+                </el-collapse-item>
+              </el-collapse>
+            </template>
+            <el-empty v-else description="尚未建立研究卡；请先加入关注列表后填写。" :image-size="64" />
+          </el-card>
+          <el-card shadow="never" class="candidate-ai-card">
+            <template #header><div class="card-header-actions"><span>AI 研判（手动）</span><el-space><el-select fit-input-width v-model="candidateAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="candidateAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!candidateAIProvider || !candidateAIPromptTemplate" :loading="candidateAIGenerating" @click="generateCandidateAI">生成研判</el-button></el-space></div></template>
+            <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
+            <template v-else-if="candidateAIAnalyses.length"><el-select fit-input-width v-model="candidateAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in candidateAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeCandidateAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeCandidateAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><el-alert v-if="activeCandidateAIAnalysis?.validation_warning" type="warning" :closable="false" show-icon title="模型输出未通过结构校验，系统已安全降级为证据不足。" style="margin-bottom:12px" /><AIRequestPrompt :system-prompt="activeCandidateAIAnalysis?.system_prompt" :user-prompt="activeCandidateAIAnalysis?.user_prompt" /><div class="ai-analysis-content"><AIAnalysisResult :result="activeCandidateAIAnalysis?.structured_result" :content="activeCandidateAIAnalysis?.content" /></div></template></template>
+            <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
+            <el-alert v-show="activeCandidateAIAnalysis?.status === 'queued' || activeCandidateAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
+          </el-card>
+        </template>
+        <template #data>
+          <el-card shadow="never">
+            <template #header>数据质量</template>
+            <el-space wrap>
+              <el-tag v-for="(value, key) in candidateDetail.data_quality" :key="key" :type="value === 'valid' ? 'success' : 'warning'" effect="plain">
+                {{ key }}: {{ value }}
+              </el-tag>
+            </el-space>
+          </el-card>
+          <el-card shadow="never">
+            <template #header>证据溯源（当前候选批次）</template>
+            <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="此处仅展示生成当前候选所使用的本地快照，不会在打开详情时请求 SEC 或行情接口。" />
+            <el-descriptions :column="2" border size="small" class="lineage-batch-meta">
+              <el-descriptions-item label="评分批次"><el-text truncated>{{ candidateDetail.data_lineage?.score_batch_id || candidateDetail.batch_id || '-' }}</el-text></el-descriptions-item>
+              <el-descriptions-item label="证据批次"><el-text truncated>{{ candidateDetail.data_lineage?.evidence_batch_id || '-' }}</el-text></el-descriptions-item>
+              <el-descriptions-item label="批次有效日">{{ candidateDetail.data_lineage?.batch_effective_date || '-' }}</el-descriptions-item>
+            </el-descriptions>
+            <el-table :data="candidateDetail.data_lineage?.items || []" size="small" border class="lineage-table" empty-text="暂无证据溯源记录">
+              <el-table-column prop="label" label="证据" width="120" />
+              <el-table-column prop="source" label="来源" min-width="190" show-overflow-tooltip />
+              <el-table-column prop="as_of" label="截至" width="120"><template #default="{ row }">{{ row.as_of || '-' }}</template></el-table-column>
+              <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="lineageStatusTagType(row.status)" effect="plain">{{ lineageStatusLabel(row.status) }}</el-tag></template></el-table-column>
+              <el-table-column prop="detail" label="说明" min-width="240" show-overflow-tooltip />
+            </el-table>
+          </el-card>
+          <el-card id="candidate-detail-audit" shadow="never">
+            <template #header>评分拆解</template>
+            <el-alert type="info" :closable="false" show-icon :title="candidateDetail.scoring_rubric.disclaimer" class="business-model-alert" />
+            <el-descriptions :column="3" border size="small" style="margin-bottom: 12px">
+              <el-descriptions-item label="公式" :span="3">{{ candidateDetail.scoring_rubric.formula }}</el-descriptions-item>
+              <el-descriptions-item label="评分版本">{{ candidateDetail.scoring_rubric.version }}</el-descriptions-item>
+              <el-descriptions-item label="内容指纹">{{ candidateDetail.scoring_rubric.content_sha256?.slice(0, 12) || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="当前总分">{{ candidateDetail.score.total_score }} / {{ candidateDetail.scoring_rubric.max_score }}</el-descriptions-item>
+            </el-descriptions>
+            <el-table :data="candidateDetail.scoring_rubric.dimensions" size="small" border>
+              <el-table-column prop="label" label="维度" width="110" />
+              <el-table-column label="本次得分" width="100" align="right"><template #default="{ row }"><strong>{{ scoringDimensionValue(candidateDetail.score, row.key) }} / {{ row.max_points }}</strong></template></el-table-column>
+              <el-table-column label="权重" width="80" align="right"><template #default="{ row }">{{ row.weight_pct }}%</template></el-table-column>
+              <el-table-column label="分值映射" min-width="260"><template #default="{ row }">{{ scoringRulesText(row.rules) }}</template></el-table-column>
+              <el-table-column prop="evidence" label="证据来源" min-width="210" show-overflow-tooltip />
+            </el-table>
+            <div class="criteria-note">{{ candidateDetail.scoring_rubric.grade_rule_note }}</div>
+          </el-card>
+          <el-card shadow="never">
+            <template #header>评分历史与入选事件</template>
+            <el-alert type="info" :closable="false" show-icon class="business-model-alert" title="仅比较已发布候选批次；分数变化不等于基本面变化，请结合下方的变化原因与证据溯源复核。" />
+            <el-table :data="candidateDetail.score_history || []" size="small" border class="score-history-table" empty-text="仅有当前评分批次，暂无可比历史">
+              <el-table-column prop="effective_date" label="有效日" width="115" />
+              <el-table-column prop="grade" label="入选画像" width="150"><template #default="{ row }"><el-tag :type="gradeTagType(row.grade)" effect="plain">{{ gradeLabel(row.grade) }}</el-tag></template></el-table-column>
+              <el-table-column prop="total_score" label="总分" width="75" align="right" />
+              <el-table-column label="较前批" width="90" align="right"><template #default="{ row }">{{ scoreHistoryDelta(row.score_delta) }}</template></el-table-column>
+              <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="changeStatusTagType(row.change_status)" effect="plain">{{ changeStatusLabel(row.change_status) }}</el-tag></template></el-table-column>
+              <el-table-column label="核心变化" min-width="230" show-overflow-tooltip><template #default="{ row }">{{ scoreHistoryReasonSummary(row.change_reasons) }}</template></el-table-column>
+              <el-table-column prop="scoring_version" label="评分版本" width="150" show-overflow-tooltip />
+            </el-table>
+            <div v-if="candidateDetail.signal_events?.length" class="signal-event-history">
+              <div class="signal-event-heading">不可变入选事件</div>
+              <el-timeline>
+                <el-timeline-item v-for="event in candidateDetail.signal_events" :key="event.id" type="success" :timestamp="formatDate(event.signal_date)">
+                  {{ candidateSignalEventLabel(event.event_type) }} · {{ gradeLabel(event.grade) }} · {{ event.total_score }} 分
+                  <span v-if="event.baseline_trade_date">（锚定价 {{ formatPrice(event.baseline_close_micros / 1_000_000, 'USD') }}，{{ formatDate(event.baseline_trade_date) }}，{{ priceSourceLabel(event.price_source) }}）</span>
                 </el-timeline-item>
               </el-timeline>
-              <el-empty v-else :image-size="44" description="尚未记录状态变化；下次日线同步后会建立当前状态基线。" />
             </div>
-          </template>
-          <el-alert
-            v-if="technicalHistoryHasLaterRows"
-            type="info"
-            :closable="false"
-            show-icon
-            class="technical-history-asof-alert"
-            :title="`当前发布批次的价格与技术信号均截至 ${formatDate(candidateDetail.technical.trade_date)}；图表中之后的本地日线仅供后续观察，不参与当前批次评分或技术信号。`"
-          />
-						<TechnicalPriceHistoryChart :ticker="candidateDetail.score.ticker" :rows="candidateDetail.technical_history || []" :technical="candidateDetail.technical" />
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-70">
-          <template #header>近期 SEC 公告</template>
-          <el-table :data="candidateDetail.recent_filings || []" size="small" border empty-text="暂无近期公告">
-            <el-table-column prop="filing_date" label="日期" width="120">
-              <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
-            </el-table-column>
-            <el-table-column prop="filing_type" label="类型" width="90" />
-            <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
-            <el-table-column label="链接" width="80">
-              <template #default="{ row }">
-                <el-link v-if="row.filing_url" :href="row.filing_url" target="_blank" type="primary">打开</el-link>
-                <span v-else>-</span>
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-140">
-          <template #header>内幕交易</template>
-          <el-alert
-            v-if="candidateDetail.insider_coverage"
-            :type="insiderCoverageAlertType(candidateDetail.insider_coverage.status)"
-            :closable="false"
-            show-icon
-            class="business-model-alert"
-            :title="insiderCoverageTitle(candidateDetail.insider_coverage)"
-            :description="insiderCoverageDescription(candidateDetail.insider_coverage)"
-          />
-          <el-alert v-else type="info" :closable="false" show-icon class="business-model-alert" title="本批次未保留 Form 4 覆盖明细" description="请完成一次新的小盘股安全宇宙同步后，再将“无内幕交易”视为覆盖结论。" />
-          <el-table :data="candidateDetail.insiders" size="small" border empty-text="暂无内幕交易">
-            <el-table-column prop="transaction_date" label="日期" width="120"><template #default="{ row }">{{ formatDate(row.transaction_date) }}</template></el-table-column>
-            <el-table-column prop="owner_name" label="人员" min-width="120" />
-            <el-table-column prop="role" label="角色" width="90" />
-            <el-table-column prop="transaction_code" label="代码" width="70" />
-            <el-table-column label="10b5-1" width="112"><template #default="{ row }"><el-tooltip :disabled="!row.ten_b5_1_evidence" :content="row.ten_b5_1_evidence"><el-tag :type="row.is_10b5_1 ? 'success' : row.ten_b5_1_status === 'possible' ? 'warning' : 'info'" effect="plain">{{ row.is_10b5_1 ? '计划内' : row.ten_b5_1_status === 'possible' ? '待核验' : '未披露' }}</el-tag></el-tooltip></template></el-table-column>
-            <el-table-column prop="qualified" label="合格" width="70"><template #default="{ row }"><el-tag :type="row.qualified ? 'success' : 'info'" effect="plain">{{ row.qualified ? '是' : '否' }}</el-tag></template></el-table-column>
-          </el-table>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-120">
-          <template #header>融资/稀释风险</template>
-          <el-alert
-            v-if="candidateDetail.capital_risk_summary?.total_events"
-            :type="candidateDetail.capital_risk_summary?.active_events ? 'warning' : 'info'"
-            :closable="false"
-            show-icon
-            class="capital-risk-summary"
-            :title="capitalRiskSummaryTitle(candidateDetail)"
-            :description="capitalRiskSummaryDescription(candidateDetail)"
-          />
-          <el-table :data="candidateDetail.capital_risks" size="small" border empty-text="暂无当前或近 180 日融资风险">
-            <el-table-column prop="effective_at" label="日期" width="120"><template #default="{ row }">{{ formatDate(row.effective_at) }}</template></el-table-column>
-            <el-table-column prop="kind" label="类型" width="140" />
-            <el-table-column prop="severity" label="严重度" width="90" />
-            <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
-            <el-table-column label="阻断" width="120"><template #default="{ row }">A: {{ row.blocks_a ? '是' : '否' }} / B: {{ row.blocks_b ? '是' : '否' }}</template></el-table-column>
-          </el-table>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-80">
-          <template #header>研究事件与催化剂时间线</template>
-          <el-alert type="info" :closable="false" show-icon title="绿色为 SEC 已发生事实；橙色为用户计划中的催化剂。用户判断必须同时填写日期和来源，才标记为资料完整。" class="business-model-alert" />
-          <el-table :data="candidateDetail.catalysts || []" size="small" border empty-text="暂无研究事件或催化剂">
-            <el-table-column prop="event_date" label="日期" width="112"><template #default="{ row }">{{ formatDate(row.event_date) }}</template></el-table-column>
-            <el-table-column label="性质" width="112"><template #default="{ row }"><el-tag :type="row.evidence_type === 'fact' ? 'success' : 'warning'" effect="plain">{{ row.evidence_type === 'fact' ? '事实事件' : '用户判断' }}</el-tag></template></el-table-column>
-            <el-table-column label="类型" width="126"><template #default="{ row }">{{ catalystEventLabel(row.event_type) }}</template></el-table-column>
-            <el-table-column prop="title" label="内容" min-width="260" show-overflow-tooltip />
-            <el-table-column label="证据" width="130"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">{{ row.source }}</el-link><span v-else>{{ row.source }}</span></template></el-table-column>
-            <el-table-column label="状态" width="106"><template #default="{ row }"><el-tag :type="row.quality?.quality_status === 'valid' ? 'success' : 'warning'" effect="plain">{{ catalystTimingLabel(row.timing_status) }}</el-tag></template></el-table-column>
-          </el-table>
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-40">
-          <template #header>预期差研究卡（用户论点，不是系统事实）</template>
-          <el-alert type="info" :closable="false" show-icon title="SEC 公告、财务和融资证据在上方独立展示；以下内容均由用户维护，需通过后续公告或数据验证。" class="business-model-alert" />
-          <template v-if="candidateDetail.research">
-            <el-descriptions :column="1" border size="small">
-              <el-descriptions-item label="公司论点"><el-tag effect="plain">{{ companyThesisStatusLabel(candidateDetail.research.company_thesis_status) }}</el-tag></el-descriptions-item>
-              <el-descriptions-item label="证券研究就绪度"><el-tag :type="securityReadinessTagType(candidateDetail.research.security_readiness)" effect="plain">{{ securityReadinessLabel(candidateDetail.research.security_readiness) }}</el-tag></el-descriptions-item>
-              <el-descriptions-item label="当前研究动作">{{ researchActionLabel(candidateDetail.research.research_action) }}</el-descriptions-item>
-              <el-descriptions-item label="动作阈值">{{ candidateDetail.research.action_threshold || '-' }}<small v-if="candidateDetail.research.action_threshold">（{{ thresholdOriginLabel(candidateDetail.research.threshold_origin) }}）</small></el-descriptions-item>
-              <el-descriptions-item label="判断依据">{{ candidateDetail.research.decision_rationale || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="市场当前担忧">{{ candidateDetail.research.market_concern || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="可证伪判断">{{ candidateDetail.research.falsifiable_judgment || candidateDetail.research.thesis || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="下个催化剂">{{ candidateDetail.research.catalyst || '-' }}{{ candidateDetail.research.catalyst_date ? `（${formatDate(candidateDetail.research.catalyst_date)}）` : '' }}</el-descriptions-item>
-              <el-descriptions-item label="催化剂来源"><el-link v-if="candidateDetail.research.catalyst_source" :href="candidateDetail.research.catalyst_source" target="_blank" type="primary">打开来源</el-link><span v-else>-</span></el-descriptions-item>
-              <el-descriptions-item label="失效条件">{{ candidateDetail.research.invalidation || '-' }}</el-descriptions-item>
-            </el-descriptions>
-            <el-collapse v-if="candidateDetail.research_versions?.length" class="research-version-history">
-              <el-collapse-item :title="`备忘录版本历史（${candidateDetail.research_versions.length} 条，仅保留最近 20 条）`" name="versions">
-                <el-table :data="candidateDetail.research_versions" size="small" border max-height="260">
-                  <el-table-column prop="version" label="版本" width="72" />
-                  <el-table-column prop="created_at" label="保存时间" width="130"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
-                  <el-table-column prop="author" label="作者" width="110" />
-                  <el-table-column label="公司论点" width="110"><template #default="{ row }">{{ companyThesisStatusLabel(row.company_thesis_status) }}</template></el-table-column>
-                  <el-table-column label="证券就绪度" width="110"><template #default="{ row }">{{ securityReadinessLabel(row.security_readiness) }}</template></el-table-column>
-                  <el-table-column label="研究动作" width="120"><template #default="{ row }">{{ researchActionLabel(row.research_action) }}</template></el-table-column>
-                  <el-table-column prop="falsifiable_judgment" label="可证伪判断" min-width="220" show-overflow-tooltip />
-                  <el-table-column prop="invalidation" label="失效条件" min-width="180" show-overflow-tooltip />
-                </el-table>
-              </el-collapse-item>
-            </el-collapse>
-          </template>
-          <el-empty v-else description="尚未建立研究卡；请先加入关注列表后填写。" :image-size="64" />
-        </el-card>
-
-        <el-card shadow="never" class="detail-order-270">
-          <template #header>原始证据字段</template>
-          <el-table :data="candidateDetail.evidence" size="small" border>
-            <el-table-column prop="field" label="字段" width="170" />
-            <el-table-column prop="value" label="值" width="140" />
-            <el-table-column prop="source" label="来源" min-width="180" />
-          </el-table>
-        </el-card>
+          </el-card>
+          <el-card shadow="never">
+            <template #header>原始证据字段</template>
+            <el-table :data="candidateDetail.evidence" size="small" border>
+              <el-table-column prop="field" label="字段" width="170" />
+              <el-table-column prop="value" label="值" width="140" />
+              <el-table-column prop="source" label="来源" min-width="180" />
+            </el-table>
+          </el-card>
+        </template>
+        </StockDetailLayout>
       </div>
     </el-drawer>
 
@@ -1998,6 +1993,11 @@ import type { AIAnalysisStructuredResult } from '@/api/types'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
 import SmallCapPolicyDialog from '@/components/SmallCapPolicyDialog.vue'
+import StockDetailLayout from '@/components/StockDetailLayout.vue'
+import StockDataStatus from '@/components/StockDataStatus.vue'
+import InstitutionalOwnershipHistory from '@/components/InstitutionalOwnershipHistory.vue'
+import type { TickerInstitutionalHoldingHistory } from '@/api/types'
+import type { StockDetailSection } from '@/utils/stockDetailSections'
 import { normalizedTickerQuery } from '@/utils/researchRouteState'
 import type {
   ApiResponse,
@@ -2047,6 +2047,12 @@ const forceMarketLoading = ref(false)
 const technicalHistoryLoading = ref(false)
 const reportLoading = ref(false)
 const detailVisible = ref(false)
+const candidateOwnership = ref<TickerInstitutionalHoldingHistory | null>(null)
+const candidateOwnershipLoading = ref(false)
+const candidateOwnershipRefreshing = ref(false)
+const candidateOwnershipError = ref('')
+let candidateOwnershipRequest = 0
+let candidateDetailRequest = 0
 const detailLoadingTicker = ref('')
 const watchingTicker = ref('')
 const watchLoading = ref(false)
@@ -2727,21 +2733,61 @@ function exportCandidates() {
   window.open(`/api/exports/candidates.csv?${query.toString()}`, '_blank', 'noopener')
 }
 
-function scrollCandidateDetailSection(section: 'summary' | 'latest' | 'fundamentals' | 'research' | 'audit') {
-  document.getElementById(`candidate-detail-${section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+async function onCandidateDetailSectionChange(section: StockDetailSection) {
+  if (section !== 'ownership' || candidateOwnership.value || candidateOwnershipLoading.value) return
+  const ticker = candidateDetail.value?.score.ticker
+  if (!ticker) return
+  const request = ++candidateOwnershipRequest
+  candidateOwnershipLoading.value = true
+  candidateOwnershipError.value = ''
+  try {
+    const response = await apiClient.get<ApiResponse<TickerInstitutionalHoldingHistory>>(`/discovery/institutional-holdings/${encodeURIComponent(ticker)}`)
+    if (request === candidateOwnershipRequest && candidateDetail.value?.score.ticker === ticker) candidateOwnership.value = response.data.data
+  } catch (err: any) {
+    if (request === candidateOwnershipRequest) candidateOwnershipError.value = err?.response?.data?.message || '读取本地历史失败；可重新进入本分区重试。'
+  } finally {
+    if (request === candidateOwnershipRequest) candidateOwnershipLoading.value = false
+  }
+}
+
+async function refreshCandidateOwnership() {
+  const ticker = candidateDetail.value?.score.ticker
+  if (!ticker || candidateOwnershipRefreshing.value) return
+  const request = ++candidateOwnershipRequest
+  candidateOwnershipRefreshing.value = true
+  candidateOwnershipLoading.value = false
+  try {
+    const response = await apiClient.post<ApiResponse<{ research: TickerInstitutionalHoldingHistory }>>(`/discovery/institutional-holdings/${encodeURIComponent(ticker)}/refresh`, null, { timeout: 95000 })
+    if (request === candidateOwnershipRequest && candidateDetail.value?.score.ticker === ticker) {
+      candidateOwnership.value = response.data.data.research
+      candidateOwnershipError.value = ''
+      ElMessage.success('已更新主要机构历史；部分覆盖与分类限制请查看说明。')
+    }
+  } catch (err: any) {
+    if (request === candidateOwnershipRequest) ElMessage.error(err?.response?.data?.message || '刷新主要机构历史失败')
+  } finally {
+    if (request === candidateOwnershipRequest) candidateOwnershipRefreshing.value = false
+  }
 }
 
 async function openDetail(row: CandidateScore) {
+  const request = ++candidateDetailRequest
   detailLoadingTicker.value = row.ticker
   try {
     const res = await apiClient.get<ApiResponse<CandidateDetail>>(`/discovery/candidates/${row.ticker}/detail`)
+    if (request !== candidateDetailRequest) return
+    ++candidateOwnershipRequest
+    candidateOwnership.value = null
+    candidateOwnershipLoading.value = false
+    candidateOwnershipRefreshing.value = false
+    candidateOwnershipError.value = ''
     candidateDetail.value = res.data.data
     detailVisible.value = true
 		await loadCandidateAIAnalyses()
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.message || '加载候选详情失败')
   } finally {
-    detailLoadingTicker.value = ''
+    if (request === candidateDetailRequest) detailLoadingTicker.value = ''
   }
 }
 
@@ -5412,68 +5458,10 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.candidate-detail-nav {
-  position: sticky;
-  top: 0;
-  z-index: 4;
-  display: flex;
-  order: 0;
-  align-items: center;
-  gap: 2px;
-  padding: 6px 10px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--el-bg-color) 96%, transparent);
-  box-shadow: 0 4px 12px rgb(15 23 42 / 6%);
-  backdrop-filter: blur(8px);
-}
-
-.candidate-detail-nav-label {
-  margin-right: auto;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
 .candidate-detail-identity {
   overflow: hidden;
   border-radius: 4px;
 }
-
-#candidate-detail-summary,
-#candidate-detail-latest,
-#candidate-detail-fundamentals,
-#candidate-detail-research,
-#candidate-detail-audit {
-  scroll-margin-top: 52px;
-}
-
-.detail-order-10 { order: 10; }
-.detail-order-20 { order: 20; }
-.detail-order-30 { order: 30; }
-.detail-order-40 { order: 40; }
-.detail-order-50 { order: 50; }
-.detail-order-60 { order: 60; }
-.detail-order-70 { order: 70; }
-.detail-order-80 { order: 80; }
-.detail-order-90 { order: 90; }
-.detail-order-100 { order: 100; }
-.detail-order-110 { order: 110; }
-.detail-order-120 { order: 120; }
-.detail-order-130 { order: 130; }
-.detail-order-140 { order: 140; }
-.detail-order-150 { order: 150; }
-.detail-order-160 { order: 160; }
-.detail-order-170 { order: 170; }
-.detail-order-180 { order: 180; }
-.detail-order-190 { order: 190; }
-.detail-order-200 { order: 200; }
-.detail-order-210 { order: 210; }
-.detail-order-220 { order: 220; }
-.detail-order-230 { order: 230; }
-.detail-order-240 { order: 240; }
-.detail-order-250 { order: 250; }
-.detail-order-260 { order: 260; }
-.detail-order-270 { order: 270; }
 
 .candidate-ai-card { margin-top: 0; }
 .ai-analysis-content { white-space: pre-wrap; line-height: 1.65; padding: 12px; border-radius: 4px; background: var(--el-fill-color-light); }

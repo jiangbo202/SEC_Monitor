@@ -86,6 +86,8 @@ func Migrate(db *gorm.DB) error {
 			&EPSForecastSnapshot{},
 			&MarketAnomalySnapshot{},
 			&InstitutionalHolderSnapshot{},
+			&InstitutionalOwnershipPoint{},
+			&InstitutionalOwnershipReceipt{},
 			&FundHolderSnapshot{},
 			&LongbridgeValuationSnapshot{},
 			&OptionResearchSnapshot{},

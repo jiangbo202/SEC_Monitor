@@ -66,6 +66,12 @@ type EarningsSurpriseAvailability struct {
 // view is intended for a watch-target detail where an operator needs to trace
 // every institution/fund disclosure and its reported ratio.
 type TickerInstitutionalHoldingHistory struct {
+	HistorySyncedAt      *time.Time                    `json:"history_synced_at,omitempty"`
+	HistoryStatus        string                        `json:"history_status"`
+	OtherHolders         []InstitutionalHolderSnapshot `json:"other_holders"`
+	OwnershipHistory     []InstitutionalOwnershipPoint `json:"ownership_history"`
+	Coverage             string                        `json:"coverage"`
+	HistoryWarnings      []string                      `json:"history_warnings"`
 	Ticker               string                        `json:"ticker"`
 	InstitutionalHolders []InstitutionalHolderSnapshot `json:"institutional_holders"`
 	FundHolders          []FundHolderSnapshot          `json:"fund_holders"`
@@ -151,6 +157,7 @@ func GetCandidateMarketResearch(ctx context.Context, db *gorm.DB, ticker string)
 	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, percent_of_shares DESC, id DESC").Limit(50).Find(&result.InstitutionalHolders).Error; err != nil {
 		return result, err
 	}
+	result.InstitutionalHolders, _ = splitInstitutionalHolders(result.InstitutionalHolders)
 	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, position_ratio DESC, id DESC").Limit(50).Find(&result.FundHolders).Error; err != nil {
 		return result, err
 	}
@@ -232,7 +239,7 @@ func buildEPSRevisionSummary(view EPSForecastView) EPSRevisionSummary {
 // identity includes provider, ticker, holder and report date, so later reports
 // remain available beside earlier disclosures.
 func GetTickerInstitutionalHoldingHistory(ctx context.Context, db *gorm.DB, ticker string) (TickerInstitutionalHoldingHistory, error) {
-	result := TickerInstitutionalHoldingHistory{InstitutionalHolders: []InstitutionalHolderSnapshot{}, FundHolders: []FundHolderSnapshot{}}
+	result := TickerInstitutionalHoldingHistory{InstitutionalHolders: []InstitutionalHolderSnapshot{}, FundHolders: []FundHolderSnapshot{}, OtherHolders: []InstitutionalHolderSnapshot{}, OwnershipHistory: []InstitutionalOwnershipPoint{}, HistoryWarnings: []string{}, Coverage: "partial_major_holders"}
 	if db == nil {
 		return result, errors.New("database is required")
 	}
@@ -247,10 +254,27 @@ func GetTickerInstitutionalHoldingHistory(ctx context.Context, db *gorm.DB, tick
 	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, fund_name ASC, id DESC").Find(&result.FundHolders).Error; err != nil {
 		return result, err
 	}
-	if len(result.InstitutionalHolders) == 0 && len(result.FundHolders) == 0 {
+	result.InstitutionalHolders, result.OtherHolders = splitInstitutionalHolders(result.InstitutionalHolders)
+	if err := loadInstitutionalOwnershipHistory(ctx, db, &result); err != nil {
+		return result, err
+	}
+	result.HistoryStatus = "not_synced"
+	var receipt InstitutionalOwnershipReceipt
+	err := db.WithContext(ctx).Where("ticker = ? AND holder_id = ?", symbol, "top").First(&receipt).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return result, err
+	}
+	if err == nil {
+		result.HistorySyncedAt = &receipt.FetchedAt
+		result.HistoryStatus = "no_confirmed_history"
+	}
+	if len(result.OwnershipHistory) > 0 {
+		result.HistoryStatus = "partial"
+	}
+	if len(result.InstitutionalHolders) == 0 && len(result.FundHolders) == 0 && len(result.OwnershipHistory) == 0 {
 		result.Message = "尚未同步 Longbridge 机构或基金持仓披露；可手动刷新，或等待每日监控标的市场研究任务。"
 	} else {
-		result.Message = "Longbridge 返回的机构股东与基金/ETF 持仓披露历史。持股比例、组合权重和报告日均为提供方口径；不同机构的披露频率与覆盖范围可能不同。"
+		result.Message = "仅覆盖 Longbridge 已披露的主要机构，不代表全体机构总占比。持股比例分母由提供方定义；个人与类型未确认的股东已分开。基金组合权重不可与公司持股比例相加；未覆盖、未续披露不等于零或清仓。"
 	}
 	return result, nil
 }
@@ -465,7 +489,7 @@ func saveLongbridgeInstitutionalHolders(ctx context.Context, db *gorm.DB, securi
 		if name == "" {
 			continue
 		}
-		rows = append(rows, InstitutionalHolderSnapshot{SecurityID: securityID, Provider: longbridgeCandidateResearchProvider, Ticker: ticker, HolderName: name, InstitutionType: strings.TrimSpace(item.InstitutionType), PercentOfShares: decimalFloat(item.PercentOfShares), SharesChanged: decimalFloat(item.SharesChanged), ReportDate: strings.TrimSpace(item.ReportDate), SourceURL: longbridgeCandidateResearchSourceURL("shareholder"), FetchedAt: now})
+		rows = append(rows, InstitutionalHolderSnapshot{HolderID: item.ShareholderID, OwnerType: classifyInstitutionType(item.InstitutionType), SecurityID: securityID, Provider: longbridgeCandidateResearchProvider, Ticker: ticker, HolderName: name, InstitutionType: strings.TrimSpace(item.InstitutionType), PercentOfShares: decimalFloat(item.PercentOfShares), SharesChanged: decimalFloat(item.SharesChanged), ReportDate: strings.TrimSpace(item.ReportDate), SourceURL: "https://open.longbridge.com/docs/fundamental/fundamental/shareholders", FetchedAt: now})
 	}
 	if len(rows) == 0 {
 		return 0, nil
@@ -473,7 +497,7 @@ func saveLongbridgeInstitutionalHolders(ctx context.Context, db *gorm.DB, securi
 	for i := range rows {
 		rows[i].IdentityCounterID = issuerCounterID(ticker)
 	}
-	err := db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}, {Name: "ticker"}, {Name: "holder_name"}, {Name: "report_date"}}, DoUpdates: clause.AssignmentColumns([]string{"identity_counter_id", "security_id", "institution_type", "percent_of_shares", "shares_changed", "source_url", "fetched_at", "updated_at"})}).Create(&rows).Error
+	err := db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "provider"}, {Name: "ticker"}, {Name: "holder_name"}, {Name: "report_date"}}, DoUpdates: clause.AssignmentColumns([]string{"holder_id", "owner_type", "identity_counter_id", "security_id", "institution_type", "percent_of_shares", "shares_changed", "source_url", "fetched_at", "updated_at"})}).Create(&rows).Error
 	return len(rows), err
 }
 
@@ -598,6 +622,12 @@ func leastRecentlyRefreshedCandidateTickers(ctx context.Context, db *gorm.DB, bu
 		tickers = append(tickers, ticker)
 	}
 	return tickers, len(scores), nil
+}
+
+// OwnershipCandidateTickers shares the published-universe selection, not the P1 freshness cursor.
+func OwnershipCandidateTickers(ctx context.Context, db *gorm.DB, budget int, last map[string]time.Time) ([]string, error) {
+	tickers, _, err := leastRecentlyRefreshedCandidateTickers(ctx, db, budget, last, nil)
+	return tickers, err
 }
 
 func decimalFloat(value *decimal.Decimal) *float64 {
