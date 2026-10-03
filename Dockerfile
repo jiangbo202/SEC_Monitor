@@ -12,6 +12,7 @@ RUN go mod download
 COPY . .
 RUN go build -o /out/sec-monitor ./cmd/server
 RUN go build -o /out/discovery-sync ./cmd/discovery-sync
+RUN go build -o /out/storage-maintenance ./cmd/storage-maintenance
 
 FROM debian:bookworm-slim
 WORKDIR /app
@@ -21,6 +22,7 @@ RUN apt-get update \
     && mkdir -p /app/data
 COPY --from=backend /out/sec-monitor /app/sec-monitor
 COPY --from=backend /out/discovery-sync /app/discovery-sync
+COPY --from=backend /out/storage-maintenance /app/storage-maintenance
 COPY --from=frontend /src/web/dist /app/web
 ENV APP_ADDR=:8080
 ENV DB_TYPE=sqlite

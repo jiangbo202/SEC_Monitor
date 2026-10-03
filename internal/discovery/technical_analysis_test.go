@@ -60,7 +60,7 @@ func TestCandidateTechnicalAnalysisPausesSignalsForUnadjustedReverseSplit(t *tes
 	if err := db.Create(&UniverseBatch{BatchID: "facts", Kind: BatchKindSecurity, Status: BatchStatusPublished, StartedAt: time.Now()}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&CapitalRiskSnapshot{BatchID: "facts", SecurityID: security.ID, Kind: CapitalEventReverseSplit, Accession: "split", EffectiveAt: time.Now().AddDate(0, 0, -5), Active: true}).Error; err != nil {
+	if err := PersistCapitalRiskSnapshots(context.Background(), db, []CapitalRiskSnapshot{{BatchID: "facts", SecurityID: security.ID, Kind: CapitalEventReverseSplit, Accession: "split", EffectiveAt: time.Now().AddDate(0, 0, -5), Active: true}}); err != nil {
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)

@@ -50,7 +50,7 @@ func TestGetCandidateDetailReturnsCurrentEvidence(t *testing.T) {
 	if err := db.Create(&InsiderTransactionSnapshot{SecurityID: security.ID, Accession: "0001", OwnerName: "CEO", OfficerTitle: "Chief Executive Officer", Role: InsiderRoleCEO, TransactionDate: time.Now().AddDate(0, 0, -5), TransactionCode: "P", AcquiredDisposedCode: "A", Qualified: true, ValueMicros: 1_000_000_000}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&CapitalRiskSnapshot{BatchID: securityBatch.BatchID, SecurityID: security.ID, Kind: CapitalEventATMProgram, Active: true, BlocksA: true, BlocksB: false, Severity: CapitalRiskSeverityHigh, Reason: "ATM program active"}).Error; err != nil {
+	if err := PersistCapitalRiskSnapshots(context.Background(), db, []CapitalRiskSnapshot{{BatchID: securityBatch.BatchID, SecurityID: security.ID, Kind: CapitalEventATMProgram, Active: true, BlocksA: true, BlocksB: false, Severity: CapitalRiskSeverityHigh, Reason: "ATM program active"}}); err != nil {
 		t.Fatal(err)
 	}
 	older := time.Now().AddDate(0, 0, -12)

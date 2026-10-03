@@ -274,6 +274,7 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		// or published small-cap research output.
 		{Key: "system.operation_history_retention_days", Value: "90", ValueType: "int", Category: "system"},
 		{Key: "system.backup_retention_days", Value: "7", ValueType: "int", Category: "system"},
+		{Key: "system.backup_keep_pairs", Value: "3", ValueType: "int", Category: "system"},
 		{Key: "system.backup_max_gib", Value: "0", ValueType: "int", Category: "system"},
 		{Key: "system.backup_dir", Value: "", ValueType: "string", Category: "system"},
 		{Key: "system.backup_replica_dir", Value: "", ValueType: "string", Category: "system"},

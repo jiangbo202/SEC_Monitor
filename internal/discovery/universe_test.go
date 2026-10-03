@@ -1068,7 +1068,7 @@ func seedSecurityBatchForMarketTest(t *testing.T, db *gorm.DB, now time.Time, se
 		}
 		if seed.BlocksB {
 			risk := CapitalRiskSnapshot{BatchID: batch.BatchID, SecurityID: security.ID, Kind: CapitalEventATMProgram, Accession: fmt.Sprintf("risk-%d", i), EffectiveAt: now.AddDate(0, 0, -1), Active: true, BlocksB: true, CreatedAt: now}
-			if err := db.Create(&risk).Error; err != nil {
+			if err := PersistCapitalRiskSnapshots(context.Background(), db, []CapitalRiskSnapshot{risk}); err != nil {
 				t.Fatal(err)
 			}
 		}

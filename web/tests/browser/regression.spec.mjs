@@ -24,6 +24,91 @@ test.beforeEach(async ({ context }) => {
   })
 })
 
+test('日线图在空白处、成交额及边缘悬浮显示当日明细，切换范围清除旧提示',async({page})=>{
+ await page.goto(`${fixtureURL}/__test/reset?scenario=success`)
+ const history=Array.from({length:220},(_,i)=>{
+  const date=new Date(Date.UTC(2026,0,1+i)).toISOString().slice(0,10),close=Number((10+i*.02).toFixed(2))
+  return {trade_date:date,open_usd:i?close-.1:0,high_usd:i?close+.2:0,low_usd:i?close-.2:0,close_usd:close,ohlc_available:i!==0,volume:1000000+i,dollar_volume_usd:close*(1000000+i),rsi_14:i<14?null:45.6,k:i<9?null:30.9,d:i<9?null:31.2,j:i<9?null:30.3,source:'longbridge',backfilled:true}
+ })
+ const target={id:1,ticker:'TEST',company_name:'Chart Fixture Inc.',target_type:'stock',status:'enabled',last_sync_status:'success'}
+ const technical={status:'ready',trade_date:history[219].trade_date,close_usd:history[219].close_usd,liquidity_status:'normal'}
+ const responses={
+  '/api/watch-targets':{items:[target],total:1},
+  '/api/watch-targets/earnings-previews':[],
+  '/api/watch-targets/1/sync-details':[],
+  '/api/watch-targets/1/technical-history':{technical,history},
+  '/api/watch-targets/1/earnings-preview':null,
+  '/api/discovery/trade-setup-history/TEST':[],
+  '/api/discovery/company-profiles/TEST':null,
+  '/api/discovery/analyst-ratings/TEST':null,
+  '/api/discovery/fair-values/TEST':null,
+  '/api/discovery/profit-history/TEST':null,
+  '/api/discovery/institutional-holdings/TEST':{institutional_holders:[],fund_holders:[],ownership_history:[]},
+  '/api/insider-trading-plans/tickers':{count:0},
+  '/api/ai/providers':[],
+ }
+ let writes=0
+ await page.route('**/api/**',route=>{
+  if(route.request().method()!=='GET')writes++
+  const path=new URL(route.request().url()).pathname
+  return Object.hasOwn(responses,path)?route.fulfill({json:{data:responses[path]}}):route.fallback()
+ })
+ await page.goto(`${fixtureURL}/targets`)
+ await page.locator('.target-list-table .el-dropdown').getByRole('button').click()
+ await page.getByRole('menuitem',{name:'标的详情',exact:true}).click()
+ await page.getByRole('button',{name:'行情技术',exact:true}).click()
+ const chart=page.getByRole('img',{name:/TEST 本地日线价格和成交量图表/})
+ const tooltip=page.locator('.technical-chart-tooltip')
+ await expect(chart).toBeVisible()
+ const hover=async(fraction,y)=>{
+  await chart.scrollIntoViewIfNeeded()
+  const box=await chart.boundingBox()
+  await chart.hover({position:{x:box.width*fraction,y:box.height*y}})
+ }
+ // Pointer is far above the candle: the whole plot must provide a useful hit area.
+ await hover(6/720,.06)
+ await expect(tooltip).toContainText(history[0].trade_date)
+ await expect(tooltip).toContainText('OHLC 待回填')
+ await expect(tooltip.locator('.technical-tooltip-prices')).toContainText('收盘$10.00')
+ await expect(tooltip.locator('.technical-tooltip-averages')).toContainText('MA200-')
+ await expect(tooltip).toContainText('RSI(14)-')
+ await expect(tooltip).toContainText('历史回填 · longbridge')
+ // The volume plot and right boundary select the same latest trading day.
+ await hover(714/720,.8)
+ await expect(tooltip).toContainText(history[219].trade_date)
+ await expect(tooltip).toContainText('收盘$14.38')
+ await expect(tooltip.locator('.technical-tooltip-averages')).toContainText('MA200$12.39')
+ await expect(tooltip).toContainText('45.6')
+ let plot=await chart.boundingBox(),hint=await tooltip.boundingBox()
+ expect(hint.x).toBeGreaterThanOrEqual(plot.x)
+ expect(hint.x+hint.width).toBeLessThanOrEqual(plot.x+plot.width)
+ await page.screenshot({path:'test-results/technical-tooltip-desktop.png',animations:'disabled'})
+ await page.getByText('技术信号与价格历史',{exact:true}).hover()
+ await expect(tooltip).toHaveCount(0)
+ await chart.focus()
+ await expect(tooltip).toContainText(history[219].trade_date)
+ await chart.press('ArrowLeft')
+ await expect(tooltip).toContainText(history[218].trade_date)
+ await chart.press('Home')
+ await expect(tooltip).toContainText(history[0].trade_date)
+ await chart.press('Escape')
+ await expect(tooltip).toHaveCount(0)
+ await hover(.5,.06)
+ await page.getByText('近1周',{exact:true}).click()
+ await expect(tooltip).toHaveCount(0)
+ await hover(6/720,.06)
+ await expect(tooltip).toContainText(history[213].trade_date)
+ await page.setViewportSize({width:390,height:844})
+ await hover(714/720,.8)
+ await expect(tooltip).toContainText(history[219].trade_date)
+ plot=await chart.boundingBox();hint=await tooltip.boundingBox()
+ expect(hint.x).toBeGreaterThanOrEqual(plot.x)
+ expect(hint.x+hint.width).toBeLessThanOrEqual(plot.x+plot.width)
+ expect(hint.y+hint.height).toBeLessThanOrEqual(plot.y+plot.height)
+ await page.screenshot({path:'test-results/technical-tooltip-mobile.png',animations:'disabled'})
+ expect(writes).toBe(0)
+})
+
 test('模块开关仅在确认保存后生效，固定依赖锁定，行情顺序写入真实配置',async({page})=>{
  await page.goto(`${fixtureURL}/__test/reset?scenario=success`)
  const writes=[];const now='2026-10-03T01:00:00Z'

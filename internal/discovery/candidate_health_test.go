@@ -35,7 +35,7 @@ func TestBuildCandidateHealthSummarizesMissingData(t *testing.T) {
 	if err := db.Create(&InsiderTransactionSnapshot{SecurityID: ready.ID, Accession: "h1", TransactionDate: time.Now(), TransactionCode: "P", Qualified: true}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&CapitalRiskSnapshot{BatchID: batch.BatchID, SecurityID: ready.ID, Kind: CapitalEventATMProgram, Accession: "risk-1", EffectiveAt: time.Now(), Active: true}).Error; err != nil {
+	if err := PersistCapitalRiskSnapshots(context.Background(), db, []CapitalRiskSnapshot{{BatchID: batch.BatchID, SecurityID: ready.ID, Kind: CapitalEventATMProgram, Accession: "risk-1", EffectiveAt: time.Now(), Active: true}}); err != nil {
 		t.Fatal(err)
 	}
 
