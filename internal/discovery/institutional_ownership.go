@@ -72,6 +72,9 @@ type ownershipHistoryClient interface {
 }
 
 func (c *longbridgeCandidateResearchSDKClient) ShareholderTop(ctx context.Context, symbol string) (*lbfundamental.ShareholderTopResponse, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/shareholders"); err != nil {
+		return nil, err
+	}
 	id, err := explicitUSStockCounterID(symbol)
 	if err != nil {
 		return nil, err
@@ -79,6 +82,9 @@ func (c *longbridgeCandidateResearchSDKClient) ShareholderTop(ctx context.Contex
 	return c.fundamental.ShareholderTop(ctx, id)
 }
 func (c *longbridgeCandidateResearchSDKClient) ShareholderDetail(ctx context.Context, symbol string, holderID int64) (*lbfundamental.ShareholderDetailResponse, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/shareholders/holding"); err != nil {
+		return nil, err
+	}
 	id, err := explicitUSStockCounterID(symbol)
 	if err != nil {
 		return nil, err

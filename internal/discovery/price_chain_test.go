@@ -42,17 +42,17 @@ func TestPriceProviderChainFillsMissingSymbolsInOrder(t *testing.T) {
 	firstHash := sha256.Sum256([]byte("first"))
 	secondHash := sha256.Sum256([]byte("second"))
 	first := &fakeChainPriceProvider{
-		name:    "tiingo",
-		records: []PriceRecord{{Symbol: "AAA", Source: "tiingo", TradeDate: day, CloseMicros: 1_000_000, Volume: 10, Currency: "USD"}},
-		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:v1", SHA256: hex.EncodeToString(firstHash[:]), EffectiveDate: day, Records: 1, Expected: 3, CoveragePct: 33.3333, Timely: true},
+		name:    "longbridge",
+		records: []PriceRecord{{Symbol: "AAA", Source: "longbridge", TradeDate: day, CloseMicros: 1_000_000, Volume: 10, Currency: "USD"}},
+		result:  ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:v1", SHA256: hex.EncodeToString(firstHash[:]), EffectiveDate: day, Records: 1, Expected: 3, CoveragePct: 33.3333, Timely: true},
 	}
 	second := &fakeChainPriceProvider{
-		name: "yahoo",
+		name: "backup",
 		records: []PriceRecord{
-			{Symbol: "BBB", Source: "yahoo", TradeDate: day, CloseMicros: 2_000_000, Volume: 20, Currency: "USD"},
-			{Symbol: "CCC", Source: "yahoo", TradeDate: day, CloseMicros: 3_000_000, Volume: 30, Currency: "USD"},
+			{Symbol: "BBB", Source: "backup", TradeDate: day, CloseMicros: 2_000_000, Volume: 20, Currency: "USD"},
+			{Symbol: "CCC", Source: "backup", TradeDate: day, CloseMicros: 3_000_000, Volume: 30, Currency: "USD"},
 		},
-		result: ProviderResult{Provider: "yahoo", SourceVersion: "yahoo:v1", SHA256: hex.EncodeToString(secondHash[:]), EffectiveDate: day, Records: 2, Expected: 2, CoveragePct: 100, Timely: true},
+		result: ProviderResult{Provider: "backup", SourceVersion: "backup:v1", SHA256: hex.EncodeToString(secondHash[:]), EffectiveDate: day, Records: 2, Expected: 2, CoveragePct: 100, Timely: true},
 	}
 	var diagnostics []PriceProviderChainDiagnostic
 
@@ -80,13 +80,13 @@ func TestPriceProviderChainFillsMissingSymbolsInOrder(t *testing.T) {
 	if !result.FallbackUsed || len(result.Attempts) != 2 || result.Attempts[0].Status != "partial" || result.Attempts[0].Remaining != 2 || result.Attempts[1].Status != "success" || result.Attempts[1].Remaining != 0 {
 		t.Fatalf("provider attempts = %#v", result.Attempts)
 	}
-	if got := []string{records[0].Source, records[1].Source, records[2].Source}; !reflect.DeepEqual(got, []string{"tiingo", "yahoo", "yahoo"}) {
+	if got := []string{records[0].Source, records[1].Source, records[2].Source}; !reflect.DeepEqual(got, []string{"longbridge", "backup", "backup"}) {
 		t.Fatalf("record sources = %#v", got)
 	}
-	if got := chain.AllowedRecordSources(); !reflect.DeepEqual(got, []string{"tiingo", "yahoo"}) {
+	if got := chain.AllowedRecordSources(); !reflect.DeepEqual(got, []string{"longbridge", "backup"}) {
 		t.Fatalf("allowed sources = %#v", got)
 	}
-	if got := diagnosticEvents(diagnostics); !reflect.DeepEqual(got, []string{"tiingo:start", "tiingo:success", "yahoo:start", "yahoo:success"}) {
+	if got := diagnosticEvents(diagnostics); !reflect.DeepEqual(got, []string{"longbridge:start", "longbridge:success", "backup:start", "backup:success"}) {
 		t.Fatalf("diagnostic events = %#v", got)
 	}
 	if diagnostics[1].Records != 1 || diagnostics[1].Remaining != 2 || diagnostics[3].Records != 2 || diagnostics[3].Remaining != 0 {
@@ -100,11 +100,11 @@ func TestPriceProviderChainReportsChildError(t *testing.T) {
 	expected := []Listing{{Ticker: "AAA"}, {Ticker: "BBB"}}
 	firstHash := sha256.Sum256([]byte("first"))
 	first := &fakeChainPriceProvider{
-		name:    "tiingo",
-		records: []PriceRecord{{Symbol: "AAA", Source: "tiingo", TradeDate: day, CloseMicros: 1_000_000, Volume: 10, Currency: "USD"}},
-		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:v1", SHA256: hex.EncodeToString(firstHash[:]), EffectiveDate: day, Records: 1, Expected: 2, CoveragePct: 50, Timely: true},
+		name:    "longbridge",
+		records: []PriceRecord{{Symbol: "AAA", Source: "longbridge", TradeDate: day, CloseMicros: 1_000_000, Volume: 10, Currency: "USD"}},
+		result:  ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:v1", SHA256: hex.EncodeToString(firstHash[:]), EffectiveDate: day, Records: 1, Expected: 2, CoveragePct: 50, Timely: true},
 	}
-	second := &fakeChainPriceProvider{name: "twelvedata", err: errors.New("twelve data rate limited")}
+	second := &fakeChainPriceProvider{name: "futu", err: errors.New("futu rate limited")}
 	var diagnostics []PriceProviderChainDiagnostic
 
 	chain, err := NewPriceProviderChain(PriceProviderChainOptions{
@@ -125,13 +125,13 @@ func TestPriceProviderChainReportsChildError(t *testing.T) {
 	if len(records) != 1 || result.Records != 1 || result.Expected != 2 {
 		t.Fatalf("records=%#v result=%#v", records, result)
 	}
-	if got := diagnosticEvents(diagnostics); !reflect.DeepEqual(got, []string{"tiingo:start", "tiingo:success", "twelvedata:start", "twelvedata:error"}) {
+	if got := diagnosticEvents(diagnostics); !reflect.DeepEqual(got, []string{"longbridge:start", "longbridge:success", "futu:start", "futu:error"}) {
 		t.Fatalf("diagnostic events = %#v", got)
 	}
-	if diagnostics[3].Error != "twelve data rate limited" || diagnostics[3].Remaining != 1 {
+	if diagnostics[3].Error != "futu rate limited" || diagnostics[3].Remaining != 1 {
 		t.Fatalf("diagnostic error = %#v", diagnostics[3])
 	}
-	if !result.FallbackUsed || len(result.Attempts) != 2 || result.Attempts[1].Status != "failed" || result.Attempts[1].ErrorMessage != "twelve data rate limited" {
+	if !result.FallbackUsed || len(result.Attempts) != 2 || result.Attempts[1].Status != "failed" || result.Attempts[1].ErrorMessage != "futu rate limited" {
 		t.Fatalf("provider attempts = %#v", result.Attempts)
 	}
 }
@@ -144,17 +144,17 @@ func TestPriceProviderChainUsesPreviousTradingDayOnlyAfterFreshProviders(t *test
 	firstHash := sha256.Sum256([]byte("first-fallback"))
 	secondHash := sha256.Sum256([]byte("second-fallback"))
 	first := &fakeChainPriceProvider{
-		name: "twelvedata",
+		name: "futu",
 		records: []PriceRecord{
-			{Symbol: "FRESH", Source: "twelvedata", TradeDate: previous, CloseMicros: 1_000_000, Volume: 10, Currency: "USD"},
-			{Symbol: "FALLBACK", Source: "twelvedata", TradeDate: previous, CloseMicros: 2_000_000, Volume: 20, Currency: "USD"},
+			{Symbol: "FRESH", Source: "futu", TradeDate: previous, CloseMicros: 1_000_000, Volume: 10, Currency: "USD"},
+			{Symbol: "FALLBACK", Source: "futu", TradeDate: previous, CloseMicros: 2_000_000, Volume: 20, Currency: "USD"},
 		},
-		result: ProviderResult{Provider: "twelvedata", SourceVersion: "twelvedata:v1", SHA256: hex.EncodeToString(firstHash[:]), EffectiveDate: effective, Records: 2, Expected: 2, CoveragePct: 100, Timely: true},
+		result: ProviderResult{Provider: "futu", SourceVersion: "futu:v1", SHA256: hex.EncodeToString(firstHash[:]), EffectiveDate: effective, Records: 2, Expected: 2, CoveragePct: 100, Timely: true},
 	}
 	second := &fakeChainPriceProvider{
-		name:    "yahoo",
-		records: []PriceRecord{{Symbol: "FRESH", Source: "yahoo", TradeDate: effective, CloseMicros: 1_100_000, Volume: 11, Currency: "USD"}},
-		result:  ProviderResult{Provider: "yahoo", SourceVersion: "yahoo:v1", SHA256: hex.EncodeToString(secondHash[:]), EffectiveDate: effective, Records: 1, Expected: 2, CoveragePct: 50, Timely: true},
+		name:    "backup",
+		records: []PriceRecord{{Symbol: "FRESH", Source: "backup", TradeDate: effective, CloseMicros: 1_100_000, Volume: 11, Currency: "USD"}},
+		result:  ProviderResult{Provider: "backup", SourceVersion: "backup:v1", SHA256: hex.EncodeToString(secondHash[:]), EffectiveDate: effective, Records: 1, Expected: 2, CoveragePct: 50, Timely: true},
 	}
 	chain, err := NewPriceProviderChain(PriceProviderChainOptions{Providers: []PriceProvider{first, second}, Calendar: &stubMarketCalendar{}})
 	if err != nil {
@@ -175,10 +175,10 @@ func TestPriceProviderChainUsesPreviousTradingDayOnlyAfterFreshProviders(t *test
 	for _, record := range records {
 		bySymbol[record.Symbol] = record
 	}
-	if fresh := bySymbol["FRESH"]; fresh.Source != "yahoo" || !fresh.TradeDate.Equal(effective) {
+	if fresh := bySymbol["FRESH"]; fresh.Source != "backup" || !fresh.TradeDate.Equal(effective) {
 		t.Fatalf("fresh replacement = %#v", fresh)
 	}
-	if fallback := bySymbol["FALLBACK"]; fallback.Source != "twelvedata" || !fallback.TradeDate.Equal(previous) {
+	if fallback := bySymbol["FALLBACK"]; fallback.Source != "futu" || !fallback.TradeDate.Equal(previous) {
 		t.Fatalf("fallback preservation = %#v", fallback)
 	}
 }

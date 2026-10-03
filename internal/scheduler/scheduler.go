@@ -47,6 +47,7 @@ const (
 const ipoRecentManualSuccessCooldown = 10 * time.Minute
 
 type Scheduler struct {
+	apiManagement           *service.APIManagementService
 	cron                    *cron.Cron
 	tasks                   *service.TaskConfigService
 	configs                 *service.ConfigService
@@ -76,6 +77,7 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 	var candidateNotifications *service.CandidateNotificationService
 	var tradeSetupNotifications *service.TradeSetupNotificationService
 	var discoverySync *service.DiscoverySyncService
+	var apiManagement *service.APIManagementService
 	var notificationBatches *service.NotificationBatchService
 	var backup *service.SQLiteBackupService
 	var lifecycle *service.LifecycleService
@@ -98,6 +100,8 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 			tradeSetupNotifications = typed
 		case *service.DiscoverySyncService:
 			discoverySync = typed
+		case *service.APIManagementService:
+			apiManagement = typed
 		case *service.NotificationBatchService:
 			notificationBatches = typed
 		case *service.SQLiteBackupService:
@@ -119,6 +123,7 @@ func New(tasks *service.TaskConfigService, filings *service.FilingService, servi
 		}
 	}
 	return &Scheduler{
+		apiManagement:           apiManagement,
 		cron:                    cron.New(cron.WithChain(cron.Recover(cron.PrintfLogger(log.Default())))),
 		tasks:                   tasks,
 		configs:                 configs,
@@ -413,6 +418,8 @@ func taskUsesLiveSEC(taskName string) bool {
 
 func (s *Scheduler) canRunTask(taskName string) bool {
 	switch taskName {
+	case "futu_institutional_ownership_sync":
+		return s.apiManagement != nil
 	case "longbridge_institutional_ownership_sync":
 		return s.discoverySync != nil
 	case secFilingSyncTaskName:
@@ -449,7 +456,14 @@ func (s *Scheduler) canRunTask(taskName string) bool {
 }
 
 func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
+	if s.apiManagement != nil {
+		if err := s.apiManagement.CheckModuleTask(ctx, taskName); err != nil {
+			return err
+		}
+	}
 	switch taskName {
+	case "futu_institutional_ownership_sync":
+		return s.apiManagement.SyncFutuOwnership(ctx)
 	case "longbridge_institutional_ownership_sync":
 		result, err := s.discoverySync.SyncInstitutionalOwnership(ctx)
 		if err != nil {

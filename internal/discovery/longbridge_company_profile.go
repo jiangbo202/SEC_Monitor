@@ -66,6 +66,9 @@ func FetchLongbridgeCompanyOverview(ctx context.Context, cfg config.DiscoveryCon
 	if !cfg.LongbridgeCompanyProfileEnabled || cfg.LongbridgeCompanyProfileRequestBudget <= 0 {
 		return LongbridgeCompanyOverview{}, errors.New("Longbridge company profile sync is disabled or budget is 0")
 	}
+	if cfg.CompanyProfileProvider == "futu" {
+		return fetchFutuCompany(ctx, cfg, ticker)
+	}
 	if strings.TrimSpace(cfg.LongbridgeAppKey) == "" || strings.TrimSpace(cfg.LongbridgeAppSecret) == "" || strings.TrimSpace(cfg.LongbridgeAccessToken) == "" {
 		return LongbridgeCompanyOverview{}, errors.New("Longbridge app key, app secret, and access token are required")
 	}
@@ -143,6 +146,9 @@ type CompanyProfileRecoveryItem struct {
 // force should only be set by an operator action; normal scheduled syncing
 // respects the local freshness window.
 func RefreshLongbridgeCompanyProfile(ctx context.Context, db *gorm.DB, cfg config.DiscoveryConfig, ticker, cik string, force bool) (CompanyProfileRefreshResult, error) {
+	if APIModuleProvider(ctx, db, "company") == "futu" {
+		return refreshFutuCompany(ctx, db, cfg, ticker, cik, force)
+	}
 	result := CompanyProfileRefreshResult{Ticker: strings.ToUpper(strings.TrimSpace(ticker))}
 	if db == nil {
 		return result, errors.New("database is required")
@@ -173,11 +179,18 @@ func SyncCurrentCandidateLongbridgeCompanyProfiles(ctx context.Context, db *gorm
 	if db == nil {
 		return result, errors.New("database is required")
 	}
+	if err := CheckSelectedAPIModule(ctx, db, "company"); err != nil {
+		if errors.Is(err, ErrAPIDisabled) {
+			result.Skipped, result.Message = true, err.Error()
+			return result, nil
+		}
+		return result, err
+	}
 	if !cfg.LongbridgeCompanyProfileEnabled {
 		result.Skipped, result.Message = true, "Longbridge 公司资料补充已关闭"
 		return result, nil
 	}
-	if strings.TrimSpace(cfg.LongbridgeAppKey) == "" || strings.TrimSpace(cfg.LongbridgeAppSecret) == "" || strings.TrimSpace(cfg.LongbridgeAccessToken) == "" {
+	if APIModuleProvider(ctx, db, "company") != "futu" && (strings.TrimSpace(cfg.LongbridgeAppKey) == "" || strings.TrimSpace(cfg.LongbridgeAppSecret) == "" || strings.TrimSpace(cfg.LongbridgeAccessToken) == "") {
 		result.Skipped, result.Message = true, "Longbridge 凭据未配置，已跳过公司资料补充"
 		return result, nil
 	}
@@ -227,10 +240,15 @@ func SyncCurrentCandidateLongbridgeCompanyProfiles(ctx context.Context, db *gorm
 			result.Failed++
 			continue
 		}
-		refreshed, err := refreshLongbridgeCompanyProfile(ctx, db, security, listing, LongbridgeCompanyProfileOptions{
-			AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken,
-			TTLDays: cfg.LongbridgeCompanyProfileTTLDays, RequestInterval: time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS) * time.Millisecond,
-		}, false)
+		var refreshed CompanyProfileRefreshResult
+		if APIModuleProvider(ctx, db, "company") == "futu" {
+			refreshed, err = refreshFutuCompany(ctx, db, cfg, listing.Ticker, security.CIK, false)
+		} else {
+			refreshed, err = refreshLongbridgeCompanyProfile(ctx, db, security, listing, LongbridgeCompanyProfileOptions{
+				AppKey: cfg.LongbridgeAppKey, AppSecret: cfg.LongbridgeAppSecret, AccessToken: cfg.LongbridgeAccessToken,
+				TTLDays: cfg.LongbridgeCompanyProfileTTLDays, RequestInterval: time.Duration(cfg.LongbridgeFundamentalRequestIntervalMS) * time.Millisecond,
+			}, false)
+		}
 		if refreshed.Cached {
 			result.Cached++
 			continue
@@ -453,7 +471,7 @@ func companyProfileSnapshotsBySecurity(ctx context.Context, db *gorm.DB, scores 
 		return result, nil
 	}
 	var snapshots []CompanyProfileSnapshot
-	if err := db.WithContext(ctx).Where("provider = ? AND security_id IN ?", longbridgeCompanyProfileProvider, securityIDs).Find(&snapshots).Error; err != nil {
+	if err := db.WithContext(ctx).Where("provider = ? AND security_id IN ?", APIModuleProvider(ctx, db, "company"), securityIDs).Find(&snapshots).Error; err != nil {
 		return nil, fmt.Errorf("load current candidate company profile attempts: %w", err)
 	}
 	for _, snapshot := range snapshots {
@@ -561,6 +579,9 @@ func refreshLongbridgeCompanyProfile(ctx context.Context, db *gorm.DB, security 
 }
 
 func saveLongbridgeCompanyProfileAttempt(ctx context.Context, db *gorm.DB, securityID uint, ticker string, attemptedAt time.Time, fetchErr error) error {
+	if errors.Is(fetchErr, ErrAPIDisabled) {
+		return nil // A policy switch is not a failed vendor attempt or retry.
+	}
 	retryCount := 1
 	var existing CompanyProfileSnapshot
 	if err := db.WithContext(ctx).Where("provider = ? AND security_id = ?", longbridgeCompanyProfileProvider, securityID).First(&existing).Error; err == nil {
@@ -644,6 +665,7 @@ func newLongbridgeCompanySDKClient(appKey, appSecret, accessToken string) (longb
 	if err != nil {
 		return nil, err
 	}
+	MonitorLongbridgeConfig(cfg)
 	client, err := lbfundamental.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -652,6 +674,9 @@ func newLongbridgeCompanySDKClient(appKey, appSecret, accessToken string) (longb
 }
 
 func (c *longbridgeCompanySDKClient) Company(ctx context.Context, symbol string) (LongbridgeCompanyOverview, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/comp-overview"); err != nil {
+		return LongbridgeCompanyOverview{}, err
+	}
 	overview, err := c.fundamental.Company(ctx, symbol)
 	if err != nil {
 		return LongbridgeCompanyOverview{}, err

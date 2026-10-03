@@ -71,6 +71,11 @@ func Migrate(db *gorm.DB) error {
 		legacyProviderHealth := hadProviderHealthTable && (!hadProviderWindow || !hadProviderGoldReady || !hadProviderGoldSHA)
 
 		if err := tx.AutoMigrate(
+			&APIProviderPolicy{},
+			&APIModulePolicy{},
+			&APICallRecord{},
+			&FutuInstitutionalPoint{},
+			&FutuInstitutionalReceipt{},
 			&SmallCapPolicyVersion{},
 			&SmallCapPolicyActivation{},
 			&Security{},

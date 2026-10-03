@@ -35,6 +35,7 @@
         <el-menu-item index="/macro-calendar"><el-icon><Calendar /></el-icon><span>{{ t('nav.macroCalendar') }}</span></el-menu-item>
 
         <div class="nav-section-label">{{ t('nav.automation') }}</div>
+        <el-menu-item index="/api-management"><el-icon><DataAnalysis /></el-icon><span>数据源与 API</span></el-menu-item>
         <el-menu-item index="/sync-runs"><el-icon><Collection /></el-icon><span>{{ t('nav.syncRuns') }}</span></el-menu-item>
         <el-menu-item index="/scheduler"><el-icon><Timer /></el-icon><span>{{ t('nav.scheduler') }}</span></el-menu-item>
         <el-menu-item index="/system-health"><el-icon><FirstAidKit /></el-icon><span>{{ t('nav.systemHealth') }}</span></el-menu-item>

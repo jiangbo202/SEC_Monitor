@@ -141,12 +141,12 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 		t.Fatal(err)
 	}
 	tradeDate := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
-	price := PriceSnapshot{Source: "tiingo", SourceVersion: "tiingo:2026-06-30", Symbol: "AAA", TradeDate: tradeDate, CloseMicros: 1_250_000, Volume: 1234567, Currency: "USD", QualityStatus: QualityStatusValid, CreatedAt: current.StartedAt}
+	price := PriceSnapshot{Source: "longbridge", SourceVersion: "longbridge:2026-06-30", Symbol: "AAA", TradeDate: tradeDate, CloseMicros: 1_250_000, Volume: 1234567, Currency: "USD", QualityStatus: QualityStatusValid, CreatedAt: current.StartedAt}
 	if err := db.Create(&price).Error; err != nil {
 		t.Fatal(err)
 	}
 	latestTradeDate := tradeDate.AddDate(0, 0, 1)
-	latestPrice := PriceSnapshot{Source: "twelvedata", SourceVersion: "twelvedata:technical-history", Symbol: "AAA", TradeDate: latestTradeDate, CloseMicros: 1_500_000, Volume: 7654321, Currency: "USD", QualityStatus: QualityStatusValid, CreatedAt: current.StartedAt.Add(time.Minute)}
+	latestPrice := PriceSnapshot{Source: "futu", SourceVersion: "futu:technical-history", Symbol: "AAA", TradeDate: latestTradeDate, CloseMicros: 1_500_000, Volume: 7654321, Currency: "USD", QualityStatus: QualityStatusValid, CreatedAt: current.StartedAt.Add(time.Minute)}
 	if err := db.Create(&latestPrice).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Ticker != "AAA" {
 		t.Fatalf("page=%#v", page)
 	}
-	if page.Items[0].PriceCloseUSD != 1.5 || page.Items[0].PriceVolume != 7654321 || page.Items[0].PriceCurrency != "USD" || page.Items[0].PriceSource != "twelvedata" || page.Items[0].PriceTradeDate == nil || !page.Items[0].PriceTradeDate.Equal(latestTradeDate) {
+	if page.Items[0].PriceCloseUSD != 1.5 || page.Items[0].PriceVolume != 7654321 || page.Items[0].PriceCurrency != "USD" || page.Items[0].PriceSource != "futu" || page.Items[0].PriceTradeDate == nil || !page.Items[0].PriceTradeDate.Equal(latestTradeDate) {
 		t.Fatalf("price evidence = %#v", page.Items[0])
 	}
 	if page.Items[0].PriceFreshnessStatus != PriceFreshnessCurrent || page.Items[0].PriceAgeCalendarDays != 0 {
@@ -257,9 +257,9 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	}
 	priceDate := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
 	prices := []PriceSnapshot{
-		{Source: "tiingo", SourceVersion: "p1", Symbol: "STRB", TradeDate: priceDate, CloseMicros: 2_000_000, Volume: 900_000, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "twelvedata", SourceVersion: "p1", Symbol: "WATB", TradeDate: priceDate, CloseMicros: 900_000, Volume: 30_000, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "twelvedata", SourceVersion: "p1", Symbol: "OLDB", TradeDate: priceDate, CloseMicros: 4_000_000, Volume: 120_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "p1", Symbol: "STRB", TradeDate: priceDate, CloseMicros: 2_000_000, Volume: 900_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "futu", SourceVersion: "p1", Symbol: "WATB", TradeDate: priceDate, CloseMicros: 900_000, Volume: 30_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "futu", SourceVersion: "p1", Symbol: "OLDB", TradeDate: priceDate, CloseMicros: 4_000_000, Volume: 120_000, Currency: "USD", QualityStatus: QualityStatusValid},
 	}
 	if err := db.Create(&prices).Error; err != nil {
 		t.Fatal(err)
@@ -306,7 +306,7 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	filtered, err := ListCandidateScores(context.Background(), db, CandidateScoreQuery{
 		QualityTier:            "strong_b",
 		ChangeStatus:           "improved",
-		MinReviewPriorityScore: 70,
+		MinReviewPriorityScore: page.Items[0].ReviewPriorityScore,
 		ExcludeQualityTags:     []string{"low_liquidity"},
 	})
 	if err != nil {
@@ -479,12 +479,12 @@ func TestCandidateScoreQueryIncludesForwardPerformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	prices := []PriceSnapshot{
-		{Source: "tiingo", SourceVersion: "v1", Symbol: "PERF", TradeDate: baseDate, CloseMicros: 1_000_000, Volume: 200_000, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "tiingo", SourceVersion: "v2", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 1), CloseMicros: 1_100_000, Volume: 210_000, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "tiingo", SourceVersion: "v3", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 2), CloseMicros: 1_120_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "tiingo", SourceVersion: "v4", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 3), CloseMicros: 1_180_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "tiingo", SourceVersion: "v5", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 4), CloseMicros: 1_200_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "tiingo", SourceVersion: "v6", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 5), CloseMicros: 1_250_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "v1", Symbol: "PERF", TradeDate: baseDate, CloseMicros: 1_000_000, Volume: 200_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "v2", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 1), CloseMicros: 1_100_000, Volume: 210_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "v3", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 2), CloseMicros: 1_120_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "v4", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 3), CloseMicros: 1_180_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "v5", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 4), CloseMicros: 1_200_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "v6", Symbol: "PERF", TradeDate: baseDate.AddDate(0, 0, 5), CloseMicros: 1_250_000, Volume: 220_000, Currency: "USD", QualityStatus: QualityStatusValid},
 	}
 	if err := db.Create(&prices).Error; err != nil {
 		t.Fatal(err)
@@ -1084,7 +1084,7 @@ func TestBatchAndProviderQueriesPaginateFilterAndOrder(t *testing.T) {
 	if err != nil || page.Total != 2 || len(page.Items) != 1 || page.Items[0].BatchID != "newer" {
 		t.Fatalf("page=%#v err=%v", page, err)
 	}
-	attemptsJSON, err := encodeProviderAttempts([]ProviderAttempt{{Provider: "tiingo", Status: "partial", Expected: 4, Records: 2, Remaining: 2, CoveragePct: 50}, {Provider: "twelvedata", Status: "success", Expected: 2, Records: 1, Remaining: 1, CoveragePct: 50}})
+	attemptsJSON, err := encodeProviderAttempts([]ProviderAttempt{{Provider: "longbridge", Status: "partial", Expected: 4, Records: 2, Remaining: 2, CoveragePct: 50}, {Provider: "futu", Status: "success", Expected: 2, Records: 1, Remaining: 1, CoveragePct: 50}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1097,9 +1097,9 @@ func TestBatchAndProviderQueriesPaginateFilterAndOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.Create(&[]PriceSnapshot{
-		{Source: "tiingo", SourceVersion: "chain:test", Symbol: "AAA", TradeDate: now, CloseMicros: 1_000_000, Currency: "USD"},
-		{Source: "tiingo", SourceVersion: "chain:test", Symbol: "BBB", TradeDate: now, CloseMicros: 1_000_000, Currency: "USD"},
-		{Source: "twelvedata", SourceVersion: "chain:test", Symbol: "CCC", TradeDate: now, CloseMicros: 1_000_000, Currency: "USD"},
+		{Source: "longbridge", SourceVersion: "chain:test", Symbol: "AAA", TradeDate: now, CloseMicros: 1_000_000, Currency: "USD"},
+		{Source: "longbridge", SourceVersion: "chain:test", Symbol: "BBB", TradeDate: now, CloseMicros: 1_000_000, Currency: "USD"},
+		{Source: "futu", SourceVersion: "chain:test", Symbol: "CCC", TradeDate: now, CloseMicros: 1_000_000, Currency: "USD"},
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -1111,7 +1111,7 @@ func TestBatchAndProviderQueriesPaginateFilterAndOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary := page.Items[0].ProviderSummary
-	if summary == nil || summary.ExpectedCount != 4 || summary.RecordCount != 3 || summary.PriceSourceCounts["tiingo"] != 2 || summary.PriceSourceCounts["twelvedata"] != 1 || !summary.FallbackUsed || len(summary.ProviderAttempts) != 2 || page.Items[0].CandidateCount != 1 {
+	if summary == nil || summary.ExpectedCount != 4 || summary.RecordCount != 3 || summary.PriceSourceCounts["longbridge"] != 2 || summary.PriceSourceCounts["futu"] != 1 || !summary.FallbackUsed || len(summary.ProviderAttempts) != 2 || page.Items[0].CandidateCount != 1 {
 		t.Fatalf("batch summary=%#v candidate_count=%d", summary, page.Items[0].CandidateCount)
 	}
 	diagnostics, err := ListProviderDiagnostics(context.Background(), db, ProviderRunQuery{Page: 1, PageSize: 1, Provider: "p"})

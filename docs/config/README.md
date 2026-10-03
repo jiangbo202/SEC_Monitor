@@ -16,7 +16,7 @@ The local control script reads environment variables before starting services.
 | `LOCAL_DATE` | current date | Override runtime date, useful for testing retention. |
 | `DB_DSN` | derived | SQLite database path. Defaults to `data/sec_monitor.db` or `data/YYYY-MM-DD/sec_monitor.db` when `LOCAL_DATA_BY_DAY=1`. |
 | `CONFIG_ENCRYPTION_KEY` | required for new sensitive values | Base64-encoded 32-byte AES-256-GCM key used for encrypted system settings. Generate with `openssl rand -base64 32`; keep it only in your local environment or Docker `.env`. |
-| `SMALL_CAP_PRICE_PROVIDER` | empty | Small-cap price provider. Supports `longbridge`, `tiingo`, `twelvedata`, `yahoo`, `stooq`, or ordered chains such as `longbridge,tiingo,twelvedata,yahoo`. |
+| `SMALL_CAP_PRICE_PROVIDER` | empty | Stock price source: `longbridge`, `futu`, `stooq`, or `longbridge,futu`. |
 | `SMALL_CAP_LONGBRIDGE_APP_KEY` | empty | Longbridge OpenAPI App Key. |
 | `SMALL_CAP_LONGBRIDGE_APP_SECRET` | empty | Longbridge OpenAPI App Secret. |
 | `SMALL_CAP_LONGBRIDGE_ACCESS_TOKEN` | empty | Longbridge OpenAPI Access Token. |
@@ -24,21 +24,13 @@ The local control script reads environment variables before starting services.
 | `SMALL_CAP_LONGBRIDGE_ANALYST_RATING_REQUEST_BUDGET` | `20` | Total Longbridge analyst-consensus requests per workflow, shared by current candidates and enabled stock watch targets. |
 | `SMALL_CAP_LONGBRIDGE_ANALYST_RATING_TARGET_CHANGE_PCT` | `5` | Minimum percentage change in the consensus average target price that is considered a notification-worthy update. |
 | `SMALL_CAP_LONGBRIDGE_FUNDAMENTAL_REQUEST_INTERVAL_MS` | `1100` | Shared minimum interval for Longbridge company-profile and analyst-rating requests; rate-limited calls are retried once after the next slot. |
-| `TIINGO_API_TOKEN` | empty | Tiingo API token for the real small-cap price source. Keep it in your shell/profile or local process environment; do not commit it. |
-| `TIINGO_API_TOKENS` | empty | Comma-separated Tiingo tokens. Request budget is applied per token. |
-| `SMALL_CAP_TIINGO_BASE_URL` | `https://api.tiingo.com` | Tiingo API base URL. |
-| `SMALL_CAP_TIINGO_REQUEST_BUDGET` | `45` | Max Tiingo requests per token for one market sync. |
-| `TWELVE_DATA_API_KEY` | empty | Twelve Data API key. |
-| `SMALL_CAP_TWELVE_DATA_BASE_URL` | `https://api.twelvedata.com` | Twelve Data API base URL. |
-| `SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET` | `700` | Max Twelve Data requests for one market sync. |
-| `SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS` | `8000` | Delay between Twelve Data requests. Keeps the free tier near 8 API credits/minute. |
-| `SMALL_CAP_YAHOO_BASE_URL` | `https://query1.finance.yahoo.com` | Yahoo chart API base URL. |
-| `SMALL_CAP_YAHOO_REQUEST_BUDGET` | `45` | Max Yahoo chart requests for one market sync. |
 | `SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT` | `85` | Minimum market price coverage required to publish a research candidate batch. A batch also cannot fall more than 15 percentage points below the previous published batch for the same provider. |
 | `SMALL_CAP_CACHE_RETENTION_DAYS` | `14` | Delete SEC download-cache files older than this period at the start of a small-cap sync. It never deletes SQLite research data. |
 | `SMALL_CAP_STOOQ_URLS` | empty | Comma-separated Stooq CSV/ZIP URLs when using the Stooq provider. |
 
-The same small-cap data-source settings can be managed from the System Settings page:
+Data-source settings are managed on the Data Sources & API page. Stock routes support Longbridge / Futu (or a configured Stooq CSV). US continuous futures use the official Futu HTTP API and an independent module; they share Futu credentials, pause and daily budget. Enable `us_futures_sync` separately for scheduled updates.
+
+
 
 | UI Field | Stored key | Runtime equivalent |
 |---|---|---|
@@ -50,19 +42,8 @@ The same small-cap data-source settings can be managed from the System Settings 
 | Longbridge Analyst Rating Enabled | `discovery.longbridge_analyst_rating_enabled` | `SMALL_CAP_LONGBRIDGE_ANALYST_RATING_ENABLED` |
 | Longbridge Analyst Rating Request Budget | `discovery.longbridge_analyst_rating_request_budget` | `SMALL_CAP_LONGBRIDGE_ANALYST_RATING_REQUEST_BUDGET` |
 | Longbridge Analyst Rating Target Change % | `discovery.longbridge_analyst_rating_target_change_pct` | `SMALL_CAP_LONGBRIDGE_ANALYST_RATING_TARGET_CHANGE_PCT` |
-| Tiingo API Token | `discovery.tiingo_api_token` | `TIINGO_API_TOKEN` |
-| Tiingo API Tokens | `discovery.tiingo_api_tokens` | `TIINGO_API_TOKENS` |
-| Tiingo Request Budget | `discovery.tiingo_request_budget` | `SMALL_CAP_TIINGO_REQUEST_BUDGET` |
-| Tiingo Base URL | `discovery.tiingo_base_url` | `SMALL_CAP_TIINGO_BASE_URL` |
-| Twelve Data API Key | `discovery.twelve_data_api_key` | `TWELVE_DATA_API_KEY` |
-| Twelve Data Request Budget | `discovery.twelve_data_request_budget` | `SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET` |
-| Twelve Data Request Interval ms | `discovery.twelve_data_request_interval_ms` | `SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS` |
-| Twelve Data Base URL | `discovery.twelve_data_base_url` | `SMALL_CAP_TWELVE_DATA_BASE_URL` |
-| Yahoo Request Budget | `discovery.yahoo_request_budget` | `SMALL_CAP_YAHOO_REQUEST_BUDGET` |
-| Yahoo Base URL | `discovery.yahoo_base_url` | `SMALL_CAP_YAHOO_BASE_URL` |
 | Min Publish Coverage % | `discovery.min_publish_coverage_pct` | `SMALL_CAP_MIN_PUBLISH_COVERAGE_PCT` |
 
-Stored system settings take precedence over environment variables. Longbridge, Tiingo, and Twelve Data credentials are returned to the browser only as masked values. Saving a masked value keeps the existing credential; clearing the field removes it.
 
 Backend config also accepts:
 
@@ -113,16 +94,9 @@ The sweep always includes required lifecycle forms (`EFFECT`, `424B4`, and `RW`)
 
 After deployment, verify `GET /api/ipo-health`. The endpoint reports pending listings, missing market mappings, stale lifecycle checks, unsupported offering parses, failed/due/dead-letter notification batches, and the latest IPO sync. Use the Notification Logs page to inspect a batch; `failed` and `dead_letter` batches can be manually requeued, which resets their retry cycle for immediate delivery. A batch with an active retry lease cannot be requeued.
 
-Example Tiingo local run:
 
 ```bash
+export SMALL_CAP_PRICE_PROVIDER=longbridge
 export SEC_USER_AGENT="sec-monitor/0.1 your-email@example.com"
-export SMALL_CAP_PRICE_PROVIDER=tiingo,twelvedata,yahoo
-export TIINGO_API_TOKEN="your-tiingo-token"
-export SMALL_CAP_TIINGO_REQUEST_BUDGET=45
-export TWELVE_DATA_API_KEY="your-twelve-data-key"
-export SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET=700
-export SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS=8000
-export SMALL_CAP_YAHOO_REQUEST_BUDGET=200
 go run ./cmd/discovery-sync
 ```

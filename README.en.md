@@ -111,7 +111,8 @@ Notifications**; the former standalone Telegram route redirects there.
 | Area | Primary sources | Notes |
 | --- | --- | --- |
 | Filings, IPOs, 13F | SEC EDGAR | Source of record for filing facts |
-| Prices and research enrichment | Longbridge, with configurable Tiingo / Twelve Data / Yahoo fallback | Results are stored as local snapshots |
+| Prices and research enrichment | Longbridge / Futu; configurable stock-price fallback between these two providers | Results are stored as local snapshots |
+| US continuous futures | Futu official HTTP API | Independent module and task; shared Futu authorization, pause and request budget; outside the stock-price route |
 | Macro calendar | BEA, BLS, FRED, Fed, Treasury, Census, DOL and EIA | FRED can mirror BLS data when BLS is unavailable; the UI marks these as data periods |
 | AI research | User-configured OpenAI-compatible API | Called only after an explicit UI action |
 

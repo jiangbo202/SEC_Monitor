@@ -78,9 +78,6 @@
           <el-table-column label="凭据" width="110">
             <template #default="{ row }"><el-tag :type="row.configured_credential ? 'success' : 'warning'" effect="plain">{{ row.configured_credential ? '已配置' : '缺失' }}</el-tag></template>
           </el-table-column>
-          <el-table-column prop="token_count" label="Token 数" width="100" align="right">
-            <template #default="{ row }">{{ row.token_count || '-' }}</template>
-          </el-table-column>
           <el-table-column label="本地单次预算" width="150" align="right">
             <template #default="{ row }">{{ formatLocalBudget(row.local_request_budget, row.budget_scope) }}</template>
           </el-table-column>
@@ -319,7 +316,7 @@
           <span>Provider Runs</span>
           <el-form :inline="true" :model="runFilters" class="inline-filters">
             <el-form-item label="Provider">
-              <el-input v-model="runFilters.provider" clearable placeholder="tiingo" style="width: 130px" />
+              <el-input v-model="runFilters.provider" clearable placeholder="longbridge" style="width: 130px" />
             </el-form-item>
             <el-form-item label="Status">
               <el-select fit-input-width v-model="runFilters.status" clearable style="width: 140px">

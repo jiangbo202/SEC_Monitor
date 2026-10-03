@@ -37,7 +37,16 @@ func main() {
 		openMainDatabase:      database.Open,
 		migrateMainDB:         database.Migrate,
 		openDiscoveryDatabase: discovery.OpenDatabase,
-		migrateDiscoveryDB:    discovery.Migrate,
+		migrateDiscoveryDB: func(db *gorm.DB) error {
+			if err := discovery.Migrate(db); err != nil {
+				return err
+			}
+			if err := discovery.EnsureAPIPolicies(context.Background(), db); err != nil {
+				return err
+			}
+			discovery.ConfigureAPIMonitor(db)
+			return nil
+		},
 		newSyncService: func(db *gorm.DB, cfg config.DiscoveryConfig, configs *service.ConfigService) syncService {
 			return service.NewDiscoverySyncService(db, cfg).WithConfigService(configs)
 		},

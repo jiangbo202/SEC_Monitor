@@ -1,7 +1,9 @@
 package config
 
 import (
+	"context"
 	"encoding/base64"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -35,20 +37,10 @@ type DiscoveryConfig struct {
 	SECSubmissionsURL                           string
 	SECCompanyFactsURL                          string
 	PriceProvider                               string
+	FutuConfigured                              bool
+	FutuReadJSON                                func(context.Context, string, string, url.Values, []byte, any) error `json:"-"`
+	CompanyProfileProvider                      string
 	StooqURLs                                   []string
-	TiingoAPIToken                              string
-	TiingoAPITokens                             []string
-	TiingoBaseURL                               string
-	TiingoConcurrency                           int
-	TiingoRequestBudget                         int
-	TiingoRequestIntervalMS                     int
-	TwelveDataAPIKey                            string
-	TwelveDataBaseURL                           string
-	TwelveDataRequestBudget                     int
-	TwelveDataRequestIntervalMS                 int
-	YahooBaseURL                                string
-	YahooRequestBudget                          int
-	YahooRequestIntervalMS                      int
 	LongbridgeAppKey                            string
 	LongbridgeAppSecret                         string
 	LongbridgeAccessToken                       string
@@ -121,19 +113,6 @@ func Load() Config {
 			SECCompanyFactsURL:                          valueOrDefault("SMALL_CAP_SEC_COMPANY_FACTS_URL", "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"),
 			PriceProvider:                               strings.ToLower(strings.TrimSpace(os.Getenv("SMALL_CAP_PRICE_PROVIDER"))),
 			StooqURLs:                                   commaSeparatedValues("SMALL_CAP_STOOQ_URLS"),
-			TiingoAPIToken:                              strings.TrimSpace(os.Getenv("TIINGO_API_TOKEN")),
-			TiingoAPITokens:                             commaSeparatedValues("TIINGO_API_TOKENS"),
-			TiingoBaseURL:                               valueOrDefault("SMALL_CAP_TIINGO_BASE_URL", "https://api.tiingo.com"),
-			TiingoConcurrency:                           positiveIntOrDefault("SMALL_CAP_TIINGO_CONCURRENCY", 1),
-			TiingoRequestBudget:                         intOrDefault("SMALL_CAP_TIINGO_REQUEST_BUDGET", 45),
-			TiingoRequestIntervalMS:                     positiveIntOrDefault("SMALL_CAP_TIINGO_REQUEST_INTERVAL_MS", 1000),
-			TwelveDataAPIKey:                            strings.TrimSpace(os.Getenv("TWELVE_DATA_API_KEY")),
-			TwelveDataBaseURL:                           valueOrDefault("SMALL_CAP_TWELVE_DATA_BASE_URL", "https://api.twelvedata.com"),
-			TwelveDataRequestBudget:                     intOrDefault("SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET", 700),
-			TwelveDataRequestIntervalMS:                 positiveIntOrDefault("SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS", 8000),
-			YahooBaseURL:                                valueOrDefault("SMALL_CAP_YAHOO_BASE_URL", "https://query1.finance.yahoo.com"),
-			YahooRequestBudget:                          intOrDefault("SMALL_CAP_YAHOO_REQUEST_BUDGET", 45),
-			YahooRequestIntervalMS:                      positiveIntOrDefault("SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS", 1000),
 			LongbridgeAppKey:                            strings.TrimSpace(os.Getenv("SMALL_CAP_LONGBRIDGE_APP_KEY")),
 			LongbridgeAppSecret:                         strings.TrimSpace(os.Getenv("SMALL_CAP_LONGBRIDGE_APP_SECRET")),
 			LongbridgeAccessToken:                       strings.TrimSpace(os.Getenv("SMALL_CAP_LONGBRIDGE_ACCESS_TOKEN")),

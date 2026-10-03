@@ -237,16 +237,20 @@ func (s *DiscoverySyncService) enrichTickerEvaluationResearch(ctx context.Contex
 		return
 	}
 	if refresh {
-		if cfg.LongbridgeCompanyProfileEnabled && cfg.LongbridgeCompanyProfileRequestBudget > 0 && longbridgeCredentialsConfigured(cfg) {
+		if cfg.LongbridgeCompanyProfileEnabled && cfg.LongbridgeCompanyProfileRequestBudget > 0 && s.moduleCredentialsConfigured(ctx, cfg, "company") {
 			if overview, err := discovery.FetchLongbridgeCompanyOverview(ctx, cfg, result.Ticker); err != nil {
 				result.Research.RefreshNotes = append(result.Research.RefreshNotes, "公司资料未更新："+discovery.SanitizeLongbridgeCandidateResearchError(err))
 			} else {
 				applyTickerEvaluationCompanyOverview(&result.Research.Profile, overview)
+				if discovery.APIModuleProvider(ctx, s.db, "company") == "futu" {
+					result.Research.Profile.ProfileProvider = "Futu company profile"
+					result.Research.Profile.SummarySource = "Futu company profile（本次评估）"
+				}
 			}
 		} else {
 			result.Research.RefreshNotes = append(result.Research.RefreshNotes, "公司资料补充已在系统配置中关闭、预算为 0 或 Longbridge 凭据未配置。")
 		}
-		if cfg.LongbridgeAnalystRatingEnabled && cfg.LongbridgeAnalystRatingRequestBudget > 0 && longbridgeCredentialsConfigured(cfg) {
+		if cfg.LongbridgeAnalystRatingEnabled && cfg.LongbridgeAnalystRatingRequestBudget > 0 && s.moduleCredentialsConfigured(ctx, cfg, "analyst") {
 			if _, err := discovery.RefreshLongbridgeAnalystRating(ctx, s.db, cfg, result.Ticker, result.CIK); err != nil {
 				result.Research.RefreshNotes = append(result.Research.RefreshNotes, "分析师共识未更新："+discovery.SanitizeLongbridgeCandidateResearchError(err))
 			}
@@ -286,6 +290,13 @@ func (s *DiscoverySyncService) enrichTickerEvaluationResearch(ctx context.Contex
 
 func longbridgeCredentialsConfigured(cfg config.DiscoveryConfig) bool {
 	return strings.TrimSpace(cfg.LongbridgeAppKey) != "" && strings.TrimSpace(cfg.LongbridgeAppSecret) != "" && strings.TrimSpace(cfg.LongbridgeAccessToken) != ""
+}
+
+func (s *DiscoverySyncService) moduleCredentialsConfigured(ctx context.Context, cfg config.DiscoveryConfig, key string) bool {
+	if discovery.APIModuleProvider(ctx, s.db, key) == "futu" {
+		return cfg.FutuConfigured && cfg.FutuReadJSON != nil
+	}
+	return longbridgeCredentialsConfigured(cfg)
 }
 
 func applyTickerEvaluationCompanyOverview(profile *discovery.CompanyProfile, overview discovery.LongbridgeCompanyOverview) {
@@ -919,6 +930,11 @@ func (s *DiscoverySyncService) autoRefreshLongbridgeAnalystRatings(ctx context.C
 			if cacheErr == nil && cached.Latest != nil {
 				latestByTicker[strings.ToUpper(strings.TrimSpace(target.Ticker))] = cached.Latest.FetchedAt
 			}
+		}
+		if err := discovery.MergeAPIDataSyncTimes(ctx, s.db, discovery.APIModuleProvider(ctx, s.db, "analyst"), "analyst", latestByTicker); err != nil {
+			result.Failed++
+			result.Message = err.Error()
+			return result
 		}
 		sort.SliceStable(targets, func(left, right int) bool {
 			leftAt, leftOK := latestByTicker[strings.ToUpper(strings.TrimSpace(targets[left].Ticker))]
@@ -2532,7 +2548,18 @@ func (s *DiscoverySyncService) appliedDiscoveryConfig(ctx context.Context) (conf
 	if s.configs == nil {
 		return cfg, nil
 	}
-	return s.configs.ApplyDiscoveryConfig(ctx, cfg)
+	applied, err := s.configs.ApplyDiscoveryConfig(ctx, cfg)
+	if err != nil {
+		return applied, err
+	}
+	monitor := discovery.CurrentAPIMonitor()
+	if monitor == nil || monitor.DB != s.db {
+		monitor = discovery.NewAPIMonitor(s.db)
+	}
+	futu := NewFutuAPIService(s.db, s.configs, monitor)
+	applied.FutuReadJSON = futu.ReadJSON
+	applied.CompanyProfileProvider = discovery.APIModuleProvider(ctx, s.db, "company")
+	return applied, nil
 }
 
 func newDiscoveryDownloader(cfg config.DiscoveryConfig, timeout time.Duration) *discovery.Downloader {
@@ -2621,13 +2648,9 @@ func (s *DiscoverySyncService) buildRunnerWithForceLivePriceFetch(forceLivePrice
 }
 
 func (s *DiscoverySyncService) buildRunnerWithPolicyBinding(forceLivePriceFetch bool, policyBinding discovery.SmallCapPolicyBinding) (DiscoverySyncRunner, error) {
-	cfg := s.cfg
-	if s.configs != nil {
-		applied, err := s.configs.ApplyDiscoveryConfig(context.Background(), cfg)
-		if err != nil {
-			return nil, err
-		}
-		cfg = applied
+	cfg, err := s.appliedDiscoveryConfig(context.Background())
+	if err != nil {
+		return nil, err
 	}
 	timeout := time.Duration(cfg.TaskTimeoutMin) * time.Minute
 	if timeout <= 0 {
@@ -2719,12 +2742,6 @@ func insiderStageTimeout(cfg config.DiscoveryConfig, fallback time.Duration) tim
 
 func (s *DiscoverySyncService) buildPriceProvider(cfg config.DiscoveryConfig, downloader *discovery.Downloader, calendar discovery.MarketCalendar) (discovery.PriceProvider, error, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.PriceProvider))
-	if provider == "" && strings.TrimSpace(cfg.TiingoAPIToken) != "" {
-		provider = "tiingo"
-	}
-	if provider == "" && len(cfg.TiingoAPITokens) > 0 {
-		provider = "tiingo"
-	}
 	if strings.Contains(provider, ",") {
 		parts := strings.Split(provider, ",")
 		children := make([]discovery.PriceProvider, 0, len(parts))
@@ -2780,6 +2797,12 @@ func (s *DiscoverySyncService) buildPriceProvider(cfg config.DiscoveryConfig, do
 
 func (s *DiscoverySyncService) buildSinglePriceProvider(cfg config.DiscoveryConfig, downloader *discovery.Downloader, calendar discovery.MarketCalendar) (discovery.PriceProvider, error, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.PriceProvider))
+	if provider == "futu" {
+		if !cfg.FutuConfigured || cfg.FutuReadJSON == nil {
+			return nil, errors.New("Futu 凭据未配置"), nil
+		}
+		return &discovery.FutuPriceProvider{ReadJSON: cfg.FutuReadJSON, Calendar: calendar}, nil, nil
+	}
 	switch provider {
 	case "", "stooq":
 		if len(cfg.StooqURLs) == 0 {
@@ -2797,71 +2820,6 @@ func (s *DiscoverySyncService) buildSinglePriceProvider(cfg config.DiscoveryConf
 			Format:     format,
 			Downloader: downloader,
 			Validation: discovery.PriceValidationOptions{Now: time.Now().UTC(), Calendar: calendar},
-		})
-		return prices, nil, err
-	case "tiingo":
-		if strings.TrimSpace(cfg.TiingoAPIToken) == "" && len(cfg.TiingoAPITokens) == 0 {
-			return nil, nil, errors.New("TIINGO_API_TOKEN or TIINGO_API_TOKENS is required when SMALL_CAP_PRICE_PROVIDER=tiingo")
-		}
-		prices, err := discovery.NewTiingoPriceProvider(discovery.TiingoPriceProviderOptions{
-			Token:           cfg.TiingoAPIToken,
-			Tokens:          cfg.TiingoAPITokens,
-			BaseURL:         cfg.TiingoBaseURL,
-			Calendar:        calendar,
-			CacheDir:        cfg.CacheDir,
-			Now:             time.Now,
-			Concurrency:     cfg.TiingoConcurrency,
-			RequestBudget:   cfg.TiingoRequestBudget,
-			RequestInterval: time.Duration(cfg.TiingoRequestIntervalMS) * time.Millisecond,
-			ProgressEvery:   100,
-			Progress: func(update discovery.TiingoProgress) {
-				reasons := ""
-				if len(update.SkipReasons) > 0 {
-					parts := make([]string, 0, len(update.SkipReasons))
-					for reason, count := range update.SkipReasons {
-						parts = append(parts, fmt.Sprintf("%s=%d", reason, count))
-					}
-					sort.Strings(parts)
-					reasons = " reasons=" + strings.Join(parts, ",")
-				}
-				log.Printf("tiingo price sync progress: processed=%d/%d records=%d skipped=%d elapsed=%s%s", update.Processed, update.Total, update.Records, update.Skipped, update.Elapsed.Round(time.Second), reasons)
-			},
-		})
-		return prices, nil, err
-	case "twelvedata":
-		if strings.TrimSpace(cfg.TwelveDataAPIKey) == "" {
-			return nil, nil, errors.New("TWELVE_DATA_API_KEY is required when SMALL_CAP_PRICE_PROVIDER=twelvedata")
-		}
-		prices, err := discovery.NewTwelveDataPriceProvider(discovery.TwelveDataPriceProviderOptions{
-			APIKey:          cfg.TwelveDataAPIKey,
-			BaseURL:         cfg.TwelveDataBaseURL,
-			Calendar:        calendar,
-			CacheDir:        cfg.CacheDir,
-			Now:             time.Now,
-			RequestBudget:   cfg.TwelveDataRequestBudget,
-			RequestInterval: time.Duration(cfg.TwelveDataRequestIntervalMS) * time.Millisecond,
-			ProgressEvery:   25,
-			Progress: func(update discovery.TwelveDataProgress) {
-				reasons := ""
-				if len(update.SkipReasons) > 0 {
-					parts := make([]string, 0, len(update.SkipReasons))
-					for reason, count := range update.SkipReasons {
-						parts = append(parts, fmt.Sprintf("%s=%d", reason, count))
-					}
-					sort.Strings(parts)
-					reasons = " reasons=" + strings.Join(parts, ",")
-				}
-				log.Printf("twelve data price sync progress: processed=%d/%d records=%d skipped=%d elapsed=%s%s", update.Processed, update.Total, update.Records, update.Skipped, update.Elapsed.Round(time.Second), reasons)
-			},
-		})
-		return prices, nil, err
-	case "yahoo":
-		prices, err := discovery.NewYahooPriceProvider(discovery.YahooPriceProviderOptions{
-			BaseURL:         cfg.YahooBaseURL,
-			Calendar:        calendar,
-			Now:             time.Now,
-			RequestBudget:   cfg.YahooRequestBudget,
-			RequestInterval: time.Duration(cfg.YahooRequestIntervalMS) * time.Millisecond,
 		})
 		return prices, nil, err
 	case "longbridge":

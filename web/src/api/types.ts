@@ -1538,6 +1538,9 @@ export interface CandidateMarketResearch {
 }
 
 export interface TickerInstitutionalHoldingHistory {
+  futu_aggregate_history?: FutuInstitutionalPoint[]
+  futu_aggregate_status?: string
+  futu_aggregate_synced_at?: string
   history_synced_at?: string
   history_status?: 'not_synced' | 'no_confirmed_history' | 'partial'
   ticker: string
@@ -1548,6 +1551,20 @@ export interface TickerInstitutionalHoldingHistory {
   ownership_history?: InstitutionalOwnershipPoint[]
   coverage?: string
   history_warnings?: string[]
+}
+
+export interface FutuInstitutionalPoint {
+  ticker: string
+  period: string
+  institution_quantity: number | null
+  institution_quantity_change: number | null
+  holder_quantity: number | null
+  holder_quantity_change: number | null
+  holder_pct: number | null
+  holder_pct_change: number | null
+  provider_updated_at?: string
+  fetched_at: string
+  source_url: string
 }
 
 export interface InstitutionalOwnershipPoint {
@@ -1588,6 +1605,12 @@ export interface CandidateFairValueEstimate {
 }
 
 export interface AnalystRatingSnapshot {
+	target_analyst_count?: number
+	strong_buy_pct?: number
+	buy_pct?: number
+	hold_pct?: number
+	underperform_pct?: number
+	sell_pct?: number
   id: number
   security_id: number
   provider: string
@@ -1867,7 +1890,6 @@ export interface ProviderObservabilityItem {
   provider: string
   configured: boolean
   configured_credential: boolean
-  token_count: number
   local_request_budget: number
   budget_scope: string
   latest_source_record_count: number
@@ -2550,4 +2572,35 @@ export interface AIAnalysisStructuredResult {
   data_gaps: string[]
   risk_notes: string[]
   evidence_sufficiency: 'high' | 'medium' | 'low' | string
+}
+
+export interface OptionResearchSnapshot {
+  id: number
+  ticker: string
+  provider: string
+  observed_date: string
+  status: string
+  call_volume?: number | null
+  put_volume?: number | null
+  put_call_volume_ratio?: number | null
+  option_volume_as_of?: string
+  short_ratio_pct?: number | null
+  current_shares_short?: number | null
+  avg_daily_share_volume?: number | null
+  days_to_cover?: number | null
+  short_reported_at?: string
+  fetched_at: string
+  anomalies?: Array<{kind: string; severity: string; label: string; detail: string}>
+}
+export interface OptionResearchView {
+  latest?: OptionResearchSnapshot
+  history: OptionResearchSnapshot[]
+  message: string
+}
+export interface OptionResearchList {
+  items: OptionResearchSnapshot[]
+  total: number
+  page: number
+  page_size: number
+  summary: {total: number; option_covered: number; short_covered: number; last_fetched_at?: string}
 }

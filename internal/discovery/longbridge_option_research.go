@@ -136,6 +136,9 @@ func refreshLongbridgeOptionResearch(ctx context.Context, db *gorm.DB, ticker, c
 	if result.Ticker == "" {
 		return result, errors.New("ticker is required")
 	}
+	if err := CheckAPIModuleEndpoint(ctx, db, "longbridge", "ws/option_volume"); err != nil {
+		return result, err
+	}
 	if strings.TrimSpace(options.AppKey) == "" || strings.TrimSpace(options.AppSecret) == "" || strings.TrimSpace(options.AccessToken) == "" {
 		return result, errors.New("Longbridge app key, app secret, and access token are required")
 	}
@@ -159,6 +162,9 @@ func refreshLongbridgeOptionResearchBatch(ctx context.Context, db *gorm.DB, targ
 	items := make([]optionResearchBatchItem, 0, len(targets))
 	if len(targets) == 0 {
 		return items, nil
+	}
+	if err := CheckAPIModuleEndpoint(ctx, db, "longbridge", "ws/option_volume"); err != nil {
+		return items, err
 	}
 	if strings.TrimSpace(options.AppKey) == "" || strings.TrimSpace(options.AppSecret) == "" || strings.TrimSpace(options.AccessToken) == "" {
 		return items, errors.New("Longbridge app key, app secret, and access token are required")
@@ -242,8 +248,21 @@ func refreshLongbridgeOptionResearchWithClient(ctx context.Context, db *gorm.DB,
 	if positions, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbquote.ShortPositionsResponse, error) {
 		return client.ShortPositions(callCtx, symbol, 1)
 	}); fetchErr != nil {
-		hadRequestError = true
-		result.Warnings = append(result.Warnings, "空头持仓："+SanitizeLongbridgeCandidateResearchError(fetchErr))
+		if errors.Is(fetchErr, ErrAPIDisabled) {
+			var cached OptionResearchSnapshot
+			err := db.WithContext(requestCtx).Where("provider = ? AND ticker = ?", snapshot.Provider, snapshot.Ticker).Order("observed_date DESC, id DESC").First(&cached).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return result, err
+			}
+			if err == nil {
+				snapshot.ShortRatioPct, snapshot.CurrentSharesShort = cached.ShortRatioPct, cached.CurrentSharesShort
+				snapshot.AvgDailyShareVolume, snapshot.DaysToCover, snapshot.ShortReportedAt = cached.AvgDailyShareVolume, cached.DaysToCover, cached.ShortReportedAt
+			}
+			result.Warnings = append(result.Warnings, "卖空接口已关闭；保留最近本地卖空快照及原报告日期，未重新查询。")
+		} else {
+			hadRequestError = true
+			result.Warnings = append(result.Warnings, "空头持仓："+SanitizeLongbridgeCandidateResearchError(fetchErr))
+		}
 	} else {
 		shortRequestSucceeded = true
 		if positions != nil && len(positions.Data) > 0 && positions.Data[0] != nil {
@@ -467,6 +486,7 @@ func newLongbridgeOptionResearchSDKClient(appKey, appSecret, accessToken string)
 	if err != nil {
 		return nil, err
 	}
+	MonitorLongbridgeConfig(cfg)
 	quote, err := lbquote.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -474,13 +494,34 @@ func newLongbridgeOptionResearchSDKClient(appKey, appSecret, accessToken string)
 	return &longbridgeOptionResearchSDKClient{quote: quote}, nil
 }
 func (c *longbridgeOptionResearchSDKClient) OptionVolume(ctx context.Context, symbol string) (*lbquote.OptionVolumeStats, error) {
-	return c.quote.OptionVolume(ctx, symbol)
+	m := CurrentAPIMonitor()
+	row, err := m.Acquire(ctx, "longbridge", "ws/option_volume", symbol)
+	if err != nil {
+		return nil, err
+	}
+	value, err := c.quote.OptionVolume(ctx, symbol)
+	m.Finish(row, err)
+	return value, err
 }
 func (c *longbridgeOptionResearchSDKClient) OptionVolumeDaily(ctx context.Context, symbol string, start, end time.Time) ([]*lbquote.DailyOptionVolume, error) {
-	return c.quote.OptionVolumeDaily(ctx, symbol, start, end)
+	m := CurrentAPIMonitor()
+	row, err := m.Acquire(ctx, "longbridge", "ws/option_volume_daily", symbol)
+	if err != nil {
+		return nil, err
+	}
+	value, err := c.quote.OptionVolumeDaily(ctx, symbol, start, end)
+	m.Finish(row, err)
+	return value, err
 }
 func (c *longbridgeOptionResearchSDKClient) ShortPositions(ctx context.Context, symbol string, count uint32) (*lbquote.ShortPositionsResponse, error) {
-	return c.quote.ShortPositions(ctx, symbol, count)
+	m := CurrentAPIMonitor()
+	row, err := m.Acquire(ctx, "longbridge", "ws/short_positions", symbol)
+	if err != nil {
+		return nil, err
+	}
+	value, err := c.quote.ShortPositions(ctx, symbol, count)
+	m.Finish(row, err)
+	return value, err
 }
 
 func SortOptionResearchByTicker(items []OptionResearchSnapshot) {

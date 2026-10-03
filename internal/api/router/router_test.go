@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"sec_monitor/internal/config"
+	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
 	"sec_monitor/internal/service"
 
@@ -136,6 +137,9 @@ func TestRouterConstructsWithDiscoveryDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open discovery db: %v", err)
 	}
+	if err := discovery.Migrate(discoveryDB); err != nil {
+		t.Fatal(err)
+	}
 
 	r, err := New(Dependencies{Config: config.Config{}, DB: db, DiscoveryDB: discoveryDB})
 	if err != nil {
@@ -185,6 +189,7 @@ func TestRouterServesWebAppFallback(t *testing.T) {
 	}{
 		{name: "root", path: "/", wantBody: "SEC Monitor"},
 		{name: "spa route", path: "/targets", wantBody: "SEC Monitor"},
+		{name: "API management SPA route", path: "/api-management", wantBody: "SEC Monitor"},
 		{name: "asset", path: "/assets/app.js", wantBody: "console.log('ok')"},
 	}
 	for _, tt := range tests {

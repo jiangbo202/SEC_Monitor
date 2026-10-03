@@ -206,7 +206,7 @@ type DashboardOperationsSummary struct {
 const dashboardSummaryCacheTTL = 30 * time.Second
 
 // GetDashboardSummary is read-only. It never refreshes SEC, Longbridge,
-// Yahoo, or Telegram data; background tasks remain solely responsible for
+// Futu, or Telegram data; background tasks remain solely responsible for
 // provider I/O and this endpoint reads their local snapshots.
 func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 	if h.DB == nil {

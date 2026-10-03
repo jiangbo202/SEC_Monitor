@@ -148,14 +148,14 @@ func TestCoordinatorResearchLocalPriceFallbackUsesOnlyPreviousTradingDay(t *test
 	previous := time.Date(2026, 7, 13, 0, 0, 0, 0, ny)
 	effective := time.Date(2026, 7, 14, 0, 0, 0, 0, ny)
 	if err := db.Create(&[]PriceSnapshot{
-		{Source: "tiingo", SourceVersion: "prior", Symbol: "AAA", TradeDate: previous, CloseMicros: 1_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "tiingo", SourceVersion: "old", Symbol: "STALE", TradeDate: previous.AddDate(0, 0, -3), CloseMicros: 1_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "prior", Symbol: "AAA", TradeDate: previous, CloseMicros: 1_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "old", Symbol: "STALE", TradeDate: previous.AddDate(0, 0, -3), CloseMicros: 1_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	c := Coordinator{DB: db, Calendar: &stubMarketCalendar{}, ResearchMode: true, Clock: func() time.Time { return time.Date(2026, 7, 15, 11, 0, 0, 0, ny) }}
 	expected := []Listing{{Ticker: "AAA"}, {Ticker: "LIVE"}, {Ticker: "STALE"}}
-	live := []PriceRecord{{Symbol: "LIVE", TradeDate: effective, CloseMicros: 2_000_000, Volume: 200, Currency: "USD", Source: "tiingo"}}
+	live := []PriceRecord{{Symbol: "LIVE", TradeDate: effective, CloseMicros: 2_000_000, Volume: 200, Currency: "USD", Source: "longbridge"}}
 	records, result, err := c.mergeResearchLocalPriceFallback(context.Background(), "chain", "2026-07-14", expected, live, ProviderResult{Provider: "chain", SourceVersion: "chain:live"}, nil, c.Clock())
 	if err != nil {
 		t.Fatalf("mergeResearchLocalPriceFallback() error = %v", err)
@@ -179,7 +179,7 @@ func TestCoordinatorResearchLocalPriceFallbackKeepsLiveRecordsWhenFallbackContex
 	db := openMigratedTestDatabase(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	live := []PriceRecord{{Symbol: "LIVE", CloseMicros: 2_000_000, Volume: 200, Currency: "USD", Source: "tiingo"}}
+	live := []PriceRecord{{Symbol: "LIVE", CloseMicros: 2_000_000, Volume: 200, Currency: "USD", Source: "longbridge"}}
 	c := Coordinator{DB: db, Calendar: contextAwareFailingCalendar{}, ResearchMode: true}
 	records, result, err := c.mergeResearchLocalPriceFallback(ctx, "chain", "2026-07-14", []Listing{{Ticker: "LIVE"}}, live, ProviderResult{Provider: "chain", SourceVersion: "chain:live"}, nil, time.Now())
 	if err != nil {
@@ -705,7 +705,7 @@ func TestCoordinatorMissingProviderHealthRunsValidationWithoutPublishing(t *test
 	}
 }
 
-func TestCoordinatorPrefiltersTiingoPriceRequestsWithFinancialSECSignals(t *testing.T) {
+func TestCoordinatorPrefiltersPriceRequestsWithFinancialSECSignals(t *testing.T) {
 	db := openMigratedTestDatabase(t)
 	ny, _ := time.LoadLocation("America/New_York")
 	now := time.Date(2026, 6, 23, 17, 0, 0, 0, ny)
@@ -716,9 +716,9 @@ func TestCoordinatorPrefiltersTiingoPriceRequestsWithFinancialSECSignals(t *test
 	})
 	priceSHA := sha256.Sum256([]byte("research-prefilter-prices"))
 	provider := &fakePriceProvider{
-		name:    "tiingo",
-		records: []PriceRecord{{Symbol: "PASS", Source: "tiingo", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
-		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:test", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
+		name:    "longbridge",
+		records: []PriceRecord{{Symbol: "PASS", Source: "longbridge", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:test", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
 	}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }, ResearchMode: true}
 	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
@@ -743,9 +743,9 @@ func TestCoordinatorResearchModePublishesValidationProviderBatch(t *testing.T) {
 	seedSecurityBatchForMarketTest(t, db, now, []marketSeedSecurity{{CIK: "0000000011", Ticker: "RSCH", Growth: 45, Runway: 18, Shares: 10_000_000}})
 	priceSHA := sha256.Sum256([]byte("research-mode-prices"))
 	provider := &fakePriceProvider{
-		name:    "tiingo",
-		records: []PriceRecord{{Symbol: "RSCH", Source: "tiingo", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
-		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:test", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
+		name:    "longbridge",
+		records: []PriceRecord{{Symbol: "RSCH", Source: "longbridge", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:test", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
 	}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }, ResearchMode: true}
 	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
@@ -768,7 +768,7 @@ func TestCoordinatorResearchModePublishesValidationProviderBatch(t *testing.T) {
 	if err := hydrateProviderRunAttempts(&run); err != nil {
 		t.Fatal(err)
 	}
-	if run.FallbackUsed || len(run.Attempts) != 1 || run.Attempts[0].Provider != "tiingo" || run.Attempts[0].Status != "success" {
+	if run.FallbackUsed || len(run.Attempts) != 1 || run.Attempts[0].Provider != "longbridge" || run.Attempts[0].Status != "success" {
 		t.Fatalf("provider attempts = %#v fallback=%v", run.Attempts, run.FallbackUsed)
 	}
 }
@@ -790,9 +790,9 @@ func TestCoordinatorResearchModeRejectsLowCoverageWithoutPublishing(t *testing.T
 	}
 	priceSHA := sha256.Sum256([]byte("low-coverage-prices"))
 	provider := &fakePriceProvider{
-		name:    "tiingo",
-		records: []PriceRecord{{Symbol: "LOW1", Source: "tiingo", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
-		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:partial", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 2, CoveragePct: 50, Timely: true},
+		name:    "longbridge",
+		records: []PriceRecord{{Symbol: "LOW1", Source: "longbridge", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:partial", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 2, CoveragePct: 50, Timely: true},
 	}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }, ResearchMode: true, MinPublishCoveragePct: 75}
 	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
@@ -830,14 +830,14 @@ func TestCoordinatorResearchModeRejectsCoverageDropFromCurrentBatch(t *testing.T
 	if err := db.Create(&CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: old.BatchID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&ProviderRun{BatchID: old.BatchID, Provider: "tiingo", Status: ProviderStatusValidation, SourceVersion: "tiingo:healthy", EffectiveDate: now.AddDate(0, 0, -1), ExpectedCount: 2, RecordCount: 2, CoveragePct: 95, Timely: true, CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
+	if err := db.Create(&ProviderRun{BatchID: old.BatchID, Provider: "longbridge", Status: ProviderStatusValidation, SourceVersion: "longbridge:healthy", EffectiveDate: now.AddDate(0, 0, -1), ExpectedCount: 2, RecordCount: 2, CoveragePct: 95, Timely: true, CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
 		t.Fatal(err)
 	}
 	priceSHA := sha256.Sum256([]byte("coverage-drop-prices"))
 	provider := &fakePriceProvider{
-		name:    "tiingo",
-		records: []PriceRecord{{Symbol: "DROP1", Source: "tiingo", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
-		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:dropped", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 2, CoveragePct: 70, Timely: true},
+		name:    "longbridge",
+		records: []PriceRecord{{Symbol: "DROP1", Source: "longbridge", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:dropped", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 2, CoveragePct: 70, Timely: true},
 	}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }, ResearchMode: true, MinPublishCoveragePct: 20}
 	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
@@ -865,9 +865,9 @@ func TestCoordinatorResearchModeUsesLatestCompletedMarketDateForMarketOnlyCatchu
 	seedSecurityBatchForMarketTest(t, db, securityDate, []marketSeedSecurity{{CIK: "0000000021", Ticker: "CUP", Growth: 45, Runway: 18, Shares: 10_000_000}})
 	priceSHA := sha256.Sum256([]byte("catchup-prices"))
 	provider := &fakePriceProvider{
-		name:    "tiingo",
-		records: []PriceRecord{{Symbol: "CUP", Source: "tiingo", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
-		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:2026-07-01", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
+		name:    "longbridge",
+		records: []PriceRecord{{Symbol: "CUP", Source: "longbridge", TradeDate: now, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:2026-07-01", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: now, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
 	}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }, ResearchMode: true}
 	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
@@ -895,11 +895,11 @@ func TestCoordinatorResearchModeAllowsNonTradingSecurityDateWithPreviousPrice(t 
 	seedSecurityBatchForMarketTest(t, db, securityDate, []marketSeedSecurity{{CIK: "0000000023", Ticker: "HOLI", Growth: 45, Runway: 18, Shares: 10_000_000}})
 	priceSHA := sha256.Sum256([]byte("holiday-previous-price"))
 	provider := &fakePriceProvider{
-		name:    "tiingo",
-		records: []PriceRecord{{Symbol: "HOLI", Source: "tiingo", TradeDate: priceDate, CloseMicros: 5_000_000, Currency: "USD"}},
-		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:2026-07-02", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: securityDate, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
+		name:    "longbridge",
+		records: []PriceRecord{{Symbol: "HOLI", Source: "longbridge", TradeDate: priceDate, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:2026-07-02", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: securityDate, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
 	}
-	if err := db.Create(&PriceSnapshot{Source: "tiingo", SourceVersion: "friday", Symbol: "HOLI", TradeDate: priceDate, CloseMicros: 5_000_000, Currency: "USD", QualityStatus: QualityStatusValid}).Error; err != nil {
+	if err := db.Create(&PriceSnapshot{Source: "longbridge", SourceVersion: "friday", Symbol: "HOLI", TradeDate: priceDate, CloseMicros: 5_000_000, Currency: "USD", QualityStatus: QualityStatusValid}).Error; err != nil {
 		t.Fatal(err)
 	}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{holidays: map[string]bool{"2026-07-03": true}}, Clock: func() time.Time { return now }, ResearchMode: true}
@@ -915,7 +915,7 @@ func TestCoordinatorResearchModeAllowsNonTradingSecurityDateWithPreviousPrice(t 
 		t.Fatalf("non-trading day must not call provider, requested date = %q", provider.requestedDate)
 	}
 	var health ProviderHealth
-	if err := db.First(&health, "provider = ?", "tiingo").Error; err != nil {
+	if err := db.First(&health, "provider = ?", "longbridge").Error; err != nil {
 		t.Fatal(err)
 	}
 	if health.LastTradeDate != "2026-07-02" {
@@ -933,14 +933,14 @@ func TestCoordinatorResearchModeAllowsSameDateProviderHealthCatchup(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&ProviderHealth{Provider: "tiingo", Status: ProviderStatusValidation, LastTradeDate: "2026-06-30", QualifiedTradingDays: 1, WindowJSON: string(window), GoldSHA256: strings.Repeat("e", 64), UpdatedAt: securityDate}).Error; err != nil {
+	if err := db.Create(&ProviderHealth{Provider: "longbridge", Status: ProviderStatusValidation, LastTradeDate: "2026-06-30", QualifiedTradingDays: 1, WindowJSON: string(window), GoldSHA256: strings.Repeat("e", 64), UpdatedAt: securityDate}).Error; err != nil {
 		t.Fatal(err)
 	}
 	priceSHA := sha256.Sum256([]byte("catchup-same-date-prices"))
 	provider := &fakePriceProvider{
-		name:    "tiingo",
-		records: []PriceRecord{{Symbol: "CUP2", Source: "tiingo", TradeDate: securityDate, CloseMicros: 5_000_000, Currency: "USD"}},
-		result:  ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:2026-06-30:partial", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: securityDate, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
+		name:    "longbridge",
+		records: []PriceRecord{{Symbol: "CUP2", Source: "longbridge", TradeDate: securityDate, CloseMicros: 5_000_000, Currency: "USD"}},
+		result:  ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:2026-06-30:partial", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: securityDate, Records: 1, Expected: 1, CoveragePct: 100, Timely: true},
 	}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }, ResearchMode: true}
 	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
@@ -955,7 +955,7 @@ func TestCoordinatorResearchModeAllowsSameDateProviderHealthCatchup(t *testing.T
 		t.Fatalf("batch=%#v", batch)
 	}
 	var health ProviderHealth
-	if err := db.First(&health, "provider = ?", "tiingo").Error; err != nil {
+	if err := db.First(&health, "provider = ?", "longbridge").Error; err != nil {
 		t.Fatal(err)
 	}
 	if health.LastTradeDate != "2026-06-30" || health.QualifiedTradingDays != 1 {
@@ -977,8 +977,8 @@ func TestCoordinatorRetriesExistingFailedMarketBatch(t *testing.T) {
 	now := time.Date(2026, 6, 30, 17, 0, 0, 0, ny)
 	securityBatch := seedSecurityBatchForMarketTest(t, db, securityDate, []marketSeedSecurity{{CIK: "0000000023", Ticker: "RETRY", Growth: 45, Runway: 18, Shares: 10_000_000}})
 	priceSHA := sha256.Sum256([]byte("retry-prices"))
-	records := []PriceRecord{{Symbol: "RETRY", Source: "tiingo", TradeDate: securityDate, CloseMicros: 5_000_000, Currency: "USD"}}
-	result := ProviderResult{Provider: "tiingo", SourceVersion: "tiingo:2026-06-30:retry", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: securityDate, Records: 1, Expected: 1, CoveragePct: 100, Timely: true}
+	records := []PriceRecord{{Symbol: "RETRY", Source: "longbridge", TradeDate: securityDate, CloseMicros: 5_000_000, Currency: "USD"}}
+	result := ProviderResult{Provider: "longbridge", SourceVersion: "longbridge:2026-06-30:retry", SHA256: hex.EncodeToString(priceSHA[:]), EffectiveDate: securityDate, Records: 1, Expected: 1, CoveragePct: 100, Timely: true}
 	effectiveAt, err := parseNYCivilDate("2026-06-30")
 	if err != nil {
 		t.Fatal(err)
@@ -1002,10 +1002,10 @@ func TestCoordinatorRetriesExistingFailedMarketBatch(t *testing.T) {
 	if err := db.Create(&UniverseBatch{BatchID: batchID, Kind: BatchKindPrescreen, Status: BatchStatusFailed, EffectiveDate: "2026-06-30", SourceVersionsJSON: encoded, ContentSHA256: contentSHA, StartedAt: now.Add(-2 * time.Hour), CompletedAt: &failedCompletedAt, ErrorMessage: "old failure"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&ProviderRun{BatchID: batchID, Provider: "tiingo", Status: ProviderStatusFailed, SourceVersion: "old", SHA256: strings.Repeat("f", 64), EffectiveDate: securityDate, CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
+	if err := db.Create(&ProviderRun{BatchID: batchID, Provider: "longbridge", Status: ProviderStatusFailed, SourceVersion: "old", SHA256: strings.Repeat("f", 64), EffectiveDate: securityDate, CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
 		t.Fatal(err)
 	}
-	provider := &fakePriceProvider{name: "tiingo", records: records, result: result}
+	provider := &fakePriceProvider{name: "longbridge", records: records, result: result}
 	c := Coordinator{DB: db, Prices: provider, Calendar: &stubMarketCalendar{}, Clock: func() time.Time { return now }, ResearchMode: true}
 	c.providerDayEvaluator = func(result ProviderResult, _ []PriceRecord, _ time.Time) (ProviderDayResult, error) {
 		return ProviderDayResult{TradeDate: result.EffectiveDate, coveragePct: 100, timely: true, validationOK: true, goldReady: false, goldSHA256: strings.Repeat("e", 64)}, nil

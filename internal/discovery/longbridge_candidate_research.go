@@ -66,16 +66,19 @@ type EarningsSurpriseAvailability struct {
 // view is intended for a watch-target detail where an operator needs to trace
 // every institution/fund disclosure and its reported ratio.
 type TickerInstitutionalHoldingHistory struct {
-	HistorySyncedAt      *time.Time                    `json:"history_synced_at,omitempty"`
-	HistoryStatus        string                        `json:"history_status"`
-	OtherHolders         []InstitutionalHolderSnapshot `json:"other_holders"`
-	OwnershipHistory     []InstitutionalOwnershipPoint `json:"ownership_history"`
-	Coverage             string                        `json:"coverage"`
-	HistoryWarnings      []string                      `json:"history_warnings"`
-	Ticker               string                        `json:"ticker"`
-	InstitutionalHolders []InstitutionalHolderSnapshot `json:"institutional_holders"`
-	FundHolders          []FundHolderSnapshot          `json:"fund_holders"`
-	Message              string                        `json:"message"`
+	FutuAggregateHistory  []FutuInstitutionalPoint      `json:"futu_aggregate_history"`
+	FutuAggregateStatus   string                        `json:"futu_aggregate_status"`
+	FutuAggregateSyncedAt *time.Time                    `json:"futu_aggregate_synced_at,omitempty"`
+	HistorySyncedAt       *time.Time                    `json:"history_synced_at,omitempty"`
+	HistoryStatus         string                        `json:"history_status"`
+	OtherHolders          []InstitutionalHolderSnapshot `json:"other_holders"`
+	OwnershipHistory      []InstitutionalOwnershipPoint `json:"ownership_history"`
+	Coverage              string                        `json:"coverage"`
+	HistoryWarnings       []string                      `json:"history_warnings"`
+	Ticker                string                        `json:"ticker"`
+	InstitutionalHolders  []InstitutionalHolderSnapshot `json:"institutional_holders"`
+	FundHolders           []FundHolderSnapshot          `json:"fund_holders"`
+	Message               string                        `json:"message"`
 }
 
 type EPSForecastView struct {
@@ -248,6 +251,20 @@ func GetTickerInstitutionalHoldingHistory(ctx context.Context, db *gorm.DB, tick
 		return result, errors.New("ticker is required")
 	}
 	result.Ticker = symbol
+	result.FutuAggregateHistory = []FutuInstitutionalPoint{}
+	result.FutuAggregateStatus = "not_synced"
+	if db.Migrator().HasTable(&FutuInstitutionalPoint{}) {
+		if err := db.WithContext(ctx).Where("ticker = ?", symbol).Order("period ASC").Find(&result.FutuAggregateHistory).Error; err != nil {
+			return result, err
+		}
+		var receipt FutuInstitutionalReceipt
+		if err := db.WithContext(ctx).First(&receipt, "ticker = ?", symbol).Error; err == nil {
+			result.FutuAggregateStatus = receipt.Status
+			result.FutuAggregateSyncedAt = &receipt.FetchedAt
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return result, err
+		}
+	}
 	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeCandidateResearchProvider, symbol).Order("report_date DESC, holder_name ASC, id DESC").Find(&result.InstitutionalHolders).Error; err != nil {
 		return result, err
 	}
@@ -323,7 +340,9 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 		if forecast, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.ForecastEps, error) {
 			return client.ForecastEps(callCtx, symbol)
 		}); fetchErr != nil {
-			requestErrors = append(requestErrors, fmt.Errorf("EPS forecast: %w", fetchErr))
+			if !errors.Is(fetchErr, ErrAPIDisabled) {
+				requestErrors = append(requestErrors, fmt.Errorf("EPS forecast: %w", fetchErr))
+			}
 			result.Warnings = append(result.Warnings, "EPS 预期："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 		} else if latest, ok := latestForecastEpsItem(forecast); ok {
 			snapshot := epsForecastSnapshotFromLongbridge(result.Ticker, securityID, latest, now)
@@ -350,8 +369,14 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 				result.EPSChanged = snapshot.ChangeSummary != ""
 				result.EPSChangeSummary = snapshot.ChangeSummary
 			}
+			if err := RecordAPIDataSync(ctx, db, longbridgeCandidateResearchProvider, "eps", result.Ticker, "available", now); err != nil {
+				return result, err
+			}
 		} else {
 			result.Warnings = append(result.Warnings, "EPS 预期：Longbridge 暂无覆盖")
+			if err := RecordAPIDataSync(ctx, db, longbridgeCandidateResearchProvider, "eps", result.Ticker, "no_coverage", now); err != nil {
+				return result, err
+			}
 			if db.Migrator().HasTable(&LongbridgeResearchRefreshState{}) {
 				if err := MarkLongbridgeResearchSuccess(ctx, db, "eps_no_coverage", result.Ticker, now); err != nil {
 					return result, err
@@ -361,7 +386,9 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 	}
 
 	if anomalies, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbmarket.AnomalyResponse, error) { return client.Anomaly(callCtx, "US") }); fetchErr != nil {
-		requestErrors = append(requestErrors, fmt.Errorf("market anomaly: %w", fetchErr))
+		if !errors.Is(fetchErr, ErrAPIDisabled) {
+			requestErrors = append(requestErrors, fmt.Errorf("market anomaly: %w", fetchErr))
+		}
 		result.Warnings = append(result.Warnings, "市场异动："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {
 		result.AnomaliesSaved, err = saveLongbridgeAnomalies(ctx, db, securityID, result.Ticker, anomalies, now)
@@ -372,7 +399,9 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 	if shareholders, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.ShareholderList, error) {
 		return client.Shareholder(callCtx, symbol)
 	}); fetchErr != nil {
-		requestErrors = append(requestErrors, fmt.Errorf("shareholders: %w", fetchErr))
+		if !errors.Is(fetchErr, ErrAPIDisabled) {
+			requestErrors = append(requestErrors, fmt.Errorf("shareholders: %w", fetchErr))
+		}
 		result.Warnings = append(result.Warnings, "机构股东："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {
 		result.ShareholdersSaved, err = saveLongbridgeInstitutionalHolders(ctx, db, securityID, result.Ticker, shareholders, now)
@@ -383,7 +412,9 @@ func refreshLongbridgeCandidateMarketResearch(ctx context.Context, db *gorm.DB, 
 	if holders, fetchErr := longbridgeFundamentalCall(requestCtx, options.RequestInterval, func(callCtx context.Context) (*lbfundamental.FundHolders, error) {
 		return client.FundHolder(callCtx, symbol)
 	}); fetchErr != nil {
-		requestErrors = append(requestErrors, fmt.Errorf("fund holders: %w", fetchErr))
+		if !errors.Is(fetchErr, ErrAPIDisabled) {
+			requestErrors = append(requestErrors, fmt.Errorf("fund holders: %w", fetchErr))
+		}
 		result.Warnings = append(result.Warnings, "基金持仓："+SanitizeLongbridgeCandidateResearchError(fetchErr))
 	} else {
 		result.FundHoldersSaved, err = saveLongbridgeFundHolders(ctx, db, securityID, result.Ticker, holders, now)
@@ -670,6 +701,7 @@ func newLongbridgeCandidateResearchSDKClient(appKey, appSecret, accessToken stri
 	if err != nil {
 		return nil, err
 	}
+	MonitorLongbridgeConfig(cfg)
 	fundamental, err := lbfundamental.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -681,6 +713,9 @@ func newLongbridgeCandidateResearchSDKClient(appKey, appSecret, accessToken stri
 	return &longbridgeCandidateResearchSDKClient{fundamental: fundamental, market: market}, nil
 }
 func (c *longbridgeCandidateResearchSDKClient) ForecastEps(ctx context.Context, symbol string) (*lbfundamental.ForecastEps, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/forecast-eps"); err != nil {
+		return nil, err
+	}
 	id, err := explicitUSStockCounterID(symbol)
 	if err != nil {
 		return nil, err
@@ -688,9 +723,15 @@ func (c *longbridgeCandidateResearchSDKClient) ForecastEps(ctx context.Context, 
 	return c.fundamental.ForecastEps(ctx, id)
 }
 func (c *longbridgeCandidateResearchSDKClient) Anomaly(ctx context.Context, market string) (*lbmarket.AnomalyResponse, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/changes"); err != nil {
+		return nil, err
+	}
 	return c.market.Anomaly(ctx, market)
 }
 func (c *longbridgeCandidateResearchSDKClient) Shareholder(ctx context.Context, symbol string) (*lbfundamental.ShareholderList, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/shareholders"); err != nil {
+		return nil, err
+	}
 	id, err := explicitUSStockCounterID(symbol)
 	if err != nil {
 		return nil, err
@@ -698,6 +739,9 @@ func (c *longbridgeCandidateResearchSDKClient) Shareholder(ctx context.Context, 
 	return c.fundamental.Shareholder(ctx, id)
 }
 func (c *longbridgeCandidateResearchSDKClient) FundHolder(ctx context.Context, symbol string) (*lbfundamental.FundHolders, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/fund-holders"); err != nil {
+		return nil, err
+	}
 	id, err := explicitUSStockCounterID(symbol)
 	if err != nil {
 		return nil, err

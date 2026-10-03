@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"sec_monitor/internal/model"
+	"sec_monitor/internal/discovery"
 
 	lbcalendar "github.com/longbridge/openapi-go/calendar"
 	lbconfig "github.com/longbridge/openapi-go/config"
@@ -34,6 +35,7 @@ func (s *MacroCalendarService) syncLongbridgeMacroCalendar(ctx context.Context, 
 	if err != nil {
 		return err
 	}
+	discovery.MonitorLongbridgeConfig(clientCfg)
 	calendar, err := lbcalendar.NewFromCfg(clientCfg)
 	if err != nil {
 		return err

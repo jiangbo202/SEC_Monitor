@@ -31,9 +31,9 @@ func TestBuildCandidateEffectivenessCalculatesCohortsAndOptionalBenchmark(t *tes
 	for day := 0; day <= 20; day++ {
 		date := base.AddDate(0, 0, day)
 		prices = append(prices,
-			PriceSnapshot{Source: "tiingo", SourceVersion: "alph", Symbol: "ALPH", TradeDate: date, CloseMicros: int64(1_000_000 + day*10_000), QualityStatus: QualityStatusValid},
-			PriceSnapshot{Source: "tiingo", SourceVersion: "beta", Symbol: "BETA", TradeDate: date, CloseMicros: int64(1_000_000 - day*5_000), QualityStatus: QualityStatusValid},
-			PriceSnapshot{Source: "tiingo", SourceVersion: "iwm", Symbol: "IWM", TradeDate: date, CloseMicros: int64(2_000_000 + day*2_000), QualityStatus: QualityStatusValid},
+			PriceSnapshot{Source: "longbridge", SourceVersion: "alph", Symbol: "ALPH", TradeDate: date, CloseMicros: int64(1_000_000 + day*10_000), QualityStatus: QualityStatusValid},
+			PriceSnapshot{Source: "longbridge", SourceVersion: "beta", Symbol: "BETA", TradeDate: date, CloseMicros: int64(1_000_000 - day*5_000), QualityStatus: QualityStatusValid},
+			PriceSnapshot{Source: "longbridge", SourceVersion: "iwm", Symbol: "IWM", TradeDate: date, CloseMicros: int64(2_000_000 + day*2_000), QualityStatus: QualityStatusValid},
 		)
 	}
 	if err := db.Create(&prices).Error; err != nil {

@@ -1253,9 +1253,6 @@ func candidateReviewPriorityReasons(item CandidateScoreResult) []ReviewPriorityR
 		}
 		add("异动："+anomaly, points)
 	}
-	if item.PriceSource == "tiingo" {
-		add("价格源：Tiingo", 2)
-	}
 	if item.PriceVolume >= 500_000 {
 		add("成交量：50万以上", 3)
 	} else if item.PriceVolume >= 100_000 {

@@ -151,12 +151,16 @@ func hydrateCompanyProfileProvider(ctx context.Context, db *gorm.DB, profile Com
 		return profile
 	}
 	var snapshot CompanyProfileSnapshot
-	err := db.WithContext(ctx).Where("provider = ? AND security_id = ? AND fetched_at IS NOT NULL", longbridgeCompanyProfileProvider, securityID).
+	provider := APIModuleProvider(ctx, db, "company")
+	err := db.WithContext(ctx).Where("provider = ? AND security_id = ? AND fetched_at IS NOT NULL", provider, securityID).
 		Order("fetched_at DESC, id DESC").First(&snapshot).Error
 	if err != nil {
 		return profile
 	}
 	profile.ProfileProvider = "Longbridge company overview"
+	if provider == "futu" {
+		profile.ProfileProvider = "Futu company profile"
+	}
 	profile.ProfileFetchedAt = snapshot.FetchedAt
 	profile.ProfileFreshness = "fresh"
 	if snapshot.FetchedAt != nil && snapshot.FetchedAt.AddDate(0, 0, 30).Before(time.Now().UTC()) {
@@ -172,7 +176,7 @@ func hydrateCompanyProfileProvider(ctx context.Context, db *gorm.DB, profile Com
 	profile.YearEnd = snapshot.YearEnd
 	if strings.TrimSpace(snapshot.Profile) != "" {
 		profile.BusinessSummary = snapshot.Profile
-		profile.SummarySource = "Longbridge company overview（本地缓存）"
+		profile.SummarySource = profile.ProfileProvider + "（本地缓存）"
 		profile.Status = "available"
 	}
 	return profile

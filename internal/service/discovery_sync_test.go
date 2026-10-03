@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -479,50 +480,23 @@ func TestDiscoverySyncServiceBuildsRunnerWithoutMarketURL(t *testing.T) {
 	}
 }
 
-func TestDiscoverySyncServiceBuildsTiingoRunnerFromToken(t *testing.T) {
-	discoveryDB := testDiscoveryDB(t)
-	runner, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{
-		PriceProvider:  "tiingo",
-		TiingoAPIToken: "test-token",
-		TiingoBaseURL:  "https://api.tiingo.com",
-	}).buildRunner()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runner.SyncMarketPrices(context.Background()); err == nil || strings.Contains(err.Error(), "SMALL_CAP_STOOQ_URLS") {
-		t.Fatalf("market err = %v, want tiingo runner without stooq config error", err)
-	}
-}
-
 func TestDiscoverySyncServiceUsesStoredDiscoveryConfig(t *testing.T) {
 	mainDB := testDB(t)
 	configs := NewConfigService(mainDB, NewAuditService(mainDB))
 	if err := configs.UpsertMany(context.Background(), []ConfigInput{
-		{Key: "discovery.price_provider", Value: "tiingo", ValueType: "string", Category: "discovery"},
-		{Key: "discovery.tiingo_api_token", Value: "stored-token", ValueType: "string", Category: "discovery", Encrypted: true},
-		{Key: "discovery.tiingo_base_url", Value: "https://api.tiingo.com", ValueType: "string", Category: "discovery"},
+		{Key: "discovery.price_provider", Value: "longbridge", ValueType: "string", Category: "discovery"},
+		{Key: "discovery.longbridge_app_key", Value: "fake-key", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.longbridge_app_secret", Value: "fake-secret", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.longbridge_access_token", Value: "fake-token", ValueType: "string", Category: "discovery", Encrypted: true},
 	}, "tester"); err != nil {
-		t.Fatalf("seed config: %v", err)
+		t.Fatal(err)
 	}
-	discoveryDB := testDiscoveryDB(t)
-	runner, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{}).WithConfigService(configs).buildRunner()
+	runner, err := NewDiscoverySyncService(testDiscoveryDB(t), config.DiscoveryConfig{}).WithConfigService(configs).buildRunner()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runner.SyncMarketPrices(context.Background()); err == nil || strings.Contains(err.Error(), "SMALL_CAP_STOOQ_URLS") {
-		t.Fatalf("market err = %v, want stored tiingo config without stooq config error", err)
-	}
-}
-
-func TestDiscoverySyncServiceRejectsTiingoWithoutToken(t *testing.T) {
-	discoveryDB := testDiscoveryDB(t)
-	_, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{
-		PriceProvider:  "tiingo",
-		TiingoBaseURL:  "https://api.tiingo.com",
-		TaskTimeoutMin: 1,
-	}).buildRunner()
-	if err == nil || !strings.Contains(err.Error(), "TIINGO_API_TOKEN") {
-		t.Fatalf("err = %v, want TIINGO_API_TOKEN error", err)
+		t.Fatalf("market err = %v, want stored Longbridge config", err)
 	}
 }
 
@@ -540,17 +514,10 @@ func TestDiscoverySyncServiceBuildSinglePriceProviderTableDriven(t *testing.T) {
 			cfg:      config.DiscoveryConfig{PriceProvider: "stooq", StooqURLs: []string{"https://prices.test/stooq.zip"}},
 			wantName: "stooq",
 		},
-		{
-			name:     "builds yahoo provider",
-			cfg:      config.DiscoveryConfig{PriceProvider: "yahoo", YahooBaseURL: "https://query1.finance.yahoo.com", YahooRequestBudget: 10},
-			wantName: "yahoo",
-		},
-		{
-			name:        "missing twelvedata key returns setup error",
-			cfg:         config.DiscoveryConfig{PriceProvider: "twelvedata", TwelveDataBaseURL: "https://api.twelvedata.com"},
-			wantSetup:   "TWELVE_DATA_API_KEY",
-			wantNilProv: true,
-		},
+		{name: "builds Longbridge provider", cfg: config.DiscoveryConfig{PriceProvider: "longbridge", LongbridgeAppKey: "fake-key", LongbridgeAppSecret: "fake-secret", LongbridgeAccessToken: "fake-token"}, wantName: "longbridge"},
+		{name: "rejects removed Yahoo stock provider", cfg: config.DiscoveryConfig{PriceProvider: "yahoo"}, wantSetup: "unsupported SMALL_CAP_PRICE_PROVIDER", wantNilProv: true},
+		{name: "rejects removed Tiingo provider", cfg: config.DiscoveryConfig{PriceProvider: "tiingo"}, wantSetup: "unsupported SMALL_CAP_PRICE_PROVIDER", wantNilProv: true},
+		{name: "rejects removed Twelve Data provider", cfg: config.DiscoveryConfig{PriceProvider: "twelvedata"}, wantSetup: "unsupported SMALL_CAP_PRICE_PROVIDER", wantNilProv: true},
 		{
 			name:        "unsupported provider returns setup error",
 			cfg:         config.DiscoveryConfig{PriceProvider: "unknown"},
@@ -609,28 +576,8 @@ func TestDiscoverySyncServiceBuildPriceProviderChainErrorsWhenNoUsableProvider(t
 }
 
 func TestDiscoverySyncServiceBuildsProviderChain(t *testing.T) {
-	discoveryDB := testDiscoveryDB(t)
-	provider, marketErr, err := NewDiscoverySyncService(discoveryDB, config.DiscoveryConfig{
-		PriceProvider:           "tiingo,twelvedata,yahoo",
-		TiingoAPIToken:          "test-token",
-		TiingoBaseURL:           "https://api.tiingo.com",
-		TwelveDataAPIKey:        "td-key",
-		TwelveDataBaseURL:       "https://api.twelvedata.com",
-		TwelveDataRequestBudget: 10,
-		YahooBaseURL:            "https://query1.finance.yahoo.com",
-		TiingoRequestBudget:     10,
-		YahooRequestBudget:      10,
-	}).buildPriceProvider(config.DiscoveryConfig{
-		PriceProvider:           "tiingo,twelvedata,yahoo",
-		TiingoAPIToken:          "test-token",
-		TiingoBaseURL:           "https://api.tiingo.com",
-		TwelveDataAPIKey:        "td-key",
-		TwelveDataBaseURL:       "https://api.twelvedata.com",
-		TwelveDataRequestBudget: 10,
-		YahooBaseURL:            "https://query1.finance.yahoo.com",
-		TiingoRequestBudget:     10,
-		YahooRequestBudget:      10,
-	}, nil, &stubServiceCalendar{})
+	cfg := config.DiscoveryConfig{PriceProvider: "longbridge,futu", LongbridgeAppKey: "fake-key", LongbridgeAppSecret: "fake-secret", LongbridgeAccessToken: "fake-token", FutuConfigured: true, FutuReadJSON: func(context.Context, string, string, url.Values, []byte, any) error { return nil }}
+	provider, marketErr, err := NewDiscoverySyncService(testDiscoveryDB(t), cfg).buildPriceProvider(cfg, nil, &stubServiceCalendar{})
 	if err != nil || marketErr != nil {
 		t.Fatalf("buildPriceProvider err=%v marketErr=%v", err, marketErr)
 	}
@@ -639,7 +586,7 @@ func TestDiscoverySyncServiceBuildsProviderChain(t *testing.T) {
 		t.Fatalf("provider=%T", provider)
 	}
 	allowlist, ok := provider.(discovery.RecordSourceAllowlistProvider)
-	if !ok || strings.Join(allowlist.AllowedRecordSources(), ",") != "tiingo,twelvedata,yahoo" {
-		t.Fatalf("allowed sources = %#v", allowlist.AllowedRecordSources())
+	if !ok || strings.Join(allowlist.AllowedRecordSources(), ",") != "longbridge,futu" {
+		t.Fatalf("allowed sources = %#v", allowlist)
 	}
 }

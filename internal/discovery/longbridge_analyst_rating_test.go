@@ -43,9 +43,14 @@ func TestRefreshLongbridgeAnalystRatingStoresSnapshotsAndSemanticChanges(t *test
 	if first.Snapshot.Status != AnalystRatingStatusAvailable || first.Snapshot.NotificationStatus != "not_applicable" {
 		t.Fatalf("first snapshot = %#v", first.Snapshot)
 	}
+	now = now.Add(10 * 24 * time.Hour)
 	cached, err := refreshLongbridgeAnalystRating(context.Background(), db, "RATE", security.CIK, options)
 	if err != nil || !cached.Cached || cached.Fetched {
 		t.Fatalf("cached refresh = %+v, err=%v", cached, err)
+	}
+	receipts, receiptErr := APIDataSyncReceipts(context.Background(), db, "longbridge", "analyst")
+	if receiptErr != nil || receipts["RATE"].LastSuccessAt == nil || !receipts["RATE"].LastSuccessAt.Equal(now) || !cached.Snapshot.FetchedAt.Equal(first.Snapshot.FetchedAt) {
+		t.Fatalf("unchanged snapshot/check time: %+v %v", receipts, receiptErr)
 	}
 	now = now.Add(24 * time.Hour)
 	client.rating = testInstitutionRating(lbfundamental.InstitutionRecommendHold, 12, 30)

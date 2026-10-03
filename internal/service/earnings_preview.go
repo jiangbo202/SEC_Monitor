@@ -32,6 +32,7 @@ const (
 	earningsPreviewStatusScheduled   = "scheduled"
 	earningsPreviewStatusNoCoverage  = "no_coverage"
 	earningsPreviewStatusUnavailable = "unavailable"
+	earningsConsensusDisabledMessage = "财务共识接口已关闭；同一财报日期保留最近共识缓存，不补零。"
 )
 
 // EarningsPreviewSettings is deliberately small and stored in system config so
@@ -426,6 +427,9 @@ func (s *EarningsPreviewService) syncTargets(ctx context.Context, targets []mode
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s：财务共识暂不可用：%v", target.Ticker, SanitizeSensitiveError(consensusErr.Error())))
 		}
 		preview := previewFromLongbridgeEvent(target, event, consensus, now)
+		if errors.Is(consensusErr, discovery.ErrAPIDisabled) {
+			preview.LastError = earningsConsensusDisabledMessage
+		}
 		saved, changed, saveErr := s.savePreview(ctx, preview, force)
 		if saveErr != nil {
 			result.Failed++
@@ -493,6 +497,14 @@ func (s *EarningsPreviewService) savePreview(ctx context.Context, next model.Ear
 			return err
 		}
 		next.ID, next.CreatedAt = previous.ID, previous.CreatedAt
+		if next.LastError == earningsConsensusDisabledMessage && previous.ReportAt != nil && next.ReportAt != nil && previous.ReportAt.Equal(*next.ReportAt) {
+			next.EPSEstimate, next.EPSActual, next.EPSSurprise = previous.EPSEstimate, previous.EPSActual, previous.EPSSurprise
+			next.RevenueEstimate, next.RevenueActual, next.RevenueSurprise = previous.RevenueEstimate, previous.RevenueActual, previous.RevenueSurprise
+			next.FiscalYear, next.FiscalPeriod = previous.FiscalYear, previous.FiscalPeriod
+			if next.Currency == "" {
+				next.Currency = previous.Currency
+			}
+		}
 		summary := earningsPreviewChangeSummary(previous, next)
 		changed = summary != ""
 		if changed {
@@ -1000,6 +1012,7 @@ func newLongbridgeEarningsClient(appKey, appSecret, accessToken string) (longbri
 	if err != nil {
 		return nil, err
 	}
+	discovery.MonitorLongbridgeConfig(cfg)
 	calendarClient, err := lbcalendar.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -1012,9 +1025,15 @@ func newLongbridgeEarningsClient(appKey, appSecret, accessToken string) (longbri
 }
 
 func (c *longbridgeEarningsSDKClient) FinanceCalendar(ctx context.Context, category lbcalendar.CalendarCategory, start, end string, market *string) (*lbcalendar.CalendarEventsResponse, error) {
+	if err := discovery.CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/finance_calendar"); err != nil {
+		return nil, err
+	}
 	return c.calendar.FinanceCalendar(ctx, category, start, end, market)
 }
 
 func (c *longbridgeEarningsSDKClient) Consensus(ctx context.Context, symbol string) (*lbfundamental.FinancialConsensus, error) {
+	if err := discovery.CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/financial-consensus-detail"); err != nil {
+		return nil, err
+	}
 	return c.fundamental.Consensus(ctx, symbol)
 }

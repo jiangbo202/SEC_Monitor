@@ -37,7 +37,6 @@ type ProviderObservabilityItem struct {
 	Provider                string           `json:"provider"`
 	Configured              bool             `json:"configured"`
 	ConfiguredCredential    bool             `json:"configured_credential"`
-	TokenCount              int              `json:"token_count"`
 	LocalRequestBudget      int              `json:"local_request_budget"`
 	BudgetScope             string           `json:"budget_scope"`
 	LatestSourceRecordCount int64            `json:"latest_source_record_count"`
@@ -257,12 +256,6 @@ func normalizedPriceProviderChain(cfg config.DiscoveryConfig) string {
 	if len(parts) > 0 {
 		return strings.Join(parts, ",")
 	}
-	if len(normalizeTiingoTokens(cfg.TiingoAPIToken, cfg.TiingoAPITokens)) > 0 {
-		return "tiingo"
-	}
-	if strings.TrimSpace(cfg.TwelveDataAPIKey) != "" {
-		return "twelvedata"
-	}
 	if len(cfg.StooqURLs) > 0 {
 		return "stooq"
 	}
@@ -289,19 +282,9 @@ func priceProviderNames(chain string) []string {
 func providerObservabilityConfig(provider string, cfg config.DiscoveryConfig) ProviderObservabilityItem {
 	item := ProviderObservabilityItem{Provider: provider, Configured: true, BudgetScope: "provider_managed"}
 	switch provider {
-	case "tiingo":
-		item.TokenCount = len(normalizeTiingoTokens(cfg.TiingoAPIToken, cfg.TiingoAPITokens))
-		item.ConfiguredCredential = item.TokenCount > 0
-		item.LocalRequestBudget = cfg.TiingoRequestBudget * item.TokenCount
-		item.BudgetScope = "per_token_per_run"
-	case "twelvedata":
-		item.ConfiguredCredential = strings.TrimSpace(cfg.TwelveDataAPIKey) != ""
-		item.LocalRequestBudget = cfg.TwelveDataRequestBudget
-		item.BudgetScope = "per_run"
-	case "yahoo":
-		item.ConfiguredCredential = true
-		item.LocalRequestBudget = cfg.YahooRequestBudget
-		item.BudgetScope = "per_run"
+	case "futu":
+		item.ConfiguredCredential = cfg.FutuConfigured
+		item.BudgetScope = "provider_daily_local"
 	case "longbridge":
 		item.ConfiguredCredential = strings.TrimSpace(cfg.LongbridgeAppKey) != "" && strings.TrimSpace(cfg.LongbridgeAppSecret) != "" && strings.TrimSpace(cfg.LongbridgeAccessToken) != ""
 		item.BudgetScope = "provider_managed"

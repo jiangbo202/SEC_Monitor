@@ -182,6 +182,7 @@ func (s *TaskConfigService) EnsureDefault(ctx context.Context) error {
 		// and run after it, so either provider family can fail or retry alone.
 		{TaskName: "longbridge_watch_target_research_sync", CronExpr: "45 8 * * 2-6", Enabled: true, Running: false},
 		{TaskName: "longbridge_institutional_ownership_sync", CronExpr: "30 10 * * 2-6", Enabled: true, Running: false},
+		{TaskName: "futu_institutional_ownership_sync", CronExpr: "45 10 * * 2-6", Enabled: false, Running: false},
 		// Option volume and short-interest are a separate endpoint family. Keep
 		// them after P1/P2 and use distinct candidate/watch-target budgets.
 		{TaskName: "longbridge_candidate_option_research_sync", CronExpr: "15 9 * * 2-6", Enabled: true, Running: false},

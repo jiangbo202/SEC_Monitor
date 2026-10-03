@@ -19,17 +19,6 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 		"SMALL_CAP_SEC_COMPANY_FACTS_URL",
 		"SMALL_CAP_PRICE_PROVIDER",
 		"SMALL_CAP_STOOQ_URLS",
-		"TIINGO_API_TOKEN",
-		"TIINGO_API_TOKENS",
-		"SMALL_CAP_TIINGO_BASE_URL",
-		"SMALL_CAP_TIINGO_REQUEST_BUDGET",
-		"TWELVE_DATA_API_KEY",
-		"SMALL_CAP_TWELVE_DATA_BASE_URL",
-		"SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET",
-		"SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS",
-		"SMALL_CAP_YAHOO_BASE_URL",
-		"SMALL_CAP_YAHOO_REQUEST_BUDGET",
-		"SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS",
 		"SMALL_CAP_LONGBRIDGE_FUNDAMENTAL_REQUEST_INTERVAL_MS",
 		"SMALL_CAP_RESEARCH_MODE",
 		"SMALL_CAP_AUTO_TECHNICAL_HISTORY_WARMUP",
@@ -70,26 +59,8 @@ func TestLoadDiscoveryDefaults(t *testing.T) {
 	if cfg.Discovery.PriceProvider != "" {
 		t.Fatalf("price provider = %q", cfg.Discovery.PriceProvider)
 	}
-	if cfg.Discovery.TiingoAPIToken != "" {
-		t.Fatalf("tiingo token should be empty")
-	}
-	if cfg.Discovery.TiingoAPITokens != nil {
-		t.Fatalf("tiingo tokens should be empty")
-	}
-	if cfg.Discovery.TiingoBaseURL != "https://api.tiingo.com" {
-		t.Fatalf("tiingo base url = %q", cfg.Discovery.TiingoBaseURL)
-	}
-	if cfg.Discovery.TiingoRequestBudget != 45 {
-		t.Fatalf("tiingo request budget = %d", cfg.Discovery.TiingoRequestBudget)
-	}
-	if cfg.Discovery.YahooBaseURL != "https://query1.finance.yahoo.com" || cfg.Discovery.YahooRequestBudget != 45 {
-		t.Fatalf("yahoo config = base:%q budget:%d", cfg.Discovery.YahooBaseURL, cfg.Discovery.YahooRequestBudget)
-	}
 	if cfg.Discovery.LongbridgeFundamentalRequestIntervalMS != 1100 {
 		t.Fatalf("longbridge fundamental request interval = %d", cfg.Discovery.LongbridgeFundamentalRequestIntervalMS)
-	}
-	if cfg.Discovery.TwelveDataAPIKey != "" || cfg.Discovery.TwelveDataBaseURL != "https://api.twelvedata.com" || cfg.Discovery.TwelveDataRequestBudget != 700 || cfg.Discovery.TwelveDataRequestIntervalMS != 8000 {
-		t.Fatalf("twelve data config = key:%q base:%q budget:%d interval:%d", cfg.Discovery.TwelveDataAPIKey, cfg.Discovery.TwelveDataBaseURL, cfg.Discovery.TwelveDataRequestBudget, cfg.Discovery.TwelveDataRequestIntervalMS)
 	}
 	if !cfg.Discovery.ResearchMode {
 		t.Fatalf("research mode should default to true")
@@ -126,21 +97,8 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	t.Setenv("SMALL_CAP_SEC_TICKER_EXCHANGE_URL", "https://example.test/tickers")
 	t.Setenv("SMALL_CAP_SEC_SUBMISSIONS_URL", "https://example.test/submissions")
 	t.Setenv("SMALL_CAP_SEC_COMPANY_FACTS_URL", "https://example.test/facts")
-	t.Setenv("SMALL_CAP_PRICE_PROVIDER", "tiingo")
+	t.Setenv("SMALL_CAP_PRICE_PROVIDER", "longbridge")
 	t.Setenv("SMALL_CAP_STOOQ_URLS", " https://example.test/a , ,https://example.test/b  ")
-	t.Setenv("TIINGO_API_TOKEN", "test-token")
-	t.Setenv("TIINGO_API_TOKENS", " token-a, token-b ")
-	t.Setenv("SMALL_CAP_TIINGO_BASE_URL", "https://tiingo.example.test")
-	t.Setenv("SMALL_CAP_TIINGO_CONCURRENCY", "4")
-	t.Setenv("SMALL_CAP_TIINGO_REQUEST_BUDGET", "40")
-	t.Setenv("SMALL_CAP_TIINGO_REQUEST_INTERVAL_MS", "250")
-	t.Setenv("TWELVE_DATA_API_KEY", "td-key")
-	t.Setenv("SMALL_CAP_TWELVE_DATA_BASE_URL", "https://td.example.test")
-	t.Setenv("SMALL_CAP_TWELVE_DATA_REQUEST_BUDGET", "600")
-	t.Setenv("SMALL_CAP_TWELVE_DATA_REQUEST_INTERVAL_MS", "750")
-	t.Setenv("SMALL_CAP_YAHOO_BASE_URL", "https://yahoo.example.test")
-	t.Setenv("SMALL_CAP_YAHOO_REQUEST_BUDGET", "30")
-	t.Setenv("SMALL_CAP_YAHOO_REQUEST_INTERVAL_MS", "500")
 	t.Setenv("SMALL_CAP_LONGBRIDGE_FUNDAMENTAL_REQUEST_INTERVAL_MS", "1250")
 	t.Setenv("SMALL_CAP_RESEARCH_MODE", "false")
 	t.Setenv("SMALL_CAP_AUTO_TECHNICAL_HISTORY_WARMUP", "false")
@@ -164,26 +122,8 @@ func TestLoadDiscoveryOverrides(t *testing.T) {
 	if !reflect.DeepEqual(cfg.StooqURLs, []string{"https://example.test/a", "https://example.test/b"}) {
 		t.Fatalf("stooq urls = %#v", cfg.StooqURLs)
 	}
-	if cfg.PriceProvider != "tiingo" || cfg.TiingoAPIToken != "test-token" || cfg.TiingoBaseURL != "https://tiingo.example.test" {
-		t.Fatalf("tiingo config = provider:%q token:%q base:%q", cfg.PriceProvider, cfg.TiingoAPIToken, cfg.TiingoBaseURL)
-	}
-	if !reflect.DeepEqual(cfg.TiingoAPITokens, []string{"token-a", "token-b"}) {
-		t.Fatalf("tiingo tokens = %#v", cfg.TiingoAPITokens)
-	}
-	if cfg.TiingoConcurrency != 4 {
-		t.Fatalf("tiingo concurrency = %d", cfg.TiingoConcurrency)
-	}
-	if cfg.TiingoRequestBudget != 40 {
-		t.Fatalf("tiingo request budget = %d", cfg.TiingoRequestBudget)
-	}
-	if cfg.TiingoRequestIntervalMS != 250 {
-		t.Fatalf("tiingo request interval = %d", cfg.TiingoRequestIntervalMS)
-	}
-	if cfg.TwelveDataAPIKey != "td-key" || cfg.TwelveDataBaseURL != "https://td.example.test" || cfg.TwelveDataRequestBudget != 600 || cfg.TwelveDataRequestIntervalMS != 750 {
-		t.Fatalf("twelve data config = %#v", cfg)
-	}
-	if cfg.YahooBaseURL != "https://yahoo.example.test" || cfg.YahooRequestBudget != 30 || cfg.YahooRequestIntervalMS != 500 {
-		t.Fatalf("yahoo config = %#v", cfg)
+	if cfg.PriceProvider != "longbridge" {
+		t.Fatalf("price provider = %q", cfg.PriceProvider)
 	}
 	if cfg.LongbridgeFundamentalRequestIntervalMS != 1250 {
 		t.Fatalf("longbridge fundamental request interval = %d", cfg.LongbridgeFundamentalRequestIntervalMS)
