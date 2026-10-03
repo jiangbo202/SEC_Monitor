@@ -1501,6 +1501,8 @@ export interface MarketAnomalySnapshot {
 }
 
 export interface InstitutionalHolderSnapshot {
+	 holder_id?: string
+	 owner_type?: string
   id: number
   ticker: string
   holder_name: string
@@ -1536,10 +1538,31 @@ export interface CandidateMarketResearch {
 }
 
 export interface TickerInstitutionalHoldingHistory {
+  history_synced_at?: string
+  history_status?: 'not_synced' | 'no_confirmed_history' | 'partial'
   ticker: string
   institutional_holders: InstitutionalHolderSnapshot[]
   fund_holders: FundHolderSnapshot[]
   message: string
+  other_holders?: InstitutionalHolderSnapshot[]
+  ownership_history?: InstitutionalOwnershipPoint[]
+  coverage?: string
+  history_warnings?: string[]
+}
+
+export interface InstitutionalOwnershipPoint {
+  holder_id: string
+  holder_name: string
+  owner_type: string
+  period: string
+  holding_date: string
+  filing_date: string
+  provider_date: string
+  percent_of_shares: number | null
+  shares_held: number | null
+  source_kind: string
+  source_url: string
+  fetched_at: string
 }
 
 export interface ValuationMetricResearch { current?: number | null; low?: number | null; high?: number | null; median?: number | null; history: Array<{ date: string; value?: number | null }> }

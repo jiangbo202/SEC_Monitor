@@ -131,7 +131,7 @@
             <template #dropdown>
               <el-dropdown-menu>
 				<el-dropdown-item command="workspace">研究工作台</el-dropdown-item>
-                <el-dropdown-item command="detail">{{ t('common.details') }}</el-dropdown-item>
+                <el-dropdown-item command="detail">标的详情</el-dropdown-item>
                 <el-dropdown-item command="edit">{{ t('common.edit') }}</el-dropdown-item>
                 <el-dropdown-item command="delete" divided>{{ t('common.delete') }}</el-dropdown-item>
               </el-dropdown-menu>
@@ -156,7 +156,7 @@
         <div class="target-mobile-actions">
           <el-button type="primary" plain @click="openWorkspace(row)">研究工作台</el-button>
           <el-button :loading="syncingId === row.id" @click="syncTarget(row)">{{ t('common.sync') }}</el-button>
-          <el-button @click="openDetail(row)">管理详情</el-button>
+          <el-button @click="openDetail(row)">标的详情</el-button>
         </div>
       </article>
       <el-empty v-if="!loading && !rows.length" :description="t('pages.targets.empty')" />
@@ -264,7 +264,7 @@
       </el-table>
     </el-dialog>
 
-    <el-drawer v-model="detailVisible" :title="detailTarget ? `${detailTarget.ticker} 管理详情` : t('pages.targets.detail')" size="min(960px, 100%)">
+    <el-drawer v-model="detailVisible" :title="detailTarget ? `${detailTarget.ticker} · 标的详情` : t('pages.targets.detail')" size="min(960px, 100%)">
       <div v-if="detailTarget" class="target-detail">
         <el-alert
           v-if="detailTarget.last_sync_status === 'failed'"
@@ -274,299 +274,312 @@
           :closable="false"
           show-icon
         />
-        <div class="target-detail-summary">
-          <el-alert
-            v-if="detailTarget.target_type === 'etf'"
-            :title="hasStoredExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExact') : t('pages.targets.fundIdentityLegacy')"
-            :description="hasStoredExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExactDetail') : t('pages.targets.fundIdentityLegacyDetail')"
-            :type="hasStoredExactFundIdentity(detailTarget) ? 'success' : 'warning'"
-            :closable="false"
-            show-icon
-          />
-          <el-descriptions :column="2" border>
-            <el-descriptions-item :label="t('common.company')">{{ detailTarget.company_name }}</el-descriptions-item>
-            <el-descriptions-item label="CIK">{{ detailTarget.cik || '-' }}</el-descriptions-item>
-            <el-descriptions-item :label="t('common.type')">{{ detailTarget.target_type }}</el-descriptions-item>
-            <template v-if="detailTarget.target_type === 'etf'">
-              <el-descriptions-item :label="t('pages.targets.fundSeriesId')">{{ detailTarget.fund_series_id || '-' }}</el-descriptions-item>
-              <el-descriptions-item :label="t('pages.targets.fundClassId')">{{ detailTarget.fund_class_id || '-' }}</el-descriptions-item>
-              <el-descriptions-item :label="t('pages.targets.identitySource')">{{ detailTarget.identity_source || '-' }}</el-descriptions-item>
-            </template>
-            <el-descriptions-item :label="t('common.targetGroup')">{{ detailTarget.group || '-' }}</el-descriptions-item>
-            <el-descriptions-item :label="t('common.status')">
-              <el-tag :type="detailTarget.status === 'enabled' ? 'success' : 'info'" effect="plain">{{ targetStatusLabel(detailTarget.status) }}</el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item :label="t('pages.targets.syncStatus')">
-              <el-tag :type="syncStatusType(detailTarget.last_sync_status)" effect="plain">{{ detailTarget.last_sync_status || '-' }}</el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item :label="t('pages.targets.lastSync')">{{ formatDateTime(detailTarget.last_sync_at) }}</el-descriptions-item>
-            <el-descriptions-item :label="t('pages.targets.recentNew')">{{ detailTarget.last_new_filings || 0 }}</el-descriptions-item>
-            <el-descriptions-item :label="t('pages.targets.syncError')">{{ detailTarget.last_sync_error || '-' }}</el-descriptions-item>
-            <el-descriptions-item :label="t('pages.targets.fetchPolicy')">{{ policySummary }}</el-descriptions-item>
-          </el-descriptions>
-          <div class="target-detail-actions">
-            <el-button type="primary" :loading="syncingId === detailTarget.id" @click="syncTarget(detailTarget)">{{ t('pages.targets.syncTarget') }}</el-button>
-            <el-button @click="openEdit(detailTarget)">{{ t('common.edit') }}</el-button>
-          </div>
-        </div>
-
-        <div class="target-detail-section">
-          <div class="panel-header target-detail-section-title">
-            <span>AI 研判（手动）</span>
-            <el-space><el-select fit-input-width v-model="targetAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="targetAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!targetAIProvider || !targetAIPromptTemplate" :loading="targetAIGenerating" @click="generateTargetAI">生成研判</el-button></el-space>
-          </div>
-          <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
-          <template v-else-if="targetAIAnalyses.length"><el-select fit-input-width v-model="targetAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in targetAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeTargetAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeTargetAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><el-alert v-if="activeTargetAIAnalysis?.validation_warning" type="warning" :closable="false" show-icon title="模型输出未通过结构校验，系统已安全降级为证据不足。" style="margin-bottom:12px" /><AIRequestPrompt :system-prompt="activeTargetAIAnalysis?.system_prompt" :user-prompt="activeTargetAIAnalysis?.user_prompt" /><div style="padding:12px;background:var(--el-fill-color-light);border-radius:4px"><AIAnalysisResult :result="activeTargetAIAnalysis?.structured_result" :content="activeTargetAIAnalysis?.content" /></div></template></template>
-          <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
-          <el-alert v-show="activeTargetAIAnalysis?.status === 'queued' || activeTargetAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
-        </div>
-
-        <div class="target-detail-section">
-          <div class="panel-header target-detail-section-title">
-            <span>公司概览（SEC + Longbridge）</span>
-            <el-button v-if="detailTarget.target_type === 'stock'" size="small" :loading="detailCompanyProfileRefreshing" @click="refreshTargetCompanyProfile">刷新公司资料</el-button>
-          </div>
-          <el-descriptions v-if="detailCompanyProfile" :column="2" border size="small">
-            <el-descriptions-item :label="t('common.company')">{{ detailCompanyProfile.company_name || detailTarget.company_name || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="交易所">{{ detailCompanyProfile.exchange || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="CIK">{{ detailCompanyProfile.cik || detailTarget.cik || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="注册州/地区">{{ detailCompanyProfile.state_of_incorporation || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="SEC 行业（SIC）" :span="2">
-              {{ detailCompanyProfile.sic_description || (detailCompanyProfile.sic ? `SIC ${detailCompanyProfile.sic}` : '-') }}
-            </el-descriptions-item>
-            <el-descriptions-item label="业务概览" :span="2">{{ detailCompanyProfile.business_summary }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailCompanyProfile.website" label="官网"><a :href="companyProfileWebsiteURL(detailCompanyProfile.website)" target="_blank" rel="noopener">{{ detailCompanyProfile.website }}</a></el-descriptions-item>
-            <el-descriptions-item v-if="detailCompanyProfile.founded" label="成立时间">{{ detailCompanyProfile.founded }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailCompanyProfile.listing_date" label="上市时间">{{ detailCompanyProfile.listing_date }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailCompanyProfile.market" label="上市市场">{{ detailCompanyProfile.market }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailCompanyProfile.employees" label="员工数">{{ detailCompanyProfile.employees }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailCompanyProfile.manager" label="管理者">{{ detailCompanyProfile.manager }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailCompanyProfile.year_end" label="财年截止日">{{ detailCompanyProfile.year_end }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailCompanyProfile.address" label="公司地址" :span="2">{{ detailCompanyProfile.address }}</el-descriptions-item>
-            <el-descriptions-item label="来源" :span="2">
-              {{ detailCompanyProfile.summary_source }}<span v-if="detailCompanyProfile.profile_fetched_at"> · Longbridge 更新于 {{ formatDateTime(detailCompanyProfile.profile_fetched_at) }}</span><span v-else-if="detailCompanyProfile.metadata_as_of"> · SEC 同步于 {{ formatDateTime(detailCompanyProfile.metadata_as_of) }}</span>
-            </el-descriptions-item>
-          </el-descriptions>
-          <el-alert v-else type="info" :closable="false" show-icon title="尚未找到本地 SEC 公司元数据；将在下一次 SEC 安全宇宙同步后自动补齐。" />
-        </div>
-
-        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
-          <div class="panel-header target-detail-section-title">
-            <span>机构持仓披露（Longbridge）</span>
-            <el-button size="small" :loading="detailMarketResearchRefreshing" @click="refreshTargetMarketResearch">刷新机构持仓</el-button>
-          </div>
-          <el-alert type="info" :closable="false" show-icon title="显示 Longbridge 已返回并保存的全部报告日快照。机构的披露频率、覆盖范围和持股比例口径由提供方决定，不能把未覆盖视为零持仓。" />
-          <template v-if="detailInstitutionalHoldings && (detailInstitutionalHoldings.institutional_holders.length || detailInstitutionalHoldings.fund_holders.length)">
-            <div class="analyst-rating-provenance-title">机构股东：每次披露的公司持股比例</div>
-            <el-table :data="detailInstitutionalHoldings.institutional_holders" size="small" border max-height="360" empty-text="Longbridge 暂无机构股东披露">
-              <el-table-column prop="holder_name" label="机构" min-width="210" show-overflow-tooltip />
-              <el-table-column prop="institution_type" label="类型" min-width="100" show-overflow-tooltip />
-              <el-table-column label="持股比例" width="110" align="right"><template #default="{ row }">{{ formatPct(row.percent_of_shares) }}</template></el-table-column>
-              <el-table-column label="披露变动" width="120" align="right"><template #default="{ row }">{{ row.shares_changed === undefined || row.shares_changed === null ? '-' : row.shares_changed.toLocaleString(undefined, { maximumFractionDigits: 0 }) }}</template></el-table-column>
-              <el-table-column prop="report_date" label="报告日" width="115" />
-              <el-table-column label="本地同步" width="165"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
-              <el-table-column label="来源" width="80"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">Longbridge</el-link><span v-else>-</span></template></el-table-column>
-            </el-table>
-            <div class="analyst-rating-provenance-title">基金 / ETF：每次披露的组合权重</div>
-            <el-table :data="detailInstitutionalHoldings.fund_holders" size="small" border max-height="360" empty-text="Longbridge 暂无基金或 ETF 持仓披露">
-              <el-table-column prop="fund_name" label="基金 / ETF" min-width="220" show-overflow-tooltip />
-              <el-table-column prop="fund_symbol" label="代码" width="110" />
-              <el-table-column label="组合权重" width="110" align="right"><template #default="{ row }">{{ formatPct(row.position_ratio) }}</template></el-table-column>
-              <el-table-column prop="report_date" label="报告日" width="115" />
-              <el-table-column label="本地同步" width="165"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
-              <el-table-column label="来源" width="80"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">Longbridge</el-link><span v-else>-</span></template></el-table-column>
-            </el-table>
-            <el-alert type="info" :closable="false" style="margin-top: 12px" :title="detailInstitutionalHoldings.message" />
-          </template>
-          <el-alert v-else type="info" :closable="false" show-icon style="margin-top: 12px" :title="detailInstitutionalHoldings?.message || '尚未同步机构持仓披露。'" description="可手动刷新当前标的；不会执行 SEC 同步、行情全量请求或候选重算。" />
-        </div>
-
-        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
-          <div class="panel-header target-detail-section-title">
-            <span>市场一致目标价与合理价值情景</span>
-            <el-button size="small" :loading="detailValuationRefreshing" @click="refreshTargetValuationResearch">刷新估值研究</el-button>
-          </div>
-          <el-alert type="warning" :closable="false" show-icon title="不提供 Longbridge “公允价值”结论：市场一致目标价与本地历史估值情景必须分开阅读，均不构成投资建议。" />
-          <template v-if="detailFairValue?.status === 'available'">
-            <el-descriptions :column="2" border size="small" style="margin-top: 12px">
-              <el-descriptions-item label="参考收盘价">{{ formatFairValuePrice(detailFairValue.reference_price, detailFairValue.currency) }}<span v-if="detailFairValue.reference_price_date"> · {{ detailFairValue.reference_price_date }}</span></el-descriptions-item>
-              <el-descriptions-item label="市场一致目标价（平均）">{{ formatFairValuePrice(detailFairValue.market_consensus_target, detailFairValue.currency) }}</el-descriptions-item>
-              <el-descriptions-item label="目标价相对空间">{{ detailFairValue.market_consensus_upside_pct === undefined || detailFairValue.market_consensus_upside_pct === null ? '-' : formatSignedPct(detailFairValue.market_consensus_upside_pct) }}</el-descriptions-item>
-              <el-descriptions-item label="市场目标价区间">{{ formatFairValuePrice(detailFairValue.market_consensus_low, detailFairValue.currency) }} - {{ formatFairValuePrice(detailFairValue.market_consensus_high, detailFairValue.currency) }}</el-descriptions-item>
-              <el-descriptions-item label="机构覆盖数">{{ detailFairValue.analyst_count || '-' }}</el-descriptions-item>
-              <el-descriptions-item v-if="detailFairValue.local_historical_scenario" label="本地历史倍数情景（低 / 中 / 高）" :span="2">
-                {{ formatFairValuePrice(detailFairValue.local_historical_scenario.low, detailFairValue.currency) }} / {{ formatFairValuePrice(detailFairValue.local_historical_scenario.mid, detailFairValue.currency) }} / {{ formatFairValuePrice(detailFairValue.local_historical_scenario.high, detailFairValue.currency) }}（{{ detailFairValue.local_historical_scenario.metrics }} 个可用指标等权）
+        <StockDetailLayout :ticker="detailTarget.ticker" :company-name="detailTarget.company_name" context-label="监控标的" :opened="detailVisible">
+        <template #actions><el-button size="small" @click="openWorkspace(detailTarget)">研究工作台</el-button></template>
+        <template #overview>
+          <StockDataStatus label="公司资料" :data="detailCompanyProfile" />
+          <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="监控状态">{{ targetStatusLabel(detailTarget.status) }}</el-descriptions-item>
+              <el-descriptions-item label="同步状态">{{ syncStatusLabel(detailTarget.last_sync_status) }}</el-descriptions-item>
+              <el-descriptions-item label="价格阶段">{{ priceActionLabel(detailTechnicalAnalysis?.price_action?.phase) }}</el-descriptions-item>
+              <el-descriptions-item label="交易计划">{{ tradeSetupLabel(detailTechnicalAnalysis?.trade_setup?.status) }}</el-descriptions-item>
+            </el-descriptions>
+          <div class="target-detail-section">
+            <div class="panel-header target-detail-section-title">
+              <span>公司概览</span>
+              <el-button v-if="detailTarget.target_type === 'stock'" size="small" :loading="detailCompanyProfileRefreshing" @click="refreshTargetCompanyProfile">刷新公司资料</el-button>
+            </div>
+            <el-descriptions v-if="detailCompanyProfile" :column="2" border size="small">
+              <el-descriptions-item :label="t('common.company')">{{ detailCompanyProfile.company_name || detailTarget.company_name || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="交易所">{{ detailCompanyProfile.exchange || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="CIK">{{ detailCompanyProfile.cik || detailTarget.cik || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="注册州/地区">{{ detailCompanyProfile.state_of_incorporation || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="SEC 行业（SIC）" :span="2">
+                {{ detailCompanyProfile.sic_description || (detailCompanyProfile.sic ? `SIC ${detailCompanyProfile.sic}` : '-') }}
               </el-descriptions-item>
-              <el-descriptions-item label="本地参考价来源" :span="2">{{ detailFairValue.reference_price_source || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="业务概览" :span="2">{{ detailCompanyProfile.business_summary }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailCompanyProfile.website" label="官网"><a :href="companyProfileWebsiteURL(detailCompanyProfile.website)" target="_blank" rel="noopener">{{ detailCompanyProfile.website }}</a></el-descriptions-item>
+              <el-descriptions-item v-if="detailCompanyProfile.founded" label="成立时间">{{ detailCompanyProfile.founded }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailCompanyProfile.listing_date" label="上市时间">{{ detailCompanyProfile.listing_date }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailCompanyProfile.market" label="上市市场">{{ detailCompanyProfile.market }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailCompanyProfile.employees" label="员工数">{{ detailCompanyProfile.employees }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailCompanyProfile.manager" label="管理者">{{ detailCompanyProfile.manager }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailCompanyProfile.year_end" label="财年截止日">{{ detailCompanyProfile.year_end }}</el-descriptions-item>
+              <el-descriptions-item v-if="detailCompanyProfile.address" label="公司地址" :span="2">{{ detailCompanyProfile.address }}</el-descriptions-item>
+              <el-descriptions-item label="来源" :span="2">
+                {{ detailCompanyProfile.summary_source }}<span v-if="detailCompanyProfile.profile_fetched_at"> · Longbridge 更新于 {{ formatDateTime(detailCompanyProfile.profile_fetched_at) }}</span><span v-else-if="detailCompanyProfile.metadata_as_of"> · SEC 同步于 {{ formatDateTime(detailCompanyProfile.metadata_as_of) }}</span>
+              </el-descriptions-item>
             </el-descriptions>
-            <div v-if="detailFairValue.metric_scenarios.length" class="analyst-rating-provenance-title">本地计算输入与过程</div>
-            <el-table v-if="detailFairValue.metric_scenarios.length" :data="detailFairValue.metric_scenarios" size="small" border>
-              <el-table-column prop="metric" label="指标" width="80" />
-              <el-table-column label="当前倍数" width="115" align="right"><template #default="{ row }">{{ row.current_multiple.toFixed(2) }}</template></el-table-column>
-              <el-table-column label="历史倍数低 / 中 / 高" min-width="190" align="right"><template #default="{ row }">{{ row.historical_low.toFixed(2) }} / {{ row.historical_mid.toFixed(2) }} / {{ row.historical_high.toFixed(2) }}</template></el-table-column>
-              <el-table-column label="推导价格低 / 中 / 高" min-width="210" align="right"><template #default="{ row }">{{ formatFairValuePrice(row.price_low, detailFairValue.currency) }} / {{ formatFairValuePrice(row.price_mid, detailFairValue.currency) }} / {{ formatFairValuePrice(row.price_high, detailFairValue.currency) }}</template></el-table-column>
-            </el-table>
-            <el-alert type="info" :closable="false" style="margin-top: 12px" :title="detailFairValue.methodology" :description="detailFairValue.message" />
-          </template>
-          <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="detailFairValue?.message || '尚缺机构目标价或可用估值倍数，无法计算本地历史估值情景。'" />
-        </div>
-
-        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
-          <div class="panel-header target-detail-section-title">
-            <span>机构与分析师共识（Longbridge）</span>
-            <el-button size="small" :loading="detailAnalystRatingRefreshing" @click="refreshTargetAnalystRating">刷新分析师评级</el-button>
+            <el-alert v-else type="info" :closable="false" show-icon title="尚未找到本地 SEC 公司元数据；将在下一次 SEC 安全宇宙同步后自动补齐。" />
           </div>
-          <template v-if="detailAnalystRating?.latest?.status === 'available'">
-            <el-descriptions :column="2" border size="small">
-              <el-descriptions-item label="共识评级"><el-tag :type="analystRecommendationTagType(detailAnalystRating.latest.recommendation)" effect="plain">{{ analystRecommendationLabel(detailAnalystRating.latest.recommendation) }}</el-tag></el-descriptions-item>
-              <el-descriptions-item label="覆盖数">{{ detailAnalystRating.latest.analyst_count }}</el-descriptions-item>
-			  <el-descriptions-item label="市场一致目标价（平均）">{{ formatAnalystPrice(detailAnalystRating.latest.target_average_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
-              <el-descriptions-item label="目标价区间">{{ formatAnalystPrice(detailAnalystRating.latest.target_low_micros, detailAnalystRating.latest.currency) }} - {{ formatAnalystPrice(detailAnalystRating.latest.target_high_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
-              <el-descriptions-item label="评级分布" :span="2">强烈买入 {{ detailAnalystRating.latest.strong_buy_count }} · 买入 {{ detailAnalystRating.latest.buy_count }} · 持有 {{ detailAnalystRating.latest.hold_count }} · 跑输 {{ detailAnalystRating.latest.underperform_count }} · 卖出 {{ detailAnalystRating.latest.sell_count }}</el-descriptions-item>
-              <el-descriptions-item label="来源" :span="2">Longbridge · {{ analystProviderTimeText(detailAnalystRating.latest) }}</el-descriptions-item>
+        </template>
+        <template #technical>
+          <StockDataStatus label="行情技术" :data="detailTechnicalAnalysis" />
+          <div class="target-detail-section">
+            <div class="panel-header target-detail-section-title">
+              <span>技术信号与价格历史</span>
+              <el-button size="small" :loading="detailTechnicalBackfilling" @click="backfillTargetTechnicalHistory">
+                回填/刷新价格历史
+              </el-button>
+            </div>
+            <el-alert
+              v-if="detailTechnicalHistory.length === 0"
+              title="尚未保存该标的的本地日线；点击右侧按钮可回填约 220 个交易日，用于展示 MA20、MA50、MA200 与每日估算成交额。"
+              type="info"
+              :closable="false"
+              show-icon
+              class="target-technical-alert"
+            />
+            <TechnicalPriceHistoryChart :ticker="detailTarget.ticker" :rows="detailTechnicalHistory" :technical="detailTechnicalAnalysis" />
+          </div>
+          <div v-if="detailTechnicalAnalysis?.price_action" class="target-detail-section">
+            <div class="panel-header target-detail-section-title"><span>价格行为循环</span><el-link type="primary" @click="$router.push({ path: '/price-action-cycle', query: { ticker: detailTarget.ticker } })">集中看台</el-link></div>
+            <el-descriptions :column="3" border size="small">
+              <el-descriptions-item label="当前阶段"><el-tag :type="priceActionTagType(detailTechnicalAnalysis.price_action.phase)" effect="plain">{{ priceActionLabel(detailTechnicalAnalysis.price_action.phase) }}</el-tag></el-descriptions-item>
+              <el-descriptions-item label="置信度">{{ detailTechnicalAnalysis.price_action.status === 'ready' ? `${detailTechnicalAnalysis.price_action.confidence}%` : '-' }}</el-descriptions-item>
+              <el-descriptions-item label="持续时间">{{ detailTechnicalAnalysis.price_action.duration_trading_days ? `${detailTechnicalAnalysis.price_action.duration_trading_days} 个交易日` : '-' }}</el-descriptions-item>
+              <el-descriptions-item label="支持证据" :span="3">{{ priceActionEvidenceText(detailTechnicalAnalysis.price_action) }}</el-descriptions-item>
+              <el-descriptions-item label="下一确认" :span="3">{{ detailTechnicalAnalysis.price_action.next_confirmation || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="失效条件" :span="3">{{ detailTechnicalAnalysis.price_action.invalidation || '-' }}</el-descriptions-item>
             </el-descriptions>
-            <div class="analyst-rating-provenance-title">结果溯源明细</div>
-            <el-table :data="analystRatingProvenanceRows(detailAnalystRating.latest)" size="small" border class="analyst-rating-provenance-table">
-              <el-table-column prop="result" label="分析结果" min-width="120" />
-              <el-table-column prop="value" label="当前值" min-width="165" show-overflow-tooltip />
-              <el-table-column prop="source" label="数据来源 / 原始聚合字段" min-width="240" show-overflow-tooltip />
-              <el-table-column prop="providerUpdatedAt" label="提供方时间" width="145" show-overflow-tooltip />
-              <el-table-column prop="fetchedAt" label="本地同步时间" width="165" />
-              <el-table-column prop="note" label="说明" min-width="190" show-overflow-tooltip />
-            </el-table>
-            <div v-if="detailAnalystRating.history?.length > 1" class="analyst-rating-provenance-title">快照变更历史（仅在聚合值变化时新增）</div>
-            <el-table v-if="detailAnalystRating.history?.length > 1" :data="detailAnalystRating.history.slice(0, 12)" size="small" border class="analyst-rating-history-table">
-              <el-table-column label="同步时间" width="165"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
-              <el-table-column label="评级" width="105"><template #default="{ row }">{{ analystRecommendationLabel(row.recommendation) }}</template></el-table-column>
-              <el-table-column prop="analyst_count" label="覆盖数" width="80" align="right" />
-              <el-table-column label="平均目标价" width="125" align="right"><template #default="{ row }">{{ formatAnalystPrice(row.target_average_micros, row.currency) }}</template></el-table-column>
-              <el-table-column prop="change_summary" label="有效变化" min-width="165" show-overflow-tooltip />
-            </el-table>
-          </template>
-          <el-alert v-else type="info" :closable="false" show-icon :title="detailAnalystRating?.message || '尚未同步分析师共识'" description="可手动刷新当前标的，不会执行 SEC 同步或行情全量请求。小盘股没有分析师覆盖属于正常情况。" />
-        </div>
-
-        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
-          <div class="panel-header target-detail-section-title">
-            <span>财报预告（Longbridge）</span>
-            <el-button size="small" :loading="detailEarningsRefreshing" @click="refreshTargetEarningsPreview">刷新财报预告</el-button>
           </div>
-          <template v-if="detailEarningsPreview?.preview?.status === 'scheduled'">
-            <el-descriptions :column="2" border size="small">
-              <el-descriptions-item label="下次财报日">{{ formatDate(detailEarningsPreview.preview.report_at) }}（{{ daysUntilEarnings(detailEarningsPreview.preview.report_at) }}）</el-descriptions-item>
-              <el-descriptions-item label="发布时段">{{ detailEarningsPreview.preview.session || '提供方未标注' }}</el-descriptions-item>
-              <el-descriptions-item label="财季">{{ earningsFiscalPeriod(detailEarningsPreview.preview) }}</el-descriptions-item>
-              <el-descriptions-item label="币种">{{ detailEarningsPreview.preview.currency || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="EPS 预期">{{ formatEarningsValue(detailEarningsPreview.preview.eps_estimate, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
-              <el-descriptions-item label="收入预期">{{ formatEarningsValue(detailEarningsPreview.preview.revenue_estimate, detailEarningsPreview.preview.currency, true) }}</el-descriptions-item>
-              <el-descriptions-item label="最近实际 EPS">{{ formatEarningsValue(detailEarningsPreview.preview.eps_actual, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
-              <el-descriptions-item label="最近实际收入">{{ formatEarningsValue(detailEarningsPreview.preview.revenue_actual, detailEarningsPreview.preview.currency, true) }}</el-descriptions-item>
-              <el-descriptions-item v-if="detailEarningsPreview.preview.change_summary" label="最近变化" :span="2">{{ detailEarningsPreview.preview.change_summary }}</el-descriptions-item>
-              <el-descriptions-item label="来源与本地更新时间" :span="2">Longbridge 财报日历 / 财务共识 · {{ formatDateTime(detailEarningsPreview.preview.fetched_at) }}</el-descriptions-item>
-              <el-descriptions-item v-if="detailEarningsPreview.preview.event_content" label="提供方说明" :span="2">{{ detailEarningsPreview.preview.event_content }}</el-descriptions-item>
-            </el-descriptions>
-            <el-alert type="info" :closable="false" show-icon class="target-technical-alert" title="财报日、发布时段与预期值由提供方维护，可能调整；实际披露结果仍以公司公告及 SEC 文件为准。" />
-			<el-divider content-position="left">预期差闭环（严格时点）</el-divider>
-			<el-descriptions :column="3" border size="small">
-			  <el-descriptions-item label="闭环状态">{{ earningsCycleStatusLabel(detailEarningsPreview.cycle?.status) }}</el-descriptions-item>
-			  <el-descriptions-item label="财报前冻结 EPS">{{ formatEarningsValue(detailEarningsPreview.cycle?.frozen_consensus?.eps_estimate, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
-			  <el-descriptions-item label="实际 EPS">{{ formatEarningsValue(detailEarningsPreview.cycle?.actual?.eps_actual, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
-			  <el-descriptions-item label="次日反应">{{ formatSignedPct(detailEarningsPreview.cycle?.price_reaction?.day_1_return_pct) }}</el-descriptions-item>
-			  <el-descriptions-item label="5日反应">{{ formatSignedPct(detailEarningsPreview.cycle?.price_reaction?.day_5_return_pct) }}</el-descriptions-item>
-			  <el-descriptions-item label="预期快照数">{{ detailEarningsPreview.cycle?.timeline?.length || 0 }}</el-descriptions-item>
-			  <el-descriptions-item label="公司指引" :span="3">{{ detailEarningsPreview.cycle?.guidance_message || '尚未结构化覆盖' }}</el-descriptions-item>
-			</el-descriptions>
-			<el-alert v-if="detailEarningsPreview.cycle?.warnings?.length" type="warning" :closable="false" show-icon class="target-technical-alert" :title="earningsCycleWarnings(detailEarningsPreview.cycle.warnings)" />
-          </template>
-          <el-alert v-else type="info" :closable="false" show-icon :title="detailEarningsPreview?.message || '尚未同步财报预告'" :description="detailEarningsPreview?.preview?.last_error || '可手动刷新当前标的；不会执行 SEC 同步或行情全量请求。'" />
-        </div>
-
-        <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
-          <ProfitHistoryChart :history="detailProfitHistory" />
-        </div>
-
-        <div class="target-detail-section">
-          <div class="panel-header target-detail-section-title">
-            <span>本地日线与成交额</span>
-            <el-button size="small" :loading="detailTechnicalBackfilling" @click="backfillTargetTechnicalHistory">
-              回填/刷新价格历史
-            </el-button>
+          <div class="target-detail-section">
+            <div class="panel-header target-detail-section-title"><span>交易计划状态历史</span></div>
+            <el-alert type="info" :closable="false" show-icon title="仅记录日线收盘后交易计划状态的变化，不是交易指令或实际成交记录。" />
+            <el-timeline v-if="detailTradeSetupHistory.length" class="target-trade-setup-timeline">
+              <el-timeline-item v-for="event in detailTradeSetupHistory" :key="event.id" :timestamp="formatDateTime(event.started_at)" :type="tradeSetupTagType(event.status)">
+                <strong>{{ tradeSetupLabel(event.status) }}</strong>
+                <span v-if="event.previous_status">（由 {{ tradeSetupLabel(event.previous_status) }} 变更）</span>
+                <div class="target-trade-setup-detail">收盘 {{ formatPrice(event.close_usd) }} USD · 止损 {{ formatPrice(event.stop_loss_usd) }} USD · {{ event.entry_trigger || event.exit_reason || '等待触发条件' }}</div>
+                <div v-if="event.reasons?.length" class="target-trade-setup-detail">{{ event.reasons.join('；') }}</div>
+              </el-timeline-item>
+            </el-timeline>
+            <el-empty v-else :image-size="44" description="尚未记录状态变化；下次日线同步后会建立当前状态基线。" />
           </div>
-          <el-alert
-            v-if="detailTechnicalHistory.length === 0"
-            title="尚未保存该标的的本地日线；点击右侧按钮可回填约 220 个交易日，用于展示 MA20、MA50、MA200 与每日估算成交额。"
-            type="info"
-            :closable="false"
-            show-icon
-            class="target-technical-alert"
-          />
-          <TechnicalPriceHistoryChart :ticker="detailTarget.ticker" :rows="detailTechnicalHistory" :technical="detailTechnicalAnalysis" />
-        </div>
-
-        <div v-if="detailTechnicalAnalysis?.price_action" class="target-detail-section">
-          <div class="panel-header target-detail-section-title"><span>价格行为循环</span><el-link type="primary" @click="$router.push({ path: '/price-action-cycle', query: { ticker: detailTarget.ticker } })">集中看台</el-link></div>
-          <el-descriptions :column="3" border size="small">
-            <el-descriptions-item label="当前阶段"><el-tag :type="priceActionTagType(detailTechnicalAnalysis.price_action.phase)" effect="plain">{{ priceActionLabel(detailTechnicalAnalysis.price_action.phase) }}</el-tag></el-descriptions-item>
-            <el-descriptions-item label="置信度">{{ detailTechnicalAnalysis.price_action.status === 'ready' ? `${detailTechnicalAnalysis.price_action.confidence}%` : '-' }}</el-descriptions-item>
-            <el-descriptions-item label="持续时间">{{ detailTechnicalAnalysis.price_action.duration_trading_days ? `${detailTechnicalAnalysis.price_action.duration_trading_days} 个交易日` : '-' }}</el-descriptions-item>
-            <el-descriptions-item label="支持证据" :span="3">{{ priceActionEvidenceText(detailTechnicalAnalysis.price_action) }}</el-descriptions-item>
-            <el-descriptions-item label="下一确认" :span="3">{{ detailTechnicalAnalysis.price_action.next_confirmation || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="失效条件" :span="3">{{ detailTechnicalAnalysis.price_action.invalidation || '-' }}</el-descriptions-item>
-          </el-descriptions>
-        </div>
-
-        <div class="target-detail-section">
-          <div class="panel-header target-detail-section-title"><span>交易计划状态历史</span></div>
-          <el-alert type="info" :closable="false" show-icon title="仅记录日线收盘后交易计划状态的变化，不是交易指令或实际成交记录。" />
-          <el-timeline v-if="detailTradeSetupHistory.length" class="target-trade-setup-timeline">
-            <el-timeline-item v-for="event in detailTradeSetupHistory" :key="event.id" :timestamp="formatDateTime(event.started_at)" :type="tradeSetupTagType(event.status)">
-              <strong>{{ tradeSetupLabel(event.status) }}</strong>
-              <span v-if="event.previous_status">（由 {{ tradeSetupLabel(event.previous_status) }} 变更）</span>
-              <div class="target-trade-setup-detail">收盘 {{ formatPrice(event.close_usd) }} USD · 止损 {{ formatPrice(event.stop_loss_usd) }} USD · {{ event.entry_trigger || event.exit_reason || '等待触发条件' }}</div>
-              <div v-if="event.reasons?.length" class="target-trade-setup-detail">{{ event.reasons.join('；') }}</div>
-            </el-timeline-item>
-          </el-timeline>
-          <el-empty v-else :image-size="44" description="尚未记录状态变化；下次日线同步后会建立当前状态基线。" />
-        </div>
-
-        <div class="panel-header target-detail-section-title">
-          <span>{{ t('pages.targets.recentSync') }}</span>
-          <el-link type="primary" @click="$router.push('/sync-runs')">{{ t('common.history') }}</el-link>
-        </div>
-        <el-table :data="detailSyncDetails" v-loading="detailLoading" border :empty-text="t('pages.targets.noSyncRuns')">
-          <el-table-column prop="status" :label="t('common.status')" width="130">
-            <template #default="{ row }">
-              <el-tag class="status-tag" :type="syncStatusType(row.status)" effect="plain">{{ row.status }}</el-tag>
+        </template>
+        <template #fundamentals>
+          <StockDataStatus label="财务历史" :data="detailProfitHistory" />
+          <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+            <ProfitHistoryChart :history="detailProfitHistory" />
+          </div>
+        </template>
+        <template #events>
+          <StockDataStatus label="财报预告" :data="detailEarningsPreview?.preview" />
+          <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+            <div class="panel-header target-detail-section-title">
+              <span>财报预告（Longbridge）</span>
+              <el-button size="small" :loading="detailEarningsRefreshing" @click="refreshTargetEarningsPreview">刷新财报预告</el-button>
+            </div>
+            <template v-if="detailEarningsPreview?.preview?.status === 'scheduled'">
+              <el-descriptions :column="2" border size="small">
+                <el-descriptions-item label="下次财报日">{{ formatDate(detailEarningsPreview.preview.report_at) }}（{{ daysUntilEarnings(detailEarningsPreview.preview.report_at) }}）</el-descriptions-item>
+                <el-descriptions-item label="发布时段">{{ detailEarningsPreview.preview.session || '提供方未标注' }}</el-descriptions-item>
+                <el-descriptions-item label="财季">{{ earningsFiscalPeriod(detailEarningsPreview.preview) }}</el-descriptions-item>
+                <el-descriptions-item label="币种">{{ detailEarningsPreview.preview.currency || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="EPS 预期">{{ formatEarningsValue(detailEarningsPreview.preview.eps_estimate, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
+                <el-descriptions-item label="收入预期">{{ formatEarningsValue(detailEarningsPreview.preview.revenue_estimate, detailEarningsPreview.preview.currency, true) }}</el-descriptions-item>
+                <el-descriptions-item label="最近实际 EPS">{{ formatEarningsValue(detailEarningsPreview.preview.eps_actual, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
+                <el-descriptions-item label="最近实际收入">{{ formatEarningsValue(detailEarningsPreview.preview.revenue_actual, detailEarningsPreview.preview.currency, true) }}</el-descriptions-item>
+                <el-descriptions-item v-if="detailEarningsPreview.preview.change_summary" label="最近变化" :span="2">{{ detailEarningsPreview.preview.change_summary }}</el-descriptions-item>
+                <el-descriptions-item label="来源与本地更新时间" :span="2">Longbridge 财报日历 / 财务共识 · {{ formatDateTime(detailEarningsPreview.preview.fetched_at) }}</el-descriptions-item>
+                <el-descriptions-item v-if="detailEarningsPreview.preview.event_content" label="提供方说明" :span="2">{{ detailEarningsPreview.preview.event_content }}</el-descriptions-item>
+              </el-descriptions>
+              <el-alert type="info" :closable="false" show-icon class="target-technical-alert" title="财报日、发布时段与预期值由提供方维护，可能调整；实际披露结果仍以公司公告及 SEC 文件为准。" />
+        <el-divider content-position="left">预期差闭环（严格时点）</el-divider>
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item label="闭环状态">{{ earningsCycleStatusLabel(detailEarningsPreview.cycle?.status) }}</el-descriptions-item>
+          <el-descriptions-item label="财报前冻结 EPS">{{ formatEarningsValue(detailEarningsPreview.cycle?.frozen_consensus?.eps_estimate, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
+          <el-descriptions-item label="实际 EPS">{{ formatEarningsValue(detailEarningsPreview.cycle?.actual?.eps_actual, detailEarningsPreview.preview.currency, false) }}</el-descriptions-item>
+          <el-descriptions-item label="次日反应">{{ formatSignedPct(detailEarningsPreview.cycle?.price_reaction?.day_1_return_pct) }}</el-descriptions-item>
+          <el-descriptions-item label="5日反应">{{ formatSignedPct(detailEarningsPreview.cycle?.price_reaction?.day_5_return_pct) }}</el-descriptions-item>
+          <el-descriptions-item label="预期快照数">{{ detailEarningsPreview.cycle?.timeline?.length || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="公司指引" :span="3">{{ detailEarningsPreview.cycle?.guidance_message || '尚未结构化覆盖' }}</el-descriptions-item>
+        </el-descriptions>
+        <el-alert v-if="detailEarningsPreview.cycle?.warnings?.length" type="warning" :closable="false" show-icon class="target-technical-alert" :title="earningsCycleWarnings(detailEarningsPreview.cycle.warnings)" />
             </template>
-          </el-table-column>
-          <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" />
-          <el-table-column prop="duration_ms" :label="t('common.duration')" width="100">
-            <template #default="{ row }">{{ formatDuration(row.duration_ms) }}</template>
-          </el-table-column>
-          <el-table-column prop="started_at" :label="t('common.time')" width="180">
-            <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
-          </el-table-column>
-          <el-table-column prop="error_message" :label="t('common.error')" min-width="180" show-overflow-tooltip />
-		  <el-table-column prop="warning_message" :label="t('pages.syncRuns.warning')" min-width="180" show-overflow-tooltip />
-        </el-table>
-
-        <div class="panel-header target-detail-section-title">
-          <span>{{ t('pages.targets.recentFilings') }}</span>
-          <el-link type="primary" @click="$router.push(`/filings?ticker=${encodeURIComponent(detailTarget.ticker)}`)">{{ t('common.viewAll') }}</el-link>
-        </div>
-        <el-table :data="detailFilings" v-loading="detailLoading" border :empty-text="t('pages.targets.noFilings')">
-          <el-table-column prop="filing_type" :label="t('common.type')" width="90" />
-          <el-table-column prop="filing_date" :label="t('common.filingDate')" width="130">
-            <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
-          </el-table-column>
-          <el-table-column prop="pulled_at" :label="t('common.syncTime')" width="170">
-            <template #default="{ row }">{{ formatDateTime(row.pulled_at) }}</template>
-          </el-table-column>
-          <el-table-column prop="title" :label="t('common.title')" min-width="200" show-overflow-tooltip />
-          <el-table-column :label="t('common.link')" width="80">
-            <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ t('common.open') }}</el-link></template>
-          </el-table-column>
-        </el-table>
+            <el-alert v-else type="info" :closable="false" show-icon :title="detailEarningsPreview?.message || '尚未同步财报预告'" :description="detailEarningsPreview?.preview?.last_error || '可手动刷新当前标的；不会执行 SEC 同步或行情全量请求。'" />
+          </div>
+          <div class="target-detail-section">
+  <div class="panel-header target-detail-section-title">
+            <span>{{ t('pages.targets.recentFilings') }}</span>
+            <el-link type="primary" @click="$router.push(`/filings?ticker=${encodeURIComponent(detailTarget.ticker)}`)">{{ t('common.viewAll') }}</el-link>
+          </div>
+  <el-table :data="detailFilings" v-loading="detailLoading" border :empty-text="t('pages.targets.noFilings')">
+            <el-table-column prop="filing_type" :label="t('common.type')" width="90" />
+            <el-table-column prop="filing_date" :label="t('common.filingDate')" width="130">
+              <template #default="{ row }">{{ formatDate(row.filing_date) }}</template>
+            </el-table-column>
+            <el-table-column prop="pulled_at" :label="t('common.syncTime')" width="170">
+              <template #default="{ row }">{{ formatDateTime(row.pulled_at) }}</template>
+            </el-table-column>
+            <el-table-column prop="title" :label="t('common.title')" min-width="200" show-overflow-tooltip />
+            <el-table-column :label="t('common.link')" width="80">
+              <template #default="{ row }"><el-link :href="row.filing_url" target="_blank" type="primary">{{ t('common.open') }}</el-link></template>
+            </el-table-column>
+          </el-table>
+  </div>
+        </template>
+        <template #ownership>
+          <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+            <div class="panel-header target-detail-section-title">
+              <span>主要机构持仓变化</span>
+              <el-button size="small" :loading="detailMarketResearchRefreshing" @click="refreshTargetMarketResearch">刷新主要机构历史</el-button>
+            </div>
+            <el-alert type="info" :closable="false" show-icon title="显示 Longbridge 已返回并保存的全部报告日快照。机构的披露频率、覆盖范围和持股比例口径由提供方决定，不能把未覆盖视为零持仓。" />
+            <InstitutionalOwnershipHistory v-if="detailInstitutionalHoldings" :history="detailInstitutionalHoldings" />
+            <template v-if="detailInstitutionalHoldings?.fund_holders.length">
+              <div class="analyst-rating-provenance-title">基金 / ETF：每次披露的组合权重</div>
+              <el-table :data="detailInstitutionalHoldings.fund_holders" size="small" border max-height="360" empty-text="Longbridge 暂无基金或 ETF 持仓披露">
+                <el-table-column prop="fund_name" label="基金 / ETF" min-width="220" show-overflow-tooltip />
+                <el-table-column prop="fund_symbol" label="代码" width="110" />
+                <el-table-column label="组合权重" width="110" align="right"><template #default="{ row }">{{ formatPct(row.position_ratio) }}</template></el-table-column>
+                <el-table-column prop="report_date" label="报告日" width="115" />
+                <el-table-column label="本地同步" width="165"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
+                <el-table-column label="来源" width="80"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">Longbridge</el-link><span v-else>-</span></template></el-table-column>
+              </el-table>
+              <el-alert type="info" :closable="false" style="margin-top: 12px" :title="detailInstitutionalHoldings.message" />
+            </template>
+            <el-alert v-if="!detailInstitutionalHoldings" type="info" :closable="false" show-icon style="margin-top: 12px" title="尚未读取本地机构持仓记录。" description="可手动刷新当前标的；不会执行 SEC 同步、行情全量请求或候选重算。" />
+          </div>
+        </template>
+        <template #valuation>
+          <StockDataStatus label="分析师共识" :data="detailAnalystRating?.latest" />
+          <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+            <div class="panel-header target-detail-section-title">
+              <span>分析师共识</span>
+              <el-button size="small" :loading="detailAnalystRatingRefreshing" @click="refreshTargetAnalystRating">刷新分析师评级</el-button>
+            </div>
+            <template v-if="detailAnalystRating?.latest?.status === 'available'">
+              <el-descriptions :column="2" border size="small">
+                <el-descriptions-item label="共识评级"><el-tag :type="analystRecommendationTagType(detailAnalystRating.latest.recommendation)" effect="plain">{{ analystRecommendationLabel(detailAnalystRating.latest.recommendation) }}</el-tag></el-descriptions-item>
+                <el-descriptions-item label="覆盖数">{{ detailAnalystRating.latest.analyst_count }}</el-descriptions-item>
+          <el-descriptions-item label="市场一致目标价（平均）">{{ formatAnalystPrice(detailAnalystRating.latest.target_average_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
+                <el-descriptions-item label="目标价区间">{{ formatAnalystPrice(detailAnalystRating.latest.target_low_micros, detailAnalystRating.latest.currency) }} - {{ formatAnalystPrice(detailAnalystRating.latest.target_high_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
+                <el-descriptions-item label="评级分布" :span="2">强烈买入 {{ detailAnalystRating.latest.strong_buy_count }} · 买入 {{ detailAnalystRating.latest.buy_count }} · 持有 {{ detailAnalystRating.latest.hold_count }} · 跑输 {{ detailAnalystRating.latest.underperform_count }} · 卖出 {{ detailAnalystRating.latest.sell_count }}</el-descriptions-item>
+                <el-descriptions-item label="来源" :span="2">Longbridge · {{ analystProviderTimeText(detailAnalystRating.latest) }}</el-descriptions-item>
+              </el-descriptions>
+              <div class="analyst-rating-provenance-title">结果溯源明细</div>
+              <el-table :data="analystRatingProvenanceRows(detailAnalystRating.latest)" size="small" border class="analyst-rating-provenance-table">
+                <el-table-column prop="result" label="分析结果" min-width="120" />
+                <el-table-column prop="value" label="当前值" min-width="165" show-overflow-tooltip />
+                <el-table-column prop="source" label="数据来源 / 原始聚合字段" min-width="240" show-overflow-tooltip />
+                <el-table-column prop="providerUpdatedAt" label="提供方时间" width="145" show-overflow-tooltip />
+                <el-table-column prop="fetchedAt" label="本地同步时间" width="165" />
+                <el-table-column prop="note" label="说明" min-width="190" show-overflow-tooltip />
+              </el-table>
+              <div v-if="detailAnalystRating.history?.length > 1" class="analyst-rating-provenance-title">快照变更历史（仅在聚合值变化时新增）</div>
+              <el-table v-if="detailAnalystRating.history?.length > 1" :data="detailAnalystRating.history.slice(0, 12)" size="small" border class="analyst-rating-history-table">
+                <el-table-column label="同步时间" width="165"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
+                <el-table-column label="评级" width="105"><template #default="{ row }">{{ analystRecommendationLabel(row.recommendation) }}</template></el-table-column>
+                <el-table-column prop="analyst_count" label="覆盖数" width="80" align="right" />
+                <el-table-column label="平均目标价" width="125" align="right"><template #default="{ row }">{{ formatAnalystPrice(row.target_average_micros, row.currency) }}</template></el-table-column>
+                <el-table-column prop="change_summary" label="有效变化" min-width="165" show-overflow-tooltip />
+              </el-table>
+            </template>
+            <el-alert v-else type="info" :closable="false" show-icon :title="detailAnalystRating?.message || '尚未同步分析师共识'" description="可手动刷新当前标的，不会执行 SEC 同步或行情全量请求。小盘股没有分析师覆盖属于正常情况。" />
+          </div>
+          <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
+            <div class="panel-header target-detail-section-title">
+              <span>目标价与估值情景</span>
+              <el-button size="small" :loading="detailValuationRefreshing" @click="refreshTargetValuationResearch">刷新估值研究</el-button>
+            </div>
+            <el-alert type="warning" :closable="false" show-icon title="不提供 Longbridge “公允价值”结论：市场一致目标价与本地历史估值情景必须分开阅读，均不构成投资建议。" />
+            <template v-if="detailFairValue?.status === 'available'">
+              <el-descriptions :column="2" border size="small" style="margin-top: 12px">
+                <el-descriptions-item label="参考收盘价">{{ formatFairValuePrice(detailFairValue.reference_price, detailFairValue.currency) }}<span v-if="detailFairValue.reference_price_date"> · {{ detailFairValue.reference_price_date }}</span></el-descriptions-item>
+                <el-descriptions-item label="市场一致目标价（平均）">{{ formatFairValuePrice(detailFairValue.market_consensus_target, detailFairValue.currency) }}</el-descriptions-item>
+                <el-descriptions-item label="目标价相对空间">{{ detailFairValue.market_consensus_upside_pct === undefined || detailFairValue.market_consensus_upside_pct === null ? '-' : formatSignedPct(detailFairValue.market_consensus_upside_pct) }}</el-descriptions-item>
+                <el-descriptions-item label="市场目标价区间">{{ formatFairValuePrice(detailFairValue.market_consensus_low, detailFairValue.currency) }} - {{ formatFairValuePrice(detailFairValue.market_consensus_high, detailFairValue.currency) }}</el-descriptions-item>
+                <el-descriptions-item label="机构覆盖数">{{ detailFairValue.analyst_count || '-' }}</el-descriptions-item>
+                <el-descriptions-item v-if="detailFairValue.local_historical_scenario" label="本地历史倍数情景（低 / 中 / 高）" :span="2">
+                  {{ formatFairValuePrice(detailFairValue.local_historical_scenario.low, detailFairValue.currency) }} / {{ formatFairValuePrice(detailFairValue.local_historical_scenario.mid, detailFairValue.currency) }} / {{ formatFairValuePrice(detailFairValue.local_historical_scenario.high, detailFairValue.currency) }}（{{ detailFairValue.local_historical_scenario.metrics }} 个可用指标等权）
+                </el-descriptions-item>
+                <el-descriptions-item label="本地参考价来源" :span="2">{{ detailFairValue.reference_price_source || '-' }}</el-descriptions-item>
+              </el-descriptions>
+              <div v-if="detailFairValue.metric_scenarios.length" class="analyst-rating-provenance-title">本地计算输入与过程</div>
+              <el-table v-if="detailFairValue.metric_scenarios.length" :data="detailFairValue.metric_scenarios" size="small" border>
+                <el-table-column prop="metric" label="指标" width="80" />
+                <el-table-column label="当前倍数" width="115" align="right"><template #default="{ row }">{{ row.current_multiple.toFixed(2) }}</template></el-table-column>
+                <el-table-column label="历史倍数低 / 中 / 高" min-width="190" align="right"><template #default="{ row }">{{ row.historical_low.toFixed(2) }} / {{ row.historical_mid.toFixed(2) }} / {{ row.historical_high.toFixed(2) }}</template></el-table-column>
+                <el-table-column label="推导价格低 / 中 / 高" min-width="210" align="right"><template #default="{ row }">{{ formatFairValuePrice(row.price_low, detailFairValue.currency) }} / {{ formatFairValuePrice(row.price_mid, detailFairValue.currency) }} / {{ formatFairValuePrice(row.price_high, detailFairValue.currency) }}</template></el-table-column>
+              </el-table>
+              <el-alert type="info" :closable="false" style="margin-top: 12px" :title="detailFairValue.methodology" :description="detailFairValue.message" />
+            </template>
+            <el-alert v-else type="info" :closable="false" show-icon style="margin-top:12px" :title="detailFairValue?.message || '尚缺机构目标价或可用估值倍数，无法计算本地历史估值情景。'" />
+          </div>
+        </template>
+        <template #research>
+          <div class="target-detail-section">
+            <div class="panel-header target-detail-section-title">
+              <span>AI 研判（手动）</span>
+              <el-space><el-select fit-input-width v-model="targetAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="targetAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!targetAIProvider || !targetAIPromptTemplate" :loading="targetAIGenerating" @click="generateTargetAI">生成研判</el-button></el-space>
+            </div>
+            <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
+            <template v-else-if="targetAIAnalyses.length"><el-select fit-input-width v-model="targetAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in targetAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeTargetAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeTargetAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><el-alert v-if="activeTargetAIAnalysis?.validation_warning" type="warning" :closable="false" show-icon title="模型输出未通过结构校验，系统已安全降级为证据不足。" style="margin-bottom:12px" /><AIRequestPrompt :system-prompt="activeTargetAIAnalysis?.system_prompt" :user-prompt="activeTargetAIAnalysis?.user_prompt" /><div style="padding:12px;background:var(--el-fill-color-light);border-radius:4px"><AIAnalysisResult :result="activeTargetAIAnalysis?.structured_result" :content="activeTargetAIAnalysis?.content" /></div></template></template>
+            <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
+            <el-alert v-show="activeTargetAIAnalysis?.status === 'queued' || activeTargetAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
+          </div>
+        </template>
+        <template #data>
+          <div class="target-detail-summary">
+            <el-alert
+              v-if="detailTarget.target_type === 'etf'"
+              :title="hasStoredExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExact') : t('pages.targets.fundIdentityLegacy')"
+              :description="hasStoredExactFundIdentity(detailTarget) ? t('pages.targets.fundIdentityExactDetail') : t('pages.targets.fundIdentityLegacyDetail')"
+              :type="hasStoredExactFundIdentity(detailTarget) ? 'success' : 'warning'"
+              :closable="false"
+              show-icon
+            />
+            <el-descriptions :column="2" border>
+              <el-descriptions-item :label="t('common.company')">{{ detailTarget.company_name }}</el-descriptions-item>
+              <el-descriptions-item label="CIK">{{ detailTarget.cik || '-' }}</el-descriptions-item>
+              <el-descriptions-item :label="t('common.type')">{{ detailTarget.target_type }}</el-descriptions-item>
+              <template v-if="detailTarget.target_type === 'etf'">
+                <el-descriptions-item :label="t('pages.targets.fundSeriesId')">{{ detailTarget.fund_series_id || '-' }}</el-descriptions-item>
+                <el-descriptions-item :label="t('pages.targets.fundClassId')">{{ detailTarget.fund_class_id || '-' }}</el-descriptions-item>
+                <el-descriptions-item :label="t('pages.targets.identitySource')">{{ detailTarget.identity_source || '-' }}</el-descriptions-item>
+              </template>
+              <el-descriptions-item :label="t('common.targetGroup')">{{ detailTarget.group || '-' }}</el-descriptions-item>
+              <el-descriptions-item :label="t('common.status')">
+                <el-tag :type="detailTarget.status === 'enabled' ? 'success' : 'info'" effect="plain">{{ targetStatusLabel(detailTarget.status) }}</el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item :label="t('pages.targets.syncStatus')">
+                <el-tag :type="syncStatusType(detailTarget.last_sync_status)" effect="plain">{{ detailTarget.last_sync_status || '-' }}</el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item :label="t('pages.targets.lastSync')">{{ formatDateTime(detailTarget.last_sync_at) }}</el-descriptions-item>
+              <el-descriptions-item :label="t('pages.targets.recentNew')">{{ detailTarget.last_new_filings || 0 }}</el-descriptions-item>
+              <el-descriptions-item :label="t('pages.targets.syncError')">{{ detailTarget.last_sync_error || '-' }}</el-descriptions-item>
+              <el-descriptions-item :label="t('pages.targets.fetchPolicy')">{{ policySummary }}</el-descriptions-item>
+            </el-descriptions>
+            <div class="target-detail-actions">
+              <el-button type="primary" :loading="syncingId === detailTarget.id" @click="syncTarget(detailTarget)">{{ t('pages.targets.syncTarget') }}</el-button>
+              <el-button @click="openEdit(detailTarget)">{{ t('common.edit') }}</el-button>
+            </div>
+          </div>
+          <div class="target-detail-section">
+  <div class="panel-header target-detail-section-title">
+            <span>{{ t('pages.targets.recentSync') }}</span>
+            <el-link type="primary" @click="$router.push('/sync-runs')">{{ t('common.history') }}</el-link>
+          </div>
+  <el-table :data="detailSyncDetails" v-loading="detailLoading" border :empty-text="t('pages.targets.noSyncRuns')">
+            <el-table-column prop="status" :label="t('common.status')" width="130">
+              <template #default="{ row }">
+                <el-tag class="status-tag" :type="syncStatusType(row.status)" effect="plain">{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="new_filings" :label="t('common.newCount')" width="80" />
+            <el-table-column prop="duration_ms" :label="t('common.duration')" width="100">
+              <template #default="{ row }">{{ formatDuration(row.duration_ms) }}</template>
+            </el-table-column>
+            <el-table-column prop="started_at" :label="t('common.time')" width="180">
+              <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
+            </el-table-column>
+            <el-table-column prop="error_message" :label="t('common.error')" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="warning_message" :label="t('pages.syncRuns.warning')" min-width="180" show-overflow-tooltip />
+          </el-table>
+  </div>
+        </template>
+        </StockDetailLayout>
       </div>
     </el-drawer>
   </section>
@@ -584,6 +597,9 @@ import AIAnalysisResult from '@/components/AIAnalysisResult.vue'
 import type { AIAnalysisStructuredResult } from '@/api/types'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
+import InstitutionalOwnershipHistory from '@/components/InstitutionalOwnershipHistory.vue'
+import StockDetailLayout from '@/components/StockDetailLayout.vue'
+import StockDataStatus from '@/components/StockDataStatus.vue'
 import type { AnalystRatingView, ApiResponse, CandidateFairValueEstimate, CandidateTechnicalAnalysis, CandidateTechnicalHistoryRow, CompanyProfile, EarningsPreview, EarningsPreviewRefreshResult, EarningsPreviewView, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerInstitutionalHoldingHistory, TickerLookup, TickerTechnicalHistory, TradePlanSimulationRebuildResult, TradePlanSimulationReport, TradeSetupStatusEvent, WatchTarget } from '@/api/types'
 import { targetRouteState } from '@/utils/researchRouteState'
 import { useI18n } from '@/i18n'
@@ -1173,10 +1189,11 @@ async function refreshTargetMarketResearch() {
 	if (!target) return
 	detailMarketResearchRefreshing.value = true
 	try {
-		await apiClient.post(`/discovery/market-research/${encodeURIComponent(target.ticker)}/refresh`, null, { params: { cik: target.cik || undefined } })
-		const holdings = await apiClient.get<ApiResponse<TickerInstitutionalHoldingHistory>>(`/discovery/institutional-holdings/${encodeURIComponent(target.ticker)}`)
-		detailInstitutionalHoldings.value = holdings.data.data
-		ElMessage.success('已更新 Longbridge 机构持仓研究')
+		const response = await apiClient.post(`/discovery/institutional-holdings/${encodeURIComponent(target.ticker)}/refresh`, null, { timeout: 95000 })
+		if (detailTarget.value?.id !== target.id) return
+		detailInstitutionalHoldings.value = response.data.data.research
+		if (response.data.data.refresh.warnings?.length) ElMessage.warning('已保存可用披露，请查看历史覆盖说明')
+		else ElMessage.success('已更新 Longbridge 主要机构历史（24 小时缓存）')
 	} catch (err: any) {
 		ElMessage.error(err?.response?.data?.message || '刷新机构持仓研究失败')
 	} finally {

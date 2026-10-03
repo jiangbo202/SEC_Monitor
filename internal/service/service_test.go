@@ -3845,8 +3845,8 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(tasks) != 27 {
-				t.Fatalf("tasks = %d, want 27", len(tasks))
+			if len(tasks) != 28 {
+				t.Fatalf("tasks = %d, want 28", len(tasks))
 			}
 			names := map[string]bool{}
 			enabled := map[string]bool{}

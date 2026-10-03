@@ -1242,6 +1242,21 @@ func (h *AppHandler) GetDiscoveryTickerInstitutionalHoldings(c *gin.Context) {
 	OK(c, result)
 }
 
+func (h *AppHandler) RefreshDiscoveryInstitutionalOwnership(c *gin.Context) {
+	result, err := h.discoverySyncService().RefreshInstitutionalOwnership(c.Request.Context(), c.Param("ticker"))
+	if err != nil {
+		Error(c, fmt.Errorf("refresh institutional ownership: %s", service.SanitizeSensitiveError(err.Error())))
+		return
+	}
+	view, err := discovery.GetTickerInstitutionalHoldingHistory(c.Request.Context(), h.DiscoveryDB, c.Param("ticker"))
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	view.HistoryWarnings = append(view.HistoryWarnings, result.Warnings...)
+	OK(c, gin.H{"refresh": result, "research": view})
+}
+
 // GetDiscoveryOptionResearch returns local options/short-interest snapshots.
 // Opening the page never causes an external market-data request.
 func (h *AppHandler) GetDiscoveryOptionResearch(c *gin.Context) {

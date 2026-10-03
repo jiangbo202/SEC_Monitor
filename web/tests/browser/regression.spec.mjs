@@ -23,6 +23,31 @@ test.beforeEach(async ({ context }) => {
     attempted.push(route.request().url());return route.abort()
   })
 })
+
+test('主要机构历史保留缺失值、隔离日期口径，打开页面不触发外部刷新', async ({page}) => {
+  await page.goto(`${fixtureURL}/__test/reset?scenario=success`)
+  let refreshes=0
+  const point=(overrides={})=>({holder_id:'1',holder_name:'Example Capital',owner_type:'Institution',period:'Q1 2026',holding_date:'',provider_date:'2026-03-31',filing_date:'',percent_of_shares:2,shares_held:1000,source_kind:'detail',source_url:'https://open.longbridge.com/docs/fundamental/fundamental/shareholder-detail',fetched_at:'2026-10-01T00:00:00Z',...overrides})
+  const history={ticker:'TEST',institutional_holders:[],fund_holders:[],other_holders:[{holder_name:'Example Person',owner_type:'Person',percent_of_shares:null,report_date:'2026-06-30'}],ownership_history:[point({period:'Q3 2026',provider_date:'2026-09-30',percent_of_shares:3}),point({period:'Q2 2026',provider_date:'2026-06-30',percent_of_shares:null}),point()],history_warnings:[],message:'仅覆盖主要机构，不是机构总占比'}
+  await page.route('**/api/institutional-filings',route=>route.fulfill({json:{data:[]}}))
+  await page.route('**/api/discovery/institutional-holdings/TEST',route=>route.fulfill({json:{data:history}}))
+  await page.route('**/api/discovery/institutional-holdings/TEST/refresh',route=>{refreshes++;return route.fulfill({json:{data:{research:history,refresh:{warnings:[]}}}})})
+  await page.goto(`${fixtureURL}/institutional-holdings?ticker=TEST`)
+  await expect(page.getByRole('img',{name:/Example Capital 公司持股比例历史/})).toBeVisible()
+  await expect(page.getByText('未核验',{exact:true}).first()).toBeVisible()
+  expect(refreshes).toBe(0)
+  const gap=page.locator('.history-table .el-table__body tr').nth(1)
+  await expect(gap).toContainText('Q2 2026')
+  await expect(gap).not.toContainText('0.00%')
+  await page.locator('.controls').getByText('按提供方记录日期',{exact:true}).click()
+  await page.getByRole('option',{name:'按明确持仓截止日',exact:true}).click()
+  await expect(page.getByRole('img',{name:/Example Capital 公司持股比例历史/})).toHaveCount(0)
+  await expect(page.getByText('等待样本：当前机构在所选日期口径下不足两个有效比例点，暂不绘制趋势。',{exact:true})).toBeVisible()
+  await page.getByRole('button',{name:'刷新主要机构历史',exact:true}).click()
+  await expect.poll(()=>refreshes).toBe(1)
+  await page.getByText(/其他股东：个人 \/ 内部人士 \/ 公司 \/ 类型未确认/).click()
+  await expect(page.getByText('Example Person',{exact:true})).toBeVisible()
+})
 test.afterEach(async ({ request,context }) => {
   expect(externalRequests.get(context)).toEqual([])
   expect(pageErrors.get(context)).toEqual([])

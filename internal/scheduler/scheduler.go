@@ -413,6 +413,8 @@ func taskUsesLiveSEC(taskName string) bool {
 
 func (s *Scheduler) canRunTask(taskName string) bool {
 	switch taskName {
+	case "longbridge_institutional_ownership_sync":
+		return s.discoverySync != nil
 	case secFilingSyncTaskName:
 		return s.filings != nil
 	case ipoRadarSyncTaskName, ipoLifecycleReconcileSyncTaskName, ipoOfferingReconcileSyncTaskName, ipoListingReconcileSyncTaskName:
@@ -448,6 +450,18 @@ func (s *Scheduler) canRunTask(taskName string) bool {
 
 func (s *Scheduler) runTask(ctx context.Context, taskName string) error {
 	switch taskName {
+	case "longbridge_institutional_ownership_sync":
+		result, err := s.discoverySync.SyncInstitutionalOwnership(ctx)
+		if err != nil {
+			return err
+		}
+		if result.Skipped {
+			return service.SkipTask(result.Message)
+		}
+		if result.Failed > 0 {
+			return researchPartialOutcome(result.Fetched, result.Attempted, result.Failed, result.Warnings)
+		}
+		return nil
 	case secFilingSyncTaskName:
 		result, err := s.filings.RefreshWithTrigger(ctx, "scheduler")
 		if err != nil {

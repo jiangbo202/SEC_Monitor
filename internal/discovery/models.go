@@ -180,6 +180,8 @@ type MarketAnomalySnapshot struct {
 
 // InstitutionalHolderSnapshot preserves a reported major-holder position.
 type InstitutionalHolderSnapshot struct {
+	HolderID          string    `json:"holder_id,omitempty" gorm:"size:64"`
+	OwnerType         string    `json:"owner_type" gorm:"size:32"`
 	IdentityCounterID string    `json:"identity_counter_id,omitempty" gorm:"size:96"`
 	ID                uint      `json:"id"`
 	SecurityID        uint      `json:"security_id" gorm:"index"`
@@ -194,6 +196,38 @@ type InstitutionalHolderSnapshot struct {
 	FetchedAt         time.Time `json:"fetched_at" gorm:"index"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// InstitutionalOwnershipPoint is a provider-reported individual holder position,
+// never an aggregate institutional ownership estimate. Unknown dates stay empty.
+type InstitutionalOwnershipPoint struct {
+	ID              uint      `json:"id"`
+	Provider        string    `json:"provider" gorm:"size:32;uniqueIndex:idx_ownership_point,priority:1"`
+	Ticker          string    `json:"ticker" gorm:"size:32;uniqueIndex:idx_ownership_point,priority:2"`
+	HolderID        string    `json:"holder_id" gorm:"size:64;uniqueIndex:idx_ownership_point,priority:3"`
+	PeriodKey       string    `json:"-" gorm:"size:255;uniqueIndex:idx_ownership_point,priority:4"`
+	HolderName      string    `json:"holder_name"`
+	OwnerType       string    `json:"owner_type"`
+	Period          string    `json:"period"`
+	HoldingDate     string    `json:"holding_date"`
+	FilingDate      string    `json:"filing_date"`
+	ProviderDate    string    `json:"provider_date"`
+	PercentOfShares *float64  `json:"percent_of_shares"`
+	SharesHeld      *float64  `json:"shares_held"`
+	SourceKind      string    `json:"source_kind"`
+	SourceURL       string    `json:"source_url"`
+	FetchedAt       time.Time `json:"fetched_at"`
+}
+
+// Raw history receipts preserve provider responses whose nested schemas are not
+// documented. Unsupported shapes must not manufacture numeric trend points.
+type InstitutionalOwnershipReceipt struct {
+	ID          uint   `json:"id"`
+	Ticker      string `gorm:"size:32;uniqueIndex:idx_ownership_receipt,priority:1"`
+	HolderID    string `gorm:"size:64;uniqueIndex:idx_ownership_receipt,priority:2"`
+	PayloadJSON string `json:"-"`
+	Status      string
+	FetchedAt   time.Time
 }
 
 // FundHolderSnapshot records a fund or ETF's disclosed portfolio weight.
