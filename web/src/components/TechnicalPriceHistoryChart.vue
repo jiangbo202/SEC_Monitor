@@ -39,7 +39,7 @@
     </div>
 
     <template v-if="view === 'chart'">
-      <div v-if="chart.points.length" class="technical-chart" role="img" :aria-label="`${ticker} 本地日线价格和成交量图表`">
+      <div v-if="chart.points.length" class="technical-chart">
         <div class="technical-chart-legend">
           <span><i class="candle-key" />日线蜡烛</span>
           <span><i class="line ma20" />20 日均线</span>
@@ -47,12 +47,13 @@
           <span><i class="line ma200" />200 日均线</span>
           <span><i class="volume-key" />每日估算成交额</span>
           <span>价格范围 {{ formatPrice(chart.minClose) }} – {{ formatPrice(chart.maxClose) }}</span>
+          <span class="technical-chart-hint">移入图表查看每日明细</span>
         </div>
-        <svg class="technical-chart-svg" viewBox="0 0 720 270" preserveAspectRatio="none">
+        <div class="technical-chart-canvas">
+        <svg ref="svgRef" class="technical-chart-svg" viewBox="0 0 720 270" preserveAspectRatio="none" role="img" :aria-label="`${ticker} 本地日线价格和成交量图表，左右方向键查看每日明细`" tabindex="0" @pointermove="handleHover" @pointerdown="handleHover" @pointerleave="handlePointerLeave" @focus="showLatest" @blur="clearHover" @keydown="handleKeydown">
+          <rect x="0" y="0" width="720" height="240" fill="transparent" />
           <line v-for="y in [24, 76, 128, 180]" :key="`grid-${y}`" x1="0" :y1="y" x2="720" :y2="y" class="grid" />
-          <rect v-for="point in chart.points" :key="`volume-${point.tradeDate}`" :x="point.x - chart.barWidth / 2" :y="point.volumeY" :width="chart.barWidth" :height="240 - point.volumeY" class="volume">
-            <title>{{ `${point.tradeDate}｜每日估算成交额 ${formatNotional(point.dollarVolume)}` }}</title>
-          </rect>
+          <rect v-for="point in chart.points" :key="`volume-${point.tradeDate}`" :x="point.x - chart.barWidth / 2" :y="point.volumeY" :width="chart.barWidth" :height="240 - point.volumeY" class="volume" />
           <polyline v-if="chart.ma20Polyline" :points="chart.ma20Polyline" fill="none" class="ma20-line" />
           <polyline v-if="chart.ma50Polyline" :points="chart.ma50Polyline" fill="none" class="ma50-line" />
           <polyline v-if="chart.ma200Polyline" :points="chart.ma200Polyline" fill="none" class="ma200-line" />
@@ -62,12 +63,36 @@
               <rect :x="point.x - chart.candleWidth / 2" :y="Math.min(point.openY, point.priceY)" :width="chart.candleWidth" :height="Math.max(Math.abs(point.openY - point.priceY), 1.5)" :class="point.close >= point.open ? 'candle-up-fill' : 'candle-down-fill'" />
             </template>
             <circle v-else :cx="point.x" :cy="point.priceY" r="2.5" class="point fallback" />
-            <title>{{ `${point.tradeDate}｜${point.ohlcAvailable ? `开 ${formatPrice(point.open)}｜高 ${formatPrice(point.high)}｜低 ${formatPrice(point.low)}｜` : 'OHLC 待回填｜'}收 ${formatPrice(point.close)}｜RSI ${formatIndicator(point.rsi14)}｜KDJ ${formatIndicator(point.k)}/${formatIndicator(point.d)}/${formatIndicator(point.j)}｜每日估算成交额 ${formatNotional(point.dollarVolume)}｜${point.backfilled ? '历史回填' : '日常同步'} / ${point.source || '-'}` }}</title>
           </g>
+          <template v-if="hoverPoint">
+            <line :x1="hoverPoint.x" :x2="hoverPoint.x" y1="16" y2="240" class="hover-line" />
+            <circle :cx="hoverPoint.x" :cy="hoverPoint.priceY" r="3" class="hover-close" />
+          </template>
           <text x="0" y="264" class="axis-label">{{ chart.startDate }}</text>
           <text x="360" y="264" text-anchor="middle" class="axis-label">{{ chart.middleDate }}</text>
           <text x="720" y="264" text-anchor="end" class="axis-label">{{ chart.endDate }}</text>
         </svg>
+        <div v-if="hoverPoint" ref="tooltipRef" class="technical-chart-tooltip" role="tooltip" :style="tooltipStyle">
+          <div class="technical-tooltip-heading"><strong>{{ hoverPoint.tradeDate }}</strong><span>{{ ticker }}</span></div>
+          <div class="technical-tooltip-prices">
+            <span>开盘<strong>{{ hoverPoint.ohlcAvailable ? formatPrice(hoverPoint.open) : '-' }}</strong></span>
+            <span>最高<strong>{{ hoverPoint.ohlcAvailable ? formatPrice(hoverPoint.high) : '-' }}</strong></span>
+            <span>最低<strong>{{ hoverPoint.ohlcAvailable ? formatPrice(hoverPoint.low) : '-' }}</strong></span>
+            <span>收盘<strong>{{ formatPrice(hoverPoint.close) }}</strong></span>
+          </div>
+          <div v-if="!hoverPoint.ohlcAvailable" class="technical-tooltip-missing">OHLC 待回填</div>
+          <div class="technical-tooltip-row"><span>成交量</span><strong>{{ formatVolume(hoverPoint.volume) }}</strong></div>
+          <div class="technical-tooltip-row"><span>每日估算成交额</span><strong>{{ formatNotional(hoverPoint.dollarVolume) }}</strong></div>
+          <div class="technical-tooltip-averages">
+            <span>MA20<strong>{{ formatPrice(hoverPoint.ma20) }}</strong></span>
+            <span>MA50<strong>{{ formatPrice(hoverPoint.ma50) }}</strong></span>
+            <span>MA200<strong>{{ formatPrice(hoverPoint.ma200) }}</strong></span>
+          </div>
+          <div class="technical-tooltip-row"><span>RSI(14)</span><strong>{{ formatIndicator(hoverPoint.rsi14) }}</strong></div>
+          <div class="technical-tooltip-row"><span>K / D / J</span><strong>{{ formatIndicator(hoverPoint.k) }} / {{ formatIndicator(hoverPoint.d) }} / {{ formatIndicator(hoverPoint.j) }}</strong></div>
+          <div class="technical-tooltip-source">{{ hoverPoint.backfilled ? '历史回填' : '日常同步' }} · {{ hoverPoint.source || '来源未记录' }}</div>
+        </div>
+        </div>
         <div class="technical-chart-note">绿色蜡烛表示收涨、红色表示收跌；圆点表示旧数据尚未回填 OHLC。成交额按收盘价 × 当日成交量估算；MA20/MA50/MA200 分别需累计满 20/50/200 个有效交易日后开始绘制。</div>
       </div>
       <el-empty v-else :image-size="72" description="暂无本地日线数据，请先回填价格历史" />
@@ -91,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { CandidateTechnicalAnalysis, CandidateTechnicalHistoryRow } from '@/api/types'
 
 const props = defineProps<{ ticker: string, rows: CandidateTechnicalHistoryRow[], technical?: CandidateTechnicalAnalysis | null }>()
@@ -104,6 +129,13 @@ type Chart = { points: Point[], pricePolyline: string, ma20Polyline: string, ma5
 
 const normalizedHistory = computed(() => [...(props.rows || [])].filter((row) => Number.isFinite(row.close_usd) && row.close_usd > 0).sort((a, b) => a.trade_date.localeCompare(b.trade_date)))
 const displayRows = computed(() => filterTechnicalHistoryRange(normalizedHistory.value, range.value))
+const svgRef = ref<SVGSVGElement | null>(null)
+const tooltipRef = ref<HTMLElement | null>(null)
+const hoverDate = ref<string | null>(null)
+const tooltipLeft = ref(8)
+const tooltipStyle = computed(() => ({ left: `${tooltipLeft.value}px`, top: '8px' }))
+const hoverPoint = computed(() => chart.value.points.find((point) => point.tradeDate === hoverDate.value) || null)
+watch([() => props.ticker, () => props.rows, range, view], clearHover)
 
 const chart = computed<Chart>(() => {
   const history = normalizedHistory.value
@@ -128,7 +160,45 @@ const chart = computed<Chart>(() => {
   return { points, pricePolyline: polyline('priceY'), ma20Polyline: polyline('ma20Y'), ma50Polyline: polyline('ma50Y'), ma200Polyline: polyline('ma200Y'), barWidth: Math.max(2, Math.min(18, 540 / count)), candleWidth: Math.max(1.5, Math.min(9, 430 / count)), minClose, maxClose, startDate: visible[0].row.trade_date, middleDate: visible[Math.floor((count - 1) / 2)].row.trade_date, endDate: visible[count - 1].row.trade_date }
 })
 
-function formatPrice(value: number) { return Number.isFinite(value) && value > 0 ? `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-' }
+function selectPoint(point: Point) {
+  hoverDate.value = point.tradeDate
+  void nextTick(() => {
+    const svg = svgRef.value
+    const active = hoverPoint.value
+    if (!svg || !active) return
+    const width = svg.getBoundingClientRect().width
+    const tooltipWidth = tooltipRef.value?.getBoundingClientRect().width || Math.min(290, width - 16)
+    const x = active.x / 720 * width
+    const desired = x + tooltipWidth + 12 <= width - 8 ? x + 12 : x - tooltipWidth - 12
+    tooltipLeft.value = Math.max(8, Math.min(desired, width - tooltipWidth - 8))
+  })
+}
+function handleHover(event: PointerEvent) {
+  const svg = svgRef.value
+  const points = chart.value.points
+  if (!svg || !points.length) return
+  const rect = svg.getBoundingClientRect()
+  if (event.clientY - rect.top > rect.height * 240 / 270) return clearHover()
+  const x = Math.max(0, Math.min(720, (event.clientX - rect.left) / Math.max(rect.width, 1) * 720))
+  selectPoint(points.reduce((nearest, point) => Math.abs(point.x - x) < Math.abs(nearest.x - x) ? point : nearest))
+}
+function clearHover() { hoverDate.value = null }
+function handlePointerLeave(event: PointerEvent) { if (event.pointerType !== 'touch') clearHover() }
+function showLatest() { const points = chart.value.points; const latest = points[points.length - 1]; if (!hoverPoint.value && latest) selectPoint(latest) }
+function handleKeydown(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return
+  event.preventDefault()
+  // Dismiss the chart hint without letting Escape close the containing drawer.
+  event.stopPropagation()
+  if (event.key === 'Escape') return clearHover()
+  const points = chart.value.points
+  if (!points.length) return
+  const activeIndex = points.findIndex((point) => point.tradeDate === hoverDate.value)
+  const current = activeIndex < 0 ? points.length - 1 : activeIndex
+  const index = event.key === 'Home' ? 0 : event.key === 'End' ? points.length - 1 : Math.max(0, Math.min(points.length - 1, current + (event.key === 'ArrowLeft' ? -1 : 1)))
+  selectPoint(points[index])
+}
+function formatPrice(value: number | null) { return value != null && Number.isFinite(value) && value > 0 ? `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-' }
 function formatVolume(value: number) { return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value || 0) }
 function formatNotional(value: number) { return `$${new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 2 }).format(value || 0)}` }
 function formatIndicator(value?: number | null) { return value == null || !Number.isFinite(value) ? '-' : value.toFixed(1) }
@@ -166,7 +236,25 @@ function filterTechnicalHistoryRange(rows: CandidateTechnicalHistoryRow[], selec
 .technical-chart { border:1px solid var(--el-border-color-lighter); border-radius:10px; padding:14px; }
 .technical-chart-legend { display:flex; flex-wrap:wrap; gap:10px 16px; color:var(--el-text-color-secondary); font-size:13px; margin-bottom:8px; }
 .technical-chart-legend span { display:inline-flex; align-items:center; gap:5px; }
+.technical-chart-hint { margin-left:auto; font-size:12px; }
+.technical-chart-canvas { position:relative; }
+.technical-chart-svg:focus-visible { outline:2px solid var(--el-color-primary); outline-offset:3px; border-radius:4px; }
+.hover-line { stroke:#606266; stroke-width:1; stroke-dasharray:4 3; pointer-events:none; }
+.hover-close { fill:#fff; stroke:#303133; stroke-width:1.5; pointer-events:none; }
+.technical-chart-tooltip { position:absolute; z-index:3; box-sizing:border-box; width:290px; max-width:calc(100% - 16px); padding:10px 12px; border-radius:8px; background:rgba(31,35,41,.96); color:#fff; box-shadow:0 8px 24px rgba(0,0,0,.2); font-size:12px; line-height:1.5; pointer-events:none; }
+.technical-tooltip-heading { display:flex; justify-content:space-between; gap:12px; padding-bottom:6px; border-bottom:1px solid rgba(255,255,255,.18); }
+.technical-tooltip-heading span,.technical-tooltip-row>span { color:#c8cbd1; }
+.technical-tooltip-prices { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px 14px; padding:7px 0; }
+.technical-tooltip-prices span,.technical-tooltip-row { display:flex; justify-content:space-between; gap:8px; }
+.technical-tooltip-prices span { color:#c8cbd1; }
+.technical-tooltip-prices strong { color:#fff; }
+.technical-tooltip-row { margin-top:3px; }
+.technical-tooltip-averages { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:7px 0; padding:6px 0; border-top:1px solid rgba(255,255,255,.18); border-bottom:1px solid rgba(255,255,255,.18); }
+.technical-tooltip-averages span { color:#c8cbd1; }
+.technical-tooltip-averages strong { display:block; color:#fff; }
+.technical-tooltip-source { margin-top:7px; color:#c8cbd1; overflow-wrap:anywhere; }
+.technical-tooltip-missing { margin-bottom:5px; color:#f3d19e; }
 .line { width:22px; height:0; border-top:4px solid; border-radius:3px; }.ma20{border-color:#e6a23c}.ma50{border-color:#67c23a}.ma200{border-color:#f56c6c}.volume-key{width:22px;height:12px;background:#c6e2ff;border-radius:3px;}.candle-key{width:16px;height:12px;border:2px solid #67c23a;background:rgba(103,194,58,.16)}
 .technical-chart-svg { width:100%; height:300px; display:block; overflow:visible; }.grid{stroke:#ebeef5;stroke-dasharray:3 4}.volume{fill:#c6e2ff}.ma20-line{stroke:#e6a23c;stroke-width:2.5;stroke-dasharray:5 4}.ma50-line{stroke:#67c23a;stroke-width:2.5;stroke-dasharray:5 4}.ma200-line{stroke:#f56c6c;stroke-width:2.5;stroke-dasharray:5 4}.candle-up,.candle-down{stroke-width:1.3}.candle-up{stroke:#67c23a}.candle-down{stroke:#f56c6c}.candle-up-fill{fill:rgba(103,194,58,.24);stroke:#67c23a}.candle-down-fill{fill:rgba(245,108,108,.28);stroke:#f56c6c}.point.fallback{fill:#909399}.axis-label{fill:#909399;font-size:12px}.technical-chart-note{margin-top:4px;color:var(--el-text-color-secondary);font-size:12px;line-height:1.5}
-@media (max-width: 640px) { .technical-history-heading{align-items:flex-start;flex-direction:column}.technical-history-controls{justify-content:flex-start}.technical-history-meta{display:block;margin:4px 0 0}.technical-chart-svg{height:220px} }
+@media (max-width: 640px) { .technical-history-heading{align-items:flex-start;flex-direction:column}.technical-history-controls{justify-content:flex-start}.technical-history-meta{display:block;margin:4px 0 0}.technical-chart-svg{height:300px}.technical-chart-hint{width:100%;margin-left:0} }
 </style>
