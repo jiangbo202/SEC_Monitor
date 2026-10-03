@@ -395,7 +395,7 @@ func refreshLongbridgeCandidateValuationResearch(ctx context.Context, db *gorm.D
 	lookupErr := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", row.Provider, row.Ticker).Order("fetched_at DESC, id DESC").First(&previous).Error
 	if lookupErr == nil && previous.SnapshotHash == row.SnapshotHash {
 		result.Cached, result.Message = true, "估值研究数据与本地最新快照一致。"
-		return result, nil
+		return result, RecordAPIDataSync(ctx, db, row.Provider, "valuation", row.Ticker, "available", now)
 	}
 	if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
 		return result, lookupErr
@@ -407,7 +407,7 @@ func refreshLongbridgeCandidateValuationResearch(ctx context.Context, db *gorm.D
 		return result, err
 	}
 	result.Fetched, result.ChangeSummary, result.Message = true, row.ChangeSummary, "已保存 Longbridge 估值历史、行业分位和同业比较快照。"
-	return result, nil
+	return result, RecordAPIDataSync(ctx, db, row.Provider, "valuation", row.Ticker, "available", now)
 }
 
 func valuationResearchPayload(value *lbfundamental.ValuationData, peers *lbfundamental.IndustryValuationList, dist *lbfundamental.IndustryValuationDist) ValuationResearchSnapshot {
@@ -498,6 +498,7 @@ func newLongbridgeValuationResearchSDKClient(appKey, appSecret, accessToken stri
 	if err != nil {
 		return nil, err
 	}
+	MonitorLongbridgeConfig(cfg)
 	client, err := lbfundamental.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -505,6 +506,9 @@ func newLongbridgeValuationResearchSDKClient(appKey, appSecret, accessToken stri
 	return &longbridgeValuationResearchSDKClient{fundamental: client}, nil
 }
 func (c *longbridgeValuationResearchSDKClient) Valuation(ctx context.Context, symbol string) (*lbfundamental.ValuationData, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/valuation"); err != nil {
+		return nil, err
+	}
 	id, err := explicitUSStockCounterID(symbol)
 	if err != nil {
 		return nil, err
@@ -512,6 +516,9 @@ func (c *longbridgeValuationResearchSDKClient) Valuation(ctx context.Context, sy
 	return c.fundamental.Valuation(ctx, id)
 }
 func (c *longbridgeValuationResearchSDKClient) IndustryValuation(ctx context.Context, symbol string) (*lbfundamental.IndustryValuationList, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/industry-valuation-comparison"); err != nil {
+		return nil, err
+	}
 	id, err := explicitUSStockCounterID(symbol)
 	if err != nil {
 		return nil, err
@@ -519,6 +526,9 @@ func (c *longbridgeValuationResearchSDKClient) IndustryValuation(ctx context.Con
 	return c.fundamental.IndustryValuation(ctx, id)
 }
 func (c *longbridgeValuationResearchSDKClient) IndustryValuationDist(ctx context.Context, symbol string) (*lbfundamental.IndustryValuationDist, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/industry-valuation-distribution"); err != nil {
+		return nil, err
+	}
 	id, err := explicitUSStockCounterID(symbol)
 	if err != nil {
 		return nil, err

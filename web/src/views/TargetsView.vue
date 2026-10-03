@@ -421,25 +421,11 @@
         </template>
         <template #ownership>
           <div v-if="detailTarget.target_type === 'stock'" class="target-detail-section">
-            <div class="panel-header target-detail-section-title">
-              <span>主要机构持仓变化</span>
-              <el-button size="small" :loading="detailMarketResearchRefreshing" @click="refreshTargetMarketResearch">刷新主要机构历史</el-button>
-            </div>
-            <el-alert type="info" :closable="false" show-icon title="显示 Longbridge 已返回并保存的全部报告日快照。机构的披露频率、覆盖范围和持股比例口径由提供方决定，不能把未覆盖视为零持仓。" />
-            <InstitutionalOwnershipHistory v-if="detailInstitutionalHoldings" :history="detailInstitutionalHoldings" />
-            <template v-if="detailInstitutionalHoldings?.fund_holders.length">
-              <div class="analyst-rating-provenance-title">基金 / ETF：每次披露的组合权重</div>
-              <el-table :data="detailInstitutionalHoldings.fund_holders" size="small" border max-height="360" empty-text="Longbridge 暂无基金或 ETF 持仓披露">
-                <el-table-column prop="fund_name" label="基金 / ETF" min-width="220" show-overflow-tooltip />
-                <el-table-column prop="fund_symbol" label="代码" width="110" />
-                <el-table-column label="组合权重" width="110" align="right"><template #default="{ row }">{{ formatPct(row.position_ratio) }}</template></el-table-column>
-                <el-table-column prop="report_date" label="报告日" width="115" />
-                <el-table-column label="本地同步" width="165"><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column>
-                <el-table-column label="来源" width="80"><template #default="{ row }"><el-link v-if="row.source_url" :href="row.source_url" target="_blank" type="primary">Longbridge</el-link><span v-else>-</span></template></el-table-column>
-              </el-table>
-              <el-alert type="info" :closable="false" style="margin-top: 12px" :title="detailInstitutionalHoldings.message" />
-            </template>
-            <el-alert v-if="!detailInstitutionalHoldings" type="info" :closable="false" show-icon style="margin-top: 12px" title="尚未读取本地机构持仓记录。" description="可手动刷新当前标的；不会执行 SEC 同步、行情全量请求或候选重算。" />
+            <InstitutionalOwnershipHistory v-if="detailInstitutionalHoldings" :history="detailInstitutionalHoldings" :longbridge-refreshing="detailMarketResearchRefreshing" @refresh-longbridge="refreshTargetMarketResearch" @futu-refreshed="onTargetFutuRefreshed" />
+            <OwnershipProviderSection v-else title="Longbridge · 单家主要机构历史">
+              <template #actions><el-button size="small" :loading="detailMarketResearchRefreshing" @click="refreshTargetMarketResearch">刷新 Longbridge 主要机构历史</el-button></template>
+              <el-alert type="info" :closable="false" title="尚未读取本地机构持仓记录。可刷新 Longbridge，或重新打开详情读取本地记录。" />
+            </OwnershipProviderSection>
           </div>
         </template>
         <template #valuation>
@@ -455,8 +441,8 @@
                 <el-descriptions-item label="覆盖数">{{ detailAnalystRating.latest.analyst_count }}</el-descriptions-item>
           <el-descriptions-item label="市场一致目标价（平均）">{{ formatAnalystPrice(detailAnalystRating.latest.target_average_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
                 <el-descriptions-item label="目标价区间">{{ formatAnalystPrice(detailAnalystRating.latest.target_low_micros, detailAnalystRating.latest.currency) }} - {{ formatAnalystPrice(detailAnalystRating.latest.target_high_micros, detailAnalystRating.latest.currency) }}</el-descriptions-item>
-                <el-descriptions-item label="评级分布" :span="2">强烈买入 {{ detailAnalystRating.latest.strong_buy_count }} · 买入 {{ detailAnalystRating.latest.buy_count }} · 持有 {{ detailAnalystRating.latest.hold_count }} · 跑输 {{ detailAnalystRating.latest.underperform_count }} · 卖出 {{ detailAnalystRating.latest.sell_count }}</el-descriptions-item>
-                <el-descriptions-item label="来源" :span="2">Longbridge · {{ analystProviderTimeText(detailAnalystRating.latest) }}</el-descriptions-item>
+                <el-descriptions-item label="评级分布" :span="2">{{ analystDistribution(detailAnalystRating.latest) }}</el-descriptions-item>
+                <el-descriptions-item label="来源" :span="2">{{ detailAnalystRating.latest.provider }} · {{ analystProviderTimeText(detailAnalystRating.latest) }}</el-descriptions-item>
               </el-descriptions>
               <div class="analyst-rating-provenance-title">结果溯源明细</div>
               <el-table :data="analystRatingProvenanceRows(detailAnalystRating.latest)" size="small" border class="analyst-rating-provenance-table">
@@ -514,7 +500,7 @@
               <span>AI 研判（手动）</span>
               <el-space><el-select fit-input-width v-model="targetAIProvider" placeholder="选择模型" size="small" style="width:210px"><el-option v-for="provider in aiProviders" :key="provider.id" :label="`${provider.name} · ${provider.model}`" :value="provider.id" /></el-select><el-select fit-input-width v-model="targetAIPromptTemplate" placeholder="选择模板" size="small" style="width:180px"><el-option v-for="template in aiPromptTemplates" :key="template.id" :label="template.name" :value="template.id" /></el-select><el-button type="primary" size="small" :disabled="!targetAIProvider || !targetAIPromptTemplate" :loading="targetAIGenerating" @click="generateTargetAI">生成研判</el-button></el-space>
             </div>
-            <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在系统配置 → AI 分析中添加供应商。" />
+            <el-alert v-if="!aiProviders.length" type="info" :closable="false" title="尚未配置可用 AI 模型；请在数据源与 API → AI 模型中添加供应商。" />
             <template v-else-if="targetAIAnalyses.length"><el-select fit-input-width v-model="targetAIAnalysisID" size="small" style="width:100%;margin-bottom:12px"><el-option v-for="item in targetAIAnalyses" :key="item.id" :label="`${item.provider_name} · ${item.model} · ${item.template_name || '历史模板'} · ${formatDateTime(item.requested_at)}`" :value="item.id" /></el-select><el-alert v-if="activeTargetAIAnalysis?.status === 'failed'" type="error" :closable="false" :title="activeTargetAIAnalysis.error_message || 'AI 调用失败'" /><template v-else><el-alert v-if="activeTargetAIAnalysis?.validation_warning" type="warning" :closable="false" show-icon title="模型输出未通过结构校验，系统已安全降级为证据不足。" style="margin-bottom:12px" /><AIRequestPrompt :system-prompt="activeTargetAIAnalysis?.system_prompt" :user-prompt="activeTargetAIAnalysis?.user_prompt" /><div style="padding:12px;background:var(--el-fill-color-light);border-radius:4px"><AIAnalysisResult :result="activeTargetAIAnalysis?.structured_result" :content="activeTargetAIAnalysis?.content" /></div></template></template>
             <el-empty v-else-if="aiProviders.length" description="尚无 AI 研判记录；仅在手动点击后生成。" :image-size="44" />
             <el-alert v-show="activeTargetAIAnalysis?.status === 'queued' || activeTargetAIAnalysis?.status === 'running'" type="warning" :closable="false" title="AI 研判正在后台处理，页面会自动刷新结果。" />
@@ -586,6 +572,8 @@
 </template>
 
 <script setup lang="ts">
+import { mergeFutuOwnershipHistory } from '@/utils/futuOwnership'
+import {analystDistribution,futuAnalystProvenance} from '@/utils/analystSource'
 import axios from 'axios'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -598,6 +586,7 @@ import type { AIAnalysisStructuredResult } from '@/api/types'
 import ProfitHistoryChart from '@/components/ProfitHistoryChart.vue'
 import TechnicalPriceHistoryChart from '@/components/TechnicalPriceHistoryChart.vue'
 import InstitutionalOwnershipHistory from '@/components/InstitutionalOwnershipHistory.vue'
+import OwnershipProviderSection from '@/components/OwnershipProviderSection.vue'
 import StockDetailLayout from '@/components/StockDetailLayout.vue'
 import StockDataStatus from '@/components/StockDataStatus.vue'
 import type { AnalystRatingView, ApiResponse, CandidateFairValueEstimate, CandidateTechnicalAnalysis, CandidateTechnicalHistoryRow, CompanyProfile, EarningsPreview, EarningsPreviewRefreshResult, EarningsPreviewView, Filing, FundIdentity, PageResult, ProfitHistory, SyncRunDetail, SystemConfig, TickerInstitutionalHoldingHistory, TickerLookup, TickerTechnicalHistory, TradePlanSimulationRebuildResult, TradePlanSimulationReport, TradeSetupStatusEvent, WatchTarget } from '@/api/types'
@@ -1191,7 +1180,7 @@ async function refreshTargetMarketResearch() {
 	try {
 		const response = await apiClient.post(`/discovery/institutional-holdings/${encodeURIComponent(target.ticker)}/refresh`, null, { timeout: 95000 })
 		if (detailTarget.value?.id !== target.id) return
-		detailInstitutionalHoldings.value = response.data.data.research
+		detailInstitutionalHoldings.value = detailInstitutionalHoldings.value ? mergeFutuOwnershipHistory(response.data.data.research, detailInstitutionalHoldings.value) : response.data.data.research
 		if (response.data.data.refresh.warnings?.length) ElMessage.warning('已保存可用披露，请查看历史覆盖说明')
 		else ElMessage.success('已更新 Longbridge 主要机构历史（24 小时缓存）')
 	} catch (err: any) {
@@ -1214,7 +1203,7 @@ function analystRecommendationTagType(value?: string) {
 
 function formatAnalystPrice(micros?: number, currency?: string) {
   if (!micros) return '-'
-  return `${currency || '$'}${(micros / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+  return `${currency || '报告币种 '}${(micros / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
 }
 
 function formatFairValuePrice(value?: number | null, currency?: string) {
@@ -1226,7 +1215,8 @@ function analystRatingProvenanceRows(snapshot: AnalystRatingView['latest']) {
   if (!snapshot) return []
   const providerUpdatedAt = snapshot.provider_updated_at_text || '提供方未返回精确更新时间'
   const fetchedAt = formatDateTime(snapshot.fetched_at)
-  const distribution = `强烈买入 ${snapshot.strong_buy_count} · 买入 ${snapshot.buy_count} · 持有 ${snapshot.hold_count} · 跑输 ${snapshot.underperform_count} · 卖出 ${snapshot.sell_count}`
+  if(snapshot.provider==='futu')return futuAnalystProvenance(snapshot,providerUpdatedAt,fetchedAt)
+  const distribution = analystDistribution(snapshot)
   return [
     { result: '共识评级', value: analystRecommendationLabel(snapshot.recommendation), source: 'Longbridge InstitutionRating / Summary.Recommend', providerUpdatedAt, fetchedAt, note: '提供方汇总结论，不代表单一机构或分析师。' },
     { result: '覆盖数与分布', value: `${snapshot.analyst_count} 位覆盖；${distribution}`, source: 'Longbridge InstitutionRating / Latest.Evaluate', providerUpdatedAt, fetchedAt, note: '覆盖数及各评级档位均为提供方聚合口径。' },
@@ -1507,6 +1497,9 @@ onMounted(() => {
 	void loadAIProviders()
 })
 onUnmounted(() => { if (targetAIPollingTimer !== undefined) window.clearTimeout(targetAIPollingTimer) })
+function onTargetFutuRefreshed(refreshed: TickerInstitutionalHoldingHistory) {
+  if (detailInstitutionalHoldings.value) detailInstitutionalHoldings.value = mergeFutuOwnershipHistory(detailInstitutionalHoldings.value, refreshed)
+}
 </script>
 
 <style scoped>

@@ -19,7 +19,7 @@ func TestPersistCandidateSignalEventsStoresImmutablePriceBaseline(t *testing.T) 
 	mustCreate(t, db, &CurrentBatchPointer{Kind: BatchKindPrescreen, BatchID: previous.BatchID, UpdatedAt: now.AddDate(0, 0, -1)})
 	mustCreate(t, db, &CandidateScoreSnapshot{BatchID: previous.BatchID, SecurityID: security.ID, Ticker: "SIGN", Grade: CandidateGradeB, EligibleB: true, TotalScore: 55})
 	mustCreate(t, db, &CandidateScoreSnapshot{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "SIGN", Grade: CandidateGradeA, EligibleA: true, EligibleB: true, TotalScore: 72, ScoringVersion: "v1"})
-	price := PriceSnapshot{Source: "tiingo", SourceVersion: "signal", Symbol: "SIGN", TradeDate: now, CloseMicros: 12_345_678, QualityStatus: QualityStatusValid}
+	price := PriceSnapshot{Source: "longbridge", SourceVersion: "signal", Symbol: "SIGN", TradeDate: now, CloseMicros: 12_345_678, QualityStatus: QualityStatusValid}
 	mustCreate(t, db, &price)
 	mustCreate(t, db, &UniverseSnapshot{BatchID: current.BatchID, SecurityID: security.ID, Ticker: "SIGN", PriceSnapshotID: &price.ID, QualityStatus: QualityStatusValid})
 
@@ -39,7 +39,7 @@ func TestPersistCandidateSignalEventsStoresImmutablePriceBaseline(t *testing.T) 
 		t.Fatalf("events = %#v, want one", events)
 	}
 	event := events[0]
-	if event.EventType != CandidateSignalEnteredA || event.SignalDate.Format(time.DateOnly) != "2026-07-17" || event.BaselineTradeDate != price.TradeDate || event.BaselineCloseMicros != price.CloseMicros || event.PriceSource != "tiingo" {
+	if event.EventType != CandidateSignalEnteredA || event.SignalDate.Format(time.DateOnly) != "2026-07-17" || event.BaselineTradeDate != price.TradeDate || event.BaselineCloseMicros != price.CloseMicros || event.PriceSource != "longbridge" {
 		t.Fatalf("event = %#v", event)
 	}
 }

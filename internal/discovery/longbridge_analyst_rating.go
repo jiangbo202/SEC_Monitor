@@ -114,20 +114,24 @@ func GetAnalystRating(ctx context.Context, db *gorm.DB, ticker string) (AnalystR
 	if symbol == "" {
 		return result, errors.New("ticker is required")
 	}
-	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", longbridgeAnalystRatingProvider, symbol).Order("fetched_at DESC, id DESC").Limit(24).Find(&result.History).Error; err != nil {
+	provider := APIModuleProvider(ctx, db, "analyst")
+	if err := verifiedIssuerSnapshots(db.WithContext(ctx)).Where("provider = ? AND ticker = ?", provider, symbol).Order("fetched_at DESC, id DESC").Limit(24).Find(&result.History).Error; err != nil {
 		return result, err
 	}
 	if len(result.History) == 0 {
 		result.Message = "尚未同步分析师共识；可点击“刷新分析师评级”仅获取该标的最新公开数据。"
-		result.Quality = researchQualityMetadata(DataLayerFact, longbridgeAnalystRatingProvider, "", time.Time{}, 14*24*time.Hour, 45*24*time.Hour)
+		result.Quality = researchQualityMetadata(DataLayerFact, provider, "", time.Time{}, 14*24*time.Hour, 45*24*time.Hour)
 		return result, nil
 	}
 	result.Latest = &result.History[0]
-	result.Quality = researchQualityMetadata(DataLayerFact, longbridgeAnalystRatingProvider, result.Latest.SnapshotHash, result.Latest.FetchedAt, 14*24*time.Hour, 45*24*time.Hour)
+	result.Quality = researchQualityMetadata(DataLayerFact, provider, result.Latest.SnapshotHash, result.Latest.FetchedAt, 14*24*time.Hour, 45*24*time.Hour)
 	if result.Latest.Status == AnalystRatingStatusNoCoverage {
 		result.Message = "数据提供方当前暂无分析师覆盖；这在小盘和微盘股中较常见，不代表同步失败。"
 	} else {
 		result.Message = "数据来源：Longbridge 机构评级聚合共识。"
+		if provider == "futu" {
+			result.Message = "数据来源：Futu 近三个月分析师共识；评级为比例，目标价为提供方报告币种，不与美元现价推算空间。"
+		}
 	}
 	return result, nil
 }
@@ -136,6 +140,9 @@ func GetAnalystRating(ctx context.Context, db *gorm.DB, ticker string) (AnalystR
 // aggregate. It has no relationship to SEC or price-universe sync and is
 // designed for an explicit detail-page button.
 func RefreshLongbridgeAnalystRating(ctx context.Context, db *gorm.DB, cfg config.DiscoveryConfig, ticker, cik string) (AnalystRatingRefreshResult, error) {
+	if APIModuleProvider(ctx, db, "analyst") == "futu" {
+		return refreshFutuAnalyst(ctx, db, cfg, ticker, cik)
+	}
 	return refreshLongbridgeAnalystRating(ctx, db, ticker, cik, NewLongbridgeAnalystRatingOptions(cfg))
 }
 
@@ -181,7 +188,7 @@ func refreshLongbridgeAnalystRating(ctx context.Context, db *gorm.DB, ticker, ci
 		result.Cached = true
 		result.Snapshot = *previous
 		result.Message = "分析师共识与本地最新快照一致。"
-		return result, nil
+		return result, RecordAPIDataSync(ctx, db, snapshot.Provider, "analyst", snapshot.Ticker, snapshot.Status, snapshot.FetchedAt)
 	}
 	if previous != nil && previous.Status == AnalystRatingStatusAvailable && snapshot.Status == AnalystRatingStatusAvailable {
 		snapshot.ChangeSummary = analystRatingChangeSummary(*previous, snapshot, options.TargetChangePct)
@@ -213,7 +220,7 @@ func refreshLongbridgeAnalystRating(ctx context.Context, db *gorm.DB, ticker, ci
 	} else {
 		result.Message = "已保存最新分析师共识快照。"
 	}
-	return result, nil
+	return result, RecordAPIDataSync(ctx, db, snapshot.Provider, "analyst", snapshot.Ticker, snapshot.Status, snapshot.FetchedAt)
 }
 
 // SyncCurrentCandidateLongbridgeAnalystRatings is deliberately budgeted. It
@@ -223,6 +230,13 @@ func SyncCurrentCandidateLongbridgeAnalystRatings(ctx context.Context, db *gorm.
 	result := AnalystRatingSyncResult{Changes: []AnalystRatingSnapshot{}}
 	if db == nil {
 		return result, errors.New("database is required")
+	}
+	if err := CheckSelectedAPIModule(ctx, db, "analyst"); err != nil {
+		if errors.Is(err, ErrAPIDisabled) {
+			result.Skipped, result.Message = true, err.Error()
+			return result, nil
+		}
+		return result, err
 	}
 	if !cfg.LongbridgeAnalystRatingEnabled {
 		result.Skipped, result.Message = true, "Longbridge 分析师评级同步已关闭"
@@ -254,7 +268,7 @@ func SyncCurrentCandidateLongbridgeAnalystRatings(ctx context.Context, db *gorm.
 			}
 		}
 		var prior []AnalystRatingSnapshot
-		if err := db.WithContext(ctx).Where("provider = ? AND ticker IN ?", longbridgeAnalystRatingProvider, tickers).Order("fetched_at DESC, id DESC").Find(&prior).Error; err != nil {
+		if err := db.WithContext(ctx).Where("provider = ? AND ticker IN ?", APIModuleProvider(ctx, db, "analyst"), tickers).Order("fetched_at DESC, id DESC").Find(&prior).Error; err != nil {
 			return result, err
 		}
 		for _, item := range prior {
@@ -262,6 +276,9 @@ func SyncCurrentCandidateLongbridgeAnalystRatings(ctx context.Context, db *gorm.
 				latestByTicker[item.Ticker] = item.FetchedAt
 			}
 		}
+	}
+	if err := MergeAPIDataSyncTimes(ctx, db, APIModuleProvider(ctx, db, "analyst"), "analyst", latestByTicker); err != nil {
+		return result, err
 	}
 	// Rotate the bounded budget through the oldest observations first. Without
 	// this, low-scoring but still-active candidates would never receive a
@@ -442,6 +459,7 @@ func newLongbridgeAnalystRatingSDKClient(appKey, appSecret, accessToken string) 
 	if err != nil {
 		return nil, err
 	}
+	MonitorLongbridgeConfig(cfg)
 	client, err := lbfundamental.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -450,6 +468,9 @@ func newLongbridgeAnalystRatingSDKClient(appKey, appSecret, accessToken string) 
 }
 
 func (c *longbridgeAnalystRatingSDKClient) InstitutionRating(ctx context.Context, symbol string) (*lbfundamental.InstitutionRating, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/institution-rating-latest"); err != nil {
+		return nil, err
+	}
 	id, err := explicitUSStockCounterID(symbol)
 	if err != nil {
 		return nil, err

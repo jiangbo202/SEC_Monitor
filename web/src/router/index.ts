@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+import { integrationSection } from '@/utils/configurationSections'
 import AppLayout from '@/layouts/AppLayout.vue'
 
 // Research pages have grown substantially. Keep the shared layout eager but
@@ -16,6 +17,7 @@ const InsiderTradingView = () => import('@/views/InsiderTradingView.vue')
 const SyncRunsView = () => import('@/views/SyncRunsView.vue')
 const SchedulerView = () => import('@/views/SchedulerView.vue')
 const ConfigsView = () => import('@/views/ConfigsView.vue')
+const APIManagementView = () => import('@/views/APIManagementView.vue')
 const SystemHealthView = () => import('@/views/SystemHealthView.vue')
 const AuditLogsView = () => import('@/views/AuditLogsView.vue')
 const NotificationLogsView = () => import('@/views/NotificationLogsView.vue')
@@ -59,14 +61,20 @@ const router = createRouter({
         { path: 'ipo-radar', name: 'ipo-radar', component: IPORadarView },
         { path: 'sync-runs', name: 'sync-runs', component: SyncRunsView },
         { path: 'scheduler', name: 'scheduler', component: SchedulerView },
-        { path: 'telegram', redirect: { path: '/configs', query: { section: 'notifications' } } },
+        { path: 'telegram', redirect: { path: '/api-management', query: { section: 'notifications' } } },
         { path: 'configs', name: 'configs', component: ConfigsView },
+        { path: 'api-management', name: 'api-management', component: APIManagementView },
         { path: 'system-health', name: 'system-health', component: SystemHealthView },
         { path: 'audit-logs', name: 'audit-logs', component: AuditLogsView },
         { path: 'notification-logs', name: 'notification-logs', component: NotificationLogsView }
       ]
     }
   ]
+})
+
+router.beforeEach(to => {
+  const section = integrationSection(to.query.section)
+  if (to.path === '/configs' && section) return { path: '/api-management', query: { ...to.query, section }, hash: to.hash, replace: true }
 })
 
 export default router

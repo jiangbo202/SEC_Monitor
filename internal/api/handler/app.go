@@ -27,6 +27,7 @@ import (
 )
 
 type AppHandler struct {
+	APIManagement          *service.APIManagementService
 	Runtime                config.Config
 	DB                     *gorm.DB
 	DiscoveryDB            *gorm.DB
@@ -1257,8 +1258,18 @@ func (h *AppHandler) RefreshDiscoveryInstitutionalOwnership(c *gin.Context) {
 	OK(c, gin.H{"refresh": result, "research": view})
 }
 
-// GetDiscoveryOptionResearch returns local options/short-interest snapshots.
+// ListDiscoveryOptionResearch returns the latest local snapshot per ticker.
 // Opening the page never causes an external market-data request.
+func (h *AppHandler) ListDiscoveryOptionResearch(c *gin.Context) {
+	page, pageSize := pageParams(c)
+	result, err := discovery.ListOptionResearch(c.Request.Context(), h.DiscoveryDB, discovery.OptionResearchListQuery{Page: page, PageSize: pageSize})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
 func (h *AppHandler) GetDiscoveryOptionResearch(c *gin.Context) {
 	result, err := discovery.GetOptionResearch(c.Request.Context(), h.DiscoveryDB, c.Param("ticker"))
 	if err != nil {

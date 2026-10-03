@@ -8,7 +8,7 @@ func TestBuildCandidateInvestabilitySeparatesLiquidityFromCompanyScore(t *testin
 		PriceCloseUSD:          12,
 		PriceQualityStatus:     QualityStatusValid,
 		PriceFreshnessStatus:   PriceFreshnessCurrent,
-		PriceSource:            "tiingo",
+		PriceSource:            "longbridge",
 		MarketQuality:          CandidateMarketQuality{SampleDays: 21, AverageDollarVolume: 1_000_000},
 	}
 	tests := []struct {

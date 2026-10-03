@@ -108,6 +108,12 @@ type CompanyProfileSnapshot struct {
 // valid observation for small and micro-cap issuers, not a synchronisation
 // failure.
 type AnalystRatingSnapshot struct {
+	TargetAnalystCount    int        `json:"target_analyst_count,omitempty"`
+	StrongBuyPct          *float64   `json:"strong_buy_pct,omitempty"`
+	BuyPct                *float64   `json:"buy_pct,omitempty"`
+	HoldPct               *float64   `json:"hold_pct,omitempty"`
+	UnderperformPct       *float64   `json:"underperform_pct,omitempty"`
+	SellPct               *float64   `json:"sell_pct,omitempty"`
 	IdentityCounterID     string     `json:"identity_counter_id,omitempty" gorm:"size:96"`
 	ID                    uint       `json:"id"`
 	SecurityID            uint       `json:"security_id" gorm:"index"`

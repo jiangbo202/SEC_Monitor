@@ -244,8 +244,8 @@ func TestBuildCandidateRelativeStrengthUsesMatchedLocalTradingDays(t *testing.T)
 func TestCandidateTechnicalHistoryRows(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	rows := []PriceSnapshot{
-		{TradeDate: base, CloseMicros: 10_000_000, Volume: 100, Source: "tiingo", SourceVersion: "tiingo:technical-history:2026-06-30"},
-		{TradeDate: base.AddDate(0, 0, 1), CloseMicros: 11_000_000, Volume: 120, Source: "tiingo", SourceVersion: "tiingo:2026-06-02"},
+		{TradeDate: base, CloseMicros: 10_000_000, Volume: 100, Source: "longbridge", SourceVersion: "longbridge:technical-history:2026-06-30"},
+		{TradeDate: base.AddDate(0, 0, 1), CloseMicros: 11_000_000, Volume: 120, Source: "longbridge", SourceVersion: "longbridge:2026-06-02"},
 	}
 
 	history := candidateTechnicalHistoryRows(rows)
@@ -264,9 +264,9 @@ func TestCandidateTechnicalPriceHistoryUsesPublishedPriceDateCutoff(t *testing.T
 	db := openMigratedTestDatabase(t)
 	base := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	prices := []PriceSnapshot{
-		{Source: "tiingo", SourceVersion: "tiingo:old", Symbol: "CUT", TradeDate: base, CloseMicros: 10_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "tiingo", SourceVersion: "tiingo:old", Symbol: "CUT", TradeDate: base.AddDate(0, 0, 1), CloseMicros: 11_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "tiingo", SourceVersion: "tiingo:backfill", Symbol: "CUT", TradeDate: base.AddDate(0, 0, 2), CloseMicros: 12_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "longbridge:old", Symbol: "CUT", TradeDate: base, CloseMicros: 10_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "longbridge:old", Symbol: "CUT", TradeDate: base.AddDate(0, 0, 1), CloseMicros: 11_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: "longbridge:backfill", Symbol: "CUT", TradeDate: base.AddDate(0, 0, 2), CloseMicros: 12_000_000, Volume: 100, Currency: "USD", QualityStatus: QualityStatusValid},
 	}
 	if err := db.Create(&prices).Error; err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestCandidateTechnicalPriceHistoryUsesPublishedPriceDateCutoff(t *testing.T
 	rows, err := candidateTechnicalPriceHistory(context.Background(), db, CandidateScoreResult{
 		CandidateScoreSnapshot: CandidateScoreSnapshot{Ticker: "CUT"},
 		PriceTradeDate:         &cutoff,
-		PriceSource:            "tiingo",
+		PriceSource:            "longbridge",
 	})
 	if err != nil {
 		t.Fatal(err)

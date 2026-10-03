@@ -123,6 +123,11 @@ func probeLongbridgeQuote(ctx context.Context, appKey, appSecret, accessToken st
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "ws/quote"); err != nil {
+		result.ErrorKind = "disabled"
+		result.Message = err.Error()
+		return finish()
+	}
 	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 	defer cancel()
 	client, err := newClient(appKey, appSecret, accessToken)
@@ -186,6 +191,9 @@ func (p *LongbridgePriceProvider) LoadForDate(ctx context.Context, expected []Li
 }
 
 func (p *LongbridgePriceProvider) load(ctx context.Context, expected []Listing, target time.Time) ([]PriceRecord, ProviderResult, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "ws/quote"); err != nil {
+		return nil, ProviderResult{}, err
+	}
 	if _, err := expectedSymbolMapping(expected); err != nil {
 		return nil, ProviderResult{}, err
 	}
@@ -277,6 +285,9 @@ func (p *LongbridgePriceProvider) quoteRecord(item longbridgeQuote, canonical st
 // is persisted in PriceSnapshot and therefore powers the volume bars shown in
 // the candidate detail chart.
 func (p *LongbridgePriceProvider) LoadHistory(ctx context.Context, expected []Listing, effectiveDate string, lookbackDays int) ([]PriceRecord, error) {
+	if err := CheckCurrentAPIEndpoint(ctx, "longbridge", "ws/history_daily"); err != nil {
+		return nil, err
+	}
 	start, end, err := normalizeHistoryWindow(effectiveDate, lookbackDays)
 	if err != nil {
 		return nil, err
@@ -393,6 +404,7 @@ func newLongbridgeSDKClient(appKey, appSecret, accessToken string) (longbridgeQu
 	if err != nil {
 		return nil, err
 	}
+	MonitorLongbridgeConfig(cfg)
 	context, err := lbquote.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -401,7 +413,13 @@ func newLongbridgeSDKClient(appKey, appSecret, accessToken string) (longbridgeQu
 }
 
 func (c *longbridgeSDKClient) Quote(ctx context.Context, symbols []string) ([]longbridgeQuote, error) {
+	m := CurrentAPIMonitor()
+	row, permitErr := m.Acquire(ctx, "longbridge", "ws/quote", strings.Join(symbols, ","))
+	if permitErr != nil {
+		return nil, permitErr
+	}
 	items, err := c.quote.Quote(ctx, symbols)
+	m.Finish(row, err)
 	if err != nil {
 		return nil, err
 	}
@@ -416,7 +434,13 @@ func (c *longbridgeSDKClient) Quote(ctx context.Context, symbols []string) ([]lo
 }
 
 func (c *longbridgeSDKClient) HistoryDaily(ctx context.Context, symbol string, start, end time.Time) ([]longbridgeCandle, error) {
+	m := CurrentAPIMonitor()
+	row, permitErr := m.Acquire(ctx, "longbridge", "ws/history_daily", symbol)
+	if permitErr != nil {
+		return nil, permitErr
+	}
 	items, err := c.quote.HistoryCandlesticksByDate(ctx, symbol, lbquote.PeriodDay, lbquote.AdjustTypeNo, &start, &end)
+	m.Finish(row, err)
 	if err != nil {
 		return nil, err
 	}

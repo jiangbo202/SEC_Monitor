@@ -71,8 +71,17 @@ func run(cfg config.Config, serve func(app *gin.Engine, address string) error) e
 		openMainDatabase:      database.Open,
 		migrateMainDatabase:   database.Migrate,
 		openDiscoveryDatabase: discovery.OpenDatabase,
-		migrateDiscoveryDB:    discovery.Migrate,
-		newRouter:             router.New,
+		migrateDiscoveryDB: func(db *gorm.DB) error {
+			if err := discovery.Migrate(db); err != nil {
+				return err
+			}
+			if err := discovery.EnsureAPIPolicies(context.Background(), db); err != nil {
+				return err
+			}
+			discovery.ConfigureAPIMonitor(db)
+			return nil
+		},
+		newRouter: router.New,
 	})
 }
 

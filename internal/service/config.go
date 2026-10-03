@@ -137,7 +137,12 @@ type SocialHeatSettings struct {
 const maskedSecretMarker = "******"
 
 var sensitiveConfigKeys = map[string]struct{}{
-	"telegram.bot_token":                {},
+	"futu.app_key":       {},
+	"futu.private_key":   {},
+	"futu.access_token":  {},
+	"futu.refresh_token": {},
+	"telegram.bot_token": {},
+	// Historical audit redaction remains after the provider credentials are removed.
 	"discovery.tiingo_api_token":        {},
 	"discovery.tiingo_api_tokens":       {},
 	"discovery.twelve_data_api_key":     {},
@@ -254,6 +259,9 @@ func sanitizeStoredNotificationErrors(tx *gorm.DB) error {
 }
 
 func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
+	if err := s.removeRetiredPriceConfigs(ctx); err != nil {
+		return err
+	}
 	if err := s.UpsertMissing(ctx, []ConfigInput{
 		{Key: "sec.user_agent", Value: "", ValueType: "string", Category: "sec"},
 		{Key: "sec.initial_fetch_days", Value: "30", ValueType: "int", Category: "sec"},
@@ -343,16 +351,6 @@ func (s *ConfigService) EnsureDefaults(ctx context.Context) error {
 		{Key: "telegram_notification.ai_analysis_enabled", Value: "false", ValueType: "bool", Category: "telegram_notification"},
 		{Key: "discovery.price_provider", Value: "", ValueType: "string", Category: "discovery"},
 		{Key: "discovery.stooq_urls", Value: "", ValueType: "string", Category: "discovery"},
-		{Key: "discovery.tiingo_api_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
-		{Key: "discovery.tiingo_api_tokens", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
-		{Key: "discovery.tiingo_base_url", Value: "https://api.tiingo.com", ValueType: "string", Category: "discovery"},
-		{Key: "discovery.tiingo_request_budget", Value: "45", ValueType: "int", Category: "discovery"},
-		{Key: "discovery.twelve_data_api_key", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
-		{Key: "discovery.twelve_data_base_url", Value: "https://api.twelvedata.com", ValueType: "string", Category: "discovery"},
-		{Key: "discovery.twelve_data_request_budget", Value: "700", ValueType: "int", Category: "discovery"},
-		{Key: "discovery.twelve_data_request_interval_ms", Value: "8000", ValueType: "int", Category: "discovery"},
-		{Key: "discovery.yahoo_base_url", Value: "https://query1.finance.yahoo.com", ValueType: "string", Category: "discovery"},
-		{Key: "discovery.yahoo_request_budget", Value: "45", ValueType: "int", Category: "discovery"},
 		{Key: "discovery.longbridge_app_key", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
 		{Key: "discovery.longbridge_app_secret", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
 		{Key: "discovery.longbridge_access_token", Value: "", ValueType: "string", Category: "discovery", Encrypted: true},
@@ -581,7 +579,17 @@ func isSensitiveConfigKey(key string) bool {
 }
 
 func validateConfigInput(key string, value string) error {
+	if isRetiredPriceConfig(key) {
+		return fmt.Errorf("%w: 该行情数据源配置已移除", ErrValidation)
+	}
 	switch key {
+	case "discovery.price_provider":
+		for _, provider := range strings.Split(strings.ToLower(value), ",") {
+			switch strings.TrimSpace(provider) {
+			case "tiingo", "twelvedata", "yahoo":
+				return fmt.Errorf("%w: 该股票行情源已移除，请选择 Longbridge / Futu", ErrValidation)
+			}
+		}
 	case aiAnalysisPromptTemplateConfigKey:
 		if len(value) > 32_000 {
 			return ErrValidation
@@ -1318,6 +1326,14 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 	if s == nil {
 		return cfg, nil
 	}
+	credentials, err := (&FutuAPIService{configs: s}).Credentials(ctx)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.FutuConfigured = credentials.OAuthConfigured
+	if credentials.Mode == "api_key" {
+		cfg.FutuConfigured = credentials.AppKeyConfigured && credentials.PrivateKeyConfigured
+	}
 	if provider, ok, err := s.GetValue(ctx, "discovery.price_provider"); err != nil {
 		return cfg, err
 	} else if ok && strings.TrimSpace(provider) != "" {
@@ -1327,68 +1343,6 @@ func (s *ConfigService) ApplyDiscoveryConfig(ctx context.Context, cfg config.Dis
 		return cfg, err
 	} else if ok && strings.TrimSpace(urls) != "" {
 		cfg.StooqURLs = commaSeparatedConfigValues(urls)
-	}
-	if token, ok, err := s.GetValue(ctx, "discovery.tiingo_api_token"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(token) != "" && !IsMaskedSecret(token) {
-		cfg.TiingoAPIToken = strings.TrimSpace(token)
-	}
-	if tokens, ok, err := s.GetValue(ctx, "discovery.tiingo_api_tokens"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(tokens) != "" && !IsMaskedSecret(tokens) {
-		cfg.TiingoAPITokens = commaSeparatedConfigValues(tokens)
-	}
-	if baseURL, ok, err := s.GetValue(ctx, "discovery.tiingo_base_url"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(baseURL) != "" {
-		cfg.TiingoBaseURL = strings.TrimSpace(baseURL)
-	}
-	if budget, ok, err := s.GetValue(ctx, "discovery.tiingo_request_budget"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(budget) != "" {
-		parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget))
-		if parseErr == nil && parsed >= 0 {
-			cfg.TiingoRequestBudget = parsed
-		}
-	}
-	if apiKey, ok, err := s.GetValue(ctx, "discovery.twelve_data_api_key"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(apiKey) != "" && !IsMaskedSecret(apiKey) {
-		cfg.TwelveDataAPIKey = strings.TrimSpace(apiKey)
-	}
-	if baseURL, ok, err := s.GetValue(ctx, "discovery.twelve_data_base_url"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(baseURL) != "" {
-		cfg.TwelveDataBaseURL = strings.TrimSpace(baseURL)
-	}
-	if budget, ok, err := s.GetValue(ctx, "discovery.twelve_data_request_budget"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(budget) != "" {
-		parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget))
-		if parseErr == nil && parsed >= 0 {
-			cfg.TwelveDataRequestBudget = parsed
-		}
-	}
-	if interval, ok, err := s.GetValue(ctx, "discovery.twelve_data_request_interval_ms"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(interval) != "" {
-		parsed, parseErr := strconv.Atoi(strings.TrimSpace(interval))
-		if parseErr == nil && parsed > 0 {
-			cfg.TwelveDataRequestIntervalMS = parsed
-		}
-	}
-	if baseURL, ok, err := s.GetValue(ctx, "discovery.yahoo_base_url"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(baseURL) != "" {
-		cfg.YahooBaseURL = strings.TrimSpace(baseURL)
-	}
-	if budget, ok, err := s.GetValue(ctx, "discovery.yahoo_request_budget"); err != nil {
-		return cfg, err
-	} else if ok && strings.TrimSpace(budget) != "" {
-		parsed, parseErr := strconv.Atoi(strings.TrimSpace(budget))
-		if parseErr == nil && parsed >= 0 {
-			cfg.YahooRequestBudget = parsed
-		}
 	}
 	if appKey, ok, err := s.GetValue(ctx, "discovery.longbridge_app_key"); err != nil {
 		return cfg, err

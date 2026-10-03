@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sec_monitor/internal/config"
+	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
 
 	lbconfig "github.com/longbridge/openapi-go/config"
@@ -42,6 +43,7 @@ func newLongbridgeIPOListingClient(appKey, appSecret, accessToken string) (longb
 	if err != nil {
 		return nil, err
 	}
+	discovery.MonitorLongbridgeConfig(cfg)
 	client, err := lbfundamental.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -50,6 +52,10 @@ func newLongbridgeIPOListingClient(appKey, appSecret, accessToken string) (longb
 }
 
 func (c *longbridgeIPOListingSDKClient) Company(ctx context.Context, symbol string) (longbridgeIPOListingOverview, error) {
+	ctx = discovery.WithLongbridgeIPOCompanyProfile(ctx)
+	if err := discovery.CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/comp-overview"); err != nil {
+		return longbridgeIPOListingOverview{}, err
+	}
 	overview, err := c.fundamental.Company(ctx, symbol)
 	if err != nil {
 		return longbridgeIPOListingOverview{}, err
@@ -75,6 +81,10 @@ func (s *IPORadarService) confirmListedCompaniesWithLongbridge(ctx context.Conte
 	confirmed := map[string]bool{}
 	if !settings.LongbridgeListingVerificationEnabled || settings.LongbridgeListingRequestBudget == 0 {
 		return confirmed, ""
+	}
+	ctx = discovery.WithLongbridgeIPOCompanyProfile(ctx)
+	if err := discovery.CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/comp-overview"); err != nil {
+		return confirmed, "IPO 上市核验尚未调用：" + err.Error()
 	}
 	cfg, err := s.longbridgeListingConfig(ctx)
 	if err != nil {

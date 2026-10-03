@@ -937,14 +937,14 @@ func TestConfigServiceClassifiesKnownSecretsAndExistingEncryptedRowsServerSide(t
 	}
 	inputs := []ConfigInput{
 		{Key: "telegram.bot_token", Value: "telegram-token", ValueType: "string", Category: "telegram", Encrypted: false},
-		{Key: "discovery.tiingo_api_token", Value: "tiingo-token", ValueType: "string", Category: "discovery", Encrypted: false},
+		{Key: "discovery.longbridge_app_key", Value: "longbridge-token", ValueType: "string", Category: "discovery", Encrypted: false},
 		{Key: "custom.legacy_secret", Value: "updated-value", ValueType: "string", Category: "custom", Encrypted: false},
 	}
 	if err := svc.UpsertMany(context.Background(), inputs, "tester"); err != nil {
 		t.Fatalf("UpsertMany: %v", err)
 	}
 
-	for _, key := range []string{"telegram.bot_token", "discovery.tiingo_api_token", "custom.legacy_secret"} {
+	for _, key := range []string{"telegram.bot_token", "discovery.longbridge_app_key", "custom.legacy_secret"} {
 		var stored model.SystemConfig
 		if err := db.Where("config_key = ?", key).First(&stored).Error; err != nil {
 			t.Fatalf("load %s: %v", key, err)
@@ -958,7 +958,7 @@ func TestConfigServiceClassifiesKnownSecretsAndExistingEncryptedRowsServerSide(t
 	if err := db.Where("object_type = ?", "system_config").Order("id DESC").First(&audit).Error; err != nil {
 		t.Fatalf("load audit record: %v", err)
 	}
-	for _, secret := range []string{"telegram-token", "tiingo-token", "updated-value"} {
+	for _, secret := range []string{"telegram-token", "longbridge-token", "updated-value"} {
 		if strings.Contains(audit.AfterData, secret) {
 			t.Fatalf("audit leaked %q: %s", secret, audit.AfterData)
 		}
@@ -1012,16 +1012,16 @@ func TestConfigServicePreservesMaskedEncryptedValues(t *testing.T) {
 	db := testDB(t)
 	svc := NewConfigService(db, NewAuditService(db))
 	if err := svc.UpsertMany(context.Background(), []ConfigInput{
-		{Key: "discovery.tiingo_api_token", Value: "real-token", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.longbridge_app_key", Value: "real-token", ValueType: "string", Category: "discovery", Encrypted: true},
 	}, "tester"); err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
 	if err := svc.UpsertMany(context.Background(), []ConfigInput{
-		{Key: "discovery.tiingo_api_token", Value: "rea******ken", ValueType: "string", Category: "discovery", Encrypted: true},
+		{Key: "discovery.longbridge_app_key", Value: "rea******ken", ValueType: "string", Category: "discovery", Encrypted: true},
 	}, "tester"); err != nil {
 		t.Fatalf("update masked token: %v", err)
 	}
-	got, ok, err := svc.GetValue(context.Background(), "discovery.tiingo_api_token")
+	got, ok, err := svc.GetValue(context.Background(), "discovery.longbridge_app_key")
 	if err != nil || !ok || got != "real-token" {
 		t.Fatalf("token = %q ok=%v err=%v, want original real-token", got, ok, err)
 	}
@@ -1037,18 +1037,8 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 		{
 			name: "applies stored discovery datasource values",
 			inputs: []ConfigInput{
-				{Key: "discovery.price_provider", Value: "Tiingo", ValueType: "string", Category: "discovery"},
+				{Key: "discovery.price_provider", Value: "Longbridge", ValueType: "string", Category: "discovery"},
 				{Key: "discovery.stooq_urls", Value: "https://a.test/listed.zip, https://b.test/other.zip", ValueType: "string", Category: "discovery"},
-				{Key: "discovery.tiingo_api_token", Value: "primary-token", ValueType: "string", Category: "discovery", Encrypted: true},
-				{Key: "discovery.tiingo_api_tokens", Value: "token-a, token-b", ValueType: "string", Category: "discovery", Encrypted: true},
-				{Key: "discovery.tiingo_base_url", Value: "https://tiingo.test", ValueType: "string", Category: "discovery"},
-				{Key: "discovery.tiingo_request_budget", Value: "12", ValueType: "int", Category: "discovery"},
-				{Key: "discovery.twelve_data_api_key", Value: "twelve-key", ValueType: "string", Category: "discovery", Encrypted: true},
-				{Key: "discovery.twelve_data_base_url", Value: "https://twelve.test", ValueType: "string", Category: "discovery"},
-				{Key: "discovery.twelve_data_request_budget", Value: "34", ValueType: "int", Category: "discovery"},
-				{Key: "discovery.twelve_data_request_interval_ms", Value: "1500", ValueType: "int", Category: "discovery"},
-				{Key: "discovery.yahoo_base_url", Value: "https://yahoo.test", ValueType: "string", Category: "discovery"},
-				{Key: "discovery.yahoo_request_budget", Value: "56", ValueType: "int", Category: "discovery"},
 				{Key: "discovery.min_publish_coverage_pct", Value: "85.5", ValueType: "float", Category: "discovery"},
 				{Key: "discovery.research_mode", Value: "false", ValueType: "bool", Category: "discovery"},
 				{Key: "discovery.auto_technical_history_warmup", Value: "true", ValueType: "bool", Category: "discovery"},
@@ -1057,36 +1047,19 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				{Key: "discovery.sec_bulk_cache_ttl_hours", Value: "10", ValueType: "int", Category: "discovery"},
 			},
 			want: config.DiscoveryConfig{
-				PriceProvider:               "tiingo",
-				StooqURLs:                   []string{"https://a.test/listed.zip", "https://b.test/other.zip"},
-				TiingoAPIToken:              "primary-token",
-				TiingoAPITokens:             []string{"token-a", "token-b"},
-				TiingoBaseURL:               "https://tiingo.test",
-				TiingoRequestBudget:         12,
-				TwelveDataAPIKey:            "twelve-key",
-				TwelveDataBaseURL:           "https://twelve.test",
-				TwelveDataRequestBudget:     34,
-				TwelveDataRequestIntervalMS: 1500,
-				YahooBaseURL:                "https://yahoo.test",
-				YahooRequestBudget:          56,
-				MinPublishCoveragePct:       85.5,
-				ResearchMode:                false,
-				AutoTechnicalHistoryWarmup:  true,
-				TaskTimeoutMin:              75,
-				DownloadIdleTimeoutSec:      120,
-				SECBulkCacheTTLHours:        10,
+				PriceProvider:              "longbridge",
+				StooqURLs:                  []string{"https://a.test/listed.zip", "https://b.test/other.zip"},
+				MinPublishCoveragePct:      85.5,
+				ResearchMode:               false,
+				AutoTechnicalHistoryWarmup: true,
+				TaskTimeoutMin:             75,
+				DownloadIdleTimeoutSec:     120,
+				SECBulkCacheTTLHours:       10,
 			},
 		},
 		{
 			name: "ignores masked and invalid numeric discovery values",
 			inputs: []ConfigInput{
-				{Key: "discovery.tiingo_api_token", Value: "old-token", ValueType: "string", Category: "discovery", Encrypted: true},
-				{Key: "discovery.tiingo_api_tokens", Value: "old-a,old-b", ValueType: "string", Category: "discovery", Encrypted: true},
-				{Key: "discovery.twelve_data_api_key", Value: "old-twelve", ValueType: "string", Category: "discovery", Encrypted: true},
-				{Key: "discovery.tiingo_request_budget", Value: "bad", ValueType: "int", Category: "discovery"},
-				{Key: "discovery.twelve_data_request_budget", Value: "-1", ValueType: "int", Category: "discovery"},
-				{Key: "discovery.twelve_data_request_interval_ms", Value: "0", ValueType: "int", Category: "discovery"},
-				{Key: "discovery.yahoo_request_budget", Value: "-2", ValueType: "int", Category: "discovery"},
 				{Key: "discovery.min_publish_coverage_pct", Value: "-1", ValueType: "float", Category: "discovery"},
 				{Key: "discovery.research_mode", Value: "not-bool", ValueType: "bool", Category: "discovery"},
 				{Key: "discovery.task_timeout_minutes", Value: "bad", ValueType: "int", Category: "discovery"},
@@ -1094,19 +1067,12 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				{Key: "discovery.sec_bulk_cache_ttl_hours", Value: "-1", ValueType: "int", Category: "discovery"},
 			},
 			want: config.DiscoveryConfig{
-				TiingoAPIToken:              "old-token",
-				TiingoAPITokens:             []string{"old-a", "old-b"},
-				TwelveDataAPIKey:            "old-twelve",
-				TiingoRequestBudget:         7,
-				TwelveDataRequestBudget:     8,
-				TwelveDataRequestIntervalMS: 9,
-				YahooRequestBudget:          10,
-				MinPublishCoveragePct:       11,
-				ResearchMode:                true,
-				AutoTechnicalHistoryWarmup:  true,
-				TaskTimeoutMin:              12,
-				DownloadIdleTimeoutSec:      13,
-				SECBulkCacheTTLHours:        14,
+				MinPublishCoveragePct:      11,
+				ResearchMode:               true,
+				AutoTechnicalHistoryWarmup: true,
+				TaskTimeoutMin:             12,
+				DownloadIdleTimeoutSec:     13,
+				SECBulkCacheTTLHours:       14,
 			},
 		},
 	}
@@ -1118,16 +1084,12 @@ func TestConfigServiceApplyDiscoveryConfigTableDriven(t *testing.T) {
 				t.Fatalf("UpsertMany: %v", err)
 			}
 			got, err := svc.ApplyDiscoveryConfig(context.Background(), config.DiscoveryConfig{
-				TiingoRequestBudget:         7,
-				TwelveDataRequestBudget:     8,
-				TwelveDataRequestIntervalMS: 9,
-				YahooRequestBudget:          10,
-				MinPublishCoveragePct:       11,
-				ResearchMode:                true,
-				AutoTechnicalHistoryWarmup:  true,
-				TaskTimeoutMin:              12,
-				DownloadIdleTimeoutSec:      13,
-				SECBulkCacheTTLHours:        14,
+				MinPublishCoveragePct:      11,
+				ResearchMode:               true,
+				AutoTechnicalHistoryWarmup: true,
+				TaskTimeoutMin:             12,
+				DownloadIdleTimeoutSec:     13,
+				SECBulkCacheTTLHours:       14,
 			})
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ApplyDiscoveryConfig err=%v wantErr=%v", err, tt.wantErr)
@@ -1304,37 +1266,20 @@ func TestConfigServiceDefaultsTableDriven(t *testing.T) {
 			if err := svc.EnsureDefaults(context.Background()); err != nil {
 				t.Fatalf("EnsureDefaults: %v", err)
 			}
-			cfg := config.DiscoveryConfig{PriceProvider: "stooq", StooqURLs: []string{"https://env.example.test/stooq.csv"}, TiingoAPIToken: "env-token", TiingoBaseURL: "https://env.example.test", TiingoRequestBudget: 10, TwelveDataAPIKey: "env-td", TwelveDataBaseURL: "https://env-td.example.test", TwelveDataRequestBudget: 10, YahooBaseURL: "https://env-yahoo.example.test", YahooRequestBudget: 10, LongbridgeAppKey: "env-lb-key", LongbridgeAppSecret: "env-lb-secret", LongbridgeAccessToken: "env-lb-token", ResearchMode: false, MinPublishCoveragePct: 0}
+			cfg := config.DiscoveryConfig{PriceProvider: "stooq", StooqURLs: []string{"https://env.example.test/stooq.csv"}, LongbridgeAppKey: "env-lb-key", LongbridgeAppSecret: "env-lb-secret", LongbridgeAccessToken: "env-lb-token", ResearchMode: false, MinPublishCoveragePct: 0}
 			applied, err := svc.ApplyDiscoveryConfig(context.Background(), cfg)
 			if err != nil {
 				t.Fatalf("ApplyDiscoveryConfig: %v", err)
 			}
-			if applied.PriceProvider != "stooq" || len(applied.StooqURLs) != 1 || applied.StooqURLs[0] != "https://env.example.test/stooq.csv" || applied.TiingoAPIToken != "env-token" || applied.TiingoBaseURL != "https://api.tiingo.com" || applied.TiingoRequestBudget != 45 || applied.TwelveDataAPIKey != "env-td" || applied.TwelveDataBaseURL != "https://api.twelvedata.com" || applied.TwelveDataRequestBudget != 700 || applied.TwelveDataRequestIntervalMS != 8000 || applied.YahooBaseURL != "https://query1.finance.yahoo.com" || applied.YahooRequestBudget != 45 || applied.LongbridgeAppKey != "env-lb-key" || applied.LongbridgeAppSecret != "env-lb-secret" || applied.LongbridgeAccessToken != "env-lb-token" || !applied.LongbridgeCompanyProfileEnabled || applied.LongbridgeCompanyProfileRequestBudget != 20 || applied.LongbridgeCompanyProfileTTLDays != 30 || !applied.LongbridgeAnalystRatingEnabled || applied.LongbridgeAnalystRatingRequestBudget != 20 || applied.LongbridgeAnalystRatingTargetChangePct != 5 || !applied.LongbridgeCandidateResearchEnabled || applied.LongbridgeCandidateResearchRequestBudget != 5 || !applied.LongbridgeWatchTargetResearchEnabled || applied.LongbridgeWatchTargetResearchRequestBudget != 5 || !applied.LongbridgeCandidateValuationEnabled || applied.LongbridgeCandidateValuationRequestBudget != 3 || !applied.LongbridgeWatchTargetValuationEnabled || applied.LongbridgeWatchTargetValuationRequestBudget != 3 || !applied.LongbridgeOptionResearchEnabled || applied.LongbridgeCandidateOptionResearchBudget != 5 || applied.LongbridgeWatchTargetOptionResearchBudget != 5 || applied.MinPublishCoveragePct != 85 || !applied.ResearchMode || !applied.AutoTechnicalHistoryWarmup || applied.TaskTimeoutMin != 60 || applied.DownloadIdleTimeoutSec != 90 || applied.SECBulkCacheTTLHours != 12 || applied.CacheRetentionDays != 14 {
+			if applied.PriceProvider != "stooq" || len(applied.StooqURLs) != 1 || applied.StooqURLs[0] != "https://env.example.test/stooq.csv" || applied.LongbridgeAppKey != "env-lb-key" || applied.LongbridgeAppSecret != "env-lb-secret" || applied.LongbridgeAccessToken != "env-lb-token" || !applied.LongbridgeCompanyProfileEnabled || applied.LongbridgeCompanyProfileRequestBudget != 20 || applied.LongbridgeCompanyProfileTTLDays != 30 || !applied.LongbridgeAnalystRatingEnabled || applied.LongbridgeAnalystRatingRequestBudget != 20 || applied.LongbridgeAnalystRatingTargetChangePct != 5 || !applied.LongbridgeCandidateResearchEnabled || applied.LongbridgeCandidateResearchRequestBudget != 5 || !applied.LongbridgeWatchTargetResearchEnabled || applied.LongbridgeWatchTargetResearchRequestBudget != 5 || !applied.LongbridgeCandidateValuationEnabled || applied.LongbridgeCandidateValuationRequestBudget != 3 || !applied.LongbridgeWatchTargetValuationEnabled || applied.LongbridgeWatchTargetValuationRequestBudget != 3 || !applied.LongbridgeOptionResearchEnabled || applied.LongbridgeCandidateOptionResearchBudget != 5 || applied.LongbridgeWatchTargetOptionResearchBudget != 5 || applied.MinPublishCoveragePct != 85 || !applied.ResearchMode || !applied.AutoTechnicalHistoryWarmup || applied.TaskTimeoutMin != 60 || applied.DownloadIdleTimeoutSec != 90 || applied.SECBulkCacheTTLHours != 12 || applied.CacheRetentionDays != 14 {
 				t.Fatalf("applied defaults = %+v", applied)
 			}
 			configs, err := svc.List(context.Background(), "discovery", true)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(configs) != 39 {
-				t.Fatalf("discovery defaults = %d, want 39", len(configs))
-			}
-		}},
-		{name: "stored twelve data config overrides env config", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
-			if err := svc.UpsertMany(context.Background(), []ConfigInput{
-				{Key: "discovery.twelve_data_api_key", Value: "stored-td", ValueType: "string", Category: "discovery", Encrypted: true},
-				{Key: "discovery.twelve_data_base_url", Value: "https://stored-td.example.test", ValueType: "string", Category: "discovery"},
-				{Key: "discovery.twelve_data_request_budget", Value: "650", ValueType: "int", Category: "discovery"},
-				{Key: "discovery.twelve_data_request_interval_ms", Value: "8500", ValueType: "int", Category: "discovery"},
-			}, "tester"); err != nil {
-				t.Fatalf("seed config: %v", err)
-			}
-			applied, err := svc.ApplyDiscoveryConfig(context.Background(), config.DiscoveryConfig{TwelveDataAPIKey: "env-td", TwelveDataBaseURL: "https://env.example.test", TwelveDataRequestBudget: 10})
-			if err != nil {
-				t.Fatalf("ApplyDiscoveryConfig: %v", err)
-			}
-			if applied.TwelveDataAPIKey != "stored-td" || applied.TwelveDataBaseURL != "https://stored-td.example.test" || applied.TwelveDataRequestBudget != 650 || applied.TwelveDataRequestIntervalMS != 8500 {
-				t.Fatalf("twelve data config = %+v", applied)
+			if len(configs) != 29 {
+				t.Fatalf("discovery defaults = %d, want 29", len(configs))
 			}
 		}},
 		{name: "stored stooq urls override env config", run: func(t *testing.T, db *gorm.DB, svc *ConfigService) {
@@ -3845,8 +3790,8 @@ func TestTaskConfigServiceTableDriven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(tasks) != 28 {
-				t.Fatalf("tasks = %d, want 28", len(tasks))
+			if len(tasks) != 29 {
+				t.Fatalf("tasks = %d, want 29", len(tasks))
 			}
 			names := map[string]bool{}
 			enabled := map[string]bool{}

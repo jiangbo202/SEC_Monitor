@@ -16,11 +16,6 @@ services:
       WEB_DIST_DIR: /app/web
       SMALL_CAP_CACHE_DIR: /app/data/.cache/discovery
       SMALL_CAP_RESEARCH_MODE: "${SMALL_CAP_RESEARCH_MODE:-true}"
-      SMALL_CAP_TIINGO_CONCURRENCY: "${SMALL_CAP_TIINGO_CONCURRENCY:-1}"
-      SMALL_CAP_TIINGO_REQUEST_BUDGET: "${SMALL_CAP_TIINGO_REQUEST_BUDGET:-45}"
-      SMALL_CAP_TIINGO_REQUEST_INTERVAL_MS: "${SMALL_CAP_TIINGO_REQUEST_INTERVAL_MS:-1000}"
-      TIINGO_API_TOKEN: "${TIINGO_API_TOKEN:-}"
-      TIINGO_API_TOKENS: "${TIINGO_API_TOKENS:-}"
       CONFIG_ENCRYPTION_KEY: "${CONFIG_ENCRYPTION_KEY:-}"
       # The application database stays in the named volume. A verified second
       # copy is written to a host bind mount so deleting/recreating that volume

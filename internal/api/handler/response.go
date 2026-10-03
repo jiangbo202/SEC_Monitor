@@ -41,6 +41,10 @@ func Error(c *gin.Context, err error) {
 		status = http.StatusConflict
 		code = "task_busy"
 	}
+	if errors.Is(err, service.ErrAPIConfigConflict) {
+		status = http.StatusConflict
+		code = "config_conflict"
+	}
 	message := err.Error()
 	if providerMessage := sec.UserMessage(err); providerMessage != "" {
 		message = providerMessage

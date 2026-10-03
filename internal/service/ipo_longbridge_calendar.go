@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode"
 
+	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
 
 	"gorm.io/gorm"
@@ -50,6 +51,7 @@ func newLongbridgeIPOCalendarClient(appKey, appSecret, accessToken string) (long
 	if err != nil {
 		return nil, err
 	}
+	discovery.MonitorLongbridgeConfig(cfg)
 	client, err := lbcalendar.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -58,6 +60,9 @@ func newLongbridgeIPOCalendarClient(appKey, appSecret, accessToken string) (long
 }
 
 func (c *longbridgeIPOCalendarSDKClient) FinanceCalendar(ctx context.Context, start, end, market string) (longbridgeIPOCalendarPage, error) {
+	if err := discovery.CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/finance_calendar"); err != nil {
+		return longbridgeIPOCalendarPage{}, err
+	}
 	response, err := c.calendar.FinanceCalendar(ctx, lbcalendar.CalendarCategoryIpo, start, end, &market)
 	if err != nil {
 		return longbridgeIPOCalendarPage{}, err

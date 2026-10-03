@@ -12,6 +12,7 @@ import (
 
 	"sec_monitor/internal/api/handler"
 	"sec_monitor/internal/config"
+	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/scheduler"
 	"sec_monitor/internal/sec"
 	"sec_monitor/internal/service"
@@ -32,7 +33,16 @@ type Dependencies struct {
 
 func New(deps Dependencies) (*gin.Engine, error) {
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery())
+	// OAuth authorization codes must never enter request logs.
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/api/providers/futu/oauth/callback"}}), gin.Recovery())
+	r.Use(func(c *gin.Context) {
+		trigger := "manual"
+		if c.Request.Method == http.MethodGet {
+			trigger = "page"
+		}
+		c.Request = c.Request.WithContext(discovery.WithAPITrigger(c.Request.Context(), trigger))
+		c.Next()
+	})
 
 	audit := service.NewAuditService(deps.DB)
 	configs := service.NewConfigService(deps.DB, audit, deps.Config.System)
@@ -73,7 +83,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 	operationalHealth := service.NewOperationalHealthService(deps.DB, deps.DiscoveryDB, notifier, configs).WithBackup(backup).WithNotificationCenter(notificationBatches)
 	macroCalendar := service.NewMacroCalendarService(deps.DB).WithLongbridge(configs, runtimeConfig.Discovery)
 	marketTrend := service.NewMarketTrendService(deps.DB, configs, runtimeConfig.Discovery)
-	usFutures := service.NewUSFuturesService(deps.DB, configs, runtimeConfig.Discovery)
+	usFutures := service.NewUSFuturesService(deps.DB, nil)
 	aiAnalysis := service.NewAIAnalysisService(deps.DB, configs, audit).WithInAppNotifications(inAppNotifications).WithNotificationCenter(notificationBatches)
 	if fetcher, ok := secClient.(sec.FilingDocumentFetcher); ok {
 		aiAnalysis.WithSECFilingFetcher(fetcher)
@@ -101,11 +111,26 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		currentFilingsClient = newSECClient(runtimeConfig)
 	}
 	ipoRadar := service.NewIPORadarService(deps.DB, currentFilingsClient, notifier, configs).WithLongbridgeListingRuntime(runtimeConfig.Discovery).WithNotificationCenter(notificationBatches).WithInAppNotifications(inAppNotifications)
-	sched := scheduler.New(tasks, filings, configs, ipoRadar, candidateNotifications, tradeSetupNotifications, discoverySync, notificationBatches, backup, lifecycle, operationalHealth, macroCalendar, marketTrend, usFutures, earningsPreview, institutionalHoldings)
+	var apiManagement *service.APIManagementService
+	if deps.DiscoveryDB != nil {
+		if err := discovery.EnsureAPIPolicies(context.Background(), deps.DiscoveryDB); err != nil {
+			return nil, fmt.Errorf("ensure API policies: %w", err)
+		}
+		monitor := discovery.CurrentAPIMonitor()
+		if monitor == nil || monitor.DB != deps.DiscoveryDB {
+			monitor = discovery.NewAPIMonitor(deps.DiscoveryDB)
+		}
+		apiManagement = service.NewAPIManagementService(deps.DiscoveryDB, deps.DB, configs, tasks, runtimeConfig.Discovery, monitor)
+	}
+	if apiManagement != nil {
+		usFutures = service.NewUSFuturesService(deps.DB, apiManagement.Futu)
+	}
+	sched := scheduler.New(tasks, filings, configs, ipoRadar, candidateNotifications, tradeSetupNotifications, discoverySync, notificationBatches, backup, lifecycle, operationalHealth, macroCalendar, marketTrend, usFutures, earningsPreview, institutionalHoldings, apiManagement)
 	if err := sched.Start(context.Background()); err != nil {
 		return nil, fmt.Errorf("start scheduler: %w", err)
 	}
 	app := &handler.AppHandler{
+		APIManagement:          apiManagement,
 		Runtime:                runtimeConfig,
 		DB:                     deps.DB,
 		DiscoveryDB:            deps.DiscoveryDB,
@@ -138,6 +163,23 @@ func New(deps Dependencies) (*gin.Engine, error) {
 
 	api := r.Group("/api")
 	{
+		providers := api.Group("/providers", func(c *gin.Context) {
+			if app.APIManagement == nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "研究数据库未启用，数据源管理不可用"})
+			}
+		})
+		providers.GET("/overview", app.GetAPIManagementOverview)
+		providers.GET("/futu/credentials", app.GetFutuCredentials)
+		providers.PUT("/futu/credentials", app.SaveFutuCredentials)
+		providers.PUT("/modules/:key", app.UpdateAPIModule)
+		providers.PUT("/price-route", app.UpdateAPIPriceRoute)
+		providers.PUT("/:provider/policy", app.UpdateAPIProviderPolicy)
+		providers.PUT("/capabilities/:key", app.UpdateAPICapability)
+		providers.POST("/:provider/probe", app.ProbeAPIProvider)
+		providers.POST("/futu/oauth/start", app.StartFutuAuthorization)
+		providers.GET("/futu/oauth/callback", app.CompleteFutuAuthorization)
+		providers.POST("/futu/disconnect", app.DisconnectFutu)
+		providers.POST("/futu/ownership/:ticker/refresh", app.RefreshFutuOwnership)
 		api.GET("/dashboard/summary", app.GetDashboardSummary)
 		api.PUT("/dashboard/preferences", app.UpdateDashboardPreferences)
 		api.GET("/sec/tickers/:ticker", app.LookupTicker)
@@ -213,6 +255,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.POST("/discovery/valuation-research/:ticker/refresh", app.RefreshDiscoveryTickerValuationResearch)
 		api.GET("/discovery/institutional-holdings/:ticker", app.GetDiscoveryTickerInstitutionalHoldings)
 		api.POST("/discovery/institutional-holdings/:ticker/refresh", app.RefreshDiscoveryInstitutionalOwnership)
+		api.GET("/discovery/options", app.ListDiscoveryOptionResearch)
 		api.GET("/discovery/options/:ticker", app.GetDiscoveryOptionResearch)
 		api.POST("/discovery/options/:ticker/refresh", app.RefreshDiscoveryOptionResearch)
 		api.GET("/discovery/trade-setup-history/:ticker", app.GetDiscoveryTickerTradeSetupHistory)
@@ -371,7 +414,7 @@ func configureWebApp(r *gin.Engine, webDistDir string) {
 			c.Status(http.StatusNotFound)
 			return
 		}
-		if strings.HasPrefix(c.Request.URL.Path, "/api") || c.Request.URL.Path == "/healthz" {
+		if c.Request.URL.Path == "/api" || strings.HasPrefix(c.Request.URL.Path, "/api/") || c.Request.URL.Path == "/healthz" {
 			c.Status(http.StatusNotFound)
 			return
 		}

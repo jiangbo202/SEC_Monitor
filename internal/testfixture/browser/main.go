@@ -81,6 +81,10 @@ func main() {
 	r.GET("/api/research-theses/:ticker/sources", h.ListThesisSources)
 	r.PUT("/api/research-theses/:ticker", h.SaveResearchThesis)
 	r.GET("/api/system-configs", func(c *gin.Context) { handler.OK(c, []any{}) })
+	// Integration editor reads local configuration; fixture responses never contact vendors.
+	for _, path := range []string{"/api/ai/providers/config", "/api/ai/prompt-templates", "/api/telegram/config"} {
+		r.GET(path, func(c *gin.Context) { handler.OK(c, []any{}) })
+	}
 	r.GET("/api/in-app-notifications/unread-count", func(c *gin.Context) { handler.OK(c, gin.H{"unread_count": 1}) })
 	r.GET("/api/in-app-notifications", func(c *gin.Context) {
 		mu.Lock()

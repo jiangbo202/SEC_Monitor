@@ -26,35 +26,32 @@ func TestGetProviderObservabilityUsesRecordedDataWithoutCredentials(t *testing.T
 	if err := db.Create(&batch).Error; err != nil {
 		t.Fatalf("create batch: %v", err)
 	}
-	attemptsJSON, err := encodeProviderAttempts([]ProviderAttempt{{Provider: "tiingo", Status: "partial", SourceVersion: "tiingo-v1", Expected: 2, Records: 1, Remaining: 1, CoveragePct: 50, ElapsedMS: 120}, {Provider: "twelvedata", Status: "success", SourceVersion: "twelve-v1", Expected: 1, Records: 1, Remaining: 0, CoveragePct: 100, ElapsedMS: 80}})
+	attemptsJSON, err := encodeProviderAttempts([]ProviderAttempt{{Provider: "longbridge", Status: "partial", SourceVersion: "longbridge-v1", Expected: 2, Records: 1, Remaining: 1, CoveragePct: 50, ElapsedMS: 120}, {Provider: "futu", Status: "success", SourceVersion: "futu-v1", Expected: 1, Records: 1, Remaining: 0, CoveragePct: 100, ElapsedMS: 80}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := ProviderRun{BatchID: batch.BatchID, Provider: "tiingo,twelvedata", Status: ProviderStatusActive, SourceVersion: "chain-v1", EffectiveDate: date, ExpectedCount: 2, RecordCount: 2, CoveragePct: 100, Timely: true, AttemptsJSON: attemptsJSON, FallbackUsed: true, CreatedAt: date.Add(time.Hour)}
+	run := ProviderRun{BatchID: batch.BatchID, Provider: "longbridge,futu", Status: ProviderStatusActive, SourceVersion: "chain-v1", EffectiveDate: date, ExpectedCount: 2, RecordCount: 2, CoveragePct: 100, Timely: true, AttemptsJSON: attemptsJSON, FallbackUsed: true, CreatedAt: date.Add(time.Hour)}
 	if err := db.Create(&run).Error; err != nil {
 		t.Fatalf("create run: %v", err)
 	}
 	prices := []PriceSnapshot{
-		{Source: "tiingo", SourceVersion: run.SourceVersion, Symbol: "ALPH", TradeDate: date, CloseMicros: 1_000_000, Currency: "USD", QualityStatus: QualityStatusValid},
-		{Source: "twelvedata", SourceVersion: run.SourceVersion, Symbol: "BETA", TradeDate: date, CloseMicros: 2_000_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "longbridge", SourceVersion: run.SourceVersion, Symbol: "ALPH", TradeDate: date, CloseMicros: 1_000_000, Currency: "USD", QualityStatus: QualityStatusValid},
+		{Source: "futu", SourceVersion: run.SourceVersion, Symbol: "BETA", TradeDate: date, CloseMicros: 2_000_000, Currency: "USD", QualityStatus: QualityStatusValid},
 	}
 	if err := db.Create(&prices).Error; err != nil {
 		t.Fatalf("create price snapshots: %v", err)
 	}
 	if err := db.Create(&[]ProviderHealth{
-		{Provider: "tiingo", Status: ProviderStatusActive, LastTradeDate: "2026-07-27", QualifiedTradingDays: 3, UpdatedAt: date},
-		{Provider: "tiingo,twelvedata", Status: ProviderStatusValidation, LastTradeDate: "2026-07-27", QualifiedTradingDays: 1, UpdatedAt: date},
+		{Provider: "longbridge", Status: ProviderStatusActive, LastTradeDate: "2026-07-27", QualifiedTradingDays: 3, UpdatedAt: date},
+		{Provider: "longbridge,futu", Status: ProviderStatusValidation, LastTradeDate: "2026-07-27", QualifiedTradingDays: 1, UpdatedAt: date},
 	}).Error; err != nil {
 		t.Fatalf("create provider health: %v", err)
 	}
 
 	result, err := GetProviderObservability(ctx, db, config.DiscoveryConfig{
-		PriceProvider:           "tiingo,twelvedata",
-		TiingoAPIToken:          "primary-token",
-		TiingoAPITokens:         []string{"secondary-token", "primary-token"},
-		TiingoRequestBudget:     45,
-		TwelveDataAPIKey:        "twelve-key",
-		TwelveDataRequestBudget: 700,
+		PriceProvider:    "longbridge,futu",
+		FutuConfigured:   true,
+		LongbridgeAppKey: "fake-key", LongbridgeAppSecret: "fake-secret", LongbridgeAccessToken: "fake-token",
 	})
 	if err != nil {
 		t.Fatalf("GetProviderObservability: %v", err)
@@ -62,10 +59,10 @@ func TestGetProviderObservabilityUsesRecordedDataWithoutCredentials(t *testing.T
 	if result.LatestRun == nil || result.LatestRun.BatchID != batch.BatchID || !result.LatestRun.FallbackUsed || len(result.LatestRun.Attempts) != 2 {
 		t.Fatalf("latest run = %+v, want market batch", result.LatestRun)
 	}
-	if result.ChainHealth == nil || result.ChainHealth.Provider != "tiingo,twelvedata" {
+	if result.ChainHealth == nil || result.ChainHealth.Provider != "longbridge,futu" {
 		t.Fatalf("chain health = %+v", result.ChainHealth)
 	}
-	if result.LatestPriceSourceCounts["tiingo"] != 1 || result.LatestPriceSourceCounts["twelvedata"] != 1 {
+	if result.LatestPriceSourceCounts["longbridge"] != 1 || result.LatestPriceSourceCounts["futu"] != 1 {
 		t.Fatalf("source counts = %+v", result.LatestPriceSourceCounts)
 	}
 	if len(result.CalendarYears) < 1 || result.CalendarYears[0].Year != 2026 || !result.CalendarYears[0].Complete {
@@ -74,35 +71,21 @@ func TestGetProviderObservabilityUsesRecordedDataWithoutCredentials(t *testing.T
 	if len(result.Providers) != 2 {
 		t.Fatalf("providers = %+v", result.Providers)
 	}
-	tiingo := result.Providers[0]
-	if tiingo.Provider != "tiingo" || tiingo.TokenCount != 2 || tiingo.LocalRequestBudget != 90 || tiingo.Health == nil || tiingo.Health.Status != ProviderStatusActive || tiingo.LatestAttempt == nil || tiingo.LatestAttempt.Status != "partial" {
-		t.Fatalf("tiingo observability = %+v", tiingo)
+	longbridge := result.Providers[0]
+	if longbridge.Provider != "longbridge" || !longbridge.ConfiguredCredential || longbridge.BudgetScope != "provider_managed" || longbridge.Health == nil || longbridge.Health.Status != ProviderStatusActive || longbridge.LatestAttempt == nil || longbridge.LatestAttempt.Status != "partial" {
+		t.Fatalf("longbridge observability = %+v", longbridge)
 	}
-	if tiingo.RecentAttemptCount != 1 || tiingo.RecentUsableCount != 1 || tiingo.RecentCompleteCount != 0 || tiingo.UsableRatePct != 100 {
-		t.Fatalf("tiingo recent SLA = %+v", tiingo)
+	if longbridge.RecentAttemptCount != 1 || longbridge.RecentUsableCount != 1 || longbridge.RecentCompleteCount != 0 || longbridge.UsableRatePct != 100 {
+		t.Fatalf("longbridge recent SLA = %+v", longbridge)
 	}
-	twelve := result.Providers[1]
-	if twelve.Provider != "twelvedata" || !twelve.ConfiguredCredential || twelve.LocalRequestBudget != 700 || twelve.LatestSourceRecordCount != 1 || twelve.LatestAttempt == nil || twelve.LatestAttempt.Status != "success" {
-		t.Fatalf("twelve observability = %+v", twelve)
+	futu := result.Providers[1]
+	if futu.Provider != "futu" || !futu.ConfiguredCredential || futu.BudgetScope != "provider_daily_local" || futu.LatestSourceRecordCount != 1 || futu.LatestAttempt == nil || futu.LatestAttempt.Status != "success" {
+		t.Fatalf("futu observability = %+v", futu)
 	}
-	if twelve.RecentAttemptCount != 1 || twelve.RecentCompleteCount != 1 || twelve.CompleteRatePct != 100 {
-		t.Fatalf("twelve recent SLA = %+v", twelve)
+	if futu.RecentAttemptCount != 1 || futu.RecentCompleteCount != 1 || futu.CompleteRatePct != 100 {
+		t.Fatalf("futu recent SLA = %+v", futu)
 	}
 	if !strings.Contains(result.BudgetNotice, "不代表") {
 		t.Fatalf("budget notice must clarify it is not account quota: %q", result.BudgetNotice)
-	}
-}
-
-func TestProviderObservabilityConfigDoesNotExposeOrCountDuplicateTokens(t *testing.T) {
-	item := providerObservabilityConfig("tiingo", config.DiscoveryConfig{
-		TiingoAPIToken:      "same",
-		TiingoAPITokens:     []string{"same,other", "other"},
-		TiingoRequestBudget: 10,
-	})
-	if item.TokenCount != 2 || item.LocalRequestBudget != 20 || !item.ConfiguredCredential {
-		t.Fatalf("tiingo config = %+v", item)
-	}
-	if item.BudgetScope != "per_token_per_run" {
-		t.Fatalf("budget scope = %q", item.BudgetScope)
 	}
 }

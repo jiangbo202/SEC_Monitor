@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"sec_monitor/internal/config"
+	"sec_monitor/internal/discovery"
 	"sec_monitor/internal/model"
 
 	lbconfig "github.com/longbridge/openapi-go/config"
@@ -116,6 +117,7 @@ func newMarketTemperatureLongbridgeClient(appKey, appSecret, accessToken string)
 	if err != nil {
 		return nil, err
 	}
+	discovery.MonitorLongbridgeConfig(cfg)
 	client, err := lbhttp.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -143,6 +145,7 @@ func newMarketTrendLongbridgeClient(appKey, appSecret, accessToken string) (mark
 	if err != nil {
 		return nil, err
 	}
+	discovery.MonitorLongbridgeConfig(cfg)
 	client, err := lbquote.NewFromCfg(cfg)
 	if err != nil {
 		return nil, err
@@ -151,7 +154,13 @@ func newMarketTrendLongbridgeClient(appKey, appSecret, accessToken string) (mark
 }
 
 func (c *marketTrendLongbridgeSDKClient) HistoryDaily(ctx context.Context, symbol string, start, end time.Time) ([]marketTrendCandle, error) {
+	m := discovery.CurrentAPIMonitor()
+	row, permitErr := m.Acquire(ctx, "longbridge", "ws/history_daily", symbol)
+	if permitErr != nil {
+		return nil, permitErr
+	}
 	items, err := c.quote.HistoryCandlesticksByDate(ctx, symbol, lbquote.PeriodDay, lbquote.AdjustTypeNo, &start, &end)
+	m.Finish(row, err)
 	if err != nil {
 		return nil, err
 	}
@@ -341,42 +350,61 @@ func (s *MarketTrendService) Refresh(ctx context.Context) (MarketTrendRefreshRes
 	if strings.TrimSpace(cfg.LongbridgeAppKey) == "" || strings.TrimSpace(cfg.LongbridgeAppSecret) == "" || strings.TrimSpace(cfg.LongbridgeAccessToken) == "" {
 		return MarketTrendRefreshResult{}, errors.New("Longbridge 行情凭据未配置，请在系统配置中填写 App Key、App Secret 和 Access Token")
 	}
-	client, err := s.newClient(cfg.LongbridgeAppKey, cfg.LongbridgeAppSecret, cfg.LongbridgeAccessToken)
-	if err != nil {
-		return MarketTrendRefreshResult{}, fmt.Errorf("create Longbridge market client: %w", err)
-	}
-	defer func() { _ = client.Close() }()
-
 	now := s.now().UTC()
 	start := now.AddDate(0, -7, 0)
 	result := MarketTrendRefreshResult{SymbolsRequested: len(marketTrendDefinitions), Warnings: []string{}}
-	for _, definition := range marketTrendDefinitions {
-		if err := ctx.Err(); err != nil {
-			return result, err
-		}
-		candles, fetchErr := client.HistoryDaily(ctx, definition.Symbol, start, now)
-		if fetchErr != nil {
-			result.Warnings = append(result.Warnings, definition.Label+"："+SanitizeSensitiveError(fetchErr.Error()))
-			continue
-		}
-		saved, storeErr := s.storeDailyBars(ctx, definition, candles, now)
-		if storeErr != nil {
-			return result, storeErr
-		}
-		if saved > 0 {
-			result.SymbolsUpdated++
-			result.BarsSaved += saved
-		}
+	marketErr := discovery.CheckCurrentAPIEndpoint(ctx, "longbridge", "ws/history_daily")
+	temperaturePolicyErr := discovery.CheckCurrentAPIEndpoint(ctx, "longbridge", "/v1/quote/market_temperature")
+	if marketErr != nil && !errors.Is(marketErr, discovery.ErrAPIDisabled) {
+		return result, marketErr
 	}
-	temperatureClient, temperatureErr := s.newTemperatureClient(cfg.LongbridgeAppKey, cfg.LongbridgeAppSecret, cfg.LongbridgeAccessToken)
-	if temperatureErr != nil {
-		result.Warnings = append(result.Warnings, "市场温度客户端："+SanitizeSensitiveError(temperatureErr.Error()))
-	} else if saved, syncErr := s.syncMarketTemperature(ctx, temperatureClient, now); syncErr != nil {
-		result.Warnings = append(result.Warnings, "市场温度："+SanitizeSensitiveError(syncErr.Error()))
+	if temperaturePolicyErr != nil && !errors.Is(temperaturePolicyErr, discovery.ErrAPIDisabled) {
+		return result, temperaturePolicyErr
+	}
+	if marketErr != nil && temperaturePolicyErr != nil {
+		return result, SkipTask("大盘行情与市场温度模块已关闭，保留本地缓存")
+	}
+	if marketErr == nil {
+		client, err := s.newClient(cfg.LongbridgeAppKey, cfg.LongbridgeAppSecret, cfg.LongbridgeAccessToken)
+		if err != nil {
+			return result, fmt.Errorf("create Longbridge market client: %w", err)
+		}
+		defer func() { _ = client.Close() }()
+		for _, definition := range marketTrendDefinitions {
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+			candles, fetchErr := client.HistoryDaily(ctx, definition.Symbol, start, now)
+			if fetchErr != nil {
+				result.Warnings = append(result.Warnings, definition.Label+"："+SanitizeSensitiveError(fetchErr.Error()))
+				continue
+			}
+			saved, storeErr := s.storeDailyBars(ctx, definition, candles, now)
+			if storeErr != nil {
+				return result, storeErr
+			}
+			if saved > 0 {
+				result.SymbolsUpdated++
+				result.BarsSaved += saved
+			}
+		}
 	} else {
-		result.TemperatureSaved = saved
+		result.SymbolsRequested = 0
+		result.Warnings = append(result.Warnings, "大盘行情模块已关闭，仅更新已启用的市场温度")
 	}
-	if result.SymbolsUpdated == 0 && len(result.Warnings) > 0 {
+	if temperaturePolicyErr == nil {
+		temperatureClient, temperatureErr := s.newTemperatureClient(cfg.LongbridgeAppKey, cfg.LongbridgeAppSecret, cfg.LongbridgeAccessToken)
+		if temperatureErr != nil {
+			result.Warnings = append(result.Warnings, "市场温度客户端："+SanitizeSensitiveError(temperatureErr.Error()))
+		} else if saved, syncErr := s.syncMarketTemperature(ctx, temperatureClient, now); syncErr != nil {
+			result.Warnings = append(result.Warnings, "市场温度："+SanitizeSensitiveError(syncErr.Error()))
+		} else {
+			result.TemperatureSaved = saved
+		}
+	} else {
+		result.Warnings = append(result.Warnings, "市场温度模块已关闭，保留原有本地记录")
+	}
+	if result.SymbolsUpdated == 0 && len(result.Warnings) > 0 && (marketErr == nil || result.TemperatureSaved == 0) {
 		return result, errors.New("Longbridge 未返回可用的大盘趋势日线")
 	}
 	return result, nil
@@ -393,7 +421,7 @@ func (s *MarketTrendService) syncMarketTemperature(ctx context.Context, client m
 		return 0, err
 	}
 	history, err := client.History(ctx, "US", start, now)
-	if err != nil {
+	if err != nil && !errors.Is(err, discovery.ErrAPIDisabled) {
 		return 0, err
 	}
 	current, currentErr := client.Current(ctx, "US")

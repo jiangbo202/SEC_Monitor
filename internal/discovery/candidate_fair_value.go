@@ -78,6 +78,9 @@ type FairValueMetricScenario struct {
 }
 
 func buildCandidateFairValueEstimate(technical CandidateTechnicalAnalysis, analyst *AnalystRatingSnapshot, valuation *ValuationResearchSnapshot) CandidateFairValueEstimate {
+	// Futu does not expose a currency on this endpoint. Keep the raw target
+	// visible in the analyst panel, but never interpret it as a USD valuation.
+	analystPriceCompatible := analyst != nil && !(analyst.Provider == "futu" && strings.TrimSpace(analyst.Currency) == "")
 	result := CandidateFairValueEstimate{
 		Status:          CandidateFairValueStatusInsufficient,
 		Currency:        "USD",
@@ -101,15 +104,15 @@ func buildCandidateFairValueEstimate(technical CandidateTechnicalAnalysis, analy
 	}
 	if analyst != nil && analyst.Status == AnalystRatingStatusAvailable {
 		result.AnalystCount = analyst.AnalystCount
-		if analyst.TargetAverageMicros > 0 {
+		if analystPriceCompatible && analyst.TargetAverageMicros > 0 {
 			value := float64(analyst.TargetAverageMicros) / 1_000_000
 			result.MarketConsensusTarget = &value
 		}
-		if analyst.TargetLowMicros > 0 {
+		if analystPriceCompatible && analyst.TargetLowMicros > 0 {
 			value := float64(analyst.TargetLowMicros) / 1_000_000
 			result.MarketConsensusLow = &value
 		}
-		if analyst.TargetHighMicros > 0 {
+		if analystPriceCompatible && analyst.TargetHighMicros > 0 {
 			value := float64(analyst.TargetHighMicros) / 1_000_000
 			result.MarketConsensusHigh = &value
 		}
@@ -161,7 +164,7 @@ func buildCandidateFairValueEstimate(technical CandidateTechnicalAnalysis, analy
 		return result
 	}
 	missing := make([]string, 0, 2)
-	if analyst == nil || analyst.TargetAverageMicros <= 0 {
+	if !analystPriceCompatible || analyst.TargetAverageMicros <= 0 {
 		missing = append(missing, "机构目标价")
 	}
 	if valuation == nil || result.ReferencePrice == nil {
