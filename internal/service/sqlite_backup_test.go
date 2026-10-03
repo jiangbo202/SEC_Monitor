@@ -382,3 +382,129 @@ func openSQLiteBackupTestDB(t *testing.T, path string) *gorm.DB {
 	})
 	return db
 }
+
+func TestBackupPairCountRetentionPreservesThreeCompleteRecoveryPoints(t *testing.T) {
+	dir := t.TempDir()
+	for _, stamp := range []string{"20260901T000000Z", "20260902T000000Z", "20260903T000000Z", "20260904T000000Z", "20260905T000000Z"} {
+		for _, name := range []string{"sec_monitor", "small_cap"} {
+			if err := os.WriteFile(filepath.Join(dir, name+"-"+stamp+".db"), []byte("snapshot"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	preserved := []string{"foreign.db", "small_cap-20260906T000000Z.db", "small_cap-20260907T000000Z.db.partial"}
+	for _, name := range preserved {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("keep"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(dir, "foreign.db"), filepath.Join(dir, "sec_monitor-20260906T000000Z.db")); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := pruneSQLiteBackupPairs(dir, 3)
+	if err != nil || deleted != 4 {
+		t.Fatalf("deleted=%d %v", deleted, err)
+	}
+	pairs, err := completeSQLiteBackupPairs(dir)
+	if err != nil || len(pairs) != 3 {
+		t.Fatalf("pairs=%v %v", pairs, err)
+	}
+	if filepath.Base(pairs[0][0]) != "sec_monitor-20260903T000000Z.db" {
+		t.Fatalf("wrong oldest retained pair %v", pairs[0])
+	}
+	for _, name := range preserved {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pruneSQLiteBackupPairs(dir, 1); err == nil {
+		t.Fatal("must reject retaining fewer than two complete pairs")
+	}
+}
+
+func TestBackupAgeRetentionProtectsTwoCompleteRecoveryPoints(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().AddDate(0, 0, -90)
+	for _, stamp := range []string{"20260901T000000Z", "20260902T000000Z", "20260903T000000Z"} {
+		for _, name := range []string{"sec_monitor", "small_cap"} {
+			p := filepath.Join(dir, name+"-"+stamp+".db")
+			os.WriteFile(p, []byte("snapshot"), 0600)
+			os.Chtimes(p, old, old)
+		}
+	}
+	deleted, err := pruneSQLiteBackups(dir, 7, time.Now())
+	if err != nil || deleted != 2 {
+		t.Fatalf("deleted=%d %v", deleted, err)
+	}
+	pairs, err := completeSQLiteBackupPairs(dir)
+	if err != nil || len(pairs) != 2 {
+		t.Fatalf("pairs=%v %v", pairs, err)
+	}
+}
+
+func TestPruneExistingVerifiesBothLocationsBeforeDeleting(t *testing.T) {
+	dir := t.TempDir()
+	mainPath, researchPath := filepath.Join(dir, "sec_monitor.db"), filepath.Join(dir, "small_cap.db")
+	mainDB, researchDB := openSQLiteBackupTestDB(t, mainPath), openSQLiteBackupTestDB(t, researchPath)
+	if err := mainDB.AutoMigrate(&model.SystemConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := researchDB.Exec("CREATE TABLE payload (id INTEGER PRIMARY KEY)").Error; err != nil {
+		t.Fatal(err)
+	}
+	replica := filepath.Join(dir, "replica")
+	if err := mainDB.Create(&model.SystemConfig{ConfigKey: "system.backup_replica_dir", ConfigValue: replica}).Error; err != nil {
+		t.Fatal(err)
+	}
+	backups := NewSQLiteBackupService(mainDB, researchDB, mainPath, researchPath, NewConfigService(mainDB, nil))
+	result, err := backups.Backup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, location := range []string{result.Directory, replica} {
+		for _, name := range []string{"sec_monitor", "small_cap"} {
+			data, err := os.ReadFile(result.Files[name])
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, stamp := range []string{"20260901T000000Z", "20260902T000000Z", "20260903T000000Z"} {
+				if err := os.WriteFile(filepath.Join(location, name+"-"+stamp+".db"), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	replicaResearch := result.ReplicaFiles["small_cap"]
+	original, err := os.ReadFile(replicaResearch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replicaResearch, []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backups.PruneExisting(context.Background()); err == nil {
+		t.Fatal("corrupt replica must block deletion")
+	}
+	for _, location := range []string{result.Directory, replica} {
+		pairs, _ := completeSQLiteBackupPairs(location)
+		if len(pairs) != 4 {
+			t.Fatal("deleted before both locations passed verification")
+		}
+	}
+	if err := os.WriteFile(replicaResearch, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := backups.PruneExisting(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, location := range []string{result.Directory, replica} {
+		if deleted[location] != 2 {
+			t.Fatalf("deleted=%v", deleted)
+		}
+		pairs, _ := completeSQLiteBackupPairs(location)
+		if len(pairs) != 3 {
+			t.Fatalf("pairs=%v", pairs)
+		}
+	}
+}

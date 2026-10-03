@@ -5,7 +5,7 @@
 - `sqlite_backup` 每天按调度页的全局时区在 `03:15` 创建一组 SQLite 一致性快照。
 - 每组包含 `sec_monitor` 与 `small_cap` 两个文件；两者都通过 `integrity_check` 后才会发布为可恢复点。
 - 配置 `system.backup_replica_dir` 后，本地完整快照组会以临时文件写入外部目录，完成同步与数据库校验后再原子发布；本地与外部目录不能相同。
-- 默认保留最近 7 天完整快照组；过期的运行历史、任务执行记录及通知批次按“运行历史保留天数”清理。
+- 默认每个目录保留最近 3 组完整双库快照（`system.backup_keep_pairs=3`），并结合 7 天保留周期清理；时间与容量策略始终保护最近 2 组；过期的运行历史、任务执行记录及通知批次按“运行历史保留天数”清理。
 - 系统健康页区分“副本文件齐全”与“副本恢复通过”。恢复演练分别选取本地和副本目录最近的完整双库快照，在隔离临时目录恢复，比较 SHA-256、执行 SQLite 完整性和应用必要表结构校验；不覆盖在线数据库。
 - 两个来源的演练结果和失败原因独立持久化；旧演练没有来源标记时显示“尚未验证”。副本开启但恢复失败时，整体结果不会显示通过；本地备份丢失时仍会尝试验证副本。校验和用于检测暂存复制过程中的变化，不是对备份内容真实性的签名，也不证明双库跨业务事务原子性。
 - 默认宿主机目录只能称为“备份副本”，应用不能证明它位于独立磁盘或异地主机。文件完整、恢复可用、异地容灾是三个不同保证。
@@ -39,8 +39,25 @@ services:
 
 ## 容量与日常运维
 
-- 系统健康页会在完整 SQLite 备份超过 50GB 时给出容量告警；这不会自动删除备份，仍由 `system.backup_retention_days` 控制保留周期。
-- 小盘研究库、下载缓存和备份都使用同一持久化卷。建议至少预留“当前研究库大小 × 保留天数 + 50%”的空间，并在低峰期执行数据库压缩。
+- 系统健康页会在完整 SQLite 备份超过 50GB 时给出容量告警；日常清理由 `system.backup_keep_pairs`（默认 3）、`system.backup_retention_days` 与可选容量预算共同控制，至少保留 2 组完整恢复点。
+- 小盘研究库、下载缓存和备份都使用同一持久化卷。建议至少预留“当前双库大小 ×（完整恢复点数 + 2）”的空间，并在低峰期执行数据库压缩。
 - 容器健康检查调用本地 `/healthz`；它只验证进程存活。数据源、任务、通知与恢复演练状态应以“系统健康”页为准。
 - 如配置 `system.backup_dir`，目标目录必须是 Docker 容器可写的持久化挂载目录；否则仍使用 `/app/data/backups`。
-- 如配置 `system.backup_replica_dir`，应使用与本地备份不同的独立挂载；系统会使用与本地相同的保留天数清理完整副本组，且不会自动删除目录内无法识别的其他文件。
+- 如配置 `system.backup_replica_dir`，应使用与本地备份不同的独立挂载；系统会在两个目录分别执行相同的完整恢复点数量和保留天数策略，且不会自动删除目录内无法识别的其他文件。
+
+## 风险快照共享存储与历史校验
+
+风险事件身份与风险评估内容分别保存在 `capital_risk_identities`、`capital_risk_versions`，相同内容由多个研究批次共享。`capital_risk_memberships` 保留原始快照 ID、批次及采集时间。`capital_risk_snapshots` 是兼容查询视图，历史接口和风险评估仍读取对应批次当时的内容；后续变化生成新的不可变版本。
+
+一次性历史整理使用随镜像发布的维护工具。先停止应用，避免维护期间后台任务改写批次；不会查询外部 API：
+
+```sh
+docker compose stop sec-monitor
+docker compose run --rm --no-deps --entrypoint /app/storage-maintenance sec-monitor --action=prune-backups
+docker compose run --rm --no-deps --entrypoint /app/storage-maintenance sec-monitor --action=backup
+docker compose run --rm --no-deps --entrypoint /app/storage-maintenance sec-monitor --action=normalize-risks
+docker compose run --rm --no-deps --entrypoint /app/storage-maintenance sec-monitor --action=compact
+docker compose up -d --wait
+```
+
+清理已有备份前会校验两个目录各自最新的双库恢复点。原始研究库备份在整理前创建。风险迁移按事务保存进度，可在中断后继续；只有原始 ID 全部保留、逐条完整内容的 SHA-256 一致时才删除旧表及重复索引。校验范围包含风险字段、原始批次、编号与时间。最后的压缩会再次创建双库备份并回收 SQLite 空闲页。仅删除旧备份不会删除数据库中的历史研究批次。

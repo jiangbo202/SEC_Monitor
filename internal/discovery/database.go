@@ -117,7 +117,6 @@ func Migrate(db *gorm.DB) error {
 			&InsiderPlanDocumentReceipt{},
 			&InsiderCoverageSnapshot{},
 			&SECFilingSnapshot{},
-			&CapitalRiskSnapshot{},
 			&SocialHeatSnapshot{},
 			&CandidateScoreSnapshot{},
 			&CandidateReportSnapshot{},
@@ -143,6 +142,9 @@ func Migrate(db *gorm.DB) error {
 			&IdentityVerificationOverride{},
 		); err != nil {
 			return err
+		}
+		if err := EnsureCapitalRiskStorage(tx); err != nil {
+			return fmt.Errorf("prepare shared capital risk storage: %w", err)
 		}
 		if err := migrateInsiderTransactionIdentity(tx); err != nil {
 			return err

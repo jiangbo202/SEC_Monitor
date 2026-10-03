@@ -134,10 +134,10 @@ func TestCandidateScoreQueryReadsCurrentPublishedBatchWithGradeFilter(t *testing
 	if err := db.Create(&metrics).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&CapitalRiskSnapshot{
+	if err := PersistCapitalRiskSnapshots(context.Background(), db, []CapitalRiskSnapshot{{
 		BatchID: securityBatch.BatchID, SecurityID: security.ID, Kind: CapitalEventATMProgram, Active: true, BlocksA: true, BlocksB: false, Severity: CapitalRiskSeverityHigh,
 		Reason: "ATM program active", EffectiveAt: time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC),
-	}).Error; err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	tradeDate := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
@@ -272,9 +272,9 @@ func TestCandidateScoreQueryAnnotatesQualityTierTagsPriorityAndChanges(t *testin
 	if err := db.Create(&universe).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&CapitalRiskSnapshot{
+	if err := PersistCapitalRiskSnapshots(context.Background(), db, []CapitalRiskSnapshot{{
 		BatchID: securityBatch.BatchID, SecurityID: securities[2].ID, Kind: CapitalEventATMProgram, Active: true, BlocksA: true, BlocksB: false, Severity: CapitalRiskSeverityHigh, Reason: "ATM active", EffectiveAt: priceDate,
-	}).Error; err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 

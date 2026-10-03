@@ -145,6 +145,10 @@ func (s *SQLiteBackupService) backupLocked(ctx context.Context) (SQLiteBackupRes
 		return result, fmt.Errorf("create backup directory: %w", err)
 	}
 	result.Directory = dir
+	keepPairs, err := s.keepPairs(ctx)
+	if err != nil {
+		return result, err
+	}
 	stamp := result.StartedAt.Format("20060102T150405Z")
 	items := []struct {
 		name string
@@ -197,6 +201,11 @@ func (s *SQLiteBackupService) backupLocked(ctx context.Context) (SQLiteBackupRes
 		return result, err
 	}
 	result.Deleted, result.CompletedAt = deleted, time.Now().UTC()
+	n, err := pruneSQLiteBackupPairs(dir, keepPairs)
+	result.Deleted += n
+	if err != nil {
+		return result, err
+	}
 	budget, err := s.capacityBudget(ctx)
 	if err != nil {
 		return result, err
@@ -216,6 +225,11 @@ func (s *SQLiteBackupService) backupLocked(ctx context.Context) (SQLiteBackupRes
 			return result, replicateErr
 		}
 		result.ReplicaDirectory, result.ReplicaFiles, result.ReplicaDeleted = replicaDir, replicaFiles, replicaDeleted
+		n, err := pruneSQLiteBackupPairs(replicaDir, keepPairs)
+		result.ReplicaDeleted += n
+		if err != nil {
+			return result, err
+		}
 		if budget > 0 {
 			n, err := pruneSQLiteBackupBudget(replicaDir, budget)
 			result.ReplicaDeleted += n
@@ -840,15 +854,41 @@ func pruneSQLiteBackups(dir string, retentionDays int, now time.Time) (int, erro
 		return 0, err
 	}
 	cutoff := now.AddDate(0, 0, -retentionDays)
+	pairs, err := completeSQLiteBackupPairs(dir)
+	if err != nil {
+		return 0, err
+	}
+	paired := map[string]bool{}
 	deleted := 0
+	for i, pair := range pairs {
+		expired := i < len(pairs)-2
+		for _, path := range pair {
+			paired[filepath.Base(path)] = true
+			info, err := os.Stat(path)
+			if err != nil {
+				return deleted, err
+			}
+			expired = expired && info.ModTime().Before(cutoff)
+		}
+		if expired {
+			for _, path := range pair {
+				if err := os.Remove(path); err != nil {
+					return deleted, err
+				}
+				deleted++
+			}
+		}
+	}
+	// Expired single-file leftovers remain eligible, but a complete pair is
+	// always evaluated and removed together; the latest two are protected.
 	for _, entry := range entries {
 		_, _, known := parseSQLiteBackupName(entry.Name())
-		if entry.IsDir() || !known {
+		if !entry.Type().IsRegular() || !known || paired[entry.Name()] {
 			continue
 		}
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return deleted, infoErr
+		info, err := entry.Info()
+		if err != nil {
+			return deleted, err
 		}
 		if info.ModTime().Before(cutoff) {
 			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
@@ -858,6 +898,111 @@ func pruneSQLiteBackups(dir string, retentionDays int, now time.Time) (int, erro
 		}
 	}
 	return deleted, nil
+}
+
+func (s *SQLiteBackupService) keepPairs(ctx context.Context) (int, error) {
+	const fallback = 3
+	if s.configs == nil {
+		return fallback, nil
+	}
+	value, ok, err := s.configs.GetValue(ctx, "system.backup_keep_pairs")
+	if err != nil || !ok {
+		return fallback, err
+	}
+	keep, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || keep < 2 || keep > 365 {
+		return 0, errors.New("backup_keep_pairs must be between 2 and 365")
+	}
+	return keep, nil
+}
+
+// A restore point consists of both databases with the same timestamp. Count
+// retention never removes partial pairs, foreign files, directories or links.
+func completeSQLiteBackupPairs(dir string) ([][]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	pairs := map[string]map[string]string{}
+	for _, entry := range entries {
+		name, stamp, ok := parseSQLiteBackupName(entry.Name())
+		if !ok || !entry.Type().IsRegular() {
+			continue
+		}
+		if pairs[stamp] == nil {
+			pairs[stamp] = map[string]string{}
+		}
+		pairs[stamp][name] = filepath.Join(dir, entry.Name())
+	}
+	stamps := []string{}
+	for stamp, files := range pairs {
+		if len(files) == 2 {
+			stamps = append(stamps, stamp)
+		}
+	}
+	sort.Strings(stamps)
+	result := make([][]string, 0, len(stamps))
+	for _, stamp := range stamps {
+		result = append(result, []string{pairs[stamp]["sec_monitor"], pairs[stamp]["small_cap"]})
+	}
+	return result, nil
+}
+
+func pruneSQLiteBackupPairs(dir string, keep int) (int, error) {
+	if keep < 2 {
+		return 0, errors.New("at least two complete backup pairs must be retained")
+	}
+	pairs, err := completeSQLiteBackupPairs(dir)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for i := 0; i < len(pairs)-keep; i++ {
+		for _, path := range pairs[i] {
+			if err := os.Remove(path); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+// PruneExisting verifies the newest restore point in both locations before
+// applying count retention to already-published snapshots.
+func (s *SQLiteBackupService) PruneExisting(ctx context.Context) (map[string]int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dir, _, err := s.settings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keep, err := s.keepPairs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	replica, err := s.replicaDirectory(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	dirs := []string{dir}
+	if replica != "" {
+		dirs = append(dirs, replica)
+	}
+	for _, path := range dirs {
+		if _, err := verifyLatestSQLitePair(path); err != nil {
+			return nil, fmt.Errorf("verify before pruning %s: %w", path, err)
+		}
+	}
+	result := map[string]int{}
+	for _, path := range dirs {
+		deleted, err := pruneSQLiteBackupPairs(path, keep)
+		if err != nil {
+			return result, err
+		}
+		result[path] = deleted
+	}
+	return result, nil
 }
 
 func (s *SQLiteBackupService) capacityBudget(ctx context.Context) (int64, error) {

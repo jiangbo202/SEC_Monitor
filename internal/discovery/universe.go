@@ -1258,7 +1258,6 @@ func (c *Coordinator) resetRetryableBatch(ctx context.Context, batch UniverseBat
 			&CandidateScoreSnapshot{},
 			&ProviderRun{},
 			&SocialHeatSnapshot{},
-			&CapitalRiskSnapshot{},
 			&FinancialMetricSnapshot{},
 			&InsiderCoverageSnapshot{},
 			&BatchShareSelection{},
@@ -1269,6 +1268,9 @@ func (c *Coordinator) resetRetryableBatch(ctx context.Context, batch UniverseBat
 			if err := cleanupBatchRows(tx, model, batch.BatchID); err != nil {
 				return err
 			}
+		}
+		if err := deleteCapitalRiskBatchSnapshots(ctx, tx, batch.BatchID); err != nil {
+			return err
 		}
 		result := tx.Model(&UniverseBatch{}).Where("batch_id = ?", batch.BatchID).Updates(map[string]any{
 			"kind": batch.Kind, "status": BatchStatusDraft, "effective_date": batch.EffectiveDate,
@@ -2122,7 +2124,7 @@ func (c *Coordinator) persistCapitalRiskSnapshots(ctx context.Context, batchID s
 			if len(chunk) == 0 {
 				return nil
 			}
-			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
+			return PersistCapitalRiskSnapshots(ctx, tx, chunk)
 		}); err != nil {
 			return err
 		}

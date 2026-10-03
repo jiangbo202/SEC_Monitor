@@ -17,7 +17,10 @@ func priceActionValidationDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&PriceSnapshot{}, &Listing{}, &Security{}, &CapitalRiskSnapshot{}, &CandidateScoreSnapshot{}, &UniverseBatch{}, &PriceActionReplayEvent{}, &PriceActionCycleSetting{}, &PriceActionPhaseSnapshot{}, &PriceActionEffectivenessSnapshot{}); err != nil {
+	if err := db.AutoMigrate(&PriceSnapshot{}, &Listing{}, &Security{}, &CandidateScoreSnapshot{}, &UniverseBatch{}, &PriceActionReplayEvent{}, &PriceActionCycleSetting{}, &PriceActionPhaseSnapshot{}, &PriceActionEffectivenessSnapshot{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureCapitalRiskStorage(db); err != nil {
 		t.Fatal(err)
 	}
 	return db

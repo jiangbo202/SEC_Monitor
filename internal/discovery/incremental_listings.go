@@ -459,7 +459,7 @@ func (c *Coordinator) cloneSecurityBatchEvidence(ctx context.Context, fromBatchI
 			count int
 		}{
 			{&classifications, len(classifications)}, {&selections, len(selections)}, {&identities, len(identities)}, {&listings, len(listings)},
-			{&metrics, len(metrics)}, {&coverage, len(coverage)}, {&risks, len(risks)},
+			{&metrics, len(metrics)}, {&coverage, len(coverage)},
 		}
 		for _, item := range rows {
 			if item.count == 0 {
@@ -469,7 +469,7 @@ func (c *Coordinator) cloneSecurityBatchEvidence(ctx context.Context, fromBatchI
 				return err
 			}
 		}
-		return nil
+		return PersistCapitalRiskSnapshots(ctx, tx, risks)
 	}); err != nil {
 		return 0, 0, err
 	}
