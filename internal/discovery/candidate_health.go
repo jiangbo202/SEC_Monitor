@@ -282,7 +282,7 @@ func buildCandidateHealthForBatch(ctx context.Context, db *gorm.DB, batch Univer
 		result.TechnicalHistoryRetryDeferred = deferred
 	}
 	if readinessItems == nil {
-		readinessPage, readinessErr := ListCandidateScores(ctx, db, CandidateScoreQuery{BatchID: batch.BatchID, Page: 1, PageSize: maxDiscoveryPageSize})
+		readinessPage, readinessErr := ListAllCandidateScores(ctx, db, CandidateScoreQuery{BatchID: batch.BatchID, SkipPerformance: true, SkipTechnicalDetails: true, SkipValuationDetails: true})
 		if readinessErr != nil {
 			return result, readinessErr
 		}

@@ -65,11 +65,12 @@ type AIAnalysisInput struct {
 }
 
 type AIAnalysisListFilter struct {
-	Ticker   string
-	Scope    string
-	Status   string
-	Page     int
-	PageSize int
+	SummaryOnly bool
+	Ticker      string
+	Scope       string
+	Status      string
+	Page        int
+	PageSize    int
 }
 
 type AIAnalysisService struct {
@@ -454,15 +455,42 @@ func (s *AIAnalysisService) List(ctx context.Context, filter AIAnalysisListFilte
 		return PageResult[model.AIAnalysis]{}, err
 	}
 	var rows []model.AIAnalysis
+	if filter.SummaryOnly {
+		query = query.Omit("system_prompt", "user_prompt", "input_snapshot", "content", "result_json")
+	}
 	err := query.Order("requested_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error
 	for index := range rows {
 		// Input snapshots can be large and are not needed for normal list views;
 		// hashes + prompt version retain the audit reference without network I/O.
 		rows[index].InputSnapshot = ""
 		rows[index].ErrorMessage = SanitizeSensitiveError(rows[index].ErrorMessage)
-		hydrateAIAnalysisStructuredResult(&rows[index])
+		if !filter.SummaryOnly {
+			hydrateAIAnalysisStructuredResult(&rows[index])
+		}
 	}
 	return newPageResult(rows, total, page, pageSize), err
+}
+
+// Get reads the original immutable record, with prompt auditing opt-in.
+func (s *AIAnalysisService) Get(ctx context.Context, id uint, promptsOnly bool) (model.AIAnalysis, error) {
+	var row model.AIAnalysis
+	query := s.db.WithContext(ctx).Omit("input_snapshot")
+	if promptsOnly {
+		query = query.Select("id", "system_prompt", "user_prompt", "input_sha256", "prompt_version")
+	} else {
+		query = query.Omit("input_snapshot", "system_prompt", "user_prompt")
+	}
+	if err := query.First(&row, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return row, ErrNotFound
+		}
+		return row, err
+	}
+	row.ErrorMessage = SanitizeSensitiveError(row.ErrorMessage)
+	if !promptsOnly {
+		hydrateAIAnalysisStructuredResult(&row)
+	}
+	return row, nil
 }
 
 func aiAnalysisPrompts(snapshot string) (string, string) {

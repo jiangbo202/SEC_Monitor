@@ -20,6 +20,7 @@ const (
 // explicit symbol evaluation. CandidateScore reuses the same fundamental and
 // short-term-review calculations as the small-cap candidate list.
 type TickerEvaluationResult struct {
+	SummaryOnly       bool                             `json:"summary_only,omitempty"`
 	ID                uint                             `json:"id,omitempty"`
 	Ticker            string                           `json:"ticker"`
 	CIK               string                           `json:"cik,omitempty"`
@@ -73,6 +74,7 @@ type TickerEvaluationPage struct {
 // Snapshot fields that are not separately indexed are read from SQLite's
 // persisted JSON payload with a fixed, allow-listed expression.
 type TickerEvaluationFilter struct {
+	SummaryOnly  bool
 	Ticker       string
 	EntryTrigger string
 	SortBy       string
@@ -177,6 +179,9 @@ func ListTickerEvaluations(ctx context.Context, db *gorm.DB, filter TickerEvalua
 		return result, err
 	}
 	var rows []TickerEvaluationSnapshot
+	if filter.SummaryOnly {
+		query = query.Select("id, company_name, cik, json_remove(result_json, '$.research') AS result_json")
+	}
 	if err := query.Order(tickerEvaluationOrder(filter.SortBy, filter.SortOrder)).Offset((result.Page - 1) * result.PageSize).Limit(result.PageSize).Find(&rows).Error; err != nil {
 		return result, err
 	}
@@ -195,9 +200,41 @@ func ListTickerEvaluations(ctx context.Context, db *gorm.DB, filter TickerEvalua
 			item.CIK = row.CIK
 		}
 		item.ID = row.ID
+		item.SummaryOnly = filter.SummaryOnly
 		result.Items = append(result.Items, item)
 	}
 	return result, nil
+}
+
+// GetTickerEvaluation reads saved evidence by ID, never recomputing history.
+func GetTickerEvaluation(ctx context.Context, db *gorm.DB, id uint) (TickerEvaluationResult, error) {
+	var row TickerEvaluationSnapshot
+	var result TickerEvaluationResult
+	if err := db.WithContext(ctx).First(&row, id).Error; err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal([]byte(row.ResultJSON), &result); err != nil {
+		return result, err
+	}
+	result.ID = row.ID
+	if result.CompanyName == "" {
+		result.CompanyName = row.CompanyName
+	}
+	if result.CIK == "" {
+		result.CIK = row.CIK
+	}
+	return result, nil
+}
+
+func (result TickerEvaluationResult) MarshalJSON() ([]byte, error) {
+	type plain TickerEvaluationResult
+	if !result.SummaryOnly {
+		return json.Marshal(plain(result))
+	}
+	return json.Marshal(struct {
+		plain
+		Research *TickerEvaluationResearchSnapshot `json:"research,omitempty"`
+	}{plain: plain(result)})
 }
 
 // ListTickerEvaluationEntryTriggers returns the distinct persisted trade-entry

@@ -52,8 +52,8 @@
           <el-alert v-else-if="activeAIAnalysis.status === 'failed'" type="error" :closable="false" :title="activeAIAnalysis.error_message || 'AI 调用失败'" class="warnings" />
           <template v-else>
             <el-alert v-if="activeAIAnalysis.validation_warning" type="warning" :closable="false" show-icon title="模型输出未通过结构校验，系统已安全降级为证据不足。" class="warnings" />
-            <AIRequestPrompt :system-prompt="activeAIAnalysis.system_prompt" :user-prompt="activeAIAnalysis.user_prompt" />
-            <div class="ai-analysis-content"><AIAnalysisResult :result="activeAIAnalysis.structured_result" :content="activeAIAnalysis.content" /></div>
+            <AIRequestPrompt :analysis-id="activeAIAnalysis.id" :system-prompt="activeAIAnalysis.system_prompt" :user-prompt="activeAIAnalysis.user_prompt" />
+            <div class="ai-analysis-content" v-loading="aiDetailLoading"><AIAnalysisResult :result="activeAIAnalysis.structured_result" :content="activeAIAnalysis.content" /></div>
           </template>
         </template>
       </el-card>
@@ -87,14 +87,14 @@
           <span>技术状态 <b>{{ comparisonRows[1].candidate_score?.technical?.status || '-' }} → {{ comparisonRows[0].candidate_score?.technical?.status || '-' }}</b></span>
         </div>
       </el-alert>
-      <el-table :data="history" v-loading="historyLoading" border empty-text="暂无评估记录" :default-sort="{ prop: historySortBy, order: historySortOrder === 'asc' ? 'ascending' : 'descending' }" @sort-change="handleHistorySort" @selection-change="handleComparisonSelection">
+      <el-table :data="history" v-loading="historyLoading" border empty-text="暂无评估记录" :default-sort="{ prop: historySortBy, order: historySortOrder === 'asc' ? 'ascending' : 'descending' }" @sort-change="handleHistorySort" @selection-change="handleComparisonSelection" @expand-change="loadExpandedHistory">
         <el-table-column type="selection" width="42" :selectable="comparisonSelectable" fixed="left" />
         <el-table-column type="expand" width="48" fixed="left">
           <template #default="{ row }">
-            <div class="research-details">
+            <div class="research-details"><p v-if="row.summary_only" class="research-note">正在读取当次保存的研究快照…</p>
               <div class="research-title">{{ row.ticker }} 研究补充快照 <span>与本次评估同一时间保存</span></div>
-              <el-alert v-if="!row.research" type="info" :closable="false" show-icon title="该历史记录生成于研究补充功能上线前，未保存扩展研究快照；重新评估一次即可生成。" />
-              <template v-else>
+              <el-alert v-if="!row.summary_only && !row.research" type="info" :closable="false" show-icon title="该历史记录生成于研究补充功能上线前，未保存扩展研究快照；重新评估一次即可生成。" />
+              <template v-else-if="!row.summary_only">
                 <el-row :gutter="14">
                   <el-col :xs="24" :lg="8"><section class="research-section"><h4>公司 / 基金档案</h4><el-descriptions :column="1" size="small" border><el-descriptions-item label="名称">{{ row.research.profile?.company_name || row.company_name || '-' }}</el-descriptions-item><el-descriptions-item label="行业">{{ row.research.profile?.sic_description || row.research.profile?.sector_category || '-' }}</el-descriptions-item><el-descriptions-item label="资料来源">{{ row.research.profile?.summary_source || '-' }}</el-descriptions-item><el-descriptions-item label="业务简介"><span class="business-summary">{{ row.research.profile?.business_summary || '暂无可核验的业务简介。' }}</span></el-descriptions-item></el-descriptions></section></el-col>
 <el-col :xs="24" :lg="8"><section class="research-section"><h4>分析师共识</h4><template v-if="row.research.analyst_rating?.latest"><el-descriptions :column="2" size="small" border><el-descriptions-item label="建议">{{ row.research.analyst_rating.latest.recommendation || '-' }}</el-descriptions-item><el-descriptions-item label="覆盖数">{{ row.research.analyst_rating.latest.analyst_count }}</el-descriptions-item><el-descriptions-item label="平均目标价">{{ microsPrice(row.research.analyst_rating.latest.target_average_micros, row.research.analyst_rating.latest.currency) }}</el-descriptions-item><el-descriptions-item label="目标区间">{{ microsPrice(row.research.analyst_rating.latest.target_low_micros, row.research.analyst_rating.latest.currency) }} – {{ microsPrice(row.research.analyst_rating.latest.target_high_micros, row.research.analyst_rating.latest.currency) }}</el-descriptions-item><el-descriptions-item label="评级分布" :span="2">{{ analystDistribution(row.research.analyst_rating.latest) }}</el-descriptions-item></el-descriptions></template><el-empty v-else :description="row.research.analyst_rating?.message || '暂无分析师共识'" :image-size="40" /></section></el-col>
@@ -132,7 +132,7 @@
 
 <script setup lang="ts">
 import {analystDistribution} from '@/utils/analystSource'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { apiClient } from '@/api/client'
@@ -177,6 +177,10 @@ const generatingAI = ref(false)
 const aiAnalyses = ref<AIAnalysis[]>([])
 const selectedAnalysisID = ref<number | null>(null)
 const activeAIAnalysis = computed(() => aiAnalyses.value.find((item) => item.id === selectedAnalysisID.value) || aiAnalyses.value[0])
+const aiDetailLoading=ref(false)
+let aiDetailGeneration=0
+async function loadAIDetail(){const item=activeAIAnalysis.value;if(!item||item.status==='queued'||item.status==='running'||item.content||item.structured_result)return;const generation=++aiDetailGeneration;aiDetailLoading.value=true;try{const response=await apiClient.get(`/ai/analyses/${item.id}`);if(generation===aiDetailGeneration && activeAIAnalysis.value?.id===item.id)Object.assign(item,response.data.data)}catch{ElMessage.error('读取 AI 历史详情失败')}finally{if(generation===aiDetailGeneration)aiDetailLoading.value=false}}
+watch(selectedAnalysisID,()=>{void loadAIDetail()})
 let aiPollingTimer: number | undefined
 
 async function evaluate() {
@@ -207,9 +211,10 @@ async function loadAIAnalyses() {
   const symbol = selected.value?.ticker || historyTicker.value
   if (!symbol) { aiAnalyses.value = []; return }
   try {
-    const response = await apiClient.get('/ai/analyses', { params: { ticker: symbol, page: 1, page_size: 20 } })
+    const response = await apiClient.get('/ai/analyses', { params: { view:'summary', ticker: symbol, page: 1, page_size: 20 } })
     aiAnalyses.value = response.data.data.items || []
-    selectedAnalysisID.value = aiAnalyses.value[0]?.id || null
+    if(!aiAnalyses.value.some(item=>item.id===selectedAnalysisID.value))selectedAnalysisID.value = aiAnalyses.value[0]?.id || null
+    void loadAIDetail()
     if (aiAnalyses.value.some((item) => item.status === 'queued' || item.status === 'running')) scheduleAIPoll()
   } catch { aiAnalyses.value = [] }
 }
@@ -227,11 +232,14 @@ async function generateAIAnalysis() {
     selectedAnalysisID.value = response.data.data.id
   } catch (err: any) { ElMessage.error(err?.response?.data?.message || 'AI 研判请求超时或失败；请检查供应商配置、额度或适当提高模型超时后手动重试') } finally { generatingAI.value = false }
 }
-function selectHistory(row: Evaluation) { selected.value = row; void loadAIAnalyses() }
+let selectedGeneration=0
+async function evaluationDetail(row:Evaluation){if(!row.summary_only)return row;const response=await apiClient.get(`/ticker-evaluations/${row.id}`);Object.assign(row,response.data.data,{summary_only:false});return row}
+async function selectHistory(row:Evaluation){const generation=++selectedGeneration;try{const value=await evaluationDetail(row);if(generation!==selectedGeneration)return;selected.value=value;void loadAIAnalyses()}catch(e:any){ElMessage.error(e?.response?.data?.message||'读取评估历史详情失败')}}
+async function loadExpandedHistory(row:Evaluation,expanded:Evaluation[]){if(!expanded.some(item=>item.id===row.id))return;try{await evaluationDetail(row)}catch{ElMessage.error('读取评估快照失败')}}
 async function loadHistory() {
   historyLoading.value = true
   try {
-    const response = await apiClient.get('/ticker-evaluations', { params: { ticker: historyTicker.value.trim().toUpperCase(), entry_trigger: historyEntryTrigger.value.trim() || undefined, sort_by: historySortBy.value, sort_order: historySortOrder.value, page: historyPage.value, page_size: historyPageSize.value } })
+    const response = await apiClient.get('/ticker-evaluations', { params: { view:'summary', ticker: historyTicker.value.trim().toUpperCase(), entry_trigger: historyEntryTrigger.value.trim() || undefined, sort_by: historySortBy.value, sort_order: historySortOrder.value, page: historyPage.value, page_size: historyPageSize.value } })
     history.value = response.data.data.items || []
     historyTotal.value = response.data.data.total || 0
   } catch (err: any) { ElMessage.error(err?.response?.data?.message || '加载历史记录失败') } finally { historyLoading.value = false }

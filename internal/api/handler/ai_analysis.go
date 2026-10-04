@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	"sec_monitor/internal/discovery"
@@ -211,7 +212,25 @@ func (h *AppHandler) ListAIAnalyses(c *gin.Context) {
 		return
 	}
 	page, pageSize := pageParams(c)
-	result, err := h.AIAnalysis.List(c.Request.Context(), service.AIAnalysisListFilter{Ticker: c.Query("ticker"), Scope: c.Query("scope"), Status: c.Query("status"), Page: page, PageSize: pageSize})
+	result, err := h.AIAnalysis.List(c.Request.Context(), service.AIAnalysisListFilter{SummaryOnly: c.Query("view") == "summary", Ticker: c.Query("ticker"), Scope: c.Query("scope"), Status: c.Query("status"), Page: page, PageSize: pageSize})
+	if err != nil {
+		Error(c, err)
+		return
+	}
+	OK(c, result)
+}
+
+func (h *AppHandler) GetAIAnalysis(c *gin.Context) {
+	if h.AIAnalysis == nil {
+		Error(c, errors.New("AI analysis service is not configured"))
+		return
+	}
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		Error(c, service.ErrValidation)
+		return
+	}
+	result, err := h.AIAnalysis.Get(c.Request.Context(), uint(id), c.Query("view") == "prompts")
 	if err != nil {
 		Error(c, err)
 		return

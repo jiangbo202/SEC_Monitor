@@ -98,6 +98,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiClient } from '@/api/client'
+import { insiderDirectionLabel as directionLabel } from '@/utils/researchLabels'
 import type { ApiResponse } from '@/api/types'
 import { useI18n } from '@/i18n'
 import { insiderRouteState } from '@/utils/researchRouteState'
@@ -177,7 +178,7 @@ function price(value?:number){ return value ? `$${Number(value).toLocaleString('
 function money(value?:number){ if(!Number.isFinite(value)||!value)return '-'; const abs=Math.abs(Number(value)); return abs>=1e6?`$${(abs/1e6).toFixed(1)}M`:abs>=1e3?`$${(abs/1e3).toFixed(1)}K`:`$${abs.toFixed(0)}` }
 function signedMoney(value:number){ const text=money(value); return text==='-'?'-':`${value>=0?'+':'−'}${text}` }
 function roleLabel(row:InsiderRow){ return [row.officer_title,row.role].filter(Boolean).join(' · ') || '身份待复核' }
-function directionLabel(row:InsiderRow){ if(row.direction==='buy')return row.transaction_code==='P'?'公开市场买入':'取得'; if(row.direction==='sell')return row.transaction_code==='S'?'公开市场卖出':'处置'; return row.transaction_code || '其他' }
+
 function planLabel(row:InsiderRow){ if(row.ten_b5_1_status==='confirmed')return row.ten_b5_1_plan_adoption_date?`计划内 · ${formatDate(row.ten_b5_1_plan_adoption_date)}`:'已确认计划'; if(row.ten_b5_1_status==='possible')return '可能关联'; return '未披露' }
 function planTagType(row:InsiderRow){ return row.ten_b5_1_status==='confirmed'?'success':row.ten_b5_1_status==='possible'?'warning':'info' }
 function planTooltip(row:InsiderRow){ if(row.ten_b5_1_evidence)return row.ten_b5_1_evidence; if(row.research_interpretation==='planned_sale_reduced_bearish')return '已确认按预先制定的 10b5-1 计划执行，卖出信号已降权；仍需结合计划采用、修改和终止情况判断。'; if(row.ten_b5_1_status==='not_disclosed')return '本地 Form 4 未发现 10b5-1 结构化标记或明确脚注，不等同于确认属于计划外交易。'; return '' }

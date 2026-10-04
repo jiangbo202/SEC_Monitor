@@ -52,9 +52,10 @@
             show-icon
           >
             <template #default>
+              <p v-if="item.detail" class="operational-summary">{{ item.detail }}</p>
               <el-space wrap :size="6">
                 <el-tag v-if="item.category" size="small" type="info" effect="plain">影响：{{ issueImpact(item.category) }}</el-tag>
-                <el-tag v-if="item.category" size="small" :type="item.manual ? 'warning' : 'success'" effect="plain">{{ item.manual ? '需要人工确认' : '自动任务将继续重试' }}</el-tag>
+                <el-tag v-if="item.category" size="small" :type="item.manual ? 'warning' : 'success'" effect="plain">{{ recoveryLabel(item.recovery, item.next) }}</el-tag>
                 <el-button v-if="item.action" type="primary" link @click="openSourceAction(item.action)">{{ t('pages.systemHealth.viewAction') }}</el-button>
               </el-space>
             </template>
@@ -106,7 +107,7 @@
           <span v-if="health.backup.incomplete_pairs">{{ t('pages.systemHealth.backupIncompletePairs', { count: health.backup.incomplete_pairs }) }}</span>
           <span><el-tag :type="health.backup.replica?.status === 'ready' ? 'info' : 'warning'" effect="plain">备份副本 {{ health.backup.replica?.enabled ? (health.backup.replica.status === 'ready' ? '文件齐全' : '需处理') : '未配置' }}</el-tag></span>
           <span v-if="health.backup.replica?.latest_completed">最近副本 {{ formatDateTime(health.backup.replica.latest_completed) }} · {{ health.backup.replica.complete_pairs }} 组（同盘目录不等于异地容灾）</span>
-          <span v-if="health.recovery_drill?.id">{{ t('pages.systemHealth.lastRecoveryDrill', { status: health.recovery_drill.status, time: formatDateTime(health.recovery_drill.started_at) }) }}</span>
+          <span v-if="health.recovery_drill?.id">{{ t('pages.systemHealth.lastRecoveryDrill', { status: cycleRuntimeStatusLabel(health.recovery_drill.status), time: formatDateTime(health.recovery_drill.started_at) }) }}</span>
           <el-tooltip v-if="health.recovery_drill?.id" :content="health.recovery_drill.local_reason || '最近一次本地隔离恢复演练'">
             <el-tag :type="health.recovery_drill.local_status === 'ready' ? 'success' : 'warning'">本地恢复 {{ recoveryStatusLabel(health.recovery_drill.local_status) }}</el-tag>
           </el-tooltip>
@@ -115,7 +116,7 @@
           </el-tooltip>
           <el-button size="small" :loading="verifyingBackup" @click="verifyLatestBackup">{{ t('pages.systemHealth.recoveryCheck') }}</el-button>
 			<el-button size="small" type="warning" :loading="compacting" @click="compactDatabases">{{ t('pages.systemHealth.compactDatabases') }}</el-button>
-			<span v-if="latestCompaction?.id">{{ t('pages.systemHealth.lastCompaction', { status: latestCompaction.status, time: formatDateTime(latestCompaction.started_at), size: formatBytes(compactionReclaimedBytes(latestCompaction)) }) }}</span>
+			<span v-if="latestCompaction?.id">{{ t('pages.systemHealth.lastCompaction', { status: cycleRuntimeStatusLabel(latestCompaction.status), time: formatDateTime(latestCompaction.started_at), size: formatBytes(compactionReclaimedBytes(latestCompaction)) }) }}</span>
         </div>
 		<el-skeleton v-else-if="loading" :rows="3" animated />
 		<div v-else>
@@ -195,8 +196,9 @@
           <div v-if="operational.issues.length" class="health-alert-grid">
             <el-alert v-for="issue in operational.issues" :key="issue.key" :title="issue.title" :description="safeOperationalDetail(issue.detail)" :type="healthAlertType(issue.severity)" :closable="false" show-icon>
               <template #default>
+                <p class="operational-summary">{{ safeOperationalDetail(issue.detail) }}</p>
 				<el-tag size="small" type="info" effect="plain">影响：{{ issueImpact(issue.category) }}</el-tag>
-				<el-tag size="small" :type="issueNeedsManualAction(issue.category) ? 'warning' : 'success'" effect="plain">{{ issueNeedsManualAction(issue.category) ? '需要人工确认' : '自动任务将继续重试' }}</el-tag>
+				<el-tag size="small" :type="issue.recovery_status === 'manual_review' || !issue.recovery_status ? 'warning' : 'info'" effect="plain">{{ recoveryLabel(issue.recovery_status, issue.next_attempt_at) }}</el-tag>
                 <el-button v-if="issue.action" type="primary" link @click="openSourceAction(issue.action)">{{ t('pages.systemHealth.viewAction') }}</el-button>
               </template>
             </el-alert>
@@ -257,7 +259,7 @@ import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
 type CycleHealth = { scope_count:number; ready_count:number; coverage_pct:number; ohlc_missing_count:number; adjustment_blocked_count:number; iwm_status:string; iwm_sample_days:number; iwm_latest_trade_date:string; active_rule_version:string; last_replay_status:string; last_replay_at?:string; effectiveness_status:string; effectiveness_latest_date:string; scope_current_count:number; scope_stale_count:number; scope_missing_count:number }
-type HealthSummary = { generated_at:string; status:string; target_total:number; enabled_targets:number; filing_total:number; notification_failures:number; issues:Array<{key:string; title:string; detail:string; severity:string; category:string; action?:string}> }
+type HealthSummary = { generated_at:string; status:string; target_total:number; enabled_targets:number; filing_total:number; notification_failures:number; issues:Array<{key:string; title:string; detail:string; severity:string; category:string; action?:string;recovery_status?:string;next_attempt_at?:string}> }
 const router = useRouter()
 const loading = ref(false)
 const verifyingBackup = ref(false)
@@ -270,9 +272,9 @@ const latestCompaction = ref<SQLiteCompactionRun | null>(null)
 const cycleHealth = ref<CycleHealth | null>(null)
 const schedulerTimezone = ref('UTC')
 const consolidatedIssues = computed(() => {
-  const systemIssues = (health.value?.issues || []).map((item, index) => ({ key: `system-${index}`, title: item.message, detail: '', level: item.level, category: '', action: '', manual: false }))
+  const systemIssues = (health.value?.issues || []).map((item, index) => ({ key: `system-${index}`, title: item.message, detail: '', level: item.level, category: '', action: '', manual: false, recovery: '', next: undefined as string|undefined }))
   const sourceIssues = operational.value?.issues || summary.value?.issues || []
-  const operationalIssues = sourceIssues.map(issue => ({ key: issue.key, title: issue.title, detail: safeOperationalDetail(issue.detail), level: issue.severity, category: issue.category, action: issue.action || '', manual: issueNeedsManualAction(issue.category) }))
+  const operationalIssues = sourceIssues.map(issue => ({ key: issue.key, title: issue.title, detail: safeOperationalDetail(issue.detail), level: issue.severity, category: issue.category, action: issue.action || '', manual: issue.recovery_status === 'manual_review' || !issue.recovery_status, recovery: issue.recovery_status || 'manual_review', next: issue.next_attempt_at }))
   return [...systemIssues, ...operationalIssues]
 })
 
@@ -381,7 +383,7 @@ function formatDateTime(value?: string | null) {
   if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString()
+  return date.toLocaleString('zh-CN', {hour12:false,timeZone:schedulerTimezone.value})
 }
 
 function formatScheduledDateTime(value?: string | null) {
@@ -389,12 +391,12 @@ function formatScheduledDateTime(value?: string | null) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   try {
-    return new Intl.DateTimeFormat(undefined, {
+    return new Intl.DateTimeFormat('zh-CN', {
       timeZone: schedulerTimezone.value,
       year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
     }).format(date)
   } catch {
-    return date.toLocaleString()
+    return date.toLocaleString('zh-CN', {hour12:false,timeZone:schedulerTimezone.value})
   }
 }
 
@@ -435,8 +437,9 @@ function issueImpact(category: string) {
   return labels[category] || '运行稳定性'
 }
 
-function issueNeedsManualAction(category: string) {
-  return ['backup', 'notification', 'data'].includes(category)
+function recoveryLabel(status?:string, next?:string) {
+  const label=({running:'任务执行中',retry_scheduled:'已安排补偿重试',scheduled:'等待下次定时执行',task_disabled:'任务未启用',manual_review:'需要人工核验'} as Record<string,string>)[status||'manual_review'] || '需要人工核验'
+  return next ? `${label} · ${formatScheduledDateTime(next)}` : label
 }
 
 function safeOperationalDetail(value?: string) {

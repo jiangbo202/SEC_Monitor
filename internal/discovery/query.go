@@ -55,7 +55,10 @@ type CandidateScoreQuery struct {
 	// SkipTechnicalDetails omits the post-pagination MA200/detail hydration.
 	// Research readiness and investability still use the bounded 21-session
 	// market-quality window before pagination, so gating semantics are unchanged.
-	SkipTechnicalDetails    bool
+	SkipTechnicalDetails bool
+	// SkipValuationDetails is for aggregates that do not consume per-row
+	// valuation. Valuation filters and sorting still hydrate their evidence.
+	SkipValuationDetails    bool
 	UpcomingEarningsTickers []string
 	UpcomingEarningsOnly    bool
 	FollowedOnly            bool
@@ -266,6 +269,17 @@ func ListUniverse(ctx context.Context, db *gorm.DB, filter UniverseQuery) (Unive
 }
 
 func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScoreQuery) (CandidateScorePage, error) {
+	return listCandidateScores(ctx, db, filter, false)
+}
+
+// ListAllCandidateScores is for local aggregation, not HTTP pagination. It
+// hydrates a published A/B batch once, including candidates beyond page 200.
+func ListAllCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScoreQuery) (CandidateScorePage, error) {
+	filter.Page, filter.PageSize = 1, maxDiscoveryPageSize
+	return listCandidateScores(ctx, db, filter, true)
+}
+
+func listCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScoreQuery, all bool) (CandidateScorePage, error) {
 	page, size, err := normalizePage(filter.Page, filter.PageSize)
 	if err != nil {
 		return CandidateScorePage{}, err
@@ -380,12 +394,18 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 	// Research-readiness only needs the recent liquidity window. Loading a
 	// full MA200 history for every candidate was the dominant cost on a large
 	// local price store; the selected page receives its longer history below.
-	technicalPriceHistories, err := candidateTechnicalPriceHistories(ctx, db, items, technicalMinimumSamples)
+	technicalNeeded := strings.TrimSpace(filter.TechnicalSignal) != ""
+	historyLimit := technicalMinimumSamples
+	if all && !filter.SkipTechnicalDetails && !technicalNeeded {
+		// The whole aggregate consumes technical details. Read its long window
+		// once; market-quality gating still selects only the last 21 sessions.
+		historyLimit = technicalMA200LookbackDays
+	}
+	technicalPriceHistories, err := candidateTechnicalPriceHistories(ctx, db, items, historyLimit)
 	if err != nil {
 		return result, err
 	}
 	hydrateCandidateMarketQualityFromPriceHistoriesWithPolicy(items, technicalPriceHistories, policy)
-	technicalNeeded := strings.TrimSpace(filter.TechnicalSignal) != ""
 	if technicalNeeded {
 		if err = hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx, db, items, technicalPriceHistories); err != nil {
 			return result, err
@@ -431,19 +451,26 @@ func ListCandidateScores(ctx context.Context, db *gorm.DB, filter CandidateScore
 		return result, nil
 	}
 	end := start + size
+	if all {
+		start, end = 0, len(items)
+	}
 	if end > len(items) {
 		end = len(items)
 	}
 	result.Items = items[start:end]
-	if !valuationNeeded {
+	if !valuationNeeded && !filter.SkipValuationDetails {
 		if err = hydrateCandidateValuations(ctx, db, batch, batch.UniverseSourceVersion, result.Items); err != nil {
 			return result, err
 		}
 	}
 	if !technicalNeeded && !filter.SkipTechnicalDetails {
-		pageTechnicalPriceHistories, historyErr := candidateTechnicalPriceHistories(ctx, db, result.Items, technicalMA200LookbackDays)
-		if historyErr != nil {
-			return result, historyErr
+		pageTechnicalPriceHistories := technicalPriceHistories
+		if historyLimit < technicalMA200LookbackDays {
+			var historyErr error
+			pageTechnicalPriceHistories, historyErr = candidateTechnicalPriceHistories(ctx, db, result.Items, technicalMA200LookbackDays)
+			if historyErr != nil {
+				return result, historyErr
+			}
 		}
 		if err = hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx, db, result.Items, pageTechnicalPriceHistories); err != nil {
 			return result, err
@@ -562,31 +589,54 @@ func BuildCandidateOverview(ctx context.Context, db *gorm.DB) (CandidateOverview
 		QualityTagCounts:  map[string]int{},
 		TopCandidates:     []CandidateScoreResult{},
 	}
-	for pageNumber := 1; ; pageNumber++ {
-		page, err := ListCandidateScores(ctx, db, CandidateScoreQuery{Page: pageNumber, PageSize: maxDiscoveryPageSize})
-		if err != nil {
+	page, err := ListAllCandidateScores(ctx, db, CandidateScoreQuery{SkipPerformance: true, SkipTechnicalDetails: true, SkipValuationDetails: true})
+	if err != nil {
+		return result, err
+	}
+	return BuildCandidateOverviewFromItems(ctx, db, page.Items)
+}
+
+// BuildCandidateOverviewFromItems reuses the same batch evidence as health and
+// dashboard consumers. Callers provide the complete immutable aggregate.
+func BuildCandidateOverviewFromItems(ctx context.Context, db *gorm.DB, items []CandidateScoreResult) (CandidateOverview, error) {
+	result := CandidateOverview{Total: int64(len(items)), GradeCounts: map[string]int{}, QualityTierCounts: map[string]int{}, ChangeCounts: map[string]int{}, SectorCounts: map[string]int{}, QualityTagCounts: map[string]int{}, TopCandidates: []CandidateScoreResult{}}
+	if len(items) > 0 {
+		result.BatchID = items[0].BatchID
+	}
+	for _, item := range items {
+		result.GradeCounts[item.Grade]++
+		result.QualityTierCounts[item.QualityTier]++
+		result.ChangeCounts[item.ChangeStatus]++
+		if item.SectorCategory != "" {
+			result.SectorCounts[item.SectorCategory]++
+		}
+		for _, tag := range item.QualityTags {
+			result.QualityTagCounts[tag]++
+		}
+		if len(result.TopCandidates) < 10 {
+			result.TopCandidates = append(result.TopCandidates, item)
+		}
+	}
+	// Summary counts need no valuation history. Keep complete evidence for the
+	// ten rows actually returned to callers instead of hydrating every row.
+	missingValuations := []CandidateScoreResult{}
+	missingIndexes := []int{}
+	for index, item := range result.TopCandidates {
+		if item.Valuation.Status == "" {
+			missingValuations = append(missingValuations, item)
+			missingIndexes = append(missingIndexes, index)
+		}
+	}
+	if len(missingValuations) > 0 {
+		var batch UniverseBatch
+		if err := db.WithContext(ctx).First(&batch, "batch_id = ?", result.BatchID).Error; err != nil {
 			return result, err
 		}
-		result.Total = page.Total
-		if len(page.Items) > 0 && result.BatchID == "" {
-			result.BatchID = page.Items[0].BatchID
+		if err := hydrateCandidateValuations(ctx, db, batch, batch.UniverseSourceVersion, missingValuations); err != nil {
+			return result, err
 		}
-		for _, item := range page.Items {
-			result.GradeCounts[item.Grade]++
-			result.QualityTierCounts[item.QualityTier]++
-			result.ChangeCounts[item.ChangeStatus]++
-			if item.SectorCategory != "" {
-				result.SectorCounts[item.SectorCategory]++
-			}
-			for _, tag := range item.QualityTags {
-				result.QualityTagCounts[tag]++
-			}
-			if len(result.TopCandidates) < 10 {
-				result.TopCandidates = append(result.TopCandidates, item)
-			}
-		}
-		if int64(pageNumber*maxDiscoveryPageSize) >= page.Total || len(page.Items) == 0 {
-			break
+		for index, item := range missingValuations {
+			result.TopCandidates[missingIndexes[index]].Valuation = item.Valuation
 		}
 	}
 	exited, err := countExitedCandidates(ctx, db, result.BatchID)

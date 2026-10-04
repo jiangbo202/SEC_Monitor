@@ -40,15 +40,17 @@ type APIProviderSummary struct {
 	VendorQuota          *int                        `json:"vendor_quota"`
 }
 type APICapability struct {
-	Key          string `json:"key"`
-	Label        string `json:"label"`
-	Provider     string `json:"provider"`
-	AutoEnabled  bool   `json:"auto_enabled"`
-	IssuerBudget int    `json:"issuer_budget"`
-	TTLHours     int    `json:"ttl_hours"`
-	MetricScope  string `json:"metric_scope"`
-	ConfigKey    string `json:"config_key,omitempty"`
-	Implemented  bool   `json:"implemented"`
+	Key             string                  `json:"key"`
+	Label           string                  `json:"label"`
+	Provider        string                  `json:"provider"`
+	AutoEnabled     bool                    `json:"auto_enabled"`
+	IssuerBudget    int                     `json:"issuer_budget"`
+	TTLHours        int                     `json:"ttl_hours"`
+	MetricScope     string                  `json:"metric_scope"`
+	ConfigKey       string                  `json:"config_key,omitempty"`
+	Implemented     bool                    `json:"implemented"`
+	EffectiveStatus string                  `json:"effective_status,omitempty"`
+	Schedules       []APICapabilitySchedule `json:"schedules,omitempty"`
 }
 type APITrend struct {
 	Provider    string `json:"provider"`
@@ -221,6 +223,9 @@ func (s *APIManagementService) Overview(ctx context.Context, provider, ticker st
 			task.LastErrorMessage = SanitizeSensitiveError(task.LastErrorMessage)
 			result.Tasks = append(result.Tasks, task)
 		}
+	}
+	if err := s.annotateCapabilitySchedules(ctx, &result, tasks, now); err != nil {
+		return result, err
 	}
 	tickers := []string{}
 	if ticker != "" {

@@ -418,12 +418,28 @@ func (s *MacroCalendarService) upsertRelease(ctx context.Context, event beaSched
 // This avoids treating a page's publication timestamp as the event identity.
 func (s *MacroCalendarService) syncOfficialBLS(ctx context.Context, result *MacroCalendarSyncResult) error {
 	body, err := s.fetch(ctx, s.blsScheduleURL)
-	if err != nil {
-		return fmt.Errorf("load BLS release schedule: %w", err)
+	var events []beaScheduleEvent
+	if err == nil {
+		events, err = parseBLSSchedule(body, s.blsScheduleURL)
+		if err == nil && len(events) == 0 {
+			err = errors.New("calendar contained no supported events")
+		}
 	}
-	events, err := parseBLSSchedule(body, s.blsScheduleURL)
 	if err != nil {
-		return fmt.Errorf("parse BLS release schedule: %w", err)
+		result.Warnings = append(result.Warnings, "BLS 总日历："+sanitizeMacroError(err)+"；尝试各指标官方日历")
+		for _, spec := range blsHTMLSchedules {
+			raw, fetchErr := s.fetch(ctx, spec.url)
+			if fetchErr != nil {
+				result.Warnings = append(result.Warnings, "BLS "+spec.category+" 日历："+sanitizeMacroError(fetchErr))
+				continue
+			}
+			parsed, parseErr := parseBLSHTMLSchedule(raw, spec.url, spec.category, spec.title)
+			if parseErr != nil {
+				result.Warnings = append(result.Warnings, "BLS "+spec.category+" 日历："+sanitizeMacroError(parseErr))
+				continue
+			}
+			events = append(events, parsed...)
+		}
 	}
 	result.ScheduledFound += len(events)
 	for _, event := range events {
@@ -882,8 +898,10 @@ func (s *MacroCalendarService) publishMacroRelease(ctx context.Context, release 
 		observation.SourceURL = sourceURL
 		observation.ProviderUpdatedAt = &publishedAt
 		observation.FetchedAt = s.now().UTC()
-		if prior, err := s.previousOfficialValue(ctx, release.Provider, observation.IndicatorCode, release.ID, publishedAt); err == nil {
-			observation.PreviousValue = prior
+		if observation.PreviousValue == nil {
+			if prior, err := s.previousOfficialValue(ctx, release.Provider, observation.IndicatorCode, release.ID, publishedAt); err == nil {
+				observation.PreviousValue = prior
+			}
 		}
 		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "release_id"}, {Name: "indicator_code"}},
@@ -937,22 +955,29 @@ func (s *MacroCalendarService) syncOfficialFOMC(ctx context.Context, result *Mac
 // guessed from the headline table and will be added only with its exact
 // official table definition.
 func (s *MacroCalendarService) syncOfficialCensusRetail(ctx context.Context, result *MacroCalendarSyncResult) error {
+	var events []beaScheduleEvent
 	body, err := s.fetch(ctx, s.censusRetailScheduleURL)
-	if err != nil {
-		return fmt.Errorf("load Census retail schedule: %w", err)
+	if err == nil {
+		events, err = parseCensusRetailSchedule(body, s.censusRetailScheduleURL)
 	}
-	events, err := parseCensusRetailSchedule(body, s.censusRetailScheduleURL)
 	if err != nil {
-		return fmt.Errorf("parse Census retail schedule: %w", err)
+		result.Warnings = append(result.Warnings, "Census 零售日历："+sanitizeMacroError(err))
 	}
+	var currentBody string
 	if strings.TrimSpace(s.censusEconomicScheduleURL) != "" {
-		economicBody, fetchErr := s.fetch(ctx, s.censusEconomicScheduleURL)
-		if fetchErr != nil {
-			result.Warnings = append(result.Warnings, "Census 经济指标总日历暂不可读取："+sanitizeMacroError(fetchErr))
-		} else if economicEvents, parseErr := parseCensusEconomicSchedule(economicBody, s.censusEconomicScheduleURL); parseErr != nil {
-			result.Warnings = append(result.Warnings, "Census 经济指标总日历解析提示："+sanitizeMacroError(parseErr))
+		currentBody, err = s.fetch(ctx, s.censusEconomicScheduleURL)
+		if err != nil {
+			result.Warnings = append(result.Warnings, "Census 经济指标总日历："+sanitizeMacroError(err))
+		} else if parsed, parseErr := parseCensusEconomicSchedule(currentBody, s.censusEconomicScheduleURL); parseErr != nil {
+			result.Warnings = append(result.Warnings, "Census 经济指标总日历解析："+sanitizeMacroError(parseErr))
 		} else {
-			events = append(events, economicEvents...)
+			// Prefer the dedicated retail schedule when it is available.
+			retailPresent := len(events) > 0
+			for _, event := range parsed {
+				if !retailPresent || event.Category != "retail_sales" {
+					events = append(events, event)
+				}
+			}
 		}
 	}
 	result.ScheduledFound += len(events)
@@ -969,12 +994,7 @@ func (s *MacroCalendarService) syncOfficialCensusRetail(ctx context.Context, res
 	if err := s.syncLatestCensusRelease(ctx, "retail_sales", defaultCensusRetailSalesURL, "", result, parseCensusRetailObservations); err != nil {
 		result.Warnings = append(result.Warnings, "Census 零售销售："+sanitizeMacroError(err))
 	}
-	if strings.TrimSpace(s.censusEconomicScheduleURL) == "" {
-		return nil
-	}
-	currentBody, fetchErr := s.fetch(ctx, s.censusEconomicScheduleURL)
-	if fetchErr != nil {
-		result.Warnings = append(result.Warnings, "Census 最新经济指标暂不可读取："+sanitizeMacroError(fetchErr))
+	if currentBody == "" {
 		return nil
 	}
 	for _, category := range []string{"durable_goods", "housing_starts", "new_home_sales", "international_trade", "advance_trade"} {
@@ -1176,13 +1196,37 @@ func (s *MacroCalendarService) syncOfficialEIAWeeklyPetroleum(ctx context.Contex
 	if err != nil {
 		return fmt.Errorf("load EIA weekly petroleum report: %w", err)
 	}
-	tableBody, err := s.fetch(ctx, s.eiaWeeklyPetroleumTable4)
+	tableBody, err := s.fetchCSV(ctx, s.eiaWeeklyPetroleumTable4)
 	if err != nil {
 		return fmt.Errorf("load EIA weekly petroleum table 4: %w", err)
 	}
 	event, observations, ok := parseEIAWeeklyPetroleum(pageBody, tableBody, s.eiaWeeklyPetroleumURL)
+	if !ok && s.eiaWeeklyPetroleumURL == defaultEIAWeeklyPetroleumURL {
+		// The official page now obtains its dates from this public JSON calendar.
+		calendarRaw, fetchErr := s.fetch(ctx, defaultEIAWeeklyCalendarURL)
+		if fetchErr != nil {
+			return fmt.Errorf("load EIA release calendar: %w", fetchErr)
+		}
+		calendarEvents, parseErr := parseEIAReleaseCalendar(calendarRaw)
+		if parseErr != nil {
+			return parseErr
+		}
+		for _, scheduled := range calendarEvents {
+			if scheduled.ScheduledAt.After(s.now().UTC()) {
+				_, saved, saveErr := s.upsertRelease(ctx, scheduled)
+				if saveErr != nil {
+					return saveErr
+				}
+				if saved {
+					result.ReleasesSaved++
+				}
+				result.ScheduledFound++
+			}
+		}
+		event, observations, ok = parseEIAWeeklyWithCalendar(calendarEvents, tableBody)
+	}
 	if !ok {
-		return errors.New("EIA weekly petroleum report did not contain supported inventory values")
+		return errors.New("EIA inventory dates or values could not be verified against the official report")
 	}
 	release, saved, err := s.upsertRelease(ctx, event)
 	if err != nil {
@@ -1192,8 +1236,28 @@ func (s *MacroCalendarService) syncOfficialEIAWeeklyPetroleum(ctx context.Contex
 		result.ReleasesSaved++
 	}
 	result.ScheduledFound++
-	if release.Status == MacroReleasePublished && strings.TrimSpace(release.SourceHash) != "" {
-		return nil
+	if release.Status == MacroReleasePublished && release.SourceHash == hashMacroBody(tableBody) {
+		// Reconcile older records whose prior week came from a local historical
+		// snapshot instead of the matching column in the official current CSV.
+		var stored []model.MacroObservation
+		if err := s.db.WithContext(ctx).Where("release_id = ?", release.ID).Find(&stored).Error; err != nil {
+			return err
+		}
+		matches := len(stored) == len(observations)
+		byCode := make(map[string]model.MacroObservation, len(stored))
+		for _, row := range stored {
+			byCode[row.IndicatorCode] = row
+		}
+		for _, expected := range observations {
+			row, found := byCode[expected.IndicatorCode]
+			if !found || row.ActualValue == nil || expected.ActualValue == nil || *row.ActualValue != *expected.ActualValue ||
+				(expected.PreviousValue != nil && (row.PreviousValue == nil || *row.PreviousValue != *expected.PreviousValue)) {
+				matches = false
+			}
+		}
+		if matches {
+			return nil
+		}
 	}
 	return s.publishMacroRelease(ctx, &release, s.eiaWeeklyPetroleumTable4, tableBody, observations, result)
 }
@@ -1205,6 +1269,9 @@ func (s *MacroCalendarService) fetch(ctx context.Context, rawURL string) (string
 	}
 	request.Header.Set("User-Agent", "sec-monitor/0.1 macro-calendar")
 	request.Header.Set("Accept", "text/html,application/xhtml+xml,text/calendar;q=0.9")
+	if parsed, parseErr := url.Parse(rawURL); parseErr == nil && strings.HasSuffix(strings.ToLower(parsed.Path), ".json") {
+		request.Header.Set("Accept", "application/json,*/*;q=0.1")
+	}
 	response, err := s.client.Do(request)
 	if err != nil {
 		return "", err
@@ -1475,8 +1542,8 @@ func parseCensusEconomicSchedule(raw, baseURL string) ([]beaScheduleEvent, error
 	for _, row := range findHTMLNodes(doc, "tr") {
 		text := normalizeMacroText(htmlNodeText(row))
 		category, title, frequency, ok := macroCensusEconomicCategory(text)
-		if !ok || category == "retail_sales" {
-			continue // The dedicated retail schedule is more complete and authoritative for this series.
+		if !ok {
+			continue
 		}
 		scheduledAt, ok := parseCensusCalendarTime(text)
 		if !ok {
@@ -1951,7 +2018,7 @@ func parseEIAWeeklyPetroleum(pageRaw, tableRaw, baseURL string) (beaScheduleEven
 		}
 		current, change := row.current, roundMacroValue(row.current-row.prior, 3)
 		observations = append(observations,
-			model.MacroObservation{IndicatorCode: definition.code, IndicatorName: definition.name, Frequency: "weekly", Unit: "MMbbl", ActualValue: &current, SourceField: definition.field},
+			model.MacroObservation{IndicatorCode: definition.code, IndicatorName: definition.name, Frequency: "weekly", Unit: "MMbbl", ActualValue: &current, PreviousValue: float64Ptr(row.prior), SourceField: definition.field},
 			model.MacroObservation{IndicatorCode: definition.code + "_wow", IndicatorName: definition.name + "周变动", Frequency: "weekly", Unit: "MMbbl", ActualValue: float64Ptr(change), SourceField: definition.field + " / current week minus prior week"},
 		)
 	}

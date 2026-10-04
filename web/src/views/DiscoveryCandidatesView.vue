@@ -4626,18 +4626,28 @@ watch(() => route.query.ticker, (ticker) => {
   void load()
 })
 
+let lastStatusPoll=0, statusPollRunning=false
+async function pollDiscoveryStatus(force=false){
+  if(document.hidden || statusPollRunning)return
+  const active=discoverySyncRun.value?.status==='running'
+  if(!force && Date.now()-lastStatusPoll < (active?15000:60000))return
+  statusPollRunning=true;lastStatusPoll=Date.now()
+  try{await loadDiscoverySyncStatus()}finally{statusPollRunning=false}
+}
+function resumeDiscoveryStatus(){if(!document.hidden)void pollDiscoveryStatus(true)}
+
 onMounted(() => {
 	filters.ticker = normalizedTickerQuery(route.query.ticker)
   load()
   void loadTenB5OneCount()
   loadCriteria()
   void loadAIProviders()
-  discoverySyncPoll = window.setInterval(() => {
-    void loadDiscoverySyncStatus()
-  }, 15_000)
+  discoverySyncPoll = window.setInterval(pollDiscoveryStatus, 15_000)
+  document.addEventListener('visibilitychange', resumeDiscoveryStatus)
 })
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', resumeDiscoveryStatus)
   if (discoverySyncPoll) window.clearInterval(discoverySyncPoll)
   if (candidateSupplementalTimer) window.clearTimeout(candidateSupplementalTimer)
   if (candidateAIPollingTimer !== undefined) window.clearTimeout(candidateAIPollingTimer)

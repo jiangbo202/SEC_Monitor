@@ -29,14 +29,24 @@ type ResearchActionGate struct {
 }
 
 func BuildResearchActionGate(ctx context.Context, db *gorm.DB, now time.Time) (ResearchActionGate, error) {
-	result := ResearchActionGate{Status: ResearchActionGateReady, Allowed: true, Reasons: []string{}, EvaluatedAt: now.UTC()}
 	if db == nil {
-		return result, errors.New("database is required")
+		return ResearchActionGate{}, errors.New("database is required")
 	}
 	health, err := BuildCandidateHealth(ctx, db)
 	if err != nil {
-		return result, err
+		return ResearchActionGate{}, err
 	}
+	effectiveness, err := BuildCandidateEffectiveness(ctx, db)
+	if err != nil {
+		return ResearchActionGate{}, err
+	}
+	return ResearchActionGateFromEvidence(health, effectiveness, now), nil
+}
+
+// ResearchActionGateFromEvidence is used by read-only summaries. Write actions
+// still call BuildResearchActionGate and read fresh persisted evidence.
+func ResearchActionGateFromEvidence(health CandidateHealth, effectiveness CandidateEffectivenessReport, now time.Time) ResearchActionGate {
+	result := ResearchActionGate{Status: ResearchActionGateReady, Allowed: true, Reasons: []string{}, EvaluatedAt: now.UTC()}
 	result.AsOf = health.PriceEffectiveDate
 	block := func(reason string) {
 		result.Allowed = false
@@ -52,10 +62,6 @@ func BuildResearchActionGate(ctx context.Context, db *gorm.DB, now time.Time) (R
 	if health.OpenDataQualityIncidents > 0 {
 		block(fmt.Sprintf("存在 %d 条尚未关闭的数据质量事件", health.OpenDataQualityIncidents))
 	}
-	effectiveness, err := BuildCandidateEffectiveness(ctx, db)
-	if err != nil {
-		return result, err
-	}
 	result.ScoringVersion = effectiveness.ScoringVersion
 	result.EffectivenessStatus = effectiveness.Status
 	result.OutcomeTrackingStatus = effectiveness.OutcomeTrackingStatus
@@ -65,5 +71,5 @@ func BuildResearchActionGate(ctx context.Context, db *gorm.DB, now time.Time) (R
 	if effectiveness.OutcomeTrackingStatus != "current" {
 		block("信号结果闭环尚未完整运行")
 	}
-	return result, nil
+	return result
 }

@@ -188,7 +188,9 @@ func hydrateCandidateTechnicalAnalysisWithPriceHistories(ctx context.Context, db
 	capitalActionsBySecurity := make(map[uint][]string, len(securityIDs))
 	if len(securityIDs) > 0 {
 		var actions []CapitalRiskSnapshot
-		if err := db.WithContext(ctx).Where("security_id IN ? AND active = ? AND kind = ?", securityIDs, true, CapitalEventReverseSplit).Find(&actions).Error; err != nil {
+		// Corporate-action gating needs existence by issuer/kind, not every
+		// historical batch membership or its full evidence payload.
+		if err := db.WithContext(ctx).Distinct("security_id", "kind").Where("security_id IN ? AND active = ? AND kind = ?", securityIDs, true, CapitalEventReverseSplit).Find(&actions).Error; err != nil {
 			return err
 		}
 		for _, action := range actions {

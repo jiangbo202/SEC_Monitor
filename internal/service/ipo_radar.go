@@ -66,6 +66,8 @@ type IPORadarHealth struct {
 	DeadLetterBatches         int                 `json:"dead_letter_batches"`
 	LatestSync                *IPORadarSyncHealth `json:"latest_sync"`
 	Actions                   []IPORadarAction    `json:"actions"`
+	ParserIssues              []IPOParserIssue    `json:"parser_issues"`
+	MappingIssues             []IPOMappingIssue   `json:"mapping_issues"`
 }
 
 // IPORadarAction is an operator-facing next step derived from the IPO health
@@ -209,6 +211,7 @@ func (s *IPORadarService) Health(ctx context.Context, now time.Time) (IPORadarHe
 		// This keeps the operator queue focused on genuinely actionable gaps.
 		if ipoRequiresMarketMapping(company) {
 			health.MissingMarketMapping++
+			health.MappingIssues = append(health.MappingIssues, IPOMappingIssue{CIK: company.CIK, CompanyName: company.CompanyName, Reason: "SEC 生命周期接近上市，但尚无可确认的交易所 / 股票身份；可能尚未开始交易或官方映射尚未发布。"})
 		}
 		if ipoLifecycleCheckStale(company, staleBefore) {
 			health.StaleLifecycleChecks++
@@ -219,6 +222,9 @@ func (s *IPORadarService) Health(ctx context.Context, now time.Time) (IPORadarHe
 		return IPORadarHealth{}, err
 	}
 	health.UnsupportedOfferingEvents = int(count)
+	if err := s.annotateIPOParserIssues(ctx, &health); err != nil {
+		return health, err
+	}
 	batchCount := func(query *gorm.DB, target *int) error {
 		count = 0
 		if err := query.Count(&count).Error; err != nil {
@@ -1459,7 +1465,7 @@ func buildIPOCompanyItem(filings []model.IPOFiling, tickerByCIK map[string]strin
 }
 
 const (
-	ipoOfferingParserVersion            = 5
+	ipoOfferingParserVersion            = 6
 	ipoOfferingUnsupportedRetryAfter    = 24 * time.Hour
 	ipoOfferingUnsupportedRetryMaxBatch = 25
 )
@@ -1492,7 +1498,7 @@ func (s *IPORadarService) enrichIPOMarketDataWithListingMapping(ctx context.Cont
 		}
 	}
 	for _, filing := range pending {
-		document, err := client.FetchFilingDocument(ctx, filing.FilingURL)
+		document, err := sec.FetchPrimaryFilingDocument(ctx, client, filing.FilingURL)
 		if err != nil {
 			if recordErr := s.recordUnsupportedIPOOffering(ctx, filing, "fetch_failed"); recordErr != nil {
 				warnings = append(warnings, "424B4 "+filing.FilingID+": "+recordErr.Error())
@@ -1594,8 +1600,15 @@ func (s *IPORadarService) pending424B4Filings(ctx context.Context) ([]model.IPOF
 	retryBefore := time.Now().UTC().Add(-ipoOfferingUnsupportedRetryAfter)
 	for _, filing := range filings {
 		event, exists := events[filing.FilingID]
-		if !exists || event.ParserVersion < ipoOfferingParserVersion {
+		if !exists {
 			pending = append(pending, filing)
+			continue
+		}
+		if event.ParserVersion < ipoOfferingParserVersion {
+			if unsupportedRetried < ipoOfferingUnsupportedRetryMaxBatch {
+				pending = append(pending, filing)
+				unsupportedRetried++
+			}
 			continue
 		}
 		// Parser failures can be caused by a temporarily unavailable SEC

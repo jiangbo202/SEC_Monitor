@@ -33,13 +33,16 @@ const (
 // OperationalIssue is an actionable, locally computed observation. Routes are
 // frontend route names, keeping the API independent from UI URL details.
 type OperationalIssue struct {
-	Key        string    `json:"key"`
-	Category   string    `json:"category"`
-	Severity   string    `json:"severity"`
-	Title      string    `json:"title"`
-	Detail     string    `json:"detail"`
-	Action     string    `json:"action"`
-	ObservedAt time.Time `json:"observed_at"`
+	Key            string     `json:"key"`
+	Category       string     `json:"category"`
+	Severity       string     `json:"severity"`
+	Title          string     `json:"title"`
+	Detail         string     `json:"detail"`
+	Action         string     `json:"action"`
+	ObservedAt     time.Time  `json:"observed_at"`
+	RecoveryStatus string     `json:"recovery_status,omitempty"`
+	TaskName       string     `json:"task_name,omitempty"`
+	NextAttemptAt  *time.Time `json:"next_attempt_at,omitempty"`
 }
 
 type OperationalTaskStatus struct {
@@ -540,6 +543,7 @@ func (s *OperationalHealthService) ReportAt(ctx context.Context, now time.Time) 
 	sort.SliceStable(report.Issues, func(i, j int) bool {
 		return operationalSeverityRank(report.Issues[i].Severity) > operationalSeverityRank(report.Issues[j].Severity)
 	})
+	annotateOperationalRecovery(&report, tasks, now)
 	report.Status = operationalReportStatus(report.Issues)
 	report.Summary = renderOperationalSummary(report)
 	return report, nil
@@ -560,14 +564,23 @@ func (s *OperationalHealthService) reportMacroCoverage(ctx context.Context, repo
 	if !macroRan {
 		return nil
 	}
+	missingBLS := []string{}
+	labels := map[string]string{"employment": "就业 / 非农", "cpi": "CPI", "ppi": "PPI", "fomc": "FOMC"}
 	for _, category := range []string{"employment", "cpi", "ppi", "fomc"} {
 		var count int64
 		if err := s.db.WithContext(ctx).Model(&model.MacroRelease{}).Where("category = ? AND status = ? AND scheduled_at > ? AND scheduled_at <= ?", category, MacroReleaseScheduled, now, now.Add(45*24*time.Hour)).Count(&count).Error; err != nil {
 			return err
 		}
 		if count == 0 {
-			report.addIssue("macro_schedule_coverage:"+category, "macro", "warning", "未来宏观日历覆盖待核验", category+" 未来 45 天尚无已核验计划；日历为空不代表没有事件风险，请复核官方发布日历。", "macro-calendar", now)
+			if category != "fomc" {
+				missingBLS = append(missingBLS, labels[category])
+				continue
+			}
+			report.addIssue("macro_schedule_coverage:fomc", "macro", "warning", "FOMC 未来日历待核验", "未来 45 天尚无已核验计划；请核对美联储官方发布日历。", "macro-calendar", now)
 		}
+	}
+	if len(missingBLS) > 0 {
+		report.addIssue("macro_schedule_coverage:bls", "macro", "warning", "BLS 未来日历覆盖待核验", strings.Join(missingBLS, "、")+"未来 45 天缺少已核验计划；总日历与分指标官方入口访问失败时保留缺口，不推算发布日期。请结合宏观同步任务的来源错误核对官方日历。", "macro-calendar", now)
 	}
 	for _, item := range []struct {
 		category string

@@ -21,8 +21,8 @@
     </el-tab-pane>
     <el-tab-pane label="能力与口径" name="capabilities">
      <el-table :data="data?.capabilities || []" border>
-      <el-table-column prop="label" label="业务能力" min-width="170" /><el-table-column label="数据源" width="125"><template #default="{row}">{{ name(row.provider) }}</template></el-table-column>
-      <el-table-column label="后台状态" width="125"><template #default="{row}"><span>{{ row.config_key?(row.auto_enabled?'已开启':'已关闭'):(row.implemented?'由独立任务管理':'未实现，禁止启用') }}</span></template></el-table-column>
+      <el-table-column type="expand"><template #default="{row}"><div style="padding:12px" v-for="task in row.schedules || []" :key="task.task_name"><strong>{{ task.task_name }} · {{ task.enabled ? '任务已启用' : '任务未启用' }}</strong><p>下次运行：{{ date(task.next_run_at) }}；实际轮转集合：{{ task.universe_size || '独立队列' }}；无成功查询回执：{{ task.receipt_missing }}；查询回执超期：{{ task.receipt_stale }}</p><p v-if="task.minimum_rounds">完整轮转至少 {{ task.minimum_rounds }} 轮；理论最早完成：{{ date(task.earliest_full_rotation_at) }}；研究新鲜度目标 {{ task.research_ttl_hours }} 小时。{{ task.freshness_feasible === false ? '当前预算与频率不足以让整个集合持续满足新鲜度目标。' : '' }}</p><p>{{ task.note }}</p></div><p v-if="!row.schedules?.length" style="padding:12px">跟随相关业务任务和价格链配置；请在任务调度中核对。</p></template></el-table-column><el-table-column prop="label" label="业务能力" min-width="170" /><el-table-column label="数据源" width="125"><template #default="{row}">{{ name(row.provider) }}</template></el-table-column>
+      <el-table-column label="后台状态" width="125"><template #default="{row}"><span>{{ capabilityState(row) }}</span></template></el-table-column>
       <el-table-column label="每轮标的上限" width="120"><template #default="{row}">{{ row.issuer_budget || '见具体任务' }}</template></el-table-column><el-table-column prop="metric_scope" label="口径与边界" min-width="250" />
      </el-table>
      <p class="muted">标的预算不等于 API 请求预算。机构合计与单家机构记录不互相回退、不相加；行情主源与备源统一在“行情与接口”中配置。</p>
@@ -122,6 +122,7 @@ function coverageTooltip(cell?:APICoverageCell){
  const threshold=cell?.ttl_hours?`；超期阈值：${cell.ttl_hours/24} 天`:''
  return checked?`最近成功查询：${date(checked)}；数据快照保存：${date(cell?.snapshot_at)}${threshold}`:`数据快照保存：${date(cell?.snapshot_at || cell?.synced_at)}；尚无独立成功查询记录，暂按快照时间判断${threshold}`
 }
+function capabilityState(row:any){return ({scheduled:'任务已开启',task_disabled:'任务未启用',capability_disabled:'功能已关闭',disabled:'模块已关闭',provider_paused:'供应商暂停',not_configured:'凭据未配置',dependency_missing:'必需接口已关闭',unimplemented:'未实现'} as Record<string,string>)[row.effective_status || ''] || (row.config_key ? (row.auto_enabled?'已开启':'已关闭') : (row.implemented?'跟随相关任务':'未实现'))}
 const coverageType=(value?:string)=>value==='available'?'success':value==='stale'||value==='partial'?'warning':'info'
 const trendPercent=(count:number)=>Math.round(count/Math.max(1,...(data.value?.trends||[]).map(item=>item.requests))*100)
 const taskLabels:Record<string,string>={watch_target_market_sync:'监控标的行情',market_trend_sync:'大盘趋势与市场温度',price_action_cycle_replay:'价格周期回放',watch_target_earnings_sync:'监控标的财报预告',ipo_listing_reconcile_sync:'IPO 上市核验',macro_calendar_sync:'宏观日历',longbridge_institutional_ownership_sync:'Longbridge 单家机构历史',futu_institutional_ownership_sync:'Futu 机构合计历史',longbridge_candidate_research_sync:'Longbridge 候选市场研究',longbridge_watch_target_research_sync:'Longbridge 监控市场研究',longbridge_candidate_valuation_sync:'Longbridge 候选估值',longbridge_watch_target_valuation_sync:'Longbridge 监控估值',longbridge_candidate_option_research_sync:'Longbridge 候选期权',longbridge_watch_target_option_research_sync:'Longbridge 监控期权'}
