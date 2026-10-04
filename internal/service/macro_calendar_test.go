@@ -470,6 +470,29 @@ func TestParseEIAWeeklyPetroleumAndStoreOfficialCSV(t *testing.T) {
 	if result.Published != 1 || result.Observations != 6 {
 		t.Fatalf("EIA result=%+v", result)
 	}
+	var stock model.MacroObservation
+	if err := db.Where("indicator_code = ?", "commercial_crude_oil_inventory_mmbbl").First(&stock).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stock.PreviousValue == nil || *stock.PreviousValue != 411.675 {
+		t.Fatal("official prior-week value was not preserved")
+	}
+	// Older stored reports used a prior local release instead of the current
+	// CSV's prior-week column. Repair only that mismatch, then remain idempotent.
+	if err := db.Model(&stock).Update("previous_value", 500).Error; err != nil {
+		t.Fatal(err)
+	}
+	repaired := MacroCalendarSyncResult{}
+	if err := service.syncOfficialEIAWeeklyPetroleum(context.Background(), &repaired); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&stock, stock.ID).Error; err != nil || stock.PreviousValue == nil || *stock.PreviousValue != 411.675 {
+		t.Fatalf("prior week was not repaired: %+v err=%v", stock.PreviousValue, err)
+	}
+	repeated := MacroCalendarSyncResult{}
+	if err := service.syncOfficialEIAWeeklyPetroleum(context.Background(), &repeated); err != nil || repeated.Observations != 0 {
+		t.Fatalf("repeated identical report must be idempotent: %+v err=%v", repeated, err)
+	}
 }
 
 func assertMacroValues(t *testing.T, observations []model.MacroObservation, want map[string]float64) {

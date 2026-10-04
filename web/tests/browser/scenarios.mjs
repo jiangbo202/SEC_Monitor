@@ -45,7 +45,7 @@ export const scenarios = {
   },
   '单模块失败不清空其他数据': async ui => {
     await reset(ui,'partial')
-    await waitText(ui,'部分模块暂无数据：机构持仓')
+    await waitText(ui,'部分模块读取失败：机构持仓')
     await waitText(ui,'$12.34')
     await waitText(ui,'TEST 原文证据')
   },

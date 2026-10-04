@@ -22,13 +22,15 @@ import (
 // dashboard fan-out (including a 500-row IPO-company request) and makes a
 // partial local-data failure visible without blanking the complete page.
 type DashboardSummary struct {
-	GeneratedAt     time.Time                  `json:"generated_at"`
-	Warnings        []string                   `json:"warnings"`
-	Preferences     DashboardPreferences       `json:"preferences"`
-	Decision        DashboardDecisionSummary   `json:"decision"`
-	Monitoring      DashboardMonitoringSummary `json:"monitoring"`
-	Operations      DashboardOperationsSummary `json:"operations"`
-	candidateHealth *discovery.CandidateHealth
+	GeneratedAt            time.Time                  `json:"generated_at"`
+	Warnings               []string                   `json:"warnings"`
+	Preferences            DashboardPreferences       `json:"preferences"`
+	Decision               DashboardDecisionSummary   `json:"decision"`
+	Monitoring             DashboardMonitoringSummary `json:"monitoring"`
+	Operations             DashboardOperationsSummary `json:"operations"`
+	candidateHealth        *discovery.CandidateHealth
+	candidateEffectiveness *discovery.CandidateEffectivenessReport
+	candidateTimings       map[string]time.Duration
 }
 
 // DashboardPreferences remains in the existing local system-config store.
@@ -216,9 +218,9 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 	forceRefresh := c.Query("refresh") == "1" || strings.EqualFold(c.Query("refresh"), "true")
 	if !forceRefresh {
 		h.dashboardCacheMu.RLock()
-		cachedAt, cached := h.dashboardCacheAt, h.dashboardCache
+		cachedAt, cached, revision := h.dashboardCacheAt, h.dashboardCache, h.dashboardCacheRevision
 		h.dashboardCacheMu.RUnlock()
-		if !cachedAt.IsZero() && time.Since(cachedAt) < dashboardSummaryCacheTTL {
+		if !cachedAt.IsZero() && revision == h.candidateSummary.revision.Load() && time.Since(cachedAt) < dashboardSummaryCacheTTL {
 			c.Header("X-Dashboard-Cache", "hit")
 			OK(c, cached)
 			return
@@ -231,14 +233,18 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 	defer h.dashboardBuildMu.Unlock()
 	if !forceRefresh {
 		h.dashboardCacheMu.RLock()
-		cachedAt, cached := h.dashboardCacheAt, h.dashboardCache
+		cachedAt, cached, revision := h.dashboardCacheAt, h.dashboardCache, h.dashboardCacheRevision
 		h.dashboardCacheMu.RUnlock()
-		if !cachedAt.IsZero() && time.Since(cachedAt) < dashboardSummaryCacheTTL {
+		if !cachedAt.IsZero() && revision == h.candidateSummary.revision.Load() && time.Since(cachedAt) < dashboardSummaryCacheTTL {
 			c.Header("X-Dashboard-Cache", "hit")
 			OK(c, cached)
 			return
 		}
 	}
+	if forceRefresh {
+		h.candidateSummary.revision.Add(1)
+	}
+	builtRevision := h.candidateSummary.revision.Load()
 	c.Header("X-Dashboard-Cache", "miss")
 	ctx := c.Request.Context()
 	now := time.Now().UTC()
@@ -268,6 +274,12 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 			result.Warnings = append(result.Warnings, section+"："+service.SanitizeSensitiveError(err.Error()))
 		}
 	}
+	stageAt := time.Now()
+	timings := []string{}
+	markStage := func(name string) {
+		timings = append(timings, fmt.Sprintf("%s;dur=%.2f", name, float64(time.Since(stageAt))/float64(time.Millisecond)))
+		stageAt = time.Now()
+	}
 
 	marketSource := ""
 	if h.MarketTrend != nil {
@@ -296,19 +308,24 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 		}
 	}
 	result.Decision.Market.Freshness = dashboardDataFreshness(ctx, h.DiscoveryDB, dashboardLatestTradeDate(result.Decision.Market), marketSource, result.Decision.Market.LastFetched, now)
+	markStage("market")
 
 	if err := h.loadDashboardCandidateActions(ctx, &result); err != nil {
 		addWarning("候选交易计划", err)
 	}
+	markStage("actions")
 	if err := h.loadDashboardCandidateAvailability(ctx, &result); err != nil {
 		addWarning("候选可用性", err)
 	}
+	markStage("availability")
 	if err := h.loadDashboardCalendar(ctx, now, &result); err != nil {
 		addWarning("事件日历", err)
 	}
+	markStage("calendar")
 	if err := h.loadDashboardMonitoring(ctx, now, &result); err != nil {
 		addWarning("监控概览", err)
 	}
+	markStage("monitoring")
 	var operationalReport *service.OperationalReport
 	if h.OperationalHealth != nil {
 		if report, err := h.OperationalHealth.Report(ctx); err != nil {
@@ -333,11 +350,20 @@ func (h *AppHandler) GetDashboardSummary(c *gin.Context) {
 			}
 		}
 	}
-	result.Decision.Readiness = buildDashboardDecisionReadiness(ctx, h.DiscoveryDB, result.Decision.Market.Freshness, operationalReport, result.candidateHealth)
+	markStage("operations")
+	result.Decision.Readiness = buildDashboardDecisionReadiness(ctx, h.DiscoveryDB, result.Decision.Market.Freshness, operationalReport, result.candidateHealth, result.candidateEffectiveness)
+	markStage("readiness")
+	for _, name := range []string{"candidates", "candidate_health", "candidate_overview", "effectiveness"} {
+		if duration, ok := result.candidateTimings[name]; ok {
+			timings = append(timings, fmt.Sprintf("%s;dur=%.2f", name, float64(duration)/float64(time.Millisecond)))
+		}
+	}
+	c.Header("Server-Timing", strings.Join(timings, ", "))
 	applyDashboardCandidateAvailability(&result.Decision.Readiness, result.Decision.Availability)
 	h.dashboardCacheMu.Lock()
 	h.dashboardCache = result
 	h.dashboardCacheAt = time.Now().UTC()
+	h.dashboardCacheRevision = builtRevision
 	h.dashboardCacheMu.Unlock()
 	OK(c, result)
 }
@@ -371,7 +397,7 @@ func (h *AppHandler) invalidateDashboardCache() {
 	h.dashboardCacheMu.Unlock()
 }
 
-func buildDashboardDecisionReadiness(ctx context.Context, db *gorm.DB, freshness DashboardDataFreshness, operations *service.OperationalReport, preloadedHealth *discovery.CandidateHealth) DashboardDecisionReadiness {
+func buildDashboardDecisionReadiness(ctx context.Context, db *gorm.DB, freshness DashboardDataFreshness, operations *service.OperationalReport, preloadedHealth *discovery.CandidateHealth, preloadedEffectiveness ...*discovery.CandidateEffectivenessReport) DashboardDecisionReadiness {
 	result := DashboardDecisionReadiness{
 		Status: "ready", Label: "今日数据可用", ResearchUsable: true, NewTradePlanAllowed: true,
 		AsOf: freshness.AsOf, ExpectedTradeDate: freshness.ExpectedTradeDate, Reasons: []DashboardDecisionReadinessItem{},
@@ -429,7 +455,13 @@ func buildDashboardDecisionReadiness(ctx context.Context, db *gorm.DB, freshness
 			add("technical_history_pending", "info", "部分标的技术历史待补齐", fmt.Sprintf("%d 只标的仍在独立重试；不影响历史完整的其他标的", health.TechnicalHistoryRetryPending), "discovery-logs")
 		}
 	}
-	effectiveness, err := discovery.BuildCandidateEffectiveness(ctx, db)
+	effectiveness := discovery.CandidateEffectivenessReport{}
+	if len(preloadedEffectiveness) > 0 && preloadedEffectiveness[0] != nil {
+		effectiveness = *preloadedEffectiveness[0]
+		err = nil
+	} else {
+		effectiveness, err = discovery.BuildCandidateEffectiveness(ctx, db)
+	}
 	if err != nil {
 		researchOnly()
 		result.EffectivenessStatus = "unavailable"
@@ -826,15 +858,15 @@ func (h *AppHandler) loadDashboardCandidateAvailability(ctx context.Context, res
 	if h.DiscoveryDB == nil {
 		return nil
 	}
-	page, err := discovery.ListCandidateScores(ctx, h.DiscoveryDB, discovery.CandidateScoreQuery{Page: 1, PageSize: 200, SkipPerformance: true})
+	summary, err := h.readCandidateSummary(ctx)
 	if err != nil {
 		return err
 	}
-	health, err := discovery.BuildCandidateHealthWithReadiness(ctx, h.DiscoveryDB, page.Items)
-	if err != nil {
-		return err
-	}
+	health := summary.Health
+	page := summary.Candidates
 	result.candidateHealth = &health
+	result.candidateEffectiveness = &summary.Effectiveness
+	result.candidateTimings = summary.timings
 	securityIDs := make([]uint, 0, len(page.Items))
 	for _, item := range page.Items {
 		securityIDs = append(securityIDs, item.SecurityID)

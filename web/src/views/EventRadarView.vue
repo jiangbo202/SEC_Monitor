@@ -15,7 +15,7 @@
           <el-option v-for="item in majorTypes" :key="item" :label="item" :value="item" />
         </el-select>
       </el-form-item>
-      <el-form-item><el-button :loading="loading" @click="load">{{ t('common.query') }}</el-button></el-form-item>
+      <el-form-item><el-button :loading="loading" @click="query">{{ t('common.query') }}</el-button></el-form-item>
     </el-form>
     <el-table :data="eventRows" v-loading="loading" border :empty-text="t('pages.eventRadar.empty')">
       <el-table-column label="级别" width="82" fixed>
@@ -35,6 +35,7 @@
 </template>
 
 <script setup lang="ts">
+import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiClient } from '@/api/client'
@@ -44,7 +45,7 @@ import { useI18n } from '@/i18n'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const majorTypes = ['8-K', 'S-1', 'S-3', '424B', '13D', 'SC 13D/A']
+const majorTypes = ['8-K', 'S-1', 'S-3', '424B', '13D']
 const loading = ref(false)
 const rows = ref<Filing[]>([])
 const total = ref(0)
@@ -63,23 +64,22 @@ function normalizeEvent(row: Filing) {
 function priorityType(value:string){return value==='高'?'danger':value==='中'?'warning':'info'}
 function openWorkspace(ticker:string){router.push({path:'/ticker-workspace',query:{ticker}})}
 
+let queryGeneration=0
 async function load() {
+  const generation=++queryGeneration
   loading.value = true
   try {
-    if (filters.filing_type) {
-      const res = await apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { ...filters, page: page.value, page_size: pageSize, sort_by: 'filing_date', sort_order: 'desc' } })
-      rows.value = res.data.data.items
-      total.value = res.data.data.total
-      return
-    }
-    const batches = await Promise.all(majorTypes.map((type) => apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { ticker: filters.ticker, filing_type: type, page: 1, page_size: 20, sort_by: 'filing_date', sort_order: 'desc' } })))
-    const merged = batches.flatMap((res) => res.data.data.items).sort((a, b) => new Date(b.filing_date).getTime() - new Date(a.filing_date).getTime())
-    rows.value = merged.slice((page.value - 1) * pageSize, page.value * pageSize)
-    total.value = merged.length
+    const res = await apiClient.get<ApiResponse<PageResult<Filing>>>('/filings', { params: { ticker: filters.ticker, event_category: filters.filing_type || 'major', page: page.value, page_size: pageSize, sort_by: 'filing_date', sort_order: 'desc' } })
+    if(generation!==queryGeneration)return
+    rows.value = res.data.data.items
+    total.value = res.data.data.total
+  } catch(err:any) {
+    if(generation===queryGeneration)ElMessage.error(err?.response?.data?.message || '读取事件雷达失败')
   } finally {
-    loading.value = false
+    if(generation===queryGeneration)loading.value = false
   }
 }
+function query() { page.value = 1; void load() }
 
 function formatDate(value?: string | null) {
   if (!value) return '-'

@@ -703,7 +703,7 @@ h1 {
 
 .health-alert-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: 12px;
   margin-bottom: 12px;
 }
@@ -711,6 +711,25 @@ h1 {
 .health-alert-grid .el-alert {
   min-height: 78px;
   align-items: flex-start;
+}
+
+.health-alert-grid .el-alert__content {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.health-alert-grid .el-tag {
+  max-width: 100%;
+  height: auto;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  line-height: 1.4;
+}
+
+.health-alert-grid .el-tag__content {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .panel-heading-action {

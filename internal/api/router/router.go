@@ -126,9 +126,6 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		usFutures = service.NewUSFuturesService(deps.DB, apiManagement.Futu)
 	}
 	sched := scheduler.New(tasks, filings, configs, ipoRadar, candidateNotifications, tradeSetupNotifications, discoverySync, notificationBatches, backup, lifecycle, operationalHealth, macroCalendar, marketTrend, usFutures, earningsPreview, institutionalHoldings, apiManagement)
-	if err := sched.Start(context.Background()); err != nil {
-		return nil, fmt.Errorf("start scheduler: %w", err)
-	}
 	app := &handler.AppHandler{
 		APIManagement:          apiManagement,
 		Runtime:                runtimeConfig,
@@ -159,6 +156,10 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		Scheduler:              sched,
 	}
 
+	app.InitializeReadCaches()
+	if err := sched.Start(context.Background()); err != nil {
+		return nil, fmt.Errorf("start scheduler: %w", err)
+	}
 	r.GET("/healthz", handler.Health)
 
 	api := r.Group("/api")
@@ -270,6 +271,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.POST("/ai/analyses", app.GenerateAIAnalysis)
 		api.POST("/ai/sec-filings/:id", app.GenerateSECFilingAIAnalysis)
 		api.GET("/ai/analyses", app.ListAIAnalyses)
+		api.GET("/ai/analyses/:id", app.GetAIAnalysis)
 		api.GET("/ai/providers", app.ListAIProviders)
 		api.GET("/ai/providers/config", app.GetAIProviderConfig)
 		api.PUT("/ai/providers/config", app.UpdateAIProviderConfig)
@@ -277,6 +279,7 @@ func New(deps Dependencies) (*gin.Engine, error) {
 		api.PUT("/ai/prompt-templates", app.UpdateAIPromptTemplates)
 		api.GET("/ticker-evaluations/entry-triggers", app.ListTickerEvaluationEntryTriggers)
 		api.GET("/ticker-evaluations", app.ListTickerEvaluations)
+		api.GET("/ticker-evaluations/:id", app.GetTickerEvaluation)
 		api.GET("/discovery/batches", app.ListDiscoveryBatches)
 		api.GET("/discovery/provider-runs", app.ListDiscoveryProviderRuns)
 		api.GET("/discovery/sync-status", app.GetDiscoverySyncStatus)

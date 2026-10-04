@@ -32,6 +32,7 @@ type FilingFilter struct {
 	Ticker             string
 	CompanyName        string
 	FilingType         string
+	EventCategory      string
 	NotificationStatus string
 	DateFrom           *time.Time
 	DateTo             *time.Time
@@ -161,6 +162,13 @@ func (s *FilingService) List(ctx context.Context, filter FilingFilter) (PageResu
 	}
 	if filter.FilingType != "" {
 		query = query.Where("filing_type = ?", strings.TrimSpace(filter.FilingType))
+	}
+	if category := strings.TrimSpace(filter.EventCategory); category != "" {
+		forms, err := eventRadarForms(category)
+		if err != nil {
+			return PageResult[FilingItem]{}, err
+		}
+		query = query.Where("UPPER(TRIM(filing_type)) IN ?", forms)
 	}
 	notificationStatus := strings.ToLower(strings.TrimSpace(filter.NotificationStatus))
 	if targetID != 0 {

@@ -494,3 +494,62 @@ test('期权列表区分读取失败与没有本地数据，不误报未覆盖',
  await expect(page.getByText('已同步 0 个标的',{exact:true})).toBeVisible()
  await expect(page.getByText('暂无本地快照；输入标的后可刷新 Longbridge 数据。',{exact:true})).toBeVisible()
 })
+
+ test('事件雷达仅请求合并类别并使用服务端分页', async ({page}) => {
+  const requests=[]
+  await page.route('**/api/filings?*',route=>{
+    const q=new URL(route.request().url()).searchParams;requests.push(Object.fromEntries(q))
+    const current=Number(q.get('page')||1),size=20,start=(current-1)*size
+    const items=Array.from({length:Math.min(size,25-start)},(_,i)=>({id:start+i+1,ticker:'TEST',company_name:'测试公司',filing_type:start+i===22?'424B5':'8-K',filing_date:'2026-10-02T00:00:00Z',title:`公告 ${start+i+1}`,event:{fact:`公告 ${start+i+1}`,category:'待解析',priority:'待定',status:'pending',impact:'原文待核验',action:'阅读原文'}}))
+    return route.fulfill({json:{code:0,data:{items,total:25,page:current,page_size:size}}})
+  })
+  await page.goto(`${fixtureURL}/event-radar`)
+  await expect(page.getByText('公告 1',{exact:true})).toBeVisible()
+  await page.locator('.el-pagination').getByText('2',{exact:true}).click()
+  await expect(page.getByText('公告 23',{exact:true})).toBeVisible()
+  expect(requests.map(q=>q.event_category)).toEqual(['major','major'])
+  expect(requests.map(q=>q.page)).toEqual(['1','2'])
+ })
+
+ test('研究台模块先返回先显示，内幕交易只读取一次，失败保留成功值', async ({page}) => {
+  let insiderRequests=0,filingRequests=0,releaseAI
+  const waiting=new Promise(resolve=>{releaseAI=resolve})
+  await page.route('**/api/ai/analyses?*',async route=>{await waiting;return route.fulfill({json:{code:0,data:{items:[],total:0}}})})
+  await page.route('**/api/filings?*',route=>{
+    filingRequests++
+    if(filingRequests>1)return route.fulfill({status:503,json:{message:'本地读取暂不可用'}})
+    return route.fulfill({json:{code:0,data:{items:[{id:900,ticker:'TEST',filing_type:'8-K',filing_date:'2026-10-02',title:'独立模块已有公告'}],total:1}}})
+  })
+  await page.route('**/api/insider-transactions?*',route=>{insiderRequests++;return route.fulfill({json:{code:0,data:{items:[{id:901,owner_name:'测试申报人',transaction_code:'A',direction:'buy',transaction_date:'2026-10-02'}],summary:{transactions:1},total:1}}})})
+  await page.goto(`${fixtureURL}/ticker-workspace?ticker=TEST`)
+  try {
+    await expect(page.getByText('独立模块已有公告',{exact:true}).first()).toBeVisible()
+    await expect(page.getByText('取得',{exact:true})).toBeVisible()
+    expect(insiderRequests).toBe(1)
+  } finally {releaseAI()}
+  await expect(page.getByText(/正在读取：/)).not.toBeVisible()
+  await page.getByRole('button',{name:'刷新本地快照',exact:true}).click()
+  await expect(page.getByText(/部分模块读取失败：SEC/)).toBeVisible()
+  await expect(page.getByText('独立模块已有公告',{exact:true}).first()).toBeVisible()
+ })
+
+ test('AI 列表详情与提示词按需读取',async({page})=>{
+  let details=0,prompts=0
+  const summary={id:900,ticker:'TEST',company_name:'测试公司',status:'success',provider_name:'测试模型',model:'fixture',scope:'ticker_evaluation',requested_at:'2026-10-02T00:00:00Z'}
+  await page.route('**/api/ai/analyses**',route=>{
+    const url=new URL(route.request().url())
+    if(url.pathname.endsWith('/900')){
+      if(url.searchParams.get('view')==='prompts'){prompts++;return route.fulfill({json:{code:0,data:{id:900,system_prompt:'当次系统指令',user_prompt:'当次完整事实包'}}})}
+      details++;return route.fulfill({json:{code:0,data:{...summary,content:'当次已保存结论'}}})
+    }
+    expect(url.searchParams.get('view')).toBe('summary')
+    return route.fulfill({json:{code:0,data:{items:[summary],total:1}}})
+  })
+  await page.goto(`${fixtureURL}/ai-analyses`)
+  await page.getByRole('button',{name:'查看',exact:true}).click()
+  await expect(page.getByText('当次已保存结论',{exact:true})).toBeVisible()
+  expect(details).toBe(1);expect(prompts).toBe(0)
+  await page.getByText('发送给 AI 的提示词',{exact:true}).click()
+  await expect(page.getByText('当次完整事实包',{exact:true})).toBeVisible()
+  expect(prompts).toBe(1)
+ })

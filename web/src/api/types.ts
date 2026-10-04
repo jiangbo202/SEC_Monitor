@@ -288,6 +288,8 @@ export interface IPORadarAction {
 }
 
 export interface IPORadarHealth {
+  parser_issues?: {reason:string;label:string;count:number;index_pages:number;examples:{company_name:string;filing_url:string}[]}[]
+  mapping_issues?: {cik:string;company_name:string;reason:string}[]
   pending_listing: number
   missing_market_mapping: number
   stale_lifecycle_checks: number
@@ -2381,6 +2383,9 @@ export interface SystemHealth {
 }
 
 export interface OperationalIssue {
+  recovery_status?: string
+  task_name?: string
+  next_attempt_at?: string
   key: string
   category: string
   severity: 'warning' | 'critical' | string
@@ -2542,6 +2547,7 @@ export interface MarketTrendRefreshResult {
 }
 
 export interface USFuturesResponse {
+  automatic_sync?: { enabled:boolean; running:boolean; next_run_at?:string; last_status:string }
   source: string
   last_fetched_at?: string | null
   futures: MarketTrendSeries[]

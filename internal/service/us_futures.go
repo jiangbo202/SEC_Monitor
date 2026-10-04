@@ -37,9 +37,16 @@ var usFuturesDefinitions = []marketTrendDefinition{
 }
 
 type USFuturesResponse struct {
-	Source      string              `json:"source"`
-	LastFetched *time.Time          `json:"last_fetched_at,omitempty"`
-	Futures     []MarketTrendSeries `json:"futures"`
+	Source        string                `json:"source"`
+	LastFetched   *time.Time            `json:"last_fetched_at,omitempty"`
+	Futures       []MarketTrendSeries   `json:"futures"`
+	AutomaticSync *FuturesAutomaticSync `json:"automatic_sync,omitempty"`
+}
+type FuturesAutomaticSync struct {
+	Enabled    bool       `json:"enabled"`
+	Running    bool       `json:"running"`
+	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
+	LastStatus string     `json:"last_status"`
 }
 type USFuturesRefreshResult struct {
 	SymbolsRequested int      `json:"symbols_requested"`
@@ -76,6 +83,14 @@ func (s *USFuturesService) List(ctx context.Context, historyDays int) (USFutures
 		return USFuturesResponse{}, err
 	}
 	result := USFuturesResponse{Source: usFuturesSourceFutu, Futures: []MarketTrendSeries{}}
+	if s.db.Migrator().HasTable(&model.TaskConfig{}) {
+		var task model.TaskConfig
+		if err := s.db.WithContext(ctx).Where("task_name = ?", "us_futures_sync").First(&task).Error; err == nil {
+			result.AutomaticSync = &FuturesAutomaticSync{Enabled: task.Enabled, Running: task.Running, NextRunAt: task.NextRunAt, LastStatus: task.LastStatus}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return result, err
+		}
+	}
 	bySymbol := map[string][]model.MarketTrendDaily{}
 	for _, row := range rows {
 		bySymbol[row.Symbol] = append(bySymbol[row.Symbol], row)

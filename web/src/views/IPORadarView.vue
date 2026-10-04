@@ -25,6 +25,17 @@
       <el-tag v-if="health.due_retry_batches || health.dead_letter_batches" type="danger" effect="plain">{{ t('pages.ipoRadar.attention.retryQueue', { due: health.due_retry_batches, dead: health.dead_letter_batches }) }}</el-tag>
     </div>
 
+    <el-collapse v-if="health?.parser_issues?.length || health?.mapping_issues?.length" class="quality-strip">
+      <el-collapse-item title="解析与身份覆盖详情" name="coverage">
+        <p>缺少字段与请求失败分开统计；索引页将先定位主文档。历史记录和新解析器升级每轮最多重试 25 条，常规失败至少间隔 24 小时；重试不保证所有格式都能解析。</p>
+        <el-table :data="health.parser_issues || []" size="small" border>
+          <el-table-column prop="label" label="原因" min-width="250" /><el-table-column prop="count" label="记录数" width="90" /><el-table-column prop="index_pages" label="其中索引页" width="110" />
+          <el-table-column label="近期样本" min-width="250"><template #default="{row}"><div v-for="item in row.examples" :key="item.filing_url"><el-link :href="item.filing_url" target="_blank" rel="noopener" type="primary">{{ item.company_name }} · SEC 原文</el-link></div></template></el-table-column>
+        </el-table>
+        <el-table v-if="health.mapping_issues?.length" :data="health.mapping_issues" size="small" border style="margin-top:12px"><el-table-column prop="company_name" label="身份待确认" min-width="200" /><el-table-column prop="cik" label="CIK" width="125" /><el-table-column prop="reason" label="核验说明" min-width="350" /></el-table>
+      </el-collapse-item>
+    </el-collapse>
+
     <el-alert
       v-if="visibleHealthActions.length"
       class="ipo-action-panel"
